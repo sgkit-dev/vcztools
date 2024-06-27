@@ -5,12 +5,10 @@ from pathlib import Path
 from typing import MutableMapping, Optional, TextIO, Union
 
 import numpy as np
-from xarray import Dataset
+import zarr
 
-from sgkit import load_dataset
-from sgkit.io.utils import FLOAT32_MISSING
-from sgkit.io.vcf.vcf_reader import RESERVED_VARIABLE_NAMES
-from sgkit.io.vcf.vcf_writer_utils import (
+from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
+from .vcf_writer_utils import (
     byte_buf_to_str,
     create_mask,
     interleave,
@@ -77,9 +75,11 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
 }
 
 
-def write_vcf(
-    input: Dataset, output: Union[PathType, TextIO], *, vcf_header: Optional[str] = None
-) -> None:
+def dims(arr):
+    return arr.attrs["_ARRAY_DIMENSIONS"]
+
+
+def write_vcf(vcz, output, *, vcf_header: Optional[str] = None) -> None:
     """Convert a dataset to a VCF file.
 
     The VCF header to use is dictated by either the ``vcf_header`` parameter or the
@@ -134,69 +134,61 @@ def write_vcf(
         or from scratch otherwise.
     """
 
+    root = zarr.open(vcz, mode="r")
+
     with ExitStack() as stack:
         if isinstance(output, str) or isinstance(output, Path):
             output = stack.enter_context(open(output, mode="w"))
 
         if vcf_header is None:
-            if "vcf_header" in input.attrs:
-                original_header = input.attrs["vcf_header"]
+            if "vcf_header" in root.attrs:
+                original_header = root.attrs["vcf_header"]
             else:
                 original_header = None
-            vcf_header = _generate_header(input, original_header)
+            vcf_header = _generate_header(root, original_header)
 
         print(vcf_header, end="", file=output)
 
-        if input.sizes["variants"] == 0:
+        pos = root["variant_position"]
+        num_variants = pos.shape[0]
+
+        if num_variants == 0:
             return
 
         header_info_fields = _info_fields(vcf_header)
         header_format_fields = _format_fields(vcf_header)
 
-        contigs = get_contigs(input).astype("S")
-        filters = get_filters(input)
+        contigs = root["contig_id"][:].astype("S")
+        filters = root["filter_id"][:].astype("S")
 
-        if filters is None:
-            filters = np.array(["PASS"], dtype="S")
-        else:
-            filters = filters.astype("S")
-
-        for ds in _variant_chunks(input):
+        for v_chunk in range(pos.cdata_shape[0]):
             dataset_chunk_to_vcf(
-                ds, header_info_fields, header_format_fields, contigs, filters, output
+                root,
+                v_chunk,
+                header_info_fields,
+                header_format_fields,
+                contigs,
+                filters,
+                output,
             )
 
 
 def dataset_chunk_to_vcf(
-    ds, header_info_fields, header_format_fields, contigs, filters, output
+    root, v_chunk, header_info_fields, header_format_fields, contigs, filters, output
 ):
-    # write a dataset chunk as VCF, with no header
-
-    ds = ds.load()  # load dataset chunk into memory
-
-    n_variants = ds.sizes["variants"]  # number of variants in this chunk
-    n_samples = ds.sizes["samples"]  # number of samples in whole dataset
+    # n_variants = ds.sizes["variants"]  # number of variants in this chunk
+    # n_samples = ds.sizes["samples"]  # number of samples in whole dataset
 
     # fixed fields
 
-    chrom = ds.variant_contig.values
-    pos = ds.variant_position.values
-    id = (
-        ds.variant_id.values.astype("S")
-        if "variant_id" in ds
-        else np.full((n_variants), ".", dtype="S")
-    )
-    alleles = ds.variant_allele.values.astype("S")
-    qual = (
-        ds.variant_quality.values
-        if "variant_quality" in ds
-        else np.full((n_variants), FLOAT32_MISSING, dtype=np.float32)
-    )
-    filter_ = (
-        ds.variant_filter.values
-        if "variant_filter" in ds
-        else np.full((n_variants, len(filters)), False, dtype=bool)
-    )
+    chrom = root.variant_contig.blocks[v_chunk]
+    pos = root.variant_position.blocks[v_chunk]
+    id = root.variant_id.blocks[v_chunk].astype("S")
+    alleles = root.variant_allele.blocks[v_chunk].astype("S")
+    qual = root.variant_quality.blocks[v_chunk]
+    filter_ = root.variant_filter.blocks[v_chunk]
+
+    n_variants = len(pos)
 
     # info fields
 
@@ -209,17 +201,21 @@ def dataset_chunk_to_vcf(
     info_prefixes = []  # field names followed by '=' (except for flag/bool types)
     for key in header_info_fields:
         var = f"variant_{key}"
-        if var not in ds:
+        try:
+            arr = root[f"variant_{key}"]
+        except KeyError:
+            # We use the VCF header as the source of information about arrays,
+            # not the other way around. This is probably not what we want to
+            # do, but keeping it this way to preserve tests initially.
             continue
-        if ds[var].dtype == bool:
-            values = ds[var].values
+        values = arr.blocks[v_chunk]
+        if arr.dtype == bool:
             info_mask[k] = create_mask(values)
             info_bufs.append(np.zeros(0, dtype=np.uint8))
             # info_indexes contains zeros so nothing is written for flag/bool
             info_prefixes.append(key)
             k += 1
         else:
-            values = ds[var].values
             if values.dtype.kind == "O":
                 values = values.astype("S")  # convert to fixed-length strings
             info_mask[k] = create_mask(values)
@@ -246,12 +242,14 @@ def dataset_chunk_to_vcf(
     k = 0
     format_fields = []
     has_gt = False
+    n_samples = 0
     for key in header_format_fields:
         var = "call_genotype" if key == "GT" else f"call_{key}"
-        if var not in ds:
+        if var not in root:
             continue
+        values = root[var].blocks[v_chunk]
         if key == "GT":
-            values = ds[var].values
+            n_samples = values.shape[1]
             format_mask[k] = create_mask(values)
             format_values.append(values)
             format_bufs.append(
@@ -261,7 +259,6 @@ def dataset_chunk_to_vcf(
             has_gt = True
             k += 1
         else:
-            values = ds[var].values
             if values.dtype.kind == "O":
                 values = values.astype("S")  # convert to fixed-length strings
             format_mask[k] = create_mask(values)
@@ -277,8 +274,8 @@ def dataset_chunk_to_vcf(
     # indexes are all the same size (number of samples) so store in a single array
     format_indexes = np.empty((len(format_values), n_samples + 1), dtype=np.int32)
 
-    if "call_genotype_phased" in ds:
-        call_genotype_phased = ds["call_genotype_phased"].values
+    if "call_genotype_phased" in root:
+        call_genotype_phased = root["call_genotype_phased"].blocks[v_chunk][:]
     else:
         call_genotype_phased = np.full((n_variants, n_samples), False, dtype=bool)
 
@@ -381,39 +378,11 @@ def dataset_chunk_to_vcf(
         print(s, file=output)
 
 
-def zarr_to_vcf(
-    input: Union[PathType, MutableMapping[str, bytes]],
-    output: Union[PathType, TextIO],
-    *,
-    vcf_header: Optional[str] = None,
-) -> None:
-    """Convert a Zarr file to a VCF file.
-
-    A convenience for :func:`sgkit.load_dataset` followed by :func:`write_vcf`.
-
-    Refer to :func:`write_vcf` for details and limitations.
-
-    Parameters
-    ----------
-    input
-        Zarr store or path to directory in file system.
-    output
-        A path or text file object that the output VCF should be written to.
-    vcf_header
-        The VCF header to use (including the line starting with ``#CHROM``). If None, then
-        a header will be generated from the dataset ``vcf_header`` attribute (if present),
-        or from scratch otherwise.
-    """
-
-    ds = load_dataset(input)
-    write_vcf(ds, output, vcf_header=vcf_header)
-
-
 def _generate_header(ds, original_header):
     output = io.StringIO()
 
-    contigs = ds.attrs["contigs"].copy()
-    filters = ds.attrs["filters"].copy() if "filters" in ds.attrs else []
+    contigs = list(ds["contig_id"][:])
+    filters = list(ds["filter_id"][:])
     info_fields = []
     format_fields = []
 
@@ -421,13 +390,13 @@ def _generate_header(ds, original_header):
         # GT must be the first field if present, per the spec (section 1.6.2)
         format_fields.append("GT")
 
-    for var, arr in ds.data_vars.items():
+    for var, arr in ds.items():
         if (
             var.startswith("variant_")
             and not var.endswith("_fill")
             and not var.endswith("_mask")
             and var not in RESERVED_VARIABLE_NAMES
-            and arr.dims[0] == "variants"
+            and dims(arr)[0] == "variants"
         ):
             key = var[len("variant_") :]
             info_fields.append(key)
@@ -435,8 +404,8 @@ def _generate_header(ds, original_header):
             var.startswith("call_")
             and not var.endswith("_fill")
             and not var.endswith("_mask")
-            and arr.dims[0] == "variants"
-            and arr.dims[1] == "samples"
+            and dims(arr)[0] == "variants"
+            and dims(arr)[1] == "samples"
         ):
             key = var[len("call_") :]
             if key in ("genotype", "genotype_phased"):
@@ -552,7 +521,7 @@ def _generate_header(ds, original_header):
 
     if len(ds.sample_id) > 0:
         print(end="\t", file=output)
-        print("FORMAT", *ds.sample_id.values, sep="\t", file=output)
+        print("FORMAT", *ds.sample_id[:], sep="\t", file=output)
     else:
         print(file=output)
 

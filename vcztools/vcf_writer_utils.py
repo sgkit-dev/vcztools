@@ -3,15 +3,29 @@
 Many functions in this module take a bytes buffer argument, ``buf``, which should be a NumPy array of type ``uint8``,
 and an integer index into the buffer, ``p``.
 """
-import numpy as np
+from typing import Callable
 
-from sgkit.accelerate import numba_jit
-from sgkit.io.utils import (
+import numpy as np
+import numba
+
+from .constants import (
     FLOAT32_FILL_AS_INT32,
     FLOAT32_MISSING_AS_INT32,
     INT_FILL,
     INT_MISSING,
 )
+
+DEFAULT_NUMBA_ARGS = {
+    "nopython": True,
+    "cache": False,
+}
+
+
+def numba_jit(*args, **kwargs) -> Callable:  # pragma: no cover
+    kwargs_ = DEFAULT_NUMBA_ARGS.copy()
+    kwargs_.update(kwargs)
+    return numba.jit(*args, **kwargs_)
+
 
 COLON = ord(":")
 COMMA = ord(",")

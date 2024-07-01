@@ -24,8 +24,6 @@ from .vcf_writer_utils import (
     vcf_values_to_byte_buf,
     vcf_values_to_byte_buf_size,
 )
-from sgkit.model import get_contigs, get_filters
-from sgkit.typing import PathType
 
 # references to the VCF spec are for https://samtools.github.io/hts-specs/VCFv4.3.pdf
 

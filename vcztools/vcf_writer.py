@@ -619,12 +619,12 @@ def _array_to_vcf_number(category, key, a):
     # reverse of vcf_number_to_dimension_and_size
     if a.dtype == bool:
         return 0
-    elif category == "INFO" and len(a.dims) == 1:
+    elif category == "INFO" and len(dims(a)) == 1:
         return 1
-    elif category == "FORMAT" and len(a.dims) == 2:
+    elif category == "FORMAT" and len(dims(a)) == 2:
         return 1
 
-    last_dim = a.dims[-1]
+    last_dim = dims(a)[-1]
     if last_dim == "alt_alleles":
         return "A"
     elif last_dim == "alleles":

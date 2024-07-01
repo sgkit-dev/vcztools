@@ -19,6 +19,7 @@ vcztools = "vcztools.cli:vcztools_main"
 [project.optional-dependencies]
 dev = [
   "bio2zarr @ git+https://github.com/sgkit-dev/bio2zarr.git",
+  "cyvcf2",
   "pytest",
   "pytest-datadir",
 ]

@@ -17,8 +17,10 @@ class NaturalOrderGroup(click.Group):
 
 @click.command
 @click.argument("path", type=click.Path())
-def view(path):
-    vcf_writer.write_vcf(path, sys.stdout)
+@click.option("-c", is_flag=True, default=False, help="Use C implementation")
+def view(path, c):
+    implementation = "c" if c else "numba"
+    vcf_writer.write_vcf(path, sys.stdout, implementation=implementation)
 
 
 @click.group(cls=NaturalOrderGroup, name="vcztools")

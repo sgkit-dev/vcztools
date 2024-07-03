@@ -121,16 +121,16 @@ test_variant_encoder_minimal(void)
     const char alt_data[] = "TC";
     const int32_t qual_data[] = { 1000, 12 };
     const char filter_data[] = "PASSPASS";
-    const int32_t an_data[] = { 8, 9 };
-    const char* aa_data = "GT";
+    const int32_t an_data[] = { -1, 9 };
+    const char* aa_data = "G.";
     const int32_t gt_data[] = { 0, 0, 0, 1, 1, 1, 1, 0 };
     const int8_t gt_phased_data[] = { 0, 1, 1, 0 };
-    const int32_t hq_data[] = { 10, 15, 7, 12, 8, 9, 10, 11 };
+    const int32_t hq_data[] = { 10, 15, 7, 12, -1, -1, -1, -1};
     int ret, j;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
-        "X\t123\tRS1\tA\tT\t1000\tPASS\tAN=8;AA=G\tFORMAT=GT:HQ\t0/0:10,15\t0|1:7,12",
-        "YY\t45678\tRS2\tG\tC\t12\tPASS\tAN=9;AA=T\tFORMAT=GT:HQ\t1|1:8,9\t1/0:10,11",
+        "X\t123\tRS1\tA\tT\t1000\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
+        "YY\t45678\tRS2\tG\tC\t12\tPASS\tAN=9\tGT\t1|1\t1/0",
     };
     char buf[1000];
 
@@ -149,7 +149,7 @@ test_variant_encoder_minimal(void)
 
     printf("\n");
     vcz_variant_encoder_print_state(&writer, _devnull);
-    vcz_variant_encoder_print_state(&writer, stdout);
+    /* vcz_variant_encoder_print_state(&writer, stdout); */
 
     for (j = 0; j < num_rows; j++) {
         ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);

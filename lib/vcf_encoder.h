@@ -4,6 +4,8 @@
 
 #define VCZ_INT_MISSING -1
 #define VCZ_INT_FILL -2
+#define VCZ_STRING_MISSING '.'
+#define VCZ_STRING_FILL '\0'
 
 #define VCZ_NUM_FIXED_FIELDS 7
 

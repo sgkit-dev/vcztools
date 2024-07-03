@@ -17,7 +17,7 @@ from .constants import (
 
 DEFAULT_NUMBA_ARGS = {
     "nopython": True,
-    "cache": False,
+    "cache": True, 
 }
 
 

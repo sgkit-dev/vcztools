@@ -11,7 +11,8 @@ from .utils import assert_vcfs_close
 
 
 @pytest.mark.parametrize("output_is_path", [True, False])
-def test_write_vcf(shared_datadir, tmp_path, output_is_path):
+@pytest.mark.parametrize("implementation", ["c", "numba"])
+def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")
     intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
@@ -22,10 +23,10 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
     )
 
     if output_is_path:
-        write_vcf(intermediate_vcz, output)
+        write_vcf(intermediate_vcz, output, implementation=implementation)
     else:
         output_str = StringIO()
-        write_vcf(intermediate_vcz, output_str)
+        write_vcf(intermediate_vcz, output_str, implementation=implementation)
         with open(output, "w") as f:
             f.write(output_str.getvalue())
 

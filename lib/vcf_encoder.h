@@ -6,12 +6,16 @@
 #define VCZ_INT_FILL -2
 #define VCZ_STRING_MISSING '.'
 #define VCZ_STRING_FILL '\0'
+#define VCZ_FLOAT32_MISSING_AS_INT32 0x7F800001
+#define VCZ_FLOAT32_FILL_AS_INT32 0x7F800002
 
 #define VCZ_NUM_FIXED_FIELDS 6
 
 #define VCZ_TYPE_INT 0
-#define VCZ_TYPE_FLOAT 0
+#define VCZ_TYPE_FLOAT 1
 #define VCZ_TYPE_STRING 2
+
+
 
 // arbitrary - we can increase if needs be
 #define VCZ_MAX_FIELD_NAME_LEN 256
@@ -60,7 +64,7 @@ int vcz_variant_encoder_init(vcz_variant_encoder_t *self,
     const char *id_data, size_t id_item_size, size_t id_num_columns,
     const char *ref_data, size_t ref_item_size,
     const char *alt_data, size_t alt_item_size, size_t alt_num_columns,
-    const int32_t *qual_data,
+    const float *qual_data,
     const char *filter_id_data, size_t filter_id_item_size, size_t filter_id_num_columns,
     const int8_t *filter_data
 );

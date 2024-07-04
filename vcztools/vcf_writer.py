@@ -226,9 +226,18 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         num_samples = gt.shape[1]
 
     encoder = _vcztools.VcfEncoder(
-        num_variants, num_samples, chrom=chrom, pos=pos, id=id, alt=alt, ref=ref,
-        filter_ids=filters, filter=filter_
+        num_variants,
+        num_samples,
+        chrom=chrom,
+        pos=pos,
+        id=id,
+        alt=alt,
+        ref=ref,
+        qual=qual,
+        filter_ids=filters,
+        filter=filter_,
     )
+    # print(encoder.arrays)
     encoder.add_gt_field(gt.astype("int32"), gt_phased)
     for name, array in info_fields.items():
         if array.dtype.kind == "O":
@@ -237,8 +246,6 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
             array = array.reshape((num_variants, 1))
         if array.dtype.kind == "i":
             array = array.astype("int32")  # tmp
-        if array.dtype.kind == "f":
-            continue  # tmp
         if array.dtype.kind == "b":
             continue  # tmp
             # array = array.astype("int32") # tmp
@@ -251,9 +258,6 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
             array = array.reshape((num_variants, num_samples, 1))
         if array.dtype.kind == "i":
             array = array.astype("int32")  # tmp
-        if array.dtype.kind == "f":
-            continue  # tmp
-            # array = array.astype("int32") # tmp
         encoder.add_format_field(name, array)
 
     for j in range(num_variants):

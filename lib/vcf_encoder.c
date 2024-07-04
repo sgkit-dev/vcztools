@@ -69,6 +69,20 @@ int32_all_missing(const int32_t *restrict data, size_t n)
 }
 
 static bool
+float32_all_missing(const float *restrict data, size_t n)
+{
+    size_t j;
+    const int32_t *restrict di32 = (const int32_t *) data;
+
+    for (j = 0; j < n; j++) {
+        if (di32[j] != VCZ_FLOAT32_FILL_AS_INT32 &&
+                di32[j] != VCZ_FLOAT32_MISSING_AS_INT32) {
+            return false;
+        }
+    }
+    return true;
+}
+static bool
 string_all_missing(const char *restrict data, size_t item_size, size_t n)
 {
     size_t j;
@@ -144,6 +158,45 @@ int32_field_write_entry(
     return offset;
 }
 
+static int64_t
+float32_field_write_entry(
+    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+{
+    const float *source = (float *) data;
+    const int32_t *int32_source = (int32_t *) data;
+    int32_t int32_value;
+    float value;
+    size_t column;
+    int written;
+    char value_buffer[128];
+
+    for (column = 0; column < self->num_columns; column++) {
+        int32_value = int32_source[column];
+        if (int32_value == VCZ_FLOAT32_FILL_AS_INT32) {
+            break;
+        }
+        if (column > 0) {
+            dest[offset] = ',';
+            offset++;
+        }
+        if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
+            dest[offset] = '.';
+            offset++;
+        } else {
+            /* offset += vcz_itoa(value, dest + offset); */
+            value = source[column];
+            written = snprintf(value_buffer, sizeof(value_buffer), "%.3g", value);
+            memcpy(dest + offset, value_buffer, written);
+            offset += written;
+        }
+    }
+    dest[offset] = '\t';
+    offset++;
+    dest[offset] = '\0';
+    return offset;
+}
+
+
 int64_t
 vcz_field_write_entry(
     const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
@@ -153,6 +206,9 @@ vcz_field_write_entry(
         if (self->item_size == 4) {
             return int32_field_write_entry(self, data, dest, buflen, offset);
         }
+    }
+    else if (self->type == VCZ_TYPE_FLOAT && self->item_size == 4) {
+        return float32_field_write_entry(self, data, dest, buflen, offset);
     } else if (self->type == VCZ_TYPE_STRING) {
         return string_field_write_entry(self, data, dest, buflen, offset);
     }
@@ -181,6 +237,9 @@ vcz_info_field_is_missing(const vcz_field_t *self, size_t variant)
         if (self->item_size == 4) {
             return int32_all_missing(data, self->num_columns);
         }
+    } else if (self->type == VCZ_TYPE_FLOAT) {
+        return float32_all_missing(data, self->num_columns);
+
     } else if (self->type == VCZ_TYPE_STRING) {
         return string_all_missing(data, self->item_size, self->num_columns);
     }
@@ -256,36 +315,6 @@ out:
     return offset;
 }
 
-/* int64_t */
-/* vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self, */
-/*     size_t variant, size_t sample, char *dest, size_t buflen, int64_t offset) */
-/* { */
-/*     vcz_field_t field; */
-/*     size_t j, row_size; */
-/*     const void *data; */
-
-/*     if (self->gt.data != NULL) { */
-/*         offset = vcz_variant_encoder_write_sample_gt( */
-/*             self, variant, sample, dest, buflen, offset); */
-/*         if (offset < 0) { */
-/*             goto out; */
-/*         } */
-/*     } */
-
-/*     for (j = 0; j < self->num_format_fields; j++) { */
-/*         field = self->format_fields[j]; */
-/*         dest[offset - 1] = ':'; */
-/*         row_size = self->num_samples * field.num_columns * field.item_size; */
-/*         data = field.data + variant * row_size */
-/*                + sample * field.num_columns * field.item_size; */
-/*         offset = vcz_field_write_entry(&field, data, dest, buflen, offset); */
-/*         if (offset < 0) { */
-/*             goto out; */
-/*         } */
-/*     } */
-/* out: */
-/*     return offset; */
-/* } */
 
 int64_t
 vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t variant,
@@ -612,7 +641,7 @@ vcz_variant_encoder_init(vcz_variant_encoder_t *self,
     const char *id_data, size_t id_item_size, size_t id_num_columns,
     const char *ref_data, size_t ref_item_size,
     const char *alt_data, size_t alt_item_size, size_t alt_num_columns,
-    const int32_t *qual_data,
+    const float *qual_data,
     const char *filter_id_data, size_t filter_id_item_size, size_t filter_id_num_columns,
     const int8_t *filter_data)
 {
@@ -643,7 +672,7 @@ vcz_variant_encoder_init(vcz_variant_encoder_t *self,
             .num_columns = alt_num_columns,
             .data = alt_data },
         { .name = "QUAL",
-            .type = VCZ_TYPE_INT,
+            .type = VCZ_TYPE_FLOAT,
             .item_size = 4,
             .num_columns = 1,
             .data = qual_data }

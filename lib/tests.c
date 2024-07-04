@@ -119,7 +119,7 @@ test_variant_encoder_minimal(void)
     const char id_data[] = "RS1RS2";
     const char ref_data[] = "AG";
     const char alt_data[] = "TC";
-    const int32_t qual_data[] = { 1000, 12 };
+    const float qual_data[] = { 9, 12.1 };
     const char filter_id_data[] = "PASS\0FILT1";
     const int8_t filter_data[] = {1, 0, 0, 1};
     const int32_t an_data[] = { -1, 9 };
@@ -130,8 +130,8 @@ test_variant_encoder_minimal(void)
     int ret, j;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
-        "X\t123\tRS1\tA\tT\t1000\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
-        "YY\t45678\tRS2\tG\tC\t12\tFILT1\tAN=9\tGT\t1|1\t1/0",
+        "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
+        "YY\t45678\tRS2\tG\tC\t12.1\tFILT1\tAN=9\tGT\t1|1\t1/0",
     };
     char buf[1000];
 
@@ -151,10 +151,11 @@ test_variant_encoder_minimal(void)
 
     printf("\n");
     vcz_variant_encoder_print_state(&writer, _devnull);
-    /* vcz_variant_encoder_print_state(&writer, stdout); */
+    vcz_variant_encoder_print_state(&writer, stdout);
 
     for (j = 0; j < num_rows; j++) {
         ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
+        printf("ret = %d\n", ret);
         printf("GOT:%s\n", buf);
         printf("EXP:%s\n", expected[j]);
         printf("GOT:%d\n", (int) strlen(buf));

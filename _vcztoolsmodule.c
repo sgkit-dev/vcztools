@@ -136,13 +136,14 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
 {
     int ret = -1;
     static char *kwlist[] = { "num_variants", "num_samples", "chrom", "pos", "id", "ref",
-        "alt", "filter_ids", "filter", NULL };
+        "alt", "qual", "filter_ids", "filter", NULL };
     int num_variants, num_samples;
     PyArrayObject *chrom = NULL;
     PyArrayObject *pos = NULL;
     PyArrayObject *id = NULL;
     PyArrayObject *ref = NULL;
     PyArrayObject *alt = NULL;
+    PyArrayObject *qual = NULL;
     PyArrayObject *filter_ids = NULL;
     PyArrayObject *filter = NULL;
     npy_intp num_filters;
@@ -157,10 +158,10 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!O!O!", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!O!O!O!", kwlist,
             &num_variants, &num_samples, &PyArray_Type, &chrom, &PyArray_Type, &pos,
             &PyArray_Type, &id, &PyArray_Type, &ref, &PyArray_Type, &alt, &PyArray_Type,
-            &filter_ids, &PyArray_Type, &filter)) {
+            &qual, &PyArray_Type, &filter_ids, &PyArray_Type, &filter)) {
         goto out;
     }
 
@@ -180,6 +181,10 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     if (VcfEncoder_store_fixed_array(self, alt, "ALT", NPY_STRING, 2, num_variants)
+        != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, qual, "QUAL", NPY_FLOAT32, 1, num_variants)
         != 0) {
         goto out;
     }
@@ -223,7 +228,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         PyArray_DATA(id), PyArray_ITEMSIZE(id), PyArray_DIMS(id)[1],
         PyArray_DATA(ref), PyArray_ITEMSIZE(ref),
         PyArray_DATA(alt), PyArray_ITEMSIZE(alt), PyArray_DIMS(alt)[1],
-        PyArray_DATA(pos),
+        PyArray_DATA(qual),
         PyArray_DATA(filter_ids), PyArray_ITEMSIZE(filter_ids), num_filters,
         PyArray_DATA(filter)
     );
@@ -274,7 +279,7 @@ out:
 }
 
 static int
-np_type_to_vcz_type(PyArrayObject *array)
+np_type_to_vcz_type(const char *name, PyArrayObject *array)
 {
     int ret = -1;
 
@@ -282,11 +287,15 @@ np_type_to_vcz_type(PyArrayObject *array)
         case 'i':
             ret = VCZ_TYPE_INT;
             break;
+        case 'f':
+            ret = VCZ_TYPE_FLOAT;
+            break;
         case 'S':
             ret = VCZ_TYPE_STRING;
             break;
         default:
-            PyErr_SetString(PyExc_ValueError, "Unsupported array dtype");
+            PyErr_Format(
+                PyExc_ValueError, "Array '%s' has unsupported array dtype", name);
             goto out;
     }
 out:
@@ -307,7 +316,7 @@ VcfEncoder_add_info_field(VcfEncoder *self, PyObject *args)
     if (VcfEncoder_add_field_array(self, name, array, 2, "INFO/") != 0) {
         goto out;
     }
-    type = np_type_to_vcz_type(array);
+    type = np_type_to_vcz_type(name, array);
     if (type < 0) {
         goto out;
     }
@@ -337,7 +346,7 @@ VcfEncoder_add_format_field(VcfEncoder *self, PyObject *args)
     if (VcfEncoder_add_field_array(self, name, array, 3, "FORMAT/") != 0) {
         goto out;
     }
-    type = np_type_to_vcz_type(array);
+    type = np_type_to_vcz_type(name, array);
     if (type < 0) {
         goto out;
     }

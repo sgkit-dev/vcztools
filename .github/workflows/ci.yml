@@ -63,4 +63,6 @@ jobs:
       - name: Check vcztools CLI
         run: |
           vcztools --help
+          # Make sure we don't have ``vcztools`` in the CWD
+          cd tests
           python -m vcztools --help

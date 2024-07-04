@@ -7,7 +7,7 @@ from typing import MutableMapping, Optional, TextIO, Union
 import numpy as np
 import zarr
 
-import _vcztools
+from . import _vcztools
 
 from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 from .vcf_writer_utils import (
@@ -192,7 +192,7 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
     qual = root.variant_quality.blocks[v_chunk]
-    # filter_ = filters[root.variant_filter.blocks[v_chunk]]
+    filter_ = root.variant_filter.blocks[v_chunk]
 
     num_variants = len(pos)
     if len(id.shape) == 1:
@@ -226,8 +226,18 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         num_samples = gt.shape[1]
 
     encoder = _vcztools.VcfEncoder(
-        num_variants, num_samples, chrom=chrom, pos=pos, id=id, alt=alt, ref=ref
+        num_variants,
+        num_samples,
+        chrom=chrom,
+        pos=pos,
+        id=id,
+        alt=alt,
+        ref=ref,
+        qual=qual,
+        filter_ids=filters,
+        filter=filter_,
     )
+    # print(encoder.arrays)
     encoder.add_gt_field(gt.astype("int32"), gt_phased)
     for name, array in info_fields.items():
         if array.dtype.kind == "O":
@@ -236,11 +246,6 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
             array = array.reshape((num_variants, 1))
         if array.dtype.kind == "i":
             array = array.astype("int32")  # tmp
-        if array.dtype.kind == "f":
-            continue  # tmp
-        if array.dtype.kind == "b":
-            continue  # tmp
-            # array = array.astype("int32") # tmp
         encoder.add_info_field(name, array)
 
     for name, array in format_fields.items():
@@ -250,22 +255,16 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
             array = array.reshape((num_variants, num_samples, 1))
         if array.dtype.kind == "i":
             array = array.astype("int32")  # tmp
-        if array.dtype.kind == "f":
-            continue  # tmp
-            # array = array.astype("int32") # tmp
         encoder.add_format_field(name, array)
 
     for j in range(num_variants):
         line = encoder.encode_row(j, 2**30)
-        print(line)
+        print(line, file=output)
 
 
 def numba_chunk_to_vcf(
     root, v_chunk, header_info_fields, header_format_fields, contigs, filters, output
 ):
-    # n_variants = ds.sizes["variants"]  # number of variants in this chunk
-    # n_samples = ds.sizes["samples"]  # number of samples in whole dataset
-
     # fixed fields
 
     chrom = root.variant_contig.blocks[v_chunk]

@@ -4,7 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vcztools"
-version = "0.0.1"
+description = "Implementation of bcftools for VCF Zarr"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+  {name = "sgkit Developers", email = "project@sgkit.dev"},
+]
 dependencies = [
   "numpy>=1.23.5,<2",
   "numba",
@@ -12,6 +17,7 @@ dependencies = [
   "click",
 ]
 requires-python = ">=3.9"
+dynamic = ["version"]
 
 [project.scripts]
 vcztools = "vcztools.cli:vcztools_main"
@@ -29,3 +35,6 @@ packages = ["vcztools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools_scm]
+write_to = "vcztools/_version.py"

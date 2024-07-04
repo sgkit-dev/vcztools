@@ -118,24 +118,27 @@ test_variant_encoder_minimal(void)
     const int32_t pos_data[] = { 123, 45678 };
     const char id_data[] = "RS1RS2";
     const char ref_data[] = "AG";
-    const char alt_data[] = "TC";
-    const int32_t qual_data[] = { 1000, 12 };
-    const char filter_data[] = "PASSPASS";
+    const char alt_data[] = "T";
+    const float qual_data[] = { 9, 12.1 };
+    const char filter_id_data[] = "PASS\0FILT1";
+    const int8_t filter_data[] = {1, 0, 0, 1};
     const int32_t an_data[] = { -1, 9 };
     const char* aa_data = "G.";
+    const int8_t flag_data[] = {0, 1};
     const int32_t gt_data[] = { 0, 0, 0, 1, 1, 1, 1, 0 };
     const int8_t gt_phased_data[] = { 0, 1, 1, 0 };
     const int32_t hq_data[] = { 10, 15, 7, 12, -1, -1, -1, -1};
     int ret, j;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
-        "X\t123\tRS1\tA\tT\t1000\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
-        "YY\t45678\tRS2\tG\tC\t12\tPASS\tAN=9\tGT\t1|1\t1/0",
+        "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
+        "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT\t1|1\t1/0",
     };
     char buf[1000];
 
     ret = vcz_variant_encoder_init(&writer, 2, 2, contig_data, 2, pos_data, id_data, 3,
-        1, ref_data, 1, alt_data, 1, 1, qual_data, filter_data, 4, 1);
+        1, ref_data, 1, alt_data, 1, 1, qual_data,
+        filter_id_data, 5, 2, filter_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_gt_field(&writer, gt_data, 4, 2, gt_phased_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -143,20 +146,23 @@ test_variant_encoder_minimal(void)
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_info_field(&writer, "AA", VCZ_TYPE_STRING, 1, 1, aa_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(&writer, "FLAG", VCZ_TYPE_BOOL, 1, 1, flag_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_format_field(
         &writer, "HQ", VCZ_TYPE_INT, 4, 2, hq_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
-    printf("\n");
     vcz_variant_encoder_print_state(&writer, _devnull);
+    printf("\n");
     /* vcz_variant_encoder_print_state(&writer, stdout); */
 
     for (j = 0; j < num_rows; j++) {
         ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
+        /* printf("ret = %d\n", ret); */
         printf("GOT:%s\n", buf);
         printf("EXP:%s\n", expected[j]);
-        printf("GOT:%d\n", (int) strlen(buf));
-        printf("EXP:%d\n", (int) strlen(expected[j]));
+        /* printf("GOT:%d\n", (int) strlen(buf)); */
+        /* printf("EXP:%d\n", (int) strlen(expected[j])); */
         CU_ASSERT_EQUAL(ret, strlen(expected[j]));
         CU_ASSERT_STRING_EQUAL(buf, expected[j]);
     }

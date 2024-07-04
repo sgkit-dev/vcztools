@@ -7,7 +7,7 @@
 #define VCZ_STRING_MISSING '.'
 #define VCZ_STRING_FILL '\0'
 
-#define VCZ_NUM_FIXED_FIELDS 7
+#define VCZ_NUM_FIXED_FIELDS 6
 
 #define VCZ_TYPE_INT 0
 #define VCZ_TYPE_FLOAT 0
@@ -39,11 +39,13 @@ typedef struct {
     size_t num_variants;
     size_t num_samples;
     vcz_field_t fixed_fields[VCZ_NUM_FIXED_FIELDS];
+    vcz_field_t filter_id;
+    const int8_t *filter_data;
     vcz_field_t gt;
+    const int8_t *gt_phased_data;
     size_t num_info_fields;
     size_t max_info_fields;
     vcz_field_t *info_fields;
-    const int8_t *gt_phased_data;
     size_t num_format_fields;
     size_t max_format_fields;
     size_t field_array_size_increment;
@@ -58,8 +60,9 @@ int vcz_variant_encoder_init(vcz_variant_encoder_t *self,
     const char *id_data, size_t id_item_size, size_t id_num_columns,
     const char *ref_data, size_t ref_item_size,
     const char *alt_data, size_t alt_item_size, size_t alt_num_columns,
-    const int32_t *qual_data, const char *filter_data, size_t filter_item_size,
-    size_t filter_num_columns
+    const int32_t *qual_data,
+    const char *filter_id_data, size_t filter_id_item_size, size_t filter_id_num_columns,
+    const int8_t *filter_data
 );
 // clang-format on
 

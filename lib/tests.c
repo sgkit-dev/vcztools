@@ -120,7 +120,8 @@ test_variant_encoder_minimal(void)
     const char ref_data[] = "AG";
     const char alt_data[] = "TC";
     const int32_t qual_data[] = { 1000, 12 };
-    const char filter_data[] = "PASSPASS";
+    const char filter_id_data[] = "PASS\0FILT1";
+    const int8_t filter_data[] = {1, 0, 0, 1};
     const int32_t an_data[] = { -1, 9 };
     const char* aa_data = "G.";
     const int32_t gt_data[] = { 0, 0, 0, 1, 1, 1, 1, 0 };
@@ -130,12 +131,13 @@ test_variant_encoder_minimal(void)
     vcz_variant_encoder_t writer;
     const char *expected[] = {
         "X\t123\tRS1\tA\tT\t1000\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
-        "YY\t45678\tRS2\tG\tC\t12\tPASS\tAN=9\tGT\t1|1\t1/0",
+        "YY\t45678\tRS2\tG\tC\t12\tFILT1\tAN=9\tGT\t1|1\t1/0",
     };
     char buf[1000];
 
     ret = vcz_variant_encoder_init(&writer, 2, 2, contig_data, 2, pos_data, id_data, 3,
-        1, ref_data, 1, alt_data, 1, 1, qual_data, filter_data, 4, 1);
+        1, ref_data, 1, alt_data, 1, 1, qual_data,
+        filter_id_data, 5, 2, filter_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_gt_field(&writer, gt_data, 4, 2, gt_phased_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);

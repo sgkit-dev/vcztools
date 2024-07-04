@@ -135,14 +135,17 @@ static int
 VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
 {
     int ret = -1;
-    static char *kwlist[]
-        = { "num_variants", "num_samples", "chrom", "pos", "id", "ref", "alt", NULL };
+    static char *kwlist[] = { "num_variants", "num_samples", "chrom", "pos", "id", "ref",
+        "alt", "filter_ids", "filter", NULL };
     int num_variants, num_samples;
     PyArrayObject *chrom = NULL;
     PyArrayObject *pos = NULL;
     PyArrayObject *id = NULL;
     PyArrayObject *ref = NULL;
     PyArrayObject *alt = NULL;
+    PyArrayObject *filter_ids = NULL;
+    PyArrayObject *filter = NULL;
+    npy_intp num_filters;
     int err;
 
     self->vcf_encoder = NULL;
@@ -154,11 +157,13 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!", kwlist, &num_variants,
-            &num_samples, &PyArray_Type, &chrom, &PyArray_Type, &pos, &PyArray_Type, &id,
-            &PyArray_Type, &ref, &PyArray_Type, &alt)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!O!O!", kwlist,
+            &num_variants, &num_samples, &PyArray_Type, &chrom, &PyArray_Type, &pos,
+            &PyArray_Type, &id, &PyArray_Type, &ref, &PyArray_Type, &alt, &PyArray_Type,
+            &filter_ids, &PyArray_Type, &filter)) {
         goto out;
     }
+
     if (VcfEncoder_store_fixed_array(self, chrom, "CHROM", NPY_STRING, 1, num_variants)
         != 0) {
         goto out;
@@ -179,16 +184,48 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
+    /* NOTE: we generalise this pattern for CHROM also to save a bit of time
+     * in building numpy String arrays */
+    assert(PyArray_CheckExact(filter_ids));
+    if (!PyArray_CHKFLAGS(filter_ids, NPY_ARRAY_IN_ARRAY)) {
+        PyErr_SetString(PyExc_ValueError, "Array must have NPY_ARRAY_IN_ARRAY flags.");
+        goto out;
+    }
+    if (PyArray_DTYPE(filter_ids)->type_num != NPY_STRING) {
+        PyErr_Format(PyExc_ValueError, "filter_ids is not of the correct type");
+        goto out;
+    }
+
+    if (PyArray_NDIM(filter_ids) != 1) {
+        PyErr_Format(PyExc_ValueError, "filter_ids must be 1D");
+        goto out;
+    }
+    num_filters = PyArray_DIMS(filter_ids)[0];
+    if (VcfEncoder_add_array(self, "IDS/", "FILTER", filter_ids) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, filter, "filter", NPY_BOOL, 2, num_variants)
+        != 0) {
+        goto out;
+    }
+    if (PyArray_DIMS(filter)[1] != num_filters) {
+        PyErr_Format(
+            PyExc_ValueError, "filters dimension must be (num_variants, num_filters)");
+        goto out;
+    }
+
     // clang-format off
     err = vcz_variant_encoder_init(
-        self->vcf_encoder, num_samples, num_variants,
-        PyArray_DATA(chrom),
-        PyArray_ITEMSIZE(chrom), PyArray_DATA(pos),
+        self->vcf_encoder,
+        num_samples, num_variants,
+        PyArray_DATA(chrom), PyArray_ITEMSIZE(chrom),
+        PyArray_DATA(pos),
         PyArray_DATA(id), PyArray_ITEMSIZE(id), PyArray_DIMS(id)[1],
         PyArray_DATA(ref), PyArray_ITEMSIZE(ref),
         PyArray_DATA(alt), PyArray_ITEMSIZE(alt), PyArray_DIMS(alt)[1],
         PyArray_DATA(pos),
-        PyArray_DATA(chrom), PyArray_ITEMSIZE(chrom), 1 // FIXME
+        PyArray_DATA(filter_ids), PyArray_ITEMSIZE(filter_ids), num_filters,
+        PyArray_DATA(filter)
     );
     // clang-format on
     if (err < 0) {

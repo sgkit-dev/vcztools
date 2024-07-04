@@ -192,7 +192,7 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
     qual = root.variant_quality.blocks[v_chunk]
-    # filter_ = filters[root.variant_filter.blocks[v_chunk]]
+    filter_ = root.variant_filter.blocks[v_chunk]
 
     num_variants = len(pos)
     if len(id.shape) == 1:
@@ -226,7 +226,8 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         num_samples = gt.shape[1]
 
     encoder = _vcztools.VcfEncoder(
-        num_variants, num_samples, chrom=chrom, pos=pos, id=id, alt=alt, ref=ref
+        num_variants, num_samples, chrom=chrom, pos=pos, id=id, alt=alt, ref=ref,
+        filter_ids=filters, filter=filter_
     )
     encoder.add_gt_field(gt.astype("int32"), gt_phased)
     for name, array in info_fields.items():

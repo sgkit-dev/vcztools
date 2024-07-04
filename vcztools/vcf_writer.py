@@ -238,7 +238,8 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         filter=filter_,
     )
     # print(encoder.arrays)
-    encoder.add_gt_field(gt.astype("int32"), gt_phased)
+    if gt is not None:
+        encoder.add_gt_field(gt.astype("int32"), gt_phased)
     for name, array in info_fields.items():
         if array.dtype.kind == "O":
             array = array.astype("S")

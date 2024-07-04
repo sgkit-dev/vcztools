@@ -6,7 +6,7 @@ from .utils import assert_vcfs_close
 
 
 @pytest.mark.parametrize(
-    "vcf_file", ["sample.vcf.gz"]
+    "vcf_file", ["sample.vcf.gz", "1kg_2020_chr20_annotations.bcf"]
 )
 @pytest.mark.parametrize("implementation", ["c", "numba"])
 def test_vcf_to_zarr_to_vcf__real_files(shared_datadir, tmp_path, vcf_file, implementation):

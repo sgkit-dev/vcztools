@@ -259,15 +259,12 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
 
     for j in range(num_variants):
         line = encoder.encode_row(j, 2**30)
-        print(line)
+        print(line, file=output)
 
 
 def numba_chunk_to_vcf(
     root, v_chunk, header_info_fields, header_format_fields, contigs, filters, output
 ):
-    # n_variants = ds.sizes["variants"]  # number of variants in this chunk
-    # n_samples = ds.sizes["samples"]  # number of samples in whole dataset
-
     # fixed fields
 
     chrom = root.variant_contig.blocks[v_chunk]

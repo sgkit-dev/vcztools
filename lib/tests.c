@@ -118,7 +118,7 @@ test_variant_encoder_minimal(void)
     const int32_t pos_data[] = { 123, 45678 };
     const char id_data[] = "RS1RS2";
     const char ref_data[] = "AG";
-    const char alt_data[] = "TC";
+    const char alt_data[] = "T";
     const float qual_data[] = { 9, 12.1 };
     const char filter_id_data[] = "PASS\0FILT1";
     const int8_t filter_data[] = {1, 0, 0, 1};
@@ -132,7 +132,7 @@ test_variant_encoder_minimal(void)
     vcz_variant_encoder_t writer;
     const char *expected[] = {
         "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
-        "YY\t45678\tRS2\tG\tC\t12.1\tFILT1\tAN=9;FLAG\tGT\t1|1\t1/0",
+        "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT\t1|1\t1/0",
     };
     char buf[1000];
 

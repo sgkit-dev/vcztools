@@ -519,9 +519,16 @@ vcz_variant_encoder_write_row(
     size_t j;
 
     for (j = 0; j < VCZ_NUM_FIXED_FIELDS; j++) {
-        offset = vcz_field_write(&self->fixed_fields[j], variant, buf, buflen, offset);
-        if (offset < 0) {
-            goto out;
+        if (vcz_info_field_is_missing(&self->fixed_fields[j], variant)) {
+            buf[offset] = '.';
+            offset++;
+            buf[offset] = '\t';
+            offset++;
+        } else {
+            offset = vcz_field_write(&self->fixed_fields[j], variant, buf, buflen, offset);
+            if (offset < 0) {
+                goto out;
+            }
         }
     }
     offset = vcz_variant_encoder_write_filter(self, variant, buf, buflen, offset);

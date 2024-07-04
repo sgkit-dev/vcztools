@@ -179,10 +179,57 @@ test_itoa_small(void)
 
     for (j = -255; j <= 256; j++) {
         len1 = sprintf(dest1, "%d", j);
-        len2 = vcz_itoa(j, dest2);
+        len2 = vcz_itoa(dest2, j);
         /* printf("%s %s\n", dest1, dest2); */
         CU_ASSERT_STRING_EQUAL(dest1, dest2);
         CU_ASSERT_EQUAL(len1, len2);
+    }
+}
+
+
+static void 
+test_ftoa(void)
+{
+    struct test_case {
+        float val;
+        const char *expected;
+    };
+    struct test_case cases[] = {
+        {0.0, "0"},
+        {0.0001, "0"},
+        {0.0005, "0.001"},
+        {0.3, "0.3"},
+        {0.32, "0.32"},
+        {0.329, "0.329"},
+        {0.3217, "0.322"},
+        {8.0, "8"},
+        {8.0001, "8"},
+        {8.3, "8.3"},
+        {8.32, "8.32"},
+        {8.329, "8.329"},
+        {8.3217, "8.322"},
+        {443.998, "443.998"},
+        {1028.0, "1028"},
+        {1028.0001, "1028"},
+        {1028.3, "1028.3"},
+        {1028.32, "1028.32"},
+        {1028.329, "1028.329"},
+        {1028.3217, "1028.322"},
+        {1000000, "1000000"},
+        {-100.0, "-100"},
+        {NAN, "nan"},
+        {INFINITY, "inf"},
+        {-INFINITY, "-inf"},
+        /* TODO test extreme value here, that push against the limits of f32 */
+    };
+    int j, len;
+    char buf[1024];
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        len = vcz_ftoa(buf, cases[j].val);
+        /* printf("j = %d %f->%s=='%s'\n", j, cases[j].val, cases[j].expected, buf); */
+        CU_ASSERT_EQUAL_FATAL(len, strlen(cases[j].expected));
+        CU_ASSERT_STRING_EQUAL_FATAL(buf, cases[j].expected);
     }
 }
 
@@ -278,6 +325,7 @@ main(int argc, char **argv)
         { "test_int_field_2d", test_int_field_2d },
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
         { "test_itoa_small", test_itoa_small },
+        { "test_ftoa", test_ftoa },
         { NULL, NULL },
     };
     return test_main(tests, argc, argv);

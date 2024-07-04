@@ -5,9 +5,10 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <math.h>
 
 int
-vcz_itoa(int32_t value, char *buf)
+vcz_itoa(char * buf, int32_t value)
 {
     int p = 0;
     int j, k;
@@ -50,6 +51,52 @@ vcz_itoa(int32_t value, char *buf)
             buf[p] = (value % 10) + '0';
         }
         p += k + 1;
+    }
+    buf[p] = '\0';
+    return p;
+}
+
+int
+vcz_ftoa(char * buf, float value)
+{
+    int p = 0;
+    int i, d1, d2, d3;
+
+    if (isnan(value)) {
+        strcpy(buf, "nan");
+        return  p + 3;
+    }
+    if (value < 0) {
+        buf[p] = '-';
+        p++;
+        value = -value;
+    }
+    if (isinf(value)) {
+        strcpy(buf + p, "inf");
+        return  p + 3;
+    }
+
+     /* integer part */
+    i = (int) roundf(value * 1000);
+    p += vcz_itoa(buf + p, i / 1000);
+
+    /* fractional part */
+    d3 = i % 10;
+    d2 = (i / 10) % 10;
+    d1 = (i / 100) % 10;
+    if (d1 + d2 + d3 > 0) {
+        buf[p] = '.';
+        p ++;
+        buf[p] = d1 + '0';
+        p ++;
+        if (d2 + d3 > 0) {
+            buf[p] = d2 + '0';
+            p ++;
+            if (d3 > 0) {
+                buf[p] = d3 + '0';
+                p ++;
+            }
+        }
     }
     buf[p] = '\0';
     return p;
@@ -160,7 +207,7 @@ int32_field_write_entry(
                 dest[offset] = '.';
                 offset++;
             } else {
-                offset += vcz_itoa(value, dest + offset);
+                offset += vcz_itoa(dest + offset, value);
                 /* written = snprintf(value_buffer, sizeof(value_buffer), "%d", value);
                  */
                 /* memcpy(dest + offset, value_buffer, written); */
@@ -320,7 +367,7 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
                 dest[offset] = '.';
                 offset++;
             } else {
-                offset += vcz_itoa(value, dest + offset);
+                offset += vcz_itoa(dest + offset, value);
                 /* written = snprintf(value_buffer, sizeof(value_buffer), "%d", value);
                  */
                 /* memcpy(dest + offset, value_buffer, written); */

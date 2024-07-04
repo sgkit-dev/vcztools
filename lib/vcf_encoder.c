@@ -193,8 +193,6 @@ int32_field_write_entry(
     const int32_t *source = (int32_t *) data;
     int32_t value;
     size_t column;
-    /* int written; */
-    /* char value_buffer[128]; */
 
     for (column = 0; column < self->num_columns; column++) {
         value = source[column];
@@ -208,10 +206,6 @@ int32_field_write_entry(
                 offset++;
             } else {
                 offset += vcz_itoa(dest + offset, value);
-                /* written = snprintf(value_buffer, sizeof(value_buffer), "%d", value);
-                 */
-                /* memcpy(dest + offset, value_buffer, written); */
-                /* offset += written; */
             }
         }
     }
@@ -230,8 +224,6 @@ float32_field_write_entry(
     int32_t int32_value;
     float value;
     size_t column;
-    int written;
-    char value_buffer[128];
 
     for (column = 0; column < self->num_columns; column++) {
         int32_value = int32_source[column];
@@ -246,11 +238,8 @@ float32_field_write_entry(
             dest[offset] = '.';
             offset++;
         } else {
-            /* offset += vcz_itoa(value, dest + offset); */
             value = source[column];
-            written = snprintf(value_buffer, sizeof(value_buffer), "%.3g", value);
-            memcpy(dest + offset, value_buffer, written);
-            offset += written;
+            offset += vcz_ftoa(dest + offset, value);
         }
     }
     dest[offset] = '\t';
@@ -368,10 +357,6 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
                 offset++;
             } else {
                 offset += vcz_itoa(dest + offset, value);
-                /* written = snprintf(value_buffer, sizeof(value_buffer), "%d", value);
-                 */
-                /* memcpy(dest + offset, value_buffer, written); */
-                /* offset += written; */
             }
         }
     }

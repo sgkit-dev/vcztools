@@ -7,7 +7,7 @@ from typing import MutableMapping, Optional, TextIO, Union
 import numpy as np
 import zarr
 
-import _vcztools
+from . import _vcztools
 
 from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 from .vcf_writer_utils import (

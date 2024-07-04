@@ -14,7 +14,7 @@
 #define VCZ_TYPE_INT 0
 #define VCZ_TYPE_FLOAT 1
 #define VCZ_TYPE_STRING 2
-
+#define VCZ_TYPE_BOOL 3
 
 
 // arbitrary - we can increase if needs be

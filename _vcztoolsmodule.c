@@ -293,6 +293,9 @@ np_type_to_vcz_type(const char *name, PyArrayObject *array)
         case 'S':
             ret = VCZ_TYPE_STRING;
             break;
+        case 'b':
+            ret = VCZ_TYPE_BOOL;
+            break;
         default:
             PyErr_Format(
                 PyExc_ValueError, "Array '%s' has unsupported array dtype", name);

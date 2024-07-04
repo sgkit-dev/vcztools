@@ -246,9 +246,6 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
             array = array.reshape((num_variants, 1))
         if array.dtype.kind == "i":
             array = array.astype("int32")  # tmp
-        if array.dtype.kind == "b":
-            continue  # tmp
-            # array = array.astype("int32") # tmp
         encoder.add_info_field(name, array)
 
     for name, array in format_fields.items():

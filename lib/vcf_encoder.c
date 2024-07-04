@@ -56,6 +56,13 @@ vcz_itoa(int32_t value, char *buf)
 }
 
 static bool
+bool_all_missing(const int8_t *restrict data, size_t n)
+{
+    assert(n == 1);
+    return !data[0];
+}
+
+static bool
 int32_all_missing(const int32_t *restrict data, size_t n)
 {
     size_t j;
@@ -75,8 +82,8 @@ float32_all_missing(const float *restrict data, size_t n)
     const int32_t *restrict di32 = (const int32_t *) data;
 
     for (j = 0; j < n; j++) {
-        if (di32[j] != VCZ_FLOAT32_FILL_AS_INT32 &&
-                di32[j] != VCZ_FLOAT32_MISSING_AS_INT32) {
+        if (di32[j] != VCZ_FLOAT32_FILL_AS_INT32
+            && di32[j] != VCZ_FLOAT32_MISSING_AS_INT32) {
             return false;
         }
     }
@@ -120,6 +127,15 @@ string_field_write_entry(
     dest[offset] = '\t';
     offset++;
     dest[offset] = '\0';
+    return offset;
+}
+
+static int64_t
+bool_field_write_entry(
+    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+{
+    /* Erase the previously inserted "=" we need for other fields.*/
+    dest[offset - 1] = '\t';
     return offset;
 }
 
@@ -196,7 +212,6 @@ float32_field_write_entry(
     return offset;
 }
 
-
 int64_t
 vcz_field_write_entry(
     const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
@@ -206,9 +221,13 @@ vcz_field_write_entry(
         if (self->item_size == 4) {
             return int32_field_write_entry(self, data, dest, buflen, offset);
         }
-    }
-    else if (self->type == VCZ_TYPE_FLOAT && self->item_size == 4) {
+    } else if (self->type == VCZ_TYPE_FLOAT) {
+        assert(self->item_size == 4);
         return float32_field_write_entry(self, data, dest, buflen, offset);
+    } else if (self->type == VCZ_TYPE_BOOL) {
+        assert(self->item_size == 1);
+        assert(self->num_columns == 1);
+        return bool_field_write_entry(self, data, dest, buflen, offset);
     } else if (self->type == VCZ_TYPE_STRING) {
         return string_field_write_entry(self, data, dest, buflen, offset);
     }
@@ -239,7 +258,8 @@ vcz_info_field_is_missing(const vcz_field_t *self, size_t variant)
         }
     } else if (self->type == VCZ_TYPE_FLOAT) {
         return float32_all_missing(data, self->num_columns);
-
+    } else if (self->type == VCZ_TYPE_BOOL) {
+        return bool_all_missing(data, self->num_columns);
     } else if (self->type == VCZ_TYPE_STRING) {
         return string_all_missing(data, self->item_size, self->num_columns);
     }
@@ -314,7 +334,6 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
 out:
     return offset;
 }
-
 
 int64_t
 vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t variant,
@@ -559,6 +578,11 @@ vcz_variant_encoder_add_field(vcz_variant_encoder_t *self, vcz_field_t *field,
         ret = VCZ_ERR_FIELD_NAME_TOO_LONG;
         goto out;
     }
+    // TODO MORE CHECKS
+    if (type == VCZ_TYPE_BOOL && item_size != 1) {
+        ret = VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
+        goto out;
+    }
     strcpy(field->name, name);
     field->type = type;
     field->item_size = item_size;
@@ -586,9 +610,12 @@ vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name
         self->info_fields = tmp;
     }
     field = self->info_fields + self->num_info_fields;
-    self->num_info_fields++;
     ret = vcz_variant_encoder_add_field(
         self, field, name, type, item_size, num_columns, data);
+    if (ret != 0) {
+        goto out;
+    }
+    self->num_info_fields++;
 out:
     return ret;
 }

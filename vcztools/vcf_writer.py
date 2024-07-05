@@ -186,7 +186,8 @@ def write_vcf(
 
 def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     chrom = contigs[root.variant_contig.blocks[v_chunk]]
-    pos = root.variant_position.blocks[v_chunk]
+    # TODO check we don't truncate silently by doing this
+    pos = root.variant_position.blocks[v_chunk].astype(np.int32)
     id = root.variant_id.blocks[v_chunk].astype("S")
     alleles = root.variant_allele.blocks[v_chunk]
     ref = alleles[:, 0].astype("S")
@@ -238,7 +239,8 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         filter=filter_,
     )
     # print(encoder.arrays)
-    encoder.add_gt_field(gt.astype("int32"), gt_phased)
+    if gt is not None:
+        encoder.add_gt_field(gt.astype("int32"), gt_phased)
     for name, array in info_fields.items():
         if array.dtype.kind == "O":
             array = array.astype("S")

@@ -20,5 +20,5 @@ cunit_dep = dependency('cunit')
 
 tests = executable('tests',
     sources: ['tests.c', 'vcf_encoder.c'],
-    dependencies: cunit_dep,
+    dependencies: [cunit_dep, m_dep],
   )

@@ -84,4 +84,5 @@ int vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self,
 int64_t vcz_variant_encoder_write_row(
     const vcz_variant_encoder_t *self, size_t row, char *buf, size_t buflen);
 
-int vcz_itoa(int32_t v, char *out);
+int vcz_itoa(char *buf, int32_t v);
+int vcz_ftoa(char *buf, float v);

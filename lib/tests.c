@@ -187,7 +187,7 @@ test_itoa_small(void)
 }
 
 
-static void 
+static void
 test_ftoa(void)
 {
     struct test_case {
@@ -220,6 +220,9 @@ test_ftoa(void)
         {NAN, "nan"},
         {INFINITY, "inf"},
         {-INFINITY, "-inf"},
+        {2311380, "2311380"},
+        {16777216, "16777216"}, /* Maximum integer value of float */
+        {-16777216, "-16777216"},
         /* TODO test extreme value here, that push against the limits of f32 */
     };
     int j, len;

@@ -60,7 +60,7 @@ int
 vcz_ftoa(char * buf, float value)
 {
     int p = 0;
-    int i, d1, d2, d3;
+    int64_t i, d1, d2, d3;
 
     if (isnan(value)) {
         strcpy(buf, "nan");
@@ -77,7 +77,7 @@ vcz_ftoa(char * buf, float value)
     }
 
      /* integer part */
-    i = (int) roundf(value * 1000);
+    i = (int64_t) round(((double) value) * 1000);
     p += vcz_itoa(buf + p, i / 1000);
 
     /* fractional part */

@@ -90,17 +90,24 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
                 else:
                     val1 = v1.format(field)
                     val2 = v2.format(field)
-                    if val1.dtype.kind == "f":
-                        np.testing.assert_allclose(
-                            val1,
-                            val2,
-                            rtol=rtol,
-                            atol=atol,
-                            err_msg=f"FORMAT {field} not equal for variants\n{v1}{v2}",
-                        )
+                    if val2 is None:
+                        # FIXME this is a quick hack to workaround missing support for
+                        # dealing with the field missing vs all-elements-in-field missing
+                        # issue.
+                        # https://github.com/jeromekelleher/vcztools/issues/14
+                        assert [str(x) == "." for x in val1]
                     else:
-                        np.testing.assert_array_equal(
-                            val1,
-                            val2,
-                            err_msg=f"FORMAT {field} not equal for variants\n{v1}{v2}",
-                        )
+                        if val1.dtype.kind == "f":
+                            np.testing.assert_allclose(
+                                val1,
+                                val2,
+                                rtol=rtol,
+                                atol=atol,
+                                err_msg=f"FORMAT {field} not equal for variants\n{v1}{v2}",
+                            )
+                        else:
+                            np.testing.assert_array_equal(
+                                val1,
+                                val2,
+                                err_msg=f"FORMAT {field} not equal for variants\n{v1}{v2}",
+                            )

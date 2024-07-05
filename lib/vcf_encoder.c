@@ -8,7 +8,7 @@
 #include <math.h>
 
 int
-vcz_itoa(char * buf, int32_t value)
+vcz_itoa(char *buf, int32_t value)
 {
     int p = 0;
     int j, k;
@@ -20,7 +20,7 @@ vcz_itoa(char * buf, int32_t value)
     }
     /*  special case small values */
     if (value < 10) {
-        buf[p] = value + '0';
+        buf[p] = (char) value + '0';
         p++;
     } else {
         k = 0;
@@ -44,11 +44,11 @@ vcz_itoa(char * buf, int32_t value)
 
         // iterate backwards in buf
         p += k;
-        buf[p] = (value % 10) + '0';
+        buf[p] = (char) (value % 10) + '0';
         for (j = 0; j < k; j++) {
             p--;
             value = value / 10;
-            buf[p] = (value % 10) + '0';
+            buf[p] = (char) (value % 10) + '0';
         }
         p += k + 1;
     }
@@ -57,14 +57,14 @@ vcz_itoa(char * buf, int32_t value)
 }
 
 int
-vcz_ftoa(char * buf, float value)
+vcz_ftoa(char *buf, float value)
 {
     int p = 0;
     int64_t i, d1, d2, d3;
 
     if (isnan(value)) {
         strcpy(buf, "nan");
-        return  p + 3;
+        return p + 3;
     }
     if (value < 0) {
         buf[p] = '-';
@@ -73,12 +73,12 @@ vcz_ftoa(char * buf, float value)
     }
     if (isinf(value)) {
         strcpy(buf + p, "inf");
-        return  p + 3;
+        return p + 3;
     }
 
      /* integer part */
     i = (int64_t) round(((double) value) * 1000);
-    p += vcz_itoa(buf + p, i / 1000);
+    p += vcz_itoa(buf + p, (int32_t) (i / 1000));
 
     /* fractional part */
     d3 = i % 10;
@@ -86,15 +86,15 @@ vcz_ftoa(char * buf, float value)
     d1 = (i / 100) % 10;
     if (d1 + d2 + d3 > 0) {
         buf[p] = '.';
-        p ++;
-        buf[p] = d1 + '0';
-        p ++;
+        p++;
+        buf[p] = (char) d1 + '0';
+        p++;
         if (d2 + d3 > 0) {
-            buf[p] = d2 + '0';
-            p ++;
+            buf[p] = (char) d2 + '0';
+            p++;
             if (d3 > 0) {
-                buf[p] = d3 + '0';
-                p ++;
+                buf[p] = (char) d3 + '0';
+                p++;
             }
         }
     }
@@ -150,10 +150,10 @@ string_all_missing(const char *restrict data, size_t item_size, size_t n)
 }
 
 static int64_t
-string_field_write_entry(
-    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+string_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
+    size_t VCZ_UNUSED(buflen), int64_t offset)
 {
-    const char *source = (char *) data;
+    const char *source = (const char *) data;
     size_t column, byte;
     const char sep = ',';
     int64_t source_offset = 0;
@@ -178,8 +178,8 @@ string_field_write_entry(
 }
 
 static int64_t
-bool_field_write_entry(
-    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+bool_field_write_entry(const vcz_field_t *VCZ_UNUSED(self), const void *VCZ_UNUSED(data),
+    char *dest, size_t VCZ_UNUSED(buflen), int64_t offset)
 {
     /* Erase the previously inserted "=" we need for other fields.*/
     dest[offset - 1] = '\t';
@@ -187,10 +187,10 @@ bool_field_write_entry(
 }
 
 static int64_t
-int32_field_write_entry(
-    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+int32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
+    size_t VCZ_UNUSED(buflen), int64_t offset)
 {
-    const int32_t *source = (int32_t *) data;
+    const int32_t *source = (const int32_t *) data;
     int32_t value;
     size_t column;
 
@@ -216,11 +216,11 @@ int32_field_write_entry(
 }
 
 static int64_t
-float32_field_write_entry(
-    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+float32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
+    size_t VCZ_UNUSED(buflen), int64_t offset)
 {
-    const float *source = (float *) data;
-    const int32_t *int32_source = (int32_t *) data;
+    const float *source = (const float *) data;
+    const int32_t *int32_source = (const int32_t *) data;
     int32_t int32_value;
     float value;
     size_t column;
@@ -248,11 +248,10 @@ float32_field_write_entry(
     return offset;
 }
 
-int64_t
+static int64_t
 vcz_field_write_entry(
     const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
 {
-
     if (self->type == VCZ_TYPE_INT) {
         if (self->item_size == 4) {
             return int32_field_write_entry(self, data, dest, buflen, offset);
@@ -328,13 +327,38 @@ vcz_field_print_state(const vcz_field_t *self, FILE *out)
         self->type, (int) self->item_size, (int) self->num_columns, self->data);
 }
 
-int64_t
+static int
+vcz_field_init(vcz_field_t *self, const char *name, int type, size_t item_size,
+    size_t num_columns, const void *data)
+{
+    int ret = 0;
+
+    self->name_length = strlen(name);
+    if (self->name_length >= VCZ_MAX_FIELD_NAME_LEN) {
+        ret = VCZ_ERR_FIELD_NAME_TOO_LONG;
+        goto out;
+    }
+    // TODO MORE CHECKS
+    if (type == VCZ_TYPE_BOOL && item_size != 1) {
+        ret = VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
+        goto out;
+    }
+    strcpy(self->name, name);
+    self->type = type;
+    self->item_size = item_size;
+    self->num_columns = num_columns;
+    self->data = data;
+out:
+    return ret;
+}
+
+static int64_t
 vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t variant,
-    size_t sample, char *dest, size_t buflen, int64_t offset)
+    size_t sample, char *dest, size_t VCZ_UNUSED(buflen), int64_t offset)
 {
     const size_t ploidy = self->gt.num_columns;
     size_t source_offset = variant * self->num_samples * ploidy + sample * ploidy;
-    const int32_t *source = ((int32_t *) self->gt.data) + source_offset;
+    const int32_t *source = ((const int32_t *) self->gt.data) + source_offset;
     const bool phased = self->gt_phased_data[variant * self->num_samples + sample];
     int32_t value;
     size_t ploid;
@@ -367,7 +391,7 @@ out:
     return offset;
 }
 
-int64_t
+static int64_t
 vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t variant,
     char *dest, size_t buflen, int64_t offset)
 {
@@ -406,7 +430,7 @@ vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t 
                 first_field = false;
                 field = self->info_fields[j];
                 memcpy(dest + offset, field.name, field.name_length);
-                offset += field.name_length;
+                offset += (int64_t) field.name_length;
                 dest[offset] = '=';
                 offset++;
                 offset = vcz_field_write(&field, variant, dest, buflen, offset);
@@ -465,7 +489,7 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
         for (j = 0; j < self->num_format_fields; j++) {
             if (!missing[j]) {
                 strcpy(buf + offset, self->format_fields[j].name);
-                offset += self->format_fields[j].name_length;
+                offset += (int64_t) self->format_fields[j].name_length;
                 buf[offset] = ':';
                 offset++;
             }
@@ -506,7 +530,7 @@ out:
 
 static int64_t
 vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t variant,
-    char *buf, size_t buflen, int64_t offset)
+    char *buf, size_t VCZ_UNUSED(buflen), int64_t offset)
 {
     const vcz_field_t filter_id = self->filter_id;
     bool all_missing = true;
@@ -557,7 +581,8 @@ vcz_variant_encoder_write_row(
             buf[offset] = '\t';
             offset++;
         } else {
-            offset = vcz_field_write(&self->fixed_fields[j], variant, buf, buflen, offset);
+            offset
+                = vcz_field_write(&self->fixed_fields[j], variant, buf, buflen, offset);
             if (offset < 0) {
                 goto out;
             }
@@ -586,7 +611,7 @@ vcz_variant_encoder_print_state(const vcz_variant_encoder_t *self, FILE *out)
 {
     size_t j;
 
-    fprintf(out, "vcz_variant_encoder: %p\n", (void *) self);
+    fprintf(out, "vcz_variant_encoder: %p\n", (const void *) self);
     fprintf(out, "\tnum_samples: %d\n", (int) self->num_samples);
     fprintf(out, "\tnum_variants: %d\n", (int) self->num_variants);
     vcz_field_print_state(&self->filter_id, out);
@@ -604,31 +629,6 @@ vcz_variant_encoder_print_state(const vcz_variant_encoder_t *self, FILE *out)
     for (j = 0; j < self->num_format_fields; j++) {
         vcz_field_print_state(&self->format_fields[j], out);
     }
-}
-
-static int
-vcz_variant_encoder_add_field(vcz_variant_encoder_t *self, vcz_field_t *field,
-    const char *name, int type, size_t item_size, size_t num_columns, const void *data)
-{
-    int ret = 0;
-
-    field->name_length = strlen(name);
-    if (field->name_length >= VCZ_MAX_FIELD_NAME_LEN) {
-        ret = VCZ_ERR_FIELD_NAME_TOO_LONG;
-        goto out;
-    }
-    // TODO MORE CHECKS
-    if (type == VCZ_TYPE_BOOL && item_size != 1) {
-        ret = VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
-        goto out;
-    }
-    strcpy(field->name, name);
-    field->type = type;
-    field->item_size = item_size;
-    field->num_columns = num_columns;
-    field->data = data;
-out:
-    return ret;
 }
 
 int
@@ -649,8 +649,7 @@ vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name
         self->info_fields = tmp;
     }
     field = self->info_fields + self->num_info_fields;
-    ret = vcz_variant_encoder_add_field(
-        self, field, name, type, item_size, num_columns, data);
+    ret = vcz_field_init(field, name, type, item_size, num_columns, data);
     if (ret != 0) {
         goto out;
     }
@@ -680,8 +679,7 @@ vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *na
     field = self->format_fields + self->num_format_fields;
     self->num_format_fields++;
 
-    ret = vcz_variant_encoder_add_field(
-        self, field, name, type, item_size, num_columns, data);
+    ret = vcz_field_init(field, name, type, item_size, num_columns, data);
 out:
     return ret;
 }
@@ -721,7 +719,7 @@ vcz_variant_encoder_init(vcz_variant_encoder_t *self,
             .type = VCZ_TYPE_INT,
             .item_size = 4,
             .num_columns = 1,
-            .data = pos_data },
+            .data = (const char *) pos_data },
         { .name = "ID",
             .type = VCZ_TYPE_STRING,
             .item_size = id_item_size,
@@ -741,7 +739,7 @@ vcz_variant_encoder_init(vcz_variant_encoder_t *self,
             .type = VCZ_TYPE_FLOAT,
             .item_size = 4,
             .num_columns = 1,
-            .data = qual_data }
+            .data = (const char *) qual_data }
     };
     // clang-format on
 

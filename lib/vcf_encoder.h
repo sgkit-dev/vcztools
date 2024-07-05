@@ -2,6 +2,19 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#ifdef __GNUC__
+#define VCZ_UNUSED(x) VCZ_UNUSED_##x __attribute__((__unused__))
+#else
+#define VCZ_UNUSED(x) VCZ_UNUSED_##x
+/* Don't bother with restrict for MSVC */
+#define restrict
+#endif
+
+/* /1* We assume CHAR_BIT == 8 when loading strings from 8-bit byte arrays *1/ */
+/* #if CHAR_BIT != 8 */
+/* #error CHAR_BIT MUST EQUAL 8 */
+/* #endif */
+
 #define VCZ_INT_MISSING -1
 #define VCZ_INT_FILL -2
 #define VCZ_STRING_MISSING '.'
@@ -15,7 +28,6 @@
 #define VCZ_TYPE_FLOAT 1
 #define VCZ_TYPE_STRING 2
 #define VCZ_TYPE_BOOL 3
-
 
 // arbitrary - we can increase if needs be
 #define VCZ_MAX_FIELD_NAME_LEN 256
@@ -32,7 +44,7 @@ typedef struct {
     int type;
     size_t item_size;
     size_t num_columns;
-    const void *data;
+    const char *data;
 } vcz_field_t;
 
 int64_t vcz_field_write(
@@ -72,15 +84,12 @@ int vcz_variant_encoder_init(vcz_variant_encoder_t *self,
 
 void vcz_variant_encoder_free(vcz_variant_encoder_t *self);
 void vcz_variant_encoder_print_state(const vcz_variant_encoder_t *self, FILE *out);
-int vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self,
-    const void *gt_data, size_t gt_item_size, size_t ploidy,
-    const int8_t *gt_phased_data);
-int vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self,
-    const char *name, int type,
-    size_t item_size, size_t num_columns, const void *data);
-int vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self,
-    const char *name, int type,
-    size_t item_size, size_t num_columns, const void *data);
+int vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self, const void *gt_data,
+    size_t gt_item_size, size_t ploidy, const int8_t *gt_phased_data);
+int vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *name,
+    int type, size_t item_size, size_t num_columns, const void *data);
+int vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name,
+    int type, size_t item_size, size_t num_columns, const void *data);
 int64_t vcz_variant_encoder_write_row(
     const vcz_variant_encoder_t *self, size_t row, char *buf, size_t buflen);
 

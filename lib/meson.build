@@ -4,7 +4,6 @@ project('vcf_encoder', ['c'],
 
 cc = meson.get_compiler('c')
 m_dep = cc.find_library('m', required: false)
-lib_deps = [m_dep]
 
 extra_c_args = [
     '-Wall', '-Wextra', '-Werror', '-Wpedantic', '-W',
@@ -21,4 +20,6 @@ cunit_dep = dependency('cunit')
 tests = executable('tests',
     sources: ['tests.c', 'vcf_encoder.c'],
     dependencies: [cunit_dep, m_dep],
-  )
+    c_args: extra_c_args, 
+)
+test('tests', tests)

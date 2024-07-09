@@ -203,10 +203,13 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     # we avoid retrieving stuff we don't need.
     format_fields = {}
     info_fields = {}
+    num_samples = None
     for name, array in root.items():
         if name.startswith("call_") and not name.startswith("call_genotype"):
             vcf_name = name[len("call_") :]
             format_fields[vcf_name] = array.blocks[v_chunk]
+            if num_samples is None:
+                num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
             info_fields[vcf_name] = array.blocks[v_chunk]
@@ -222,13 +225,12 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         else:
             gt_phased = np.zeros_like(gt, dtype=bool)
 
-    num_samples = 0
-    if gt is not None:
+    if gt is not None and num_samples is None:
         num_samples = gt.shape[1]
 
     encoder = _vcztools.VcfEncoder(
         num_variants,
-        num_samples,
+        num_samples if num_samples is not None else 0,
         chrom=chrom,
         pos=pos,
         id=id,
@@ -242,7 +244,8 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     if gt is not None:
         encoder.add_gt_field(gt.astype("int32"), gt_phased)
     for name, array in info_fields.items():
-        if array.dtype.kind == "O":
+        # print(array.dtype.kind)
+        if array.dtype.kind in ("O", "U"):
             array = array.astype("S")
         if len(array.shape) == 1:
             array = array.reshape((num_variants, 1))
@@ -251,7 +254,8 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         encoder.add_info_field(name, array)
 
     for name, array in format_fields.items():
-        if array.dtype.kind == "O":
+        assert num_samples > 0
+        if array.dtype.kind in ("O", "U"):
             array = array.astype("S")
         if len(array.shape) == 2:
             array = array.reshape((num_variants, num_samples, 1))

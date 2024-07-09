@@ -312,6 +312,8 @@ vcz_format_field_is_missing(const vcz_field_t *self, size_t variant, size_t num_
         if (self->item_size == 4) {
             return int32_all_missing(data, self->num_columns * num_samples);
         }
+    } else if (self->type == VCZ_TYPE_FLOAT) {
+        return float32_all_missing(data, self->num_columns * num_samples);
     } else if (self->type == VCZ_TYPE_STRING) {
         return string_all_missing(
             data, self->item_size, self->num_columns * num_samples);
@@ -480,7 +482,14 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
     }
     all_missing = all_missing && gt_missing;
 
-    if (!all_missing) {
+    if (all_missing) {
+        for (j = 0; j < num_samples + 1; j++) {
+            buf[offset] = '.';
+            offset++;
+            buf[offset] = '\t';
+            offset++;
+        }
+    } else {
 
         if (!gt_missing) {
             strcpy(buf + offset, "GT:");

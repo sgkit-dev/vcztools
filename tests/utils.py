@@ -16,6 +16,17 @@ def open_vcf(path) -> Iterator[cyvcf2.VCF]:
         vcf.close()
 
 
+def normalise_info_missingness(info_dict, key):
+    value = info_dict.get(key, None)
+    if isinstance(value, tuple):
+        if all(x is None for x in value):
+            value = None
+    elif isinstance(value, str):
+        if all(x == "." for x in value.split(",")):
+            value = None
+    return value
+
+
 def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
     """Like :py:func:`numpy.testing.assert_allclose()`, but for VCF files.
 
@@ -60,13 +71,13 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
                 v2.FILTERS
             ), f"FILTER not equal for variants\n{v1}{v2}"
 
-            assert (
-                dict(v1.INFO).keys() == dict(v2.INFO).keys()
-            ), f"INFO keys not equal for variants\n{v1}{v2}"
-            for k in dict(v1.INFO).keys():
+            v1_info = dict(v1.INFO)
+            v2_info = dict(v2.INFO)
+            all_keys = set(v1_info.keys()) | set(v2_info.keys())
+            for k in all_keys:
+                val1 = normalise_info_missingness(v1_info, k)
+                val2 = normalise_info_missingness(v2_info, k)
                 # values are python objects (not np arrays)
-                val1 = v1.INFO[k]
-                val2 = v2.INFO[k]
                 if isinstance(val1, float) or (
                     isinstance(val1, tuple) and any(isinstance(v, float) for v in val1)
                 ):

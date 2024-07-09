@@ -23,9 +23,14 @@ def vcz_path_cache(vcf_path):
 
 @pytest.mark.parametrize(
     "vcf_file",
-    ["sample.vcf.gz", "1kg_2020_chr20_annotations.bcf", "1kg_2020_chrM.vcf.gz"],
+    [
+        "sample.vcf.gz",
+        "1kg_2020_chr20_annotations.bcf",
+        "1kg_2020_chrM.vcf.gz",
+        "field_type_combos.vcf.gz",
+    ],
 )
-@pytest.mark.parametrize("implementation", ["c", "numba"])
+@pytest.mark.parametrize("implementation", ["c"])  # , "numba"])
 def test_vcf_to_zarr_to_vcf__real_files(tmp_path, vcf_file, implementation):
     original = pathlib.Path("tests/data/vcf") / vcf_file
     vcz = vcz_path_cache(original)

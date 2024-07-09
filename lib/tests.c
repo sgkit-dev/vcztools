@@ -128,12 +128,13 @@ test_variant_encoder_minimal(void)
     const int32_t gt_data[] = { 0, 0, 0, 1, 1, 1, 1, 0 };
     const int8_t gt_phased_data[] = { 0, 1, 1, 0 };
     const int32_t hq_data[] = { 10, 15, 7, 12, -1, -1, -1, -1 };
+    const float gl_data[] = { 1, 2, 3, 4, 1.1f, 1.2f, 1.3f, 1.4f };
     int64_t ret;
     size_t j;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
-        "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ\t0/0:10,15\t0|1:7,12",
-        "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT\t1|1\t1/0",
+        "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ:GL\t0/0:10,15:1,2\t0|1:7,12:3,4",
+        "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT:GL\t1|1:1.1,1.2\t1/0:1.3,1.4",
     };
     char buf[1000];
 
@@ -153,6 +154,9 @@ test_variant_encoder_minimal(void)
     ret = vcz_variant_encoder_add_format_field(
         &writer, "HQ", VCZ_TYPE_INT, 4, 2, hq_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "GL", VCZ_TYPE_FLOAT, 4, 2, gl_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     vcz_variant_encoder_print_state(&writer, _devnull);
     /* printf("\n"); */
@@ -161,6 +165,76 @@ test_variant_encoder_minimal(void)
     for (j = 0; j < num_rows; j++) {
         ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
         /* printf("ret = %d\n", ret); */
+        /* printf("GOT:%s\n", buf); */
+        /* printf("EXP:%s\n", expected[j]); */
+        /* printf("GOT:%d\n", (int) strlen(buf)); */
+        /* printf("EXP:%d\n", (int) strlen(expected[j])); */
+        CU_ASSERT_EQUAL(ret, strlen(expected[j]));
+        CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+    }
+    vcz_variant_encoder_free(&writer);
+}
+
+static void
+test_variant_encoder_fields_all_missing(void)
+{
+    const size_t num_rows = 1;
+    const char contig_data[] = "X";
+    const int32_t pos_data[] = { 123 };
+    const char id_data[] = ".";
+    const char ref_data[] = "A";
+    const char alt_data[] = "T";
+    const float qual_data[] = { 9 };
+    const char filter_id_data[] = "PASS";
+    const int8_t filter_data[] = { 1 };
+    const int32_t an_data[] = { -1 };
+    const char *aa_data = ".";
+    const int8_t flag_data[] = { 0 };
+    const int32_t gt_data[] = { -1, -1, -1, -1 };
+    const int8_t gt_phased_data[] = { 0, 0 };
+    const int32_t hq_data[] = { -1, -1, -1, -1 };
+    const int32_t gl_data[] = {
+        VCZ_FLOAT32_MISSING_AS_INT32,
+        VCZ_FLOAT32_MISSING_AS_INT32,
+        VCZ_FLOAT32_MISSING_AS_INT32,
+        VCZ_FLOAT32_MISSING_AS_INT32,
+    };
+    int64_t ret;
+    size_t j;
+    vcz_variant_encoder_t writer;
+    const char *expected[] = {
+        "X\t123\t.\tA\tT\t9\tPASS\t.\t.\t.\t.",
+    };
+    char buf[1000];
+
+    ret = vcz_variant_encoder_init(&writer, 2, num_rows, contig_data, 1, pos_data,
+        id_data, 1, 1, ref_data, 1, alt_data, 1, 1, qual_data, filter_id_data, 4, 1,
+        filter_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_gt_field(&writer, gt_data, 4, 2, gt_phased_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(&writer, "AN", VCZ_TYPE_INT, 4, 1, an_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "AA", VCZ_TYPE_STRING, 1, 1, aa_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "FLAG", VCZ_TYPE_BOOL, 1, 1, flag_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "HQ", VCZ_TYPE_INT, 4, 2, hq_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "GL", VCZ_TYPE_FLOAT, 4, 2, gl_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    vcz_variant_encoder_print_state(&writer, _devnull);
+    /* printf("\n"); */
+    /* vcz_variant_encoder_print_state(&writer, stdout); */
+
+    for (j = 0; j < num_rows; j++) {
+        ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
+        /* printf("ret = %d\n", (int) ret); */
         /* printf("GOT:%s\n", buf); */
         /* printf("EXP:%s\n", expected[j]); */
         /* printf("GOT:%d\n", (int) strlen(buf)); */
@@ -331,6 +405,7 @@ main(int argc, char **argv)
         { "test_int_field_1d", test_int_field_1d },
         { "test_int_field_2d", test_int_field_2d },
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
+        { "test_variant_fields_all_missing", test_variant_encoder_fields_all_missing },
         { "test_itoa_small", test_itoa_small },
         { "test_ftoa", test_ftoa },
         { NULL, NULL },

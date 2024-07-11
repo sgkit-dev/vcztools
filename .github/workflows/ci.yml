@@ -74,12 +74,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
-          sudo apt install -y ninja-build libcunit1-dev valgrind meson
+          sudo apt install -y ninja-build libcunit1-dev valgrind meson gcovr
       - name: Build
         working-directory: ./lib
         run: |
-          meson setup build
+          meson setup -Db_coverage=true build
       - name: Tests
         working-directory: ./lib
         run: |
           ninja -C build test
+      - name: Show coverage
+        working-directory: ./lib
+        run: |
+          ninja -C build coverage-text
+          cat build/meson-logs/coverage.txt

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import MutableMapping, Optional, TextIO, Union
 
 import numpy as np
+from vcztools.regions import parse_targets_string, pslice_to_slice
 import zarr
 
 from . import _vcztools
@@ -80,7 +81,7 @@ def dims(arr):
 
 
 def write_vcf(
-    vcz, output, *, vcf_header: Optional[str] = None, implementation="numba"
+    vcz, output, *, vcf_header: Optional[str] = None, variant_targets=None, implementation="numba"
 ) -> None:
     """Convert a dataset to a VCF file.
 
@@ -163,7 +164,19 @@ def write_vcf(
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
 
+        if variant_targets is None:
+            variant_mask = np.ones(pos.shape[0], dtype=bool)
+        else:
+            contig, start, end = parse_targets_string(variant_targets)
+            variant_slice = pslice_to_slice(root["contig_id"][:].astype("U").tolist(), root["variant_contig"], pos, contig, start, end)
+            variant_mask = np.zeros(pos.shape[0], dtype=bool)
+            variant_mask[variant_slice] = 1
+        # Use zarr arrays to get mask chunks aligned with the main data
+        # for convenience.
+        z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
+
         for v_chunk in range(pos.cdata_shape[0]):
+            v_mask_chunk = z_variant_mask.blocks[v_chunk]
             if implementation == "numba":
                 numba_chunk_to_vcf(
                     root,
@@ -175,25 +188,32 @@ def write_vcf(
                     output,
                 )
             else:
-                c_chunk_to_vcf(
-                    root,
-                    v_chunk,
-                    contigs,
-                    filters,
-                    output,
-                )
+                count = np.sum(v_mask_chunk)
+                if count > 0:
+                    c_chunk_to_vcf(
+                        root,
+                        v_chunk,
+                        v_mask_chunk,
+                        contigs,
+                        filters,
+                        output,
+                    )
 
 
-def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
-    chrom = contigs[root.variant_contig.blocks[v_chunk]]
+def get_block_selection(zarray, key, mask):
+    return zarray.blocks[key][mask]
+
+
+def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
+    chrom = contigs[get_block_selection(root.variant_contig, v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
-    pos = root.variant_position.blocks[v_chunk].astype(np.int32)
-    id = root.variant_id.blocks[v_chunk].astype("S")
-    alleles = root.variant_allele.blocks[v_chunk]
+    pos = get_block_selection(root.variant_position, v_chunk, v_mask_chunk).astype(np.int32)
+    id = get_block_selection(root.variant_id, v_chunk, v_mask_chunk).astype("S")
+    alleles = get_block_selection(root.variant_allele, v_chunk, v_mask_chunk)
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
-    qual = root.variant_quality.blocks[v_chunk]
-    filter_ = root.variant_filter.blocks[v_chunk]
+    qual = get_block_selection(root.variant_quality, v_chunk, v_mask_chunk)
+    filter_ = get_block_selection(root.variant_filter, v_chunk, v_mask_chunk)
 
     num_variants = len(pos)
     if len(id.shape) == 1:
@@ -207,21 +227,21 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     for name, array in root.items():
         if name.startswith("call_") and not name.startswith("call_genotype"):
             vcf_name = name[len("call_") :]
-            format_fields[vcf_name] = array.blocks[v_chunk]
+            format_fields[vcf_name] = get_block_selection(array, v_chunk, v_mask_chunk)
             if num_samples is None:
                 num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
-            info_fields[vcf_name] = array.blocks[v_chunk]
+            info_fields[vcf_name] = get_block_selection(array, v_chunk, v_mask_chunk)
 
     gt = None
     gt_phased = None
     if "call_genotype" in root:
         array = root["call_genotype"]
-        gt = array.blocks[v_chunk]
+        gt = get_block_selection(array, v_chunk, v_mask_chunk)
         if "call_genotype_phased" in root:
             array = root["call_genotype_phased"]
-            gt_phased = array.blocks[v_chunk]
+            gt_phased = get_block_selection(array, v_chunk, v_mask_chunk)
         else:
             gt_phased = np.zeros_like(gt, dtype=bool)
 

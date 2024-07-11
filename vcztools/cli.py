@@ -18,9 +18,16 @@ class NaturalOrderGroup(click.Group):
 @click.command
 @click.argument("path", type=click.Path())
 @click.option("-c", is_flag=True, default=False, help="Use C implementation")
-def view(path, c):
+@click.option(
+    "-t",
+    "--targets",
+    type=str,
+    default=None,
+    help="Target regions to include.",
+)
+def view(path, c, targets):
     implementation = "c" if c else "numba"
-    vcf_writer.write_vcf(path, sys.stdout, implementation=implementation)
+    vcf_writer.write_vcf(path, sys.stdout, variant_targets=targets, implementation=implementation)
 
 
 @click.group(cls=NaturalOrderGroup, name="vcztools")

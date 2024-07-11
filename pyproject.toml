@@ -38,3 +38,33 @@ testpaths = ["tests"]
 
 [tool.setuptools_scm]
 write_to = "vcztools/_version.py"
+
+[tool.ruff]
+# Assume Python 3.9
+target-version = "py39"
+
+# Same as Black.
+line-length = 88
+indent-width = 4
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "W", "I", "N", "UP", "A", "RUF", "PT"]
+#Allow uppercase names for e.g. call_AD
+ignore = ["N806", "N802", "A001", "A002"]
+
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.isort]
+known-third-party = [
+  "bio2zarr",
+  "click",
+  "cyvcf2",
+  "numcodecs",
+  "numpy",
+  "pandas",
+  "pyranges",
+  "pytest",
+  "setuptools",
+  "zarr"
+]

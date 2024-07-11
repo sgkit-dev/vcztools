@@ -8,8 +8,9 @@
 #include <math.h>
 
 int
-vcz_itoa(char *buf, int32_t value)
+vcz_itoa(char *buf, int32_t v)
 {
+    int64_t value = v;
     int p = 0;
     int j, k;
 
@@ -40,6 +41,10 @@ vcz_itoa(char *buf, int32_t value)
             k = 7;
         } else if (value < 1000000000) {
             k = 8;
+        } else if (value < 10000000000) {
+            k = 9;
+        } else {
+            assert(false);
         }
 
         // iterate backwards in buf
@@ -76,9 +81,9 @@ vcz_ftoa(char *buf, float value)
         return p + 3;
     }
 
-     /* integer part */
+    /* integer part */
     i = (int64_t) round(((double) value) * 1000);
-    p += vcz_itoa(buf + p, (int32_t) (i / 1000));
+    p += vcz_itoa(buf + p, (int32_t)(i / 1000));
 
     /* fractional part */
     d3 = i % 10;

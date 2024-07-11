@@ -245,7 +245,6 @@ test_variant_encoder_fields_all_missing(void)
     vcz_variant_encoder_free(&writer);
 }
 
-// TODO also do this with larger values to hit all cases.
 static void
 test_itoa_small(void)
 {
@@ -256,6 +255,45 @@ test_itoa_small(void)
     for (j = -255; j <= 256; j++) {
         len1 = sprintf(dest1, "%d", j);
         len2 = vcz_itoa(dest2, j);
+        /* printf("%s %s\n", dest1, dest2); */
+        CU_ASSERT_STRING_EQUAL(dest1, dest2);
+        CU_ASSERT_EQUAL(len1, len2);
+    }
+}
+
+static void
+test_itoa_pow10(void)
+{
+    char dest1[64], dest2[64];
+    int len1, len2;
+    int32_t j, k, power, value;
+
+    for (power = 0; power < 10; power++) {
+        j = (int32_t) pow(10, power);
+        for (k = -1; k < 2; k++) {
+            value = j + k;
+            len1 = sprintf(dest1, "%d", value);
+            len2 = vcz_itoa(dest2, value);
+            /* printf("%s %s\n", dest1, dest2); */
+            CU_ASSERT_STRING_EQUAL_FATAL(dest1, dest2);
+            CU_ASSERT_EQUAL(len1, len2);
+        }
+    }
+}
+
+static void
+test_itoa_boundary(void)
+{
+    char dest1[64], dest2[64];
+    int len1, len2;
+    size_t j;
+    int32_t value;
+    int32_t cases[] = { INT32_MIN, INT32_MAX };
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        value = cases[j];
+        len1 = sprintf(dest1, "%d", value);
+        len2 = vcz_itoa(dest2, value);
         /* printf("%s %s\n", dest1, dest2); */
         CU_ASSERT_STRING_EQUAL(dest1, dest2);
         CU_ASSERT_EQUAL(len1, len2);
@@ -407,6 +445,8 @@ main(int argc, char **argv)
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
         { "test_variant_fields_all_missing", test_variant_encoder_fields_all_missing },
         { "test_itoa_small", test_itoa_small },
+        { "test_itoa_pow10", test_itoa_pow10 },
+        { "test_itoa_boundary", test_itoa_boundary },
         { "test_ftoa", test_ftoa },
         { NULL, NULL },
     };

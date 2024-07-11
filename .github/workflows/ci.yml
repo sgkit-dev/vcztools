@@ -66,3 +66,29 @@ jobs:
           # Make sure we don't have ``vcztools`` in the CWD
           cd tests
           python -m vcztools --help
+
+  c_test:
+    name: C tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt install -y ninja-build libcunit1-dev valgrind meson gcovr
+      - name: Build
+        working-directory: ./lib
+        run: |
+          meson setup -Db_coverage=true build
+      - name: Tests
+        working-directory: ./lib
+        run: |
+          ninja -C build test
+      - name: Show coverage
+        working-directory: ./lib
+        run: |
+          ninja -C build coverage-text
+          cat build/meson-logs/coverage.txt
+      - name: Valgrind 
+        working-directory: ./lib
+        run: |
+          valgrind --leak-check=full --error-exitcode=1 ./build/tests

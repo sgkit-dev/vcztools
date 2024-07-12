@@ -2,53 +2,59 @@ import re
 from typing import Any, List, Optional
 
 import numpy as np
+import pandas as pd
+import pyranges
 
 
-def parse_targets_string(targets: str) -> tuple[str, Optional[int], Optional[int]]:
-    """Return the contig, start position and end position from a targets string."""
-    if re.search(r":\d+-\d*$", targets):
-        contig, start_end = targets.rsplit(":", 1)
+def parse_region(region: str) -> tuple[str, Optional[int], Optional[int]]:
+    """Return the contig, start position and end position from a region string."""
+    if re.search(r":\d+-\d*$", region):
+        contig, start_end = region.rsplit(":", 1)
         start, end = start_end.split("-")
         return contig, int(start), int(end) if len(end) > 0 else None
-    elif re.search(r":\d+$", targets):
-        contig, start = targets.rsplit(":", 1)
+    elif re.search(r":\d+$", region):
+        contig, start = region.rsplit(":", 1)
         return contig, int(start), int(start)
     else:
-        contig = targets
+        contig = region
         return contig, None, None
 
 
-def region_to_slice(
+def parse_targets(targets: str) -> list[tuple[str, Optional[int], Optional[int]]]:
+    return [parse_region(region) for region in targets.split(",")]
+
+
+def regions_to_selection(
     all_contigs: List[str],
     variant_contig: Any,
     variant_position: Any,
-    contig: str,
-    start: Optional[int] = None,
-    end: Optional[int] = None,
-) -> slice:
-    """Convert a VCF region to a Python slice."""
+    regions: list[tuple[str, Optional[int], Optional[int]]],
+):
+    # subtract 1 from start coordinate to convert intervals
+    # from VCF (1-based, fully-closed) to Python (0-based, half-open)
 
-    # subtract one from start since VCF is 1-based (fully closed),
-    # but Python slices are 0-based (half open)
-    start = None if start is None else start - 1
+    df = pd.DataFrame({"Chromosome": variant_contig, "Start": variant_position - 1, "End": variant_position})
+    # save original index as column so we can retrieve it after finding overlap
+    df["index"] = df.index
+    variants = pyranges.PyRanges(df)
 
-    contig_index = all_contigs.index(contig)
-    contig_range = np.searchsorted(variant_contig, [contig_index, contig_index + 1])
-
-    if start is None and end is None:
-        start_index, end_index = contig_range
-    else:
-        contig_pos = variant_position[slice(contig_range[0], contig_range[1])]
+    chromosomes = []
+    starts = []
+    ends = []
+    for contig, start, end in regions:
         if start is None:
-            assert end is not None  # covered by case above
-            start_index = contig_range[0]
-            end_index = contig_range[0] + np.searchsorted(contig_pos, [end])[0]
-        elif end is None:
-            start_index = contig_range[0] + np.searchsorted(contig_pos, [start])[0]
-            end_index = contig_range[1]
+            start = 0
         else:
-            start_index, end_index = contig_range[0] + np.searchsorted(
-                contig_pos, [start, end]
-            )
+            start -= 1
+        
+        if end is None:
+            end = np.iinfo(np.int64).max
 
-    return slice(start_index, end_index)
+        chromosomes.append(all_contigs.index(contig))
+        starts.append(start)
+        ends.append(end)
+
+    query = pyranges.PyRanges(chromosomes=chromosomes, starts=starts, ends=ends)
+
+    overlap = variants.overlap(query)
+    return overlap.df["index"].to_numpy()

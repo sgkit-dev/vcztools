@@ -218,18 +218,16 @@ string_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
             source_offset++;
         }
     }
-    offset = append_char(dest, '\t', offset, buflen);
 out:
     return offset;
 }
 
 static int64_t
 bool_field_write_entry(const vcz_field_t *VCZ_UNUSED(self), const void *VCZ_UNUSED(data),
-    char *dest, size_t VCZ_UNUSED(buflen), int64_t offset)
+    char *VCZ_UNUSED(dest), size_t VCZ_UNUSED(buflen), int64_t offset)
 {
     /* Erase the previously inserted "=" we need for other fields.*/
-    dest[offset - 1] = '\t';
-    return offset;
+    return offset - 1;
 }
 
 static int64_t
@@ -254,7 +252,6 @@ int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char
             goto out;
         }
     }
-    offset = append_char(dest, '\t', offset, buflen);
 out:
     return offset;
 }
@@ -284,7 +281,6 @@ float32_field_write_entry(const vcz_field_t *self, const void *restrict data,
             goto out;
         }
     }
-    offset = append_char(dest, '\t', offset, buflen);
 out:
     return offset;
 }
@@ -427,9 +423,6 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
             }
         }
     }
-    dest[offset] = '\t';
-    offset++;
-    dest[offset] = '\0';
 out:
     return offset;
 }
@@ -476,7 +469,12 @@ vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t 
                 offset += (int64_t) field.name_length;
                 dest[offset] = '=';
                 offset++;
+
                 offset = vcz_field_write(&field, variant, dest, buflen, offset);
+                if (offset < 0) {
+                    goto out;
+                }
+                offset = append_char(dest, '\t', offset, buflen);
                 if (offset < 0) {
                     goto out;
                 }
@@ -553,7 +551,11 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
                 if (offset < 0) {
                     goto out;
                 }
-                buf[offset - 1] = ':';
+                offset = append_char(buf, ':', offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
+
             }
             for (j = 0; j < self->num_format_fields; j++) {
                 if (!missing[j]) {
@@ -565,9 +567,15 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
                     if (offset < 0) {
                         goto out;
                     }
-                    buf[offset - 1] = ':';
+                    offset = append_char(buf, ':', offset, buflen);
+                    if (offset < 0) {
+                        goto out;
+                    }
+                    /* offset = append_char(buf, ':', offset, buflen); */
+                    /* buf[offset - 1] = ':'; */
                 }
             }
+            /* offset = append_char(buf, '\t', offset, buflen); */
             buf[offset - 1] = '\t';
         }
     }
@@ -625,17 +633,22 @@ vcz_variant_encoder_write_row(
     size_t j;
 
     for (j = 0; j < VCZ_NUM_FIXED_FIELDS; j++) {
+        // FIXME do we really need to do this check?
         if (vcz_info_field_is_missing(&self->fixed_fields[j], variant)) {
-            buf[offset] = '.';
-            offset++;
-            buf[offset] = '\t';
-            offset++;
+            offset = append_char(buf, '.', offset, (int64_t) buflen);
+            if (offset < 0) {
+                goto out;
+            }
         } else {
             offset = vcz_field_write(
                 &self->fixed_fields[j], variant, buf, (int64_t) buflen, offset);
             if (offset < 0) {
                 goto out;
             }
+        }
+        offset = append_char(buf, '\t', offset, (int64_t) buflen);
+        if (offset < 0) {
+            goto out;
         }
     }
     offset

@@ -20,7 +20,7 @@ test_int_field_1d(void)
         .num_columns = 1,
         .data = (const char *) data };
     char buf[1000];
-    const char *expected[] = { "1\t", "2\t", "12345789\t", ".\t", "-100\t" };
+    const char *expected[] = { "1", "2", "12345789", ".", "-100" };
     int64_t ret;
     size_t j;
 
@@ -60,8 +60,8 @@ test_int_field_1d_overflow(void)
     }
     j = num_rows - 1;
     CU_ASSERT_FATAL(data[j] == -1);
-    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
-    for (buflen = 0; buflen < 2; buflen++) {
+    /* Missing data is treated differently. Just need 1 byte for "." */
+    for (buflen = 0; buflen < 1; buflen++) {
         buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_field_write(&field, j, buf, buflen, 0);
@@ -81,7 +81,7 @@ test_int_field_2d(void)
         .num_columns = 3,
         .data = (const char *) data };
     char buf[1000];
-    const char *expected[] = { "1,2,3\t", "1234,5678\t", ".\t", "\t" };
+    const char *expected[] = { "1,2,3", "1234,5678", ".", "" };
     int64_t ret;
     size_t j;
 
@@ -106,7 +106,7 @@ test_float_field_1d(void)
         .data = (const char *) data };
     char buf[1000];
     const char *expected[]
-        = { "1\t", "2.1\t", "-2147483648\t", "12345789\t", "-1\t", "-100.123\t", ".\t" };
+        = { "1", "2.1", "-2147483648", "12345789", "-1", "-100.123", "." };
     int64_t ret;
     size_t j;
     int32_t *int_data = (int32_t *) data;
@@ -151,8 +151,8 @@ test_float_field_1d_overflow(void)
         }
     }
     j = num_rows - 1;
-    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
-    for (buflen = 0; buflen < 2; buflen++) {
+    /* Missing data is treated differently. Just need 1 byte for "." */
+    for (buflen = 0; buflen < 1; buflen++) {
         buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_field_write(&field, j, buf, buflen, 0);
@@ -176,7 +176,7 @@ test_string_field_1d(void)
         .num_columns = 1,
         .data = data };
     char buf[1000];
-    const char *expected[] = { "X\t", "XX\t", "XXX\t" };
+    const char *expected[] = { "X", "XX", "XXX" };
     int64_t ret;
     size_t j;
 
@@ -208,7 +208,7 @@ test_string_field_1d_overflow(void)
     char *buf;
 
     for (j = 0; j < num_rows - 1; j++) {
-        for (buflen = 0; buflen <= (int) item_size; buflen++) {
+        for (buflen = 0; buflen < (int) item_size; buflen++) {
             /* printf("buflen = %d\n", (int) buflen); */
             buf = malloc((size_t) buflen);
             CU_ASSERT_FATAL(buf != NULL);
@@ -217,13 +217,13 @@ test_string_field_1d_overflow(void)
             if (ret < 0) {
                 CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
             } else {
-                CU_ASSERT_EQUAL_FATAL(ret, j + 2);
+                CU_ASSERT_EQUAL_FATAL(ret, j + 1);
             }
         }
     }
     j = num_rows - 1;
-    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
-    for (buflen = 0; buflen < 2; buflen++) {
+    /* Missing data is treated differently. Just need 1 byte for "." */
+    for (buflen = 0; buflen < 1; buflen++) {
         buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_field_write(&field, j, buf, buflen, 0);
@@ -246,7 +246,7 @@ test_string_field_2d(void)
         .num_columns = 3,
         .data = data };
     char buf[1000];
-    const char *expected[] = { "X,Y\t", "XX,YY,Z\t", "XXX\t" };
+    const char *expected[] = { "X,Y", "XX,YY,Z", "XXX" };
     int64_t ret;
     size_t j;
 
@@ -314,7 +314,7 @@ test_variant_encoder_minimal(void)
 
     for (j = 0; j < num_rows; j++) {
         ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
-        /* printf("ret = %d\n", ret); */
+        /* printf("ret = %d\n", (int) ret); */
         /* printf("GOT:%s\n", buf); */
         /* printf("EXP:%s\n", expected[j]); */
         /* printf("GOT:%d\n", (int) strlen(buf)); */

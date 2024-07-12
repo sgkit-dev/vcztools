@@ -6,6 +6,9 @@ from vcztools.regions import parse_targets_string
 @pytest.mark.parametrize(
     "targets, expected",
     [
+        ("chr1", ("chr1", None, None)),
+        ("chr1:12", ("chr1", 12, 12)),
+        ("chr1:12-", ("chr1", 12, None)),
         ("chr1:12-103", ("chr1", 12, 103)),
     ],
 )

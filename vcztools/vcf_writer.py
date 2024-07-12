@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import MutableMapping, Optional, TextIO, Union
 
 import numpy as np
-from vcztools.regions import parse_targets_string, region_to_slice
+from vcztools.regions import parse_targets, regions_to_selection
 import zarr
 
 from . import _vcztools
@@ -167,17 +167,15 @@ def write_vcf(
         if variant_targets is None:
             variant_mask = np.ones(pos.shape[0], dtype=bool)
         else:
-            contig, start, end = parse_targets_string(variant_targets)
-            variant_slice = region_to_slice(
+            regions = parse_targets(variant_targets)
+            variant_selection = regions_to_selection(
                 root["contig_id"][:].astype("U").tolist(),
                 root["variant_contig"],
-                pos,
-                contig,
-                start,
-                end,
+                pos[:],
+                regions,
             )
             variant_mask = np.zeros(pos.shape[0], dtype=bool)
-            variant_mask[variant_slice] = 1
+            variant_mask[variant_selection] = 1
         # Use zarr arrays to get mask chunks aligned with the main data
         # for convenience.
         z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])

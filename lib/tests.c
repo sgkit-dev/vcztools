@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <float.h>
 #include <vcf_encoder.h>
 
 FILE *_devnull;
@@ -25,7 +26,8 @@ test_int_field_1d(void)
 
     for (j = 0; j < num_rows; j++) {
         ret = vcz_field_write(&field, j, buf, 1000, 0);
-        /* printf("%s: %s\n", buf, expected[j]); */
+        /* printf("ret = %d\n", (int)ret); */
+        /* printf("'%.*s': %s\n", (int) ret, buf, expected[j]); */
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
         CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
     }
@@ -34,7 +36,7 @@ test_int_field_1d(void)
 static void
 test_int_field_1d_overflow(void)
 {
-    const int32_t data[] = { 1, 2, 12345789, -100, INT32_MIN, INT32_MAX, -1};
+    const int32_t data[] = { 1, 2, 12345789, -100, INT32_MIN, INT32_MAX, -1 };
     const size_t num_rows = sizeof(data) / sizeof(*data);
     vcz_field_t field = { .name = "test",
         .type = VCZ_TYPE_INT,
@@ -54,7 +56,6 @@ test_int_field_1d_overflow(void)
             ret = vcz_field_write(&field, j, buf, buflen, 0);
             free(buf);
             CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
-
         }
     }
     j = num_rows - 1;
@@ -68,7 +69,6 @@ test_int_field_1d_overflow(void)
         CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
     }
 }
-
 
 static void
 test_int_field_2d(void)
@@ -90,6 +90,74 @@ test_int_field_2d(void)
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
         /* printf("%s: %s\n", buf, expected[j]); */
         CU_ASSERT_NSTRING_EQUAL_FATAL(buf, expected[j], ret);
+    }
+}
+
+static void
+test_float_field_1d(void)
+{
+    float data[] = { 1.0f, 2.1f, INT32_MIN, 12345789.0f, -1, -100.123f, 0 };
+
+    const size_t num_rows = sizeof(data) / sizeof(*data);
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_FLOAT,
+        .item_size = 4,
+        .num_columns = 1,
+        .data = (const char *) data };
+    char buf[1000];
+    const char *expected[]
+        = { "1\t", "2.1\t", "-2147483648\t", "12345789\t", "-1\t", "-100.123\t", ".\t" };
+    int64_t ret;
+    size_t j;
+    int32_t *int_data = (int32_t *) data;
+
+    int_data[num_rows - 1] = VCZ_FLOAT32_MISSING_AS_INT32;
+
+    for (j = 0; j < num_rows; j++) {
+        ret = vcz_field_write(&field, j, buf, 1000, 0);
+        printf("ret = %d\n", (int)ret);
+        printf("'%.*s':'%s'\n", (int) ret, buf, expected[j]);
+        CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
+        CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
+    }
+}
+
+static void
+test_float_field_1d_overflow(void)
+{
+    float data[] = { 1.0f, 2.1f, 12345789.0f, (float) M_PI, -1, -100.123f, 0 };
+    const size_t num_rows = sizeof(data) / sizeof(*data);
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_FLOAT,
+        .item_size = 4,
+        .num_columns = 1,
+        .data = (const char *) data };
+    int64_t ret;
+    size_t j, buflen;
+    char *buf;
+    int32_t *int_data = (int32_t *) data;
+
+    int_data[num_rows - 1] = VCZ_FLOAT32_MISSING_AS_INT32;
+
+    for (j = 0; j < num_rows - 1; j++) {
+        /* printf("%d\n", (int) data[j]); */
+        for (buflen = 0; buflen <= VCZ_FLOAT32_BUF_SIZE; buflen++) {
+            /* printf("buflen = %d\n", (int) buflen); */
+            buf = malloc(buflen);
+            CU_ASSERT_FATAL(buf != NULL);
+            ret = vcz_field_write(&field, j, buf, buflen, 0);
+            free(buf);
+            CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
+        }
+    }
+    j = num_rows - 1;
+    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
+    for (buflen = 0; buflen < 2; buflen++) {
+        buf = malloc(buflen);
+        CU_ASSERT_FATAL(buf != NULL);
+        ret = vcz_field_write(&field, j, buf, buflen, 0);
+        free(buf);
+        CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
     }
 }
 
@@ -376,7 +444,14 @@ test_ftoa(void)
         {2311380, "2311380"},
         {16777216, "16777216"}, /* Maximum integer value of float */
         {-16777216, "-16777216"},
+        {INT32_MIN, "-2147483648"},
+        {(float) INT32_MAX, "2147483648"},
+        {(float) DBL_MAX, "inf",},
+        {(float) DBL_MIN, "0",},
+        {FLT_MIN, "0",},
         /* TODO test extreme value here, that push against the limits of f32 */
+        // FAILS https://github.com/jeromekelleher/vcztools/issues/21
+        /* {FLT_MAX, "340282346638528859811704183484516925440",}, */
     };
     // clang-format on
     int len;
@@ -385,7 +460,7 @@ test_ftoa(void)
 
     for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
         len = vcz_ftoa(buf, cases[j].val);
-        /* printf("j = %d %f->%s=='%s'\n", j, cases[j].val, cases[j].expected, buf); */
+        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected, buf); */
         CU_ASSERT_EQUAL_FATAL(len, strlen(cases[j].expected));
         CU_ASSERT_STRING_EQUAL_FATAL(buf, cases[j].expected);
     }
@@ -482,6 +557,8 @@ main(int argc, char **argv)
         { "test_int_field_1d", test_int_field_1d },
         { "test_int_field_1d_overflow", test_int_field_1d_overflow },
         { "test_int_field_2d", test_int_field_2d },
+        { "test_float_field_1d", test_float_field_1d },
+        { "test_float_field_1d_overflow", test_float_field_1d_overflow },
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
         { "test_variant_fields_all_missing", test_variant_encoder_fields_all_missing },
         { "test_itoa_small", test_itoa_small },

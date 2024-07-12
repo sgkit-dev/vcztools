@@ -8,9 +8,8 @@
 #include <math.h>
 
 int
-vcz_itoa(char *buf, int32_t v)
+vcz_itoa(char *restrict buf, int64_t value)
 {
-    int64_t value = v;
     int p = 0;
     int j, k;
 
@@ -19,6 +18,9 @@ vcz_itoa(char *buf, int32_t v)
         p++;
         value = -value;
     }
+    /* We only support int32_t values. The +1 here is for supporting the
+     * float converter below */
+    assert(value <= (1LL + INT32_MAX));
     /*  special case small values */
     if (value < 10) {
         buf[p] = (char) value + '0';
@@ -42,9 +44,8 @@ vcz_itoa(char *buf, int32_t v)
         } else if (value < 1000000000) {
             k = 8;
         } else if (value < 10000000000) {
+            // Largest possible INT32 value
             k = 9;
-        } else {
-            assert(false);
         }
 
         // iterate backwards in buf
@@ -62,7 +63,7 @@ vcz_itoa(char *buf, int32_t v)
 }
 
 int
-vcz_ftoa(char *buf, float value)
+vcz_ftoa(char *restrict buf, float value)
 {
     int p = 0;
     int64_t i, d1, d2, d3;
@@ -83,7 +84,9 @@ vcz_ftoa(char *buf, float value)
 
     /* integer part */
     i = (int64_t) round(((double) value) * 1000);
-    p += vcz_itoa(buf + p, (int32_t)(i / 1000));
+    /* printf("i = %ld\n", i); */
+    /* printf("i/ 1000 = %ld\n", i / 1000); */
+    p += vcz_itoa(buf + p, i / 1000);
 
     /* fractional part */
     d3 = i % 10;
@@ -105,6 +108,41 @@ vcz_ftoa(char *buf, float value)
     }
     buf[p] = '\0';
     return p;
+}
+
+static inline int64_t
+append_char(char *restrict dest, char c, int64_t offset, int64_t buflen)
+{
+    if (offset == buflen) {
+        return VCZ_ERR_BUFFER_OVERFLOW;
+    }
+    dest[offset] = c;
+    return offset + 1;
+}
+
+static inline int64_t
+append_int(char *restrict dest, int32_t value, int64_t offset, int64_t buflen)
+{
+    if (value == VCZ_INT_MISSING) {
+        return append_char(dest, '.', offset, buflen);
+    }
+    if (offset + VCZ_INT32_BUF_SIZE >= buflen) {
+        return VCZ_ERR_BUFFER_OVERFLOW;
+    }
+    return offset + vcz_itoa(dest + offset, value);
+}
+
+static inline int64_t
+append_float(char *restrict dest, int32_t int32_value, float value, int64_t offset,
+    int64_t buflen)
+{
+    if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
+        return append_char(dest, '.', offset, buflen);
+    }
+    if (offset + VCZ_FLOAT32_BUF_SIZE >= buflen) {
+        return VCZ_ERR_BUFFER_OVERFLOW;
+    }
+    return offset + vcz_ftoa(dest + offset, value);
 }
 
 static bool
@@ -192,54 +230,39 @@ bool_field_write_entry(const vcz_field_t *VCZ_UNUSED(self), const void *VCZ_UNUS
 }
 
 static int64_t
-int32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
+int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char *dest,
     int64_t buflen, int64_t offset)
 {
-    const int32_t *source = (const int32_t *) data;
-    int32_t value;
+    const int32_t *restrict source = (const int32_t *) data;
     size_t column;
 
     for (column = 0; column < self->num_columns; column++) {
-        value = source[column];
-        if (value != VCZ_INT_FILL) {
-            if (column > 0) {
-                dest[offset] = ',';
-                offset++;
-            }
-            if (value == VCZ_INT_MISSING) {
-                if (offset == buflen) {
-                    offset = VCZ_ERR_BUFFER_OVERFLOW;
-                    goto out;
-                }
-                dest[offset] = '.';
-                offset++;
-            } else {
-                if (offset + VCZ_INT32_BUF_SIZE >= (int64_t) buflen) {
-                    offset = VCZ_ERR_BUFFER_OVERFLOW;
-                    goto out;
-                }
-                offset += vcz_itoa(dest + offset, value);
+        if (source[column] == VCZ_INT_FILL) {
+            break;
+        }
+        if (column > 0) {
+            offset = append_char(dest, ',', offset, buflen);
+            if (offset < 0) {
+                goto out;
             }
         }
+        offset = append_int(dest, source[column], offset, buflen);
+        if (offset < 0) {
+            goto out;
+        }
     }
-    if (offset == buflen) {
-        offset = VCZ_ERR_BUFFER_OVERFLOW;
-        goto out;
-    }
-    dest[offset] = '\t';
-    offset++;
+    offset = append_char(dest, '\t', offset, buflen);
 out:
     return offset;
 }
 
 static int64_t
-float32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
-    size_t VCZ_UNUSED(buflen), int64_t offset)
+float32_field_write_entry(const vcz_field_t *self, const void *restrict data,
+    char *restrict dest, int64_t buflen, int64_t offset)
 {
-    const float *source = (const float *) data;
-    const int32_t *int32_source = (const int32_t *) data;
+    const float *restrict source = (const float *restrict) data;
+    const int32_t *restrict int32_source = (const int32_t *restrict) data;
     int32_t int32_value;
-    float value;
     size_t column;
 
     for (column = 0; column < self->num_columns; column++) {
@@ -248,20 +271,18 @@ float32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
             break;
         }
         if (column > 0) {
-            dest[offset] = ',';
-            offset++;
+            offset = append_char(dest, ',', offset, buflen);
+            if (offset < 0) {
+                goto out;
+            }
         }
-        if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
-            dest[offset] = '.';
-            offset++;
-        } else {
-            value = source[column];
-            offset += vcz_ftoa(dest + offset, value);
+        offset = append_float(dest, int32_value, source[column], offset, buflen);
+        if (offset < 0) {
+            goto out;
         }
     }
-    dest[offset] = '\t';
-    offset++;
-    dest[offset] = '\0';
+    offset = append_char(dest, '\t', offset, buflen);
+out:
     return offset;
 }
 
@@ -275,7 +296,7 @@ vcz_field_write_entry(
         }
     } else if (self->type == VCZ_TYPE_FLOAT) {
         assert(self->item_size == 4);
-        return float32_field_write_entry(self, data, dest, buflen, offset);
+        return float32_field_write_entry(self, data, dest, (int64_t) buflen, offset);
     } else if (self->type == VCZ_TYPE_BOOL) {
         assert(self->item_size == 1);
         assert(self->num_columns == 1);

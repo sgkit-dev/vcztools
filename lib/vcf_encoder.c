@@ -210,8 +210,10 @@ string_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
         }
         for (byte = 0; byte < self->item_size; byte++) {
             if (source[source_offset] != '\0') {
-                dest[offset] = source[source_offset];
-                offset++;
+                offset = append_char(dest, source[source_offset], offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
             }
             source_offset++;
         }
@@ -288,8 +290,8 @@ out:
 }
 
 static int64_t
-vcz_field_write_entry(
-    const vcz_field_t *self, const void *data, char *dest, int64_t buflen, int64_t offset)
+vcz_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
+    int64_t buflen, int64_t offset)
 {
     if (self->type == VCZ_TYPE_INT) {
         if (self->item_size == 4) {
@@ -629,22 +631,25 @@ vcz_variant_encoder_write_row(
             buf[offset] = '\t';
             offset++;
         } else {
-            offset
-                = vcz_field_write(&self->fixed_fields[j], variant, buf, (int64_t) buflen, offset);
+            offset = vcz_field_write(
+                &self->fixed_fields[j], variant, buf, (int64_t) buflen, offset);
             if (offset < 0) {
                 goto out;
             }
         }
     }
-    offset = vcz_variant_encoder_write_filter(self, variant, buf, (int64_t) buflen, offset);
+    offset
+        = vcz_variant_encoder_write_filter(self, variant, buf, (int64_t) buflen, offset);
     if (offset < 0) {
         goto out;
     }
-    offset = vcz_variant_encoder_write_info_fields(self, variant, buf, (int64_t) buflen, offset);
+    offset = vcz_variant_encoder_write_info_fields(
+        self, variant, buf, (int64_t) buflen, offset);
     if (offset < 0) {
         goto out;
     }
-    offset = vcz_variant_encoder_write_format_fields(self, variant, buf, (int64_t) buflen, offset);
+    offset = vcz_variant_encoder_write_format_fields(
+        self, variant, buf, (int64_t) buflen, offset);
     if (offset < 0) {
         goto out;
     }

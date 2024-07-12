@@ -243,7 +243,7 @@ bool_field_write_entry(const vcz_field_t *VCZ_UNUSED(self), const void *VCZ_UNUS
 
 static int64_t
 int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char *buf,
-    int64_t buflen, int64_t offset)
+    int64_t buflen, int64_t offset, char separator)
 {
     const int32_t *restrict source = (const int32_t *) data;
     size_t column;
@@ -253,7 +253,7 @@ int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char
             break;
         }
         if (column > 0) {
-            offset = append_char(buf, ',', offset, buflen);
+            offset = append_char(buf, separator, offset, buflen);
             if (offset < 0) {
                 goto out;
             }
@@ -302,7 +302,7 @@ vcz_field_write_entry(
 {
     if (self->type == VCZ_TYPE_INT) {
         if (self->item_size == 4) {
-            return int32_field_write_entry(self, data, buf, buflen, offset);
+            return int32_field_write_entry(self, data, buf, buflen, offset, ',');
         }
     } else if (self->type == VCZ_TYPE_FLOAT) {
         assert(self->item_size == 4);
@@ -409,33 +409,9 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
     size_t source_offset = variant * self->num_samples * ploidy + sample * ploidy;
     const int32_t *source = ((const int32_t *) self->gt.data) + source_offset;
     const bool phased = self->gt_phased_data[variant * self->num_samples + sample];
-    int32_t value;
-    size_t ploid;
     char sep = phased ? '|' : '/';
 
-    if (self->gt.item_size != 4) {
-        offset = VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
-        goto out;
-    }
-
-    for (ploid = 0; ploid < ploidy; ploid++) {
-        value = source[ploid];
-        if (value == VCZ_INT_FILL) {
-            break;
-        }
-        if (ploid > 0) {
-            offset = append_char(buf, sep, offset, buflen);
-            if (offset < 0) {
-                goto out;
-            }
-        }
-        offset = append_int(buf, value, offset, buflen);
-        if (offset < 0) {
-            goto out;
-        }
-    }
-out:
-    return offset;
+    return int32_field_write_entry(&self->gt, source, buf, buflen, offset, sep);
 }
 
 static int64_t
@@ -656,7 +632,6 @@ vcz_variant_encoder_write_row(
     size_t j;
 
     for (j = 0; j < VCZ_NUM_FIXED_FIELDS; j++) {
-        // FIXME do we really need to do this check?
         if (vcz_info_field_is_missing(&self->fixed_fields[j], variant)) {
             offset = append_char(buf, '.', offset, (int64_t) buflen);
             if (offset < 0) {

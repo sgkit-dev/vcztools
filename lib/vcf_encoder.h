@@ -51,7 +51,7 @@ typedef struct {
 } vcz_field_t;
 
 int64_t vcz_field_write(
-    const vcz_field_t *self, size_t row, char *buf, size_t buflen, int64_t offset);
+    const vcz_field_t *self, size_t row, char *buf, int64_t buflen, int64_t offset);
 void vcz_field_print_state(const vcz_field_t *self, FILE *out);
 
 typedef struct {

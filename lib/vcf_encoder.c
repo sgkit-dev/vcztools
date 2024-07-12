@@ -111,38 +111,49 @@ vcz_ftoa(char *restrict buf, float value)
 }
 
 static inline int64_t
-append_char(char *restrict dest, char c, int64_t offset, int64_t buflen)
+append_string(char *restrict buf, const char *restrict str, int64_t len, int64_t offset,
+    int64_t buflen)
+{
+    if (offset + len >= buflen) {
+        return VCZ_ERR_BUFFER_OVERFLOW;
+    }
+    memcpy(buf + offset, str, (size_t) len);
+    return offset + len;
+}
+
+static inline int64_t
+append_char(char *restrict buf, char c, int64_t offset, int64_t buflen)
 {
     if (offset == buflen) {
         return VCZ_ERR_BUFFER_OVERFLOW;
     }
-    dest[offset] = c;
+    buf[offset] = c;
     return offset + 1;
 }
 
 static inline int64_t
-append_int(char *restrict dest, int32_t value, int64_t offset, int64_t buflen)
+append_int(char *restrict buf, int32_t value, int64_t offset, int64_t buflen)
 {
     if (value == VCZ_INT_MISSING) {
-        return append_char(dest, '.', offset, buflen);
+        return append_char(buf, '.', offset, buflen);
     }
     if (offset + VCZ_INT32_BUF_SIZE >= buflen) {
         return VCZ_ERR_BUFFER_OVERFLOW;
     }
-    return offset + vcz_itoa(dest + offset, value);
+    return offset + vcz_itoa(buf + offset, value);
 }
 
 static inline int64_t
-append_float(char *restrict dest, int32_t int32_value, float value, int64_t offset,
-    int64_t buflen)
+append_float(
+    char *restrict buf, int32_t int32_value, float value, int64_t offset, int64_t buflen)
 {
     if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
-        return append_char(dest, '.', offset, buflen);
+        return append_char(buf, '.', offset, buflen);
     }
     if (offset + VCZ_FLOAT32_BUF_SIZE >= buflen) {
         return VCZ_ERR_BUFFER_OVERFLOW;
     }
-    return offset + vcz_ftoa(dest + offset, value);
+    return offset + vcz_ftoa(buf + offset, value);
 }
 
 static bool
@@ -193,8 +204,8 @@ string_all_missing(const char *restrict data, size_t item_size, size_t n)
 }
 
 static int64_t
-string_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
-    size_t VCZ_UNUSED(buflen), int64_t offset)
+string_field_write_entry(
+    const vcz_field_t *self, const void *data, char *buf, int64_t buflen, int64_t offset)
 {
     const char *source = (const char *) data;
     size_t column, byte;
@@ -203,34 +214,35 @@ string_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
 
     for (column = 0; column < self->num_columns; column++) {
         if (column > 0 && source[source_offset] != '\0') {
-            dest[offset] = sep;
-            offset++;
+            offset = append_char(buf, sep, offset, buflen);
+            if (offset < 0) {
+                goto out;
+            }
         }
         for (byte = 0; byte < self->item_size; byte++) {
             if (source[source_offset] != '\0') {
-                dest[offset] = source[source_offset];
-                offset++;
+                offset = append_char(buf, source[source_offset], offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
             }
             source_offset++;
         }
     }
-    dest[offset] = '\t';
-    offset++;
-    dest[offset] = '\0';
+out:
     return offset;
 }
 
 static int64_t
 bool_field_write_entry(const vcz_field_t *VCZ_UNUSED(self), const void *VCZ_UNUSED(data),
-    char *dest, size_t VCZ_UNUSED(buflen), int64_t offset)
+    char *VCZ_UNUSED(buf), size_t VCZ_UNUSED(buflen), int64_t offset)
 {
     /* Erase the previously inserted "=" we need for other fields.*/
-    dest[offset - 1] = '\t';
-    return offset;
+    return offset - 1;
 }
 
 static int64_t
-int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char *dest,
+int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char *buf,
     int64_t buflen, int64_t offset)
 {
     const int32_t *restrict source = (const int32_t *) data;
@@ -241,24 +253,23 @@ int32_field_write_entry(const vcz_field_t *self, const void *restrict data, char
             break;
         }
         if (column > 0) {
-            offset = append_char(dest, ',', offset, buflen);
+            offset = append_char(buf, ',', offset, buflen);
             if (offset < 0) {
                 goto out;
             }
         }
-        offset = append_int(dest, source[column], offset, buflen);
+        offset = append_int(buf, source[column], offset, buflen);
         if (offset < 0) {
             goto out;
         }
     }
-    offset = append_char(dest, '\t', offset, buflen);
 out:
     return offset;
 }
 
 static int64_t
 float32_field_write_entry(const vcz_field_t *self, const void *restrict data,
-    char *restrict dest, int64_t buflen, int64_t offset)
+    char *restrict buf, int64_t buflen, int64_t offset)
 {
     const float *restrict source = (const float *restrict) data;
     const int32_t *restrict int32_source = (const int32_t *restrict) data;
@@ -271,57 +282,55 @@ float32_field_write_entry(const vcz_field_t *self, const void *restrict data,
             break;
         }
         if (column > 0) {
-            offset = append_char(dest, ',', offset, buflen);
+            offset = append_char(buf, ',', offset, buflen);
             if (offset < 0) {
                 goto out;
             }
         }
-        offset = append_float(dest, int32_value, source[column], offset, buflen);
+        offset = append_float(buf, int32_value, source[column], offset, buflen);
         if (offset < 0) {
             goto out;
         }
     }
-    offset = append_char(dest, '\t', offset, buflen);
 out:
     return offset;
 }
 
 static int64_t
 vcz_field_write_entry(
-    const vcz_field_t *self, const void *data, char *dest, size_t buflen, int64_t offset)
+    const vcz_field_t *self, const void *data, char *buf, int64_t buflen, int64_t offset)
 {
     if (self->type == VCZ_TYPE_INT) {
         if (self->item_size == 4) {
-            return int32_field_write_entry(self, data, dest, (int64_t) buflen, offset);
+            return int32_field_write_entry(self, data, buf, buflen, offset);
         }
     } else if (self->type == VCZ_TYPE_FLOAT) {
         assert(self->item_size == 4);
-        return float32_field_write_entry(self, data, dest, (int64_t) buflen, offset);
+        return float32_field_write_entry(self, data, buf, buflen, offset);
     } else if (self->type == VCZ_TYPE_BOOL) {
         assert(self->item_size == 1);
         assert(self->num_columns == 1);
-        return bool_field_write_entry(self, data, dest, buflen, offset);
+        return bool_field_write_entry(self, data, buf, (size_t) buflen, offset);
     } else if (self->type == VCZ_TYPE_STRING) {
-        return string_field_write_entry(self, data, dest, buflen, offset);
+        return string_field_write_entry(self, data, buf, buflen, offset);
     }
     return VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
 }
 
 int64_t
 vcz_field_write(
-    const vcz_field_t *self, size_t variant, char *dest, size_t buflen, int64_t offset)
+    const vcz_field_t *self, size_t variant, char *buf, int64_t buflen, int64_t offset)
 {
 
     size_t row_size = self->num_columns * self->item_size;
     const void *data = self->data + variant * row_size;
 
-    return vcz_field_write_entry(self, data, dest, buflen, offset);
+    return vcz_field_write_entry(self, data, buf, buflen, offset);
 }
 
 static bool
 vcz_info_field_is_missing(const vcz_field_t *self, size_t variant)
 {
-
     size_t row_size = self->num_columns * self->item_size;
     const void *data = self->data + variant * row_size;
 
@@ -394,7 +403,7 @@ out:
 
 static int64_t
 vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t variant,
-    size_t sample, char *dest, size_t VCZ_UNUSED(buflen), int64_t offset)
+    size_t sample, char *buf, int64_t buflen, int64_t offset)
 {
     const size_t ploidy = self->gt.num_columns;
     size_t source_offset = variant * self->num_samples * ploidy + sample * ploidy;
@@ -411,29 +420,27 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
 
     for (ploid = 0; ploid < ploidy; ploid++) {
         value = source[ploid];
-        if (value != VCZ_INT_FILL) {
-            if (ploid > 0) {
-                dest[offset] = sep;
-                offset++;
-            }
-            if (value == VCZ_INT_MISSING) {
-                dest[offset] = '.';
-                offset++;
-            } else {
-                offset += vcz_itoa(dest + offset, value);
+        if (value == VCZ_INT_FILL) {
+            break;
+        }
+        if (ploid > 0) {
+            offset = append_char(buf, sep, offset, buflen);
+            if (offset < 0) {
+                goto out;
             }
         }
+        offset = append_int(buf, value, offset, buflen);
+        if (offset < 0) {
+            goto out;
+        }
     }
-    dest[offset] = '\t';
-    offset++;
-    dest[offset] = '\0';
 out:
     return offset;
 }
 
 static int64_t
 vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t variant,
-    char *dest, size_t buflen, int64_t offset)
+    char *buf, int64_t buflen, int64_t offset)
 {
     vcz_field_t field;
     size_t j;
@@ -456,24 +463,33 @@ vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t 
     }
 
     if (all_missing) {
-        dest[offset] = '.';
-        offset++;
-        dest[offset] = '\t';
-        offset++;
+        offset = append_string(buf, ".\t", 2, offset, buflen);
+        if (offset < 0) {
+            goto out;
+        }
     } else {
         first_field = true;
         for (j = 0; j < self->num_info_fields; j++) {
             if (!missing[j]) {
                 if (!first_field) {
-                    dest[offset - 1] = ';';
+                    buf[offset - 1] = ';';
                 }
                 first_field = false;
                 field = self->info_fields[j];
-                memcpy(dest + offset, field.name, field.name_length);
-                offset += (int64_t) field.name_length;
-                dest[offset] = '=';
-                offset++;
-                offset = vcz_field_write(&field, variant, dest, buflen, offset);
+                offset = append_string(
+                    buf, field.name, (int64_t) field.name_length, offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
+                offset = append_char(buf, '=', offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
+                offset = vcz_field_write(&field, variant, buf, buflen, offset);
+                if (offset < 0) {
+                    goto out;
+                }
+                offset = append_char(buf, '\t', offset, buflen);
                 if (offset < 0) {
                     goto out;
                 }
@@ -489,7 +505,7 @@ out:
 
 static int64_t
 vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
-    size_t variant, char *buf, size_t buflen, int64_t offset)
+    size_t variant, char *buf, int64_t buflen, int64_t offset)
 {
     size_t j, sample, row_size;
     vcz_field_t field;
@@ -522,23 +538,30 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
 
     if (all_missing) {
         for (j = 0; j < num_samples + 1; j++) {
-            buf[offset] = '.';
-            offset++;
-            buf[offset] = '\t';
-            offset++;
+            offset = append_string(buf, ".\t", 2, offset, buflen);
+            if (offset < 0) {
+                goto out;
+            }
         }
     } else {
-
         if (!gt_missing) {
-            strcpy(buf + offset, "GT:");
-            offset += 3;
+            offset = append_string(buf, "GT:", 3, offset, buflen);
+            if (offset < 0) {
+                goto out;
+            }
         }
         for (j = 0; j < self->num_format_fields; j++) {
             if (!missing[j]) {
-                strcpy(buf + offset, self->format_fields[j].name);
-                offset += (int64_t) self->format_fields[j].name_length;
-                buf[offset] = ':';
-                offset++;
+                field = self->format_fields[j];
+                offset = append_string(
+                    buf, field.name, (int64_t) field.name_length, offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
+                offset = append_char(buf, ':', offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
             }
         }
         buf[offset - 1] = '\t';
@@ -550,7 +573,10 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
                 if (offset < 0) {
                     goto out;
                 }
-                buf[offset - 1] = ':';
+                offset = append_char(buf, ':', offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
             }
             for (j = 0; j < self->num_format_fields; j++) {
                 if (!missing[j]) {
@@ -562,7 +588,10 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
                     if (offset < 0) {
                         goto out;
                     }
-                    buf[offset - 1] = ':';
+                    offset = append_char(buf, ':', offset, buflen);
+                    if (offset < 0) {
+                        goto out;
+                    }
                 }
             }
             buf[offset - 1] = '\t';
@@ -577,7 +606,7 @@ out:
 
 static int64_t
 vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t variant,
-    char *buf, size_t VCZ_UNUSED(buflen), int64_t offset)
+    char *buf, int64_t buflen, int64_t offset)
 {
     const vcz_field_t filter_id = self->filter_id;
     bool all_missing = true;
@@ -591,8 +620,10 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
         }
     }
     if (all_missing) {
-        buf[offset] = '.';
-        offset++;
+        offset = append_char(buf, '.', offset, buflen);
+        if (offset < 0) {
+            goto out;
+        }
     } else {
         source_offset = 0;
         for (j = 0; j < filter_id.num_columns; j++) {
@@ -609,8 +640,11 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
             }
         }
     }
-    buf[offset] = '\t';
-    offset++;
+    offset = append_char(buf, '\t', offset, buflen);
+    if (offset < 0) {
+        goto out;
+    }
+out:
     return offset;
 }
 
@@ -622,28 +656,36 @@ vcz_variant_encoder_write_row(
     size_t j;
 
     for (j = 0; j < VCZ_NUM_FIXED_FIELDS; j++) {
+        // FIXME do we really need to do this check?
         if (vcz_info_field_is_missing(&self->fixed_fields[j], variant)) {
-            buf[offset] = '.';
-            offset++;
-            buf[offset] = '\t';
-            offset++;
+            offset = append_char(buf, '.', offset, (int64_t) buflen);
+            if (offset < 0) {
+                goto out;
+            }
         } else {
-            offset
-                = vcz_field_write(&self->fixed_fields[j], variant, buf, buflen, offset);
+            offset = vcz_field_write(
+                &self->fixed_fields[j], variant, buf, (int64_t) buflen, offset);
             if (offset < 0) {
                 goto out;
             }
         }
+        offset = append_char(buf, '\t', offset, (int64_t) buflen);
+        if (offset < 0) {
+            goto out;
+        }
     }
-    offset = vcz_variant_encoder_write_filter(self, variant, buf, buflen, offset);
+    offset
+        = vcz_variant_encoder_write_filter(self, variant, buf, (int64_t) buflen, offset);
     if (offset < 0) {
         goto out;
     }
-    offset = vcz_variant_encoder_write_info_fields(self, variant, buf, buflen, offset);
+    offset = vcz_variant_encoder_write_info_fields(
+        self, variant, buf, (int64_t) buflen, offset);
     if (offset < 0) {
         goto out;
     }
-    offset = vcz_variant_encoder_write_format_fields(self, variant, buf, buflen, offset);
+    offset = vcz_variant_encoder_write_format_fields(
+        self, variant, buf, (int64_t) buflen, offset);
     if (offset < 0) {
         goto out;
     }

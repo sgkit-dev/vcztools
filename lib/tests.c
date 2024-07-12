@@ -20,7 +20,7 @@ test_int_field_1d(void)
         .num_columns = 1,
         .data = (const char *) data };
     char buf[1000];
-    const char *expected[] = { "1\t", "2\t", "12345789\t", ".\t", "-100\t" };
+    const char *expected[] = { "1", "2", "12345789", ".", "-100" };
     int64_t ret;
     size_t j;
 
@@ -43,15 +43,15 @@ test_int_field_1d_overflow(void)
         .item_size = 4,
         .num_columns = 1,
         .data = (const char *) data };
-    int64_t ret;
-    size_t j, buflen;
+    int64_t ret, buflen;
+    size_t j;
     char *buf;
 
     for (j = 0; j < num_rows - 1; j++) {
         /* printf("%d\n", (int) data[j]); */
         for (buflen = 0; buflen <= VCZ_INT32_BUF_SIZE; buflen++) {
             /* printf("buflen = %d\n", (int) buflen); */
-            buf = malloc(buflen);
+            buf = malloc((size_t) buflen);
             CU_ASSERT_FATAL(buf != NULL);
             ret = vcz_field_write(&field, j, buf, buflen, 0);
             free(buf);
@@ -60,9 +60,9 @@ test_int_field_1d_overflow(void)
     }
     j = num_rows - 1;
     CU_ASSERT_FATAL(data[j] == -1);
-    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
-    for (buflen = 0; buflen < 2; buflen++) {
-        buf = malloc(buflen);
+    /* Missing data is treated differently. Just need 1 byte for "." */
+    for (buflen = 0; buflen < 1; buflen++) {
+        buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_field_write(&field, j, buf, buflen, 0);
         free(buf);
@@ -81,7 +81,7 @@ test_int_field_2d(void)
         .num_columns = 3,
         .data = (const char *) data };
     char buf[1000];
-    const char *expected[] = { "1,2,3\t", "1234,5678\t", ".\t", "\t" };
+    const char *expected[] = { "1,2,3", "1234,5678", ".", "" };
     int64_t ret;
     size_t j;
 
@@ -106,7 +106,7 @@ test_float_field_1d(void)
         .data = (const char *) data };
     char buf[1000];
     const char *expected[]
-        = { "1\t", "2.1\t", "-2147483648\t", "12345789\t", "-1\t", "-100.123\t", ".\t" };
+        = { "1", "2.1", "-2147483648", "12345789", "-1", "-100.123", "." };
     int64_t ret;
     size_t j;
     int32_t *int_data = (int32_t *) data;
@@ -115,8 +115,8 @@ test_float_field_1d(void)
 
     for (j = 0; j < num_rows; j++) {
         ret = vcz_field_write(&field, j, buf, 1000, 0);
-        printf("ret = %d\n", (int)ret);
-        printf("'%.*s':'%s'\n", (int) ret, buf, expected[j]);
+        /* printf("ret = %d\n", (int)ret); */
+        /* printf("'%.*s':'%s'\n", (int) ret, buf, expected[j]); */
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
         CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
     }
@@ -132,8 +132,8 @@ test_float_field_1d_overflow(void)
         .item_size = 4,
         .num_columns = 1,
         .data = (const char *) data };
-    int64_t ret;
-    size_t j, buflen;
+    int64_t ret, buflen;
+    size_t j;
     char *buf;
     int32_t *int_data = (int32_t *) data;
 
@@ -143,7 +143,7 @@ test_float_field_1d_overflow(void)
         /* printf("%d\n", (int) data[j]); */
         for (buflen = 0; buflen <= VCZ_FLOAT32_BUF_SIZE; buflen++) {
             /* printf("buflen = %d\n", (int) buflen); */
-            buf = malloc(buflen);
+            buf = malloc((size_t) buflen);
             CU_ASSERT_FATAL(buf != NULL);
             ret = vcz_field_write(&field, j, buf, buflen, 0);
             free(buf);
@@ -151,9 +151,9 @@ test_float_field_1d_overflow(void)
         }
     }
     j = num_rows - 1;
-    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
-    for (buflen = 0; buflen < 2; buflen++) {
-        buf = malloc(buflen);
+    /* Missing data is treated differently. Just need 1 byte for "." */
+    for (buflen = 0; buflen < 1; buflen++) {
+        buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_field_write(&field, j, buf, buflen, 0);
         free(buf);
@@ -176,7 +176,7 @@ test_string_field_1d(void)
         .num_columns = 1,
         .data = data };
     char buf[1000];
-    const char *expected[] = { "X\t", "XX\t", "XXX\t" };
+    const char *expected[] = { "X", "XX", "XXX" };
     int64_t ret;
     size_t j;
 
@@ -184,7 +184,51 @@ test_string_field_1d(void)
     for (j = 0; j < num_rows; j++) {
         ret = vcz_field_write(&field, j, buf, 1000, 0);
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
-        CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+        CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
+    }
+}
+
+static void
+test_string_field_1d_overflow(void)
+{
+    /* item_size=4, rows=3, cols=1 */
+    const size_t num_rows = 4;
+    const size_t item_size = 3;
+    const char data[] = "X\0\0"  /* X */
+                        "XX\0"   /* XX*/
+                        "XXX"    /* XXX, */
+                        ".\0\0"; /* .  */
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_STRING,
+        .item_size = 3,
+        .num_columns = 1,
+        .data = data };
+    int64_t ret, buflen;
+    size_t j;
+    char *buf;
+
+    for (j = 0; j < num_rows - 1; j++) {
+        for (buflen = 0; buflen < (int) item_size; buflen++) {
+            /* printf("buflen = %d\n", (int) buflen); */
+            buf = malloc((size_t) buflen);
+            CU_ASSERT_FATAL(buf != NULL);
+            ret = vcz_field_write(&field, j, buf, buflen, 0);
+            free(buf);
+            if (ret < 0) {
+                CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
+            } else {
+                CU_ASSERT_EQUAL_FATAL(ret, j + 1);
+            }
+        }
+    }
+    j = num_rows - 1;
+    /* Missing data is treated differently. Just need 1 byte for "." */
+    for (buflen = 0; buflen < 1; buflen++) {
+        buf = malloc((size_t) buflen);
+        CU_ASSERT_FATAL(buf != NULL);
+        ret = vcz_field_write(&field, j, buf, buflen, 0);
+        free(buf);
+        CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
     }
 }
 
@@ -196,14 +240,13 @@ test_string_field_2d(void)
     const char data[] = "X\0\0Y\0\0\0\0\0" /* [X, Y] */
                         "XX\0YY\0Z\0\0"    /* [XX, YY, Z], */
                         "XXX\0\0\0\0\0";   /* [XXX], */
-
     vcz_field_t field = { .name = "test",
         .type = VCZ_TYPE_STRING,
         .item_size = 3,
         .num_columns = 3,
         .data = data };
     char buf[1000];
-    const char *expected[] = { "X,Y\t", "XX,YY,Z\t", "XXX\t" };
+    const char *expected[] = { "X,Y", "XX,YY,Z", "XXX" };
     int64_t ret;
     size_t j;
 
@@ -212,7 +255,7 @@ test_string_field_2d(void)
     for (j = 0; j < num_rows; j++) {
         ret = vcz_field_write(&field, j, buf, 1000, 0);
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
-        CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+        CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
     }
 }
 
@@ -237,13 +280,13 @@ test_variant_encoder_minimal(void)
     const int32_t hq_data[] = { 10, 15, 7, 12, -1, -1, -1, -1 };
     const float gl_data[] = { 1, 2, 3, 4, 1.1f, 1.2f, 1.3f, 1.4f };
     int64_t ret;
-    size_t j;
+    size_t j, buflen;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
         "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ:GL\t0/0:10,15:1,2\t0|1:7,12:3,4",
         "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT:GL\t1|1:1.1,1.2\t1/0:1.3,1.4",
     };
-    char buf[1000];
+    char *buf;
 
     ret = vcz_variant_encoder_init(&writer, 2, 2, contig_data, 2, pos_data, id_data, 3,
         1, ref_data, 1, alt_data, 1, 1, qual_data, filter_id_data, 5, 2, filter_data);
@@ -270,14 +313,27 @@ test_variant_encoder_minimal(void)
     /* vcz_variant_encoder_print_state(&writer, stdout); */
 
     for (j = 0; j < num_rows; j++) {
-        ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
-        /* printf("ret = %d\n", ret); */
+        for (buflen = 0;; buflen++) {
+            /* printf("buflen = %d\n", (int) buflen); */
+            buf = malloc(buflen);
+            CU_ASSERT_FATAL(buf != NULL);
+            ret = vcz_variant_encoder_write_row(&writer, j, buf, buflen);
+            if (ret < 0) {
+                free(buf);
+                CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_BUFFER_OVERFLOW);
+            } else {
+                break;
+            }
+        }
+        CU_ASSERT_FATAL(buflen >= strlen(expected[j]));
+        /* printf("ret = %d\n", (int) ret); */
         /* printf("GOT:%s\n", buf); */
         /* printf("EXP:%s\n", expected[j]); */
         /* printf("GOT:%d\n", (int) strlen(buf)); */
         /* printf("EXP:%d\n", (int) strlen(expected[j])); */
         CU_ASSERT_EQUAL(ret, strlen(expected[j]));
         CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+        free(buf);
     }
     vcz_variant_encoder_free(&writer);
 }
@@ -460,7 +516,8 @@ test_ftoa(void)
 
     for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
         len = vcz_ftoa(buf, cases[j].val);
-        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected, buf); */
+        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected,
+         * buf); */
         CU_ASSERT_EQUAL_FATAL(len, strlen(cases[j].expected));
         CU_ASSERT_STRING_EQUAL_FATAL(buf, cases[j].expected);
     }
@@ -553,6 +610,7 @@ main(int argc, char **argv)
 {
     CU_TestInfo tests[] = {
         { "test_string_field_1d", test_string_field_1d },
+        { "test_string_field_1d_overflow", test_string_field_1d_overflow },
         { "test_string_field_2d", test_string_field_2d },
         { "test_int_field_1d", test_int_field_1d },
         { "test_int_field_1d_overflow", test_int_field_1d_overflow },

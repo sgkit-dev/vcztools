@@ -193,7 +193,7 @@ bool_field_write_entry(const vcz_field_t *VCZ_UNUSED(self), const void *VCZ_UNUS
 
 static int64_t
 int32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
-    size_t VCZ_UNUSED(buflen), int64_t offset)
+    int64_t buflen, int64_t offset)
 {
     const int32_t *source = (const int32_t *) data;
     int32_t value;
@@ -207,16 +207,28 @@ int32_field_write_entry(const vcz_field_t *self, const void *data, char *dest,
                 offset++;
             }
             if (value == VCZ_INT_MISSING) {
+                if (offset == buflen) {
+                    offset = VCZ_ERR_BUFFER_OVERFLOW;
+                    goto out;
+                }
                 dest[offset] = '.';
                 offset++;
             } else {
+                if (offset + VCZ_INT32_BUF_SIZE >= (int64_t) buflen) {
+                    offset = VCZ_ERR_BUFFER_OVERFLOW;
+                    goto out;
+                }
                 offset += vcz_itoa(dest + offset, value);
             }
         }
     }
+    if (offset == buflen) {
+        offset = VCZ_ERR_BUFFER_OVERFLOW;
+        goto out;
+    }
     dest[offset] = '\t';
     offset++;
-    dest[offset] = '\0';
+out:
     return offset;
 }
 
@@ -259,7 +271,7 @@ vcz_field_write_entry(
 {
     if (self->type == VCZ_TYPE_INT) {
         if (self->item_size == 4) {
-            return int32_field_write_entry(self, data, dest, buflen, offset);
+            return int32_field_write_entry(self, data, dest, (int64_t) buflen, offset);
         }
     } else if (self->type == VCZ_TYPE_FLOAT) {
         assert(self->item_size == 4);

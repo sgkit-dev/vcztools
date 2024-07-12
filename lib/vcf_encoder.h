@@ -31,8 +31,11 @@
 
 // arbitrary - we can increase if needs be
 #define VCZ_MAX_FIELD_NAME_LEN 256
+#define VCZ_INT32_BUF_SIZE 11 // -2147483648
+#define VCZ_FLOAT32_BUF_SIZE 15 // An int + "." and 3 decimal places
 
 #define VCZ_ERR_NO_MEMORY (-100)
+#define VCZ_ERR_BUFFER_OVERFLOW (-101)
 
 /* Built-in-limitations */
 #define VCZ_ERR_FIELD_NAME_TOO_LONG (-201)

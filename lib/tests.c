@@ -27,9 +27,48 @@ test_int_field_1d(void)
         ret = vcz_field_write(&field, j, buf, 1000, 0);
         /* printf("%s: %s\n", buf, expected[j]); */
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
-        CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+        CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
     }
 }
+
+static void
+test_int_field_1d_overflow(void)
+{
+    const int32_t data[] = { 1, 2, 12345789, -100, INT32_MIN, INT32_MAX, -1};
+    const size_t num_rows = sizeof(data) / sizeof(*data);
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_INT,
+        .item_size = 4,
+        .num_columns = 1,
+        .data = (const char *) data };
+    int64_t ret;
+    size_t j, buflen;
+    char *buf;
+
+    for (j = 0; j < num_rows - 1; j++) {
+        /* printf("%d\n", (int) data[j]); */
+        for (buflen = 0; buflen <= VCZ_INT32_BUF_SIZE; buflen++) {
+            /* printf("buflen = %d\n", (int) buflen); */
+            buf = malloc(buflen);
+            CU_ASSERT_FATAL(buf != NULL);
+            ret = vcz_field_write(&field, j, buf, buflen, 0);
+            free(buf);
+            CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
+
+        }
+    }
+    j = num_rows - 1;
+    CU_ASSERT_FATAL(data[j] == -1);
+    /* Missing data is treated differently. Just need 2 bytes for ".\t" */
+    for (buflen = 0; buflen < 2; buflen++) {
+        buf = malloc(buflen);
+        CU_ASSERT_FATAL(buf != NULL);
+        ret = vcz_field_write(&field, j, buf, buflen, 0);
+        free(buf);
+        CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
+    }
+}
+
 
 static void
 test_int_field_2d(void)
@@ -50,7 +89,7 @@ test_int_field_2d(void)
         ret = vcz_field_write(&field, j, buf, 1000, 0);
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
         /* printf("%s: %s\n", buf, expected[j]); */
-        CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+        CU_ASSERT_NSTRING_EQUAL_FATAL(buf, expected[j], ret);
     }
 }
 
@@ -441,6 +480,7 @@ main(int argc, char **argv)
         { "test_string_field_1d", test_string_field_1d },
         { "test_string_field_2d", test_string_field_2d },
         { "test_int_field_1d", test_int_field_1d },
+        { "test_int_field_1d_overflow", test_int_field_1d_overflow },
         { "test_int_field_2d", test_int_field_2d },
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
         { "test_variant_fields_all_missing", test_variant_encoder_fields_all_missing },

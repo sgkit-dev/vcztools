@@ -9,8 +9,13 @@ def parse_targets_string(targets: str) -> tuple[str, Optional[int], Optional[int
     if re.search(r":\d+-\d*$", targets):
         contig, start_end = targets.rsplit(":", 1)
         start, end = start_end.split("-")
-        return contig, int(start), int(end)
-    raise NotImplementedError()
+        return contig, int(start), int(end) if len(end) > 0 else None
+    elif re.search(r":\d+$", targets):
+        contig, start = targets.rsplit(":", 1)
+        return contig, int(start), int(start)
+    else:
+        contig = targets
+        return contig, None, None
 
 
 def pslice_to_slice(
@@ -29,6 +34,7 @@ def pslice_to_slice(
     else:
         contig_pos = variant_position[slice(contig_range[0], contig_range[1])]
         if start is None:
+            assert end is not None  # covered by case above
             start_index = contig_range[0]
             end_index = contig_range[0] + np.searchsorted(contig_pos, [end])[0]
         elif end is None:

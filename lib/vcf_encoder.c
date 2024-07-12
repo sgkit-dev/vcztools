@@ -144,8 +144,8 @@ append_int(char *restrict buf, int32_t value, int64_t offset, int64_t buflen)
 }
 
 static inline int64_t
-append_float(char *restrict buf, int32_t int32_value, float value, int64_t offset,
-    int64_t buflen)
+append_float(
+    char *restrict buf, int32_t int32_value, float value, int64_t offset, int64_t buflen)
 {
     if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
         return append_char(buf, '.', offset, buflen);
@@ -204,8 +204,8 @@ string_all_missing(const char *restrict data, size_t item_size, size_t n)
 }
 
 static int64_t
-string_field_write_entry(const vcz_field_t *self, const void *data, char *buf,
-    int64_t buflen, int64_t offset)
+string_field_write_entry(
+    const vcz_field_t *self, const void *data, char *buf, int64_t buflen, int64_t offset)
 {
     const char *source = (const char *) data;
     size_t column, byte;
@@ -297,8 +297,8 @@ out:
 }
 
 static int64_t
-vcz_field_write_entry(const vcz_field_t *self, const void *data, char *buf,
-    int64_t buflen, int64_t offset)
+vcz_field_write_entry(
+    const vcz_field_t *self, const void *data, char *buf, int64_t buflen, int64_t offset)
 {
     if (self->type == VCZ_TYPE_INT) {
         if (self->item_size == 4) {
@@ -403,7 +403,7 @@ out:
 
 static int64_t
 vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t variant,
-    size_t sample, char *buf, int64_t VCZ_UNUSED(buflen), int64_t offset)
+    size_t sample, char *buf, int64_t buflen, int64_t offset)
 {
     const size_t ploidy = self->gt.num_columns;
     size_t source_offset = variant * self->num_samples * ploidy + sample * ploidy;
@@ -420,17 +420,18 @@ vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t va
 
     for (ploid = 0; ploid < ploidy; ploid++) {
         value = source[ploid];
-        if (value != VCZ_INT_FILL) {
-            if (ploid > 0) {
-                buf[offset] = sep;
-                offset++;
+        if (value == VCZ_INT_FILL) {
+            break;
+        }
+        if (ploid > 0) {
+            offset = append_char(buf, sep, offset, buflen);
+            if (offset < 0) {
+                goto out;
             }
-            if (value == VCZ_INT_MISSING) {
-                buf[offset] = '.';
-                offset++;
-            } else {
-                offset += vcz_itoa(buf + offset, value);
-            }
+        }
+        offset = append_int(buf, value, offset, buflen);
+        if (offset < 0) {
+            goto out;
         }
     }
 out:
@@ -543,7 +544,6 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
             }
         }
     } else {
-
         if (!gt_missing) {
             offset = append_string(buf, "GT:", 3, offset, buflen);
             if (offset < 0) {

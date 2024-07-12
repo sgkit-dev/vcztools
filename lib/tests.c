@@ -280,13 +280,13 @@ test_variant_encoder_minimal(void)
     const int32_t hq_data[] = { 10, 15, 7, 12, -1, -1, -1, -1 };
     const float gl_data[] = { 1, 2, 3, 4, 1.1f, 1.2f, 1.3f, 1.4f };
     int64_t ret;
-    size_t j;
+    size_t j, buflen;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
         "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ:GL\t0/0:10,15:1,2\t0|1:7,12:3,4",
         "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT:GL\t1|1:1.1,1.2\t1/0:1.3,1.4",
     };
-    char buf[1000];
+    char *buf;
 
     ret = vcz_variant_encoder_init(&writer, 2, 2, contig_data, 2, pos_data, id_data, 3,
         1, ref_data, 1, alt_data, 1, 1, qual_data, filter_id_data, 5, 2, filter_data);
@@ -313,7 +313,19 @@ test_variant_encoder_minimal(void)
     /* vcz_variant_encoder_print_state(&writer, stdout); */
 
     for (j = 0; j < num_rows; j++) {
-        ret = vcz_variant_encoder_write_row(&writer, j, buf, 1000);
+        for (buflen = 0;; buflen++) {
+            /* printf("buflen = %d\n", (int) buflen); */
+            buf = malloc(buflen);
+            CU_ASSERT_FATAL(buf != NULL);
+            ret = vcz_variant_encoder_write_row(&writer, j, buf, buflen);
+            if (ret < 0) {
+                free(buf);
+                CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_BUFFER_OVERFLOW);
+            } else {
+                break;
+            }
+        }
+        CU_ASSERT_FATAL(buflen >= strlen(expected[j]));
         /* printf("ret = %d\n", (int) ret); */
         /* printf("GOT:%s\n", buf); */
         /* printf("EXP:%s\n", expected[j]); */
@@ -321,6 +333,7 @@ test_variant_encoder_minimal(void)
         /* printf("EXP:%d\n", (int) strlen(expected[j])); */
         CU_ASSERT_EQUAL(ret, strlen(expected[j]));
         CU_ASSERT_STRING_EQUAL(buf, expected[j]);
+        free(buf);
     }
     vcz_variant_encoder_free(&writer);
 }

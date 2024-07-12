@@ -188,6 +188,7 @@ def write_vcf(
                 numba_chunk_to_vcf(
                     root,
                     v_chunk,
+                    v_mask_chunk,
                     header_info_fields,
                     header_format_fields,
                     contigs,
@@ -301,16 +302,16 @@ def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
 
 
 def numba_chunk_to_vcf(
-    root, v_chunk, header_info_fields, header_format_fields, contigs, filters, output
+    root, v_chunk, v_mask_chunk, header_info_fields, header_format_fields, contigs, filters, output
 ):
     # fixed fields
 
-    chrom = root.variant_contig.blocks[v_chunk]
-    pos = root.variant_position.blocks[v_chunk]
-    id = root.variant_id.blocks[v_chunk].astype("S")
-    alleles = root.variant_allele.blocks[v_chunk].astype("S")
-    qual = root.variant_quality.blocks[v_chunk]
-    filter_ = root.variant_filter.blocks[v_chunk]
+    chrom = get_block_selection(root.variant_contig, v_chunk, v_mask_chunk)
+    pos = get_block_selection(root.variant_position, v_chunk, v_mask_chunk)
+    id = get_block_selection(root.variant_id, v_chunk, v_mask_chunk).astype("S")
+    alleles = get_block_selection(root.variant_allele, v_chunk, v_mask_chunk).astype("S")
+    qual = get_block_selection(root.variant_quality, v_chunk, v_mask_chunk)
+    filter_ = get_block_selection(root.variant_filter, v_chunk, v_mask_chunk)
 
     n_variants = len(pos)
 
@@ -332,7 +333,7 @@ def numba_chunk_to_vcf(
             # not the other way around. This is probably not what we want to
             # do, but keeping it this way to preserve tests initially.
             continue
-        values = arr.blocks[v_chunk]
+        values = get_block_selection(arr, v_chunk, v_mask_chunk)
         if arr.dtype == bool:
             info_mask[k] = create_mask(values)
             info_bufs.append(np.zeros(0, dtype=np.uint8))
@@ -371,7 +372,7 @@ def numba_chunk_to_vcf(
         var = "call_genotype" if key == "GT" else f"call_{key}"
         if var not in root:
             continue
-        values = root[var].blocks[v_chunk]
+        values = get_block_selection(root[var], v_chunk, v_mask_chunk)
         if key == "GT":
             n_samples = values.shape[1]
             format_mask[k] = create_mask(values)
@@ -399,7 +400,7 @@ def numba_chunk_to_vcf(
     format_indexes = np.empty((len(format_values), n_samples + 1), dtype=np.int32)
 
     if "call_genotype_phased" in root:
-        call_genotype_phased = root["call_genotype_phased"].blocks[v_chunk][:]
+        call_genotype_phased = get_block_selection(root["call_genotype_phased"], v_chunk, v_mask_chunk)[:]
     else:
         call_genotype_phased = np.full((n_variants, n_samples), False, dtype=bool)
 

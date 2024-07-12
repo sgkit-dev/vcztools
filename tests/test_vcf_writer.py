@@ -55,7 +55,7 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
     assert_vcfs_close(path, output)
 
 
-@pytest.mark.parametrize("implementation", ["c"])
+@pytest.mark.parametrize("implementation", ["c", "numba"])
 def test_write_vcf__targets(shared_datadir, tmp_path, implementation):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")
@@ -72,8 +72,12 @@ def test_write_vcf__targets(shared_datadir, tmp_path, implementation):
 
     assert v.samples == ["NA00001", "NA00002", "NA00003"]
 
+    count = 0
     for variant in v:
         assert variant.CHROM == "20"
+        count += 1
+
+    assert count == 6
 
 
 def test_write_vcf__set_header(shared_datadir, tmp_path):

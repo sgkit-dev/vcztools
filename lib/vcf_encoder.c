@@ -114,7 +114,8 @@ static inline int64_t
 append_string(char *restrict buf, const char *restrict str, int64_t len, int64_t offset,
     int64_t buflen)
 {
-    if (offset + len >= buflen) {
+    if (offset + len > buflen) {
+        /* printf("offset = %d len=%d buflen = %d\n", (int) offset, (int) len, (int) buflen); */
         return VCZ_ERR_BUFFER_OVERFLOW;
     }
     memcpy(buf + offset, str, (size_t) len);
@@ -134,26 +135,33 @@ append_char(char *restrict buf, char c, int64_t offset, int64_t buflen)
 static inline int64_t
 append_int(char *restrict buf, int32_t value, int64_t offset, int64_t buflen)
 {
+    char tmp[VCZ_INT32_BUF_SIZE];
+    int64_t len;
+
     if (value == VCZ_INT_MISSING) {
         return append_char(buf, '.', offset, buflen);
     }
-    if (offset + VCZ_INT32_BUF_SIZE >= buflen) {
-        return VCZ_ERR_BUFFER_OVERFLOW;
-    }
-    return offset + vcz_itoa(buf + offset, value);
+    /* Note: it would be slightly more efficient to write directly into the output 
+     * buffer here, but doing it this way makes it easier to test that we're correctly
+     * catching all buffer overflows */
+    len = vcz_itoa(tmp, value);
+    /* printf("%d: %d\n", value, (int) len); */
+    return append_string(buf, tmp, len, offset, buflen);
 }
 
 static inline int64_t
 append_float(
     char *restrict buf, int32_t int32_value, float value, int64_t offset, int64_t buflen)
 {
+    char tmp[VCZ_FLOAT32_BUF_SIZE];
+    int64_t len;
+
     if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
         return append_char(buf, '.', offset, buflen);
     }
-    if (offset + VCZ_FLOAT32_BUF_SIZE >= buflen) {
-        return VCZ_ERR_BUFFER_OVERFLOW;
-    }
-    return offset + vcz_ftoa(buf + offset, value);
+    len = vcz_ftoa(tmp, value);
+    /* printf("%f: %d\n", value, (int) len); */
+    return append_string(buf, tmp, len, offset, buflen);
 }
 
 static bool
@@ -609,8 +617,10 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
                     if (filter_id_data[source_offset] == VCZ_STRING_FILL) {
                         break;
                     }
-                    buf[offset] = filter_id_data[source_offset];
-                    offset++;
+                    offset = append_char(buf, filter_id_data[source_offset], offset, buflen);
+                    if (offset < 0) {
+                        goto out;
+                    }
                     source_offset++;
                 }
             }

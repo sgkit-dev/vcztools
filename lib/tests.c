@@ -21,14 +21,14 @@ validate_field(const vcz_field_t *field, size_t num_rows, const char **expected)
         for (buflen = 0; buflen < (int64_t) strlen(expected[j]); buflen++) {
             buf = malloc((size_t) buflen);
             CU_ASSERT_FATAL(buf != NULL);
-            ret = vcz_field_write(field, j, buf, buflen, 0);
+            ret = vcz_field_write_1d(field, j, buf, buflen, 0);
             free(buf);
             CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
         }
         buflen = (int64_t) strlen(expected[j]);
         buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
-        ret = vcz_field_write(field, j, buf, buflen, 0);
+        ret = vcz_field_write_1d(field, j, buf, buflen, 0);
         /* printf("ret = %d\n", (int)ret); */
         /* printf("'%.*s': %s\n", (int) ret, buf, expected[j]); */
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));

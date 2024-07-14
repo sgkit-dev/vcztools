@@ -242,15 +242,13 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
     )
     # print(encoder.arrays)
     if gt is not None:
-        encoder.add_gt_field(gt.astype("int32"), gt_phased)
+        encoder.add_gt_field(gt, gt_phased)
     for name, array in info_fields.items():
         # print(array.dtype.kind)
         if array.dtype.kind in ("O", "U"):
             array = array.astype("S")
         if len(array.shape) == 1:
             array = array.reshape((num_variants, 1))
-        if array.dtype.kind == "i":
-            array = array.astype("int32")  # tmp
         encoder.add_info_field(name, array)
 
     for name, array in format_fields.items():
@@ -259,12 +257,10 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
             array = array.astype("S")
         if len(array.shape) == 2:
             array = array.reshape((num_variants, num_samples, 1))
-        if array.dtype.kind == "i":
-            array = array.astype("int32")  # tmp
         encoder.add_format_field(name, array)
 
     for j in range(num_variants):
-        line = encoder.encode_row(j, 2**30)
+        line = encoder.encode_row(j, 2**20)
         print(line, file=output)
 
 

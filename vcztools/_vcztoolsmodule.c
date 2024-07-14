@@ -219,20 +219,48 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
-    // clang-format off
-    err = vcz_variant_encoder_init(
-        self->vcf_encoder,
-        num_samples, num_variants,
-        PyArray_DATA(chrom), PyArray_ITEMSIZE(chrom),
-        PyArray_DATA(pos),
-        PyArray_DATA(id), PyArray_ITEMSIZE(id), PyArray_DIMS(id)[1],
-        PyArray_DATA(ref), PyArray_ITEMSIZE(ref),
-        PyArray_DATA(alt), PyArray_ITEMSIZE(alt), PyArray_DIMS(alt)[1],
-        PyArray_DATA(qual),
-        PyArray_DATA(filter_ids), PyArray_ITEMSIZE(filter_ids), num_filters,
-        PyArray_DATA(filter)
-    );
-    // clang-format on
+    err = vcz_variant_encoder_init(self->vcf_encoder, num_variants, num_samples);
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_chrom_field(
+        self->vcf_encoder, PyArray_ITEMSIZE(chrom), PyArray_DATA(chrom));
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_pos_field(self->vcf_encoder, PyArray_DATA(pos));
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_id_field(
+        self->vcf_encoder, PyArray_ITEMSIZE(id), PyArray_DIMS(id)[1], PyArray_DATA(id));
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_ref_field(
+        self->vcf_encoder, PyArray_ITEMSIZE(ref), PyArray_DATA(ref));
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_alt_field(self->vcf_encoder, PyArray_ITEMSIZE(alt),
+        PyArray_DIMS(alt)[1], PyArray_DATA(alt));
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_qual_field(self->vcf_encoder, PyArray_DATA(qual));
+    if (err < 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    err = vcz_variant_encoder_add_filter_field(self->vcf_encoder,
+        PyArray_ITEMSIZE(filter_ids), num_filters, PyArray_DATA(filter_ids),
+        PyArray_DATA(filter));
     if (err < 0) {
         handle_library_error(err);
         goto out;
@@ -421,8 +449,8 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
     if (VcfEncoder_add_array(self, "FORMAT/", "GT_phased", array) != 0) {
         goto out;
     }
-    err = vcz_variant_encoder_add_gt_field(self->vcf_encoder, PyArray_DATA(gt),
-        PyArray_ITEMSIZE(gt), PyArray_DIMS(gt)[2], PyArray_DATA(gt_phased));
+    err = vcz_variant_encoder_add_gt_field(self->vcf_encoder, PyArray_ITEMSIZE(gt),
+        PyArray_DIMS(gt)[2], PyArray_DATA(gt), PyArray_DATA(gt_phased));
     if (err != 0) {
         goto out;
     }

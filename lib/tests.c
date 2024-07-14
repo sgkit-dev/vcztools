@@ -215,10 +215,23 @@ test_variant_encoder_minimal(void)
         "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT:GL\t1|1:1.1,1.2\t1/0:1.3,1.4",
     };
 
-    ret = vcz_variant_encoder_init(&writer, 2, 2, contig_data, 2, pos_data, id_data, 3,
-        1, ref_data, 1, alt_data, 1, 1, qual_data, filter_id_data, 5, 2, filter_data);
+    ret = vcz_variant_encoder_init(&writer, 2, 2);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = vcz_variant_encoder_add_gt_field(&writer, gt_data, 4, 2, gt_phased_data);
+    ret = vcz_variant_encoder_add_chrom_field(&writer, 2, contig_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_pos_field(&writer, pos_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_id_field(&writer, 3, 1, id_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_ref_field(&writer, 1, ref_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_alt_field(&writer, 1, 1, alt_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_filter_field(&writer, 5, 2, filter_id_data, filter_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_gt_field(&writer, 4, 2, gt_data, gt_phased_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_info_field(&writer, "AN", VCZ_TYPE_INT, 4, 1, an_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -269,11 +282,23 @@ test_variant_encoder_fields_all_missing(void)
         "X\t123\t.\tA\tT\t9\tPASS\t.\t.\t.\t.",
     };
 
-    ret = vcz_variant_encoder_init(&writer, 2, num_rows, contig_data, 1, pos_data,
-        id_data, 1, 1, ref_data, 1, alt_data, 1, 1, qual_data, filter_id_data, 4, 1,
-        filter_data);
+    ret = vcz_variant_encoder_init(&writer, num_rows, 2);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = vcz_variant_encoder_add_gt_field(&writer, gt_data, 4, 2, gt_phased_data);
+    ret = vcz_variant_encoder_add_chrom_field(&writer, 1, contig_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_pos_field(&writer, pos_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_id_field(&writer, 1, 1, id_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_ref_field(&writer, 1, ref_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_alt_field(&writer, 1, 1, alt_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_filter_field(&writer, 4, 1, filter_id_data, filter_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_gt_field(&writer, 4, 2, gt_data, gt_phased_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_info_field(&writer, "AN", VCZ_TYPE_INT, 4, 1, an_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -291,6 +316,21 @@ test_variant_encoder_fields_all_missing(void)
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     validate_encoder(&writer, num_rows, expected);
+    vcz_variant_encoder_free(&writer);
+}
+
+static void
+test_variant_encoder_bad_fields(void)
+{
+    vcz_variant_encoder_t writer;
+    int ret;
+
+    ret = vcz_variant_encoder_init(&writer, 0, 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    /* ret = vcz_variant_encoder_add_info_field( */
+    /*     &writer, "AA", VCZ_TYPE_STRING, 1, 1, aa_data); */
+
     vcz_variant_encoder_free(&writer);
 }
 
@@ -502,7 +542,9 @@ main(int argc, char **argv)
         { "test_string_field_1d", test_string_field_1d },
         { "test_string_field_2d", test_string_field_2d },
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
-        { "test_variant_fields_all_missing", test_variant_encoder_fields_all_missing },
+        { "test_variant_encoder_fields_all_missing",
+            test_variant_encoder_fields_all_missing },
+        { "test_variant_encoder_bad_fields", test_variant_encoder_bad_fields },
         { "test_itoa_small", test_itoa_small },
         { "test_itoa_pow10", test_itoa_pow10 },
         { "test_itoa_boundary", test_itoa_boundary },

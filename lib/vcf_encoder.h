@@ -72,28 +72,35 @@ typedef struct {
     vcz_field_t *format_fields;
 } vcz_variant_encoder_t;
 
-// clang-format off
-int vcz_variant_encoder_init(vcz_variant_encoder_t *self,
-    size_t num_variants, size_t num_samples,
-    const char *contig_data, size_t contig_item_size,
-    const int32_t *position_data,
-    const char *id_data, size_t id_item_size, size_t id_num_columns,
-    const char *ref_data, size_t ref_item_size,
-    const char *alt_data, size_t alt_item_size, size_t alt_num_columns,
-    const float *qual_data,
-    const char *filter_id_data, size_t filter_id_item_size, size_t filter_id_num_columns,
-    const int8_t *filter_data
-);
-// clang-format on
+/* // clang-format off */
+/* int vcz_variant_encoder_init(vcz_variant_encoder_t *self, */
+/*     size_t num_variants, size_t num_samples, */
+/*     const char *contig_data, size_t contig_item_size, */
+/*     const int32_t *position_data, */
+/*     const char *id_data, size_t id_item_size, size_t id_num_columns, */
+/*     const char *ref_data, size_t ref_item_size, */
+/*     const char *alt_data, size_t alt_item_size, size_t alt_num_columns, */
+/*     const float *qual_data, */
+/*     const char *filter_id_data, size_t filter_id_item_size, size_t filter_id_num_columns, */
+/*     const int8_t *filter_data */
+/* ); */
+/* // clang-format on */
 
+int vcz_variant_encoder_init(vcz_variant_encoder_t *self, size_t num_variants, size_t num_samples);
 void vcz_variant_encoder_free(vcz_variant_encoder_t *self);
 void vcz_variant_encoder_print_state(const vcz_variant_encoder_t *self, FILE *out);
-int vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self, const void *gt_data,
-    size_t gt_item_size, size_t ploidy, const int8_t *gt_phased_data);
-int vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *name,
-    int type, size_t item_size, size_t num_columns, const void *data);
-int vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name,
-    int type, size_t item_size, size_t num_columns, const void *data);
+
+int vcz_variant_encoder_add_chrom_field(vcz_variant_encoder_t *self, size_t item_size, const char *data);
+int vcz_variant_encoder_add_pos_field(vcz_variant_encoder_t *self, const int32_t *data);
+int vcz_variant_encoder_add_qual_field(vcz_variant_encoder_t *self, const float *data);
+int vcz_variant_encoder_add_ref_field(vcz_variant_encoder_t *self, size_t item_size, const char *data);
+int vcz_variant_encoder_add_id_field(vcz_variant_encoder_t *self, size_t item_size, size_t num_columns, const char *data);
+int vcz_variant_encoder_add_alt_field(vcz_variant_encoder_t *self, size_t item_size, size_t num_columns, const char *data);
+int vcz_variant_encoder_add_filter_field(vcz_variant_encoder_t *self, size_t id_item_size, size_t id_num_columns, const char *id_data, const int8_t *filter_data);
+int vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self, size_t item_size, size_t num_columns, const void *data, const int8_t *phased_data);
+int vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name, int type, size_t item_size, size_t num_columns, const void *data);
+int vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *name, int type, size_t item_size, size_t num_columns, const void *data);
+
 int64_t vcz_variant_encoder_write_row(
     const vcz_variant_encoder_t *self, size_t row, char *buf, size_t buflen);
 

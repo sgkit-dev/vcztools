@@ -115,7 +115,8 @@ append_string(char *restrict buf, const char *restrict str, int64_t len, int64_t
     int64_t buflen)
 {
     if (offset + len > buflen) {
-        /* printf("offset = %d len=%d buflen = %d\n", (int) offset, (int) len, (int) buflen); */
+        /* printf("offset = %d len=%d buflen = %d\n", (int) offset, (int) len, (int)
+         * buflen); */
         return VCZ_ERR_BUFFER_OVERFLOW;
     }
     memcpy(buf + offset, str, (size_t) len);
@@ -141,7 +142,7 @@ append_int(char *restrict buf, int32_t value, int64_t offset, int64_t buflen)
     if (value == VCZ_INT_MISSING) {
         return append_char(buf, '.', offset, buflen);
     }
-    /* Note: it would be slightly more efficient to write directly into the output 
+    /* Note: it would be slightly more efficient to write directly into the output
      * buffer here, but doing it this way makes it easier to test that we're correctly
      * catching all buffer overflows */
     len = vcz_itoa(tmp, value);
@@ -309,9 +310,8 @@ vcz_field_write_entry(
     const vcz_field_t *self, const void *data, char *buf, int64_t buflen, int64_t offset)
 {
     if (self->type == VCZ_TYPE_INT) {
-        if (self->item_size == 4) {
-            return int32_field_write_entry(self, data, buf, buflen, offset, ',');
-        }
+        assert(self->item_size == 4);
+        return int32_field_write_entry(self, data, buf, buflen, offset, ',');
     } else if (self->type == VCZ_TYPE_FLOAT) {
         assert(self->item_size == 4);
         return float32_field_write_entry(self, data, buf, buflen, offset);
@@ -319,10 +319,9 @@ vcz_field_write_entry(
         assert(self->item_size == 1);
         assert(self->num_columns == 1);
         return bool_field_write_entry(self, data, buf, (size_t) buflen, offset);
-    } else if (self->type == VCZ_TYPE_STRING) {
-        return string_field_write_entry(self, data, buf, buflen, offset);
     }
-    return VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
+    assert(self->type == VCZ_TYPE_STRING);
+    return string_field_write_entry(self, data, buf, buflen, offset);
 }
 
 int64_t
@@ -617,7 +616,8 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
                     if (filter_id_data[source_offset] == VCZ_STRING_FILL) {
                         break;
                     }
-                    offset = append_char(buf, filter_id_data[source_offset], offset, buflen);
+                    offset = append_char(
+                        buf, filter_id_data[source_offset], offset, buflen);
                     if (offset < 0) {
                         goto out;
                     }
@@ -759,75 +759,84 @@ out:
 }
 
 int
-vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self, const void *gt_data,
-    size_t gt_item_size, size_t ploidy, const int8_t *gt_phased_data)
+vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self, size_t item_size,
+    size_t num_columns, const void *data, const int8_t *phased_data)
 {
-    strcpy(self->gt.name, "GT");
-    self->gt.item_size = gt_item_size;
-    self->gt.data = gt_data;
-    self->gt.num_columns = ploidy;
-    self->gt_phased_data = gt_phased_data;
-    return 0;
+    self->gt_phased_data = phased_data;
+    return vcz_field_init(&self->gt, "GT", VCZ_TYPE_INT, item_size, num_columns, data);
 }
 
-// clang-format off
-int
-vcz_variant_encoder_init(vcz_variant_encoder_t *self,
-    size_t num_samples, size_t num_variants,
-    const char *chrom_data, size_t chrom_item_size,
-    const int32_t *pos_data,
-    const char *id_data, size_t id_item_size, size_t id_num_columns,
-    const char *ref_data, size_t ref_item_size,
-    const char *alt_data, size_t alt_item_size, size_t alt_num_columns,
-    const float *qual_data,
-    const char *filter_id_data, size_t filter_id_item_size, size_t filter_id_num_columns,
-    const int8_t *filter_data)
-{
-    vcz_field_t fixed_fields[] = {
-        { .name = "CHROM",
-            .type = VCZ_TYPE_STRING,
-            .item_size = chrom_item_size,
-            .num_columns = 1,
-            .data = chrom_data },
-        { .name = "POS",
-            .type = VCZ_TYPE_INT,
-            .item_size = 4,
-            .num_columns = 1,
-            .data = (const char *) pos_data },
-        { .name = "ID",
-            .type = VCZ_TYPE_STRING,
-            .item_size = id_item_size,
-            .num_columns = id_num_columns,
-            .data = id_data },
-        { .name = "REF",
-            .type = VCZ_TYPE_STRING,
-            .item_size = ref_item_size,
-            .num_columns = 1,
-            .data = ref_data },
-        { .name = "ALT",
-            .type = VCZ_TYPE_STRING,
-            .item_size = alt_item_size,
-            .num_columns = alt_num_columns,
-            .data = alt_data },
-        { .name = "QUAL",
-            .type = VCZ_TYPE_FLOAT,
-            .item_size = 4,
-            .num_columns = 1,
-            .data = (const char *) qual_data }
-    };
-    // clang-format on
+#define CHROM_FIELD_INDEX 0
+#define POS_FIELD_INDEX 1
+#define ID_FIELD_INDEX 2
+#define REF_FIELD_INDEX 3
+#define ALT_FIELD_INDEX 4
+#define QUAL_FIELD_INDEX 5
+#define FILTER_FIELD_INDEX 6
 
+int
+vcz_variant_encoder_add_chrom_field(
+    vcz_variant_encoder_t *self, size_t item_size, const char *data)
+{
+    return vcz_field_init(self->fixed_fields + CHROM_FIELD_INDEX, "CHROM",
+        VCZ_TYPE_STRING, item_size, 1, data);
+}
+
+int
+vcz_variant_encoder_add_pos_field(vcz_variant_encoder_t *self, const int32_t *data)
+{
+    return vcz_field_init(
+        self->fixed_fields + POS_FIELD_INDEX, "POS", VCZ_TYPE_INT, 4, 1, data);
+}
+
+int
+vcz_variant_encoder_add_qual_field(vcz_variant_encoder_t *self, const float *data)
+{
+    return vcz_field_init(
+        self->fixed_fields + QUAL_FIELD_INDEX, "QUAL", VCZ_TYPE_FLOAT, 4, 1, data);
+}
+
+int
+vcz_variant_encoder_add_ref_field(
+    vcz_variant_encoder_t *self, size_t item_size, const char *data)
+{
+    return vcz_field_init(self->fixed_fields + REF_FIELD_INDEX, "REF", VCZ_TYPE_STRING,
+        item_size, 1, data);
+}
+
+int
+vcz_variant_encoder_add_id_field(
+    vcz_variant_encoder_t *self, size_t item_size, size_t num_columns, const char *data)
+{
+    return vcz_field_init(self->fixed_fields + ID_FIELD_INDEX, "ID", VCZ_TYPE_STRING,
+        item_size, num_columns, data);
+}
+
+int
+vcz_variant_encoder_add_alt_field(
+    vcz_variant_encoder_t *self, size_t item_size, size_t num_columns, const char *data)
+{
+    return vcz_field_init(self->fixed_fields + ALT_FIELD_INDEX, "ALT", VCZ_TYPE_STRING,
+        item_size, num_columns, data);
+}
+
+int
+vcz_variant_encoder_add_filter_field(vcz_variant_encoder_t *self, size_t id_item_size,
+    size_t id_num_columns, const char *id_data, const int8_t *filter_data)
+{
+    self->filter_data = filter_data;
+    return vcz_field_init(&self->filter_id, "IDS/FILTERS", VCZ_TYPE_STRING, id_item_size,
+        id_num_columns, id_data);
+}
+
+int
+vcz_variant_encoder_init(
+    vcz_variant_encoder_t *self, size_t num_variants, size_t num_samples)
+{
     memset(self, 0, sizeof(*self));
     self->num_samples = num_samples;
     self->num_variants = num_variants;
     self->field_array_size_increment = 64; // arbitrary
-    strcpy(self->filter_id.name, "IDS/FILTERS");
-    self->filter_id.type = VCZ_TYPE_STRING;
-    self->filter_id.item_size = filter_id_item_size;
-    self->filter_id.data = filter_id_data;
-    self->filter_id.num_columns = filter_id_num_columns;
-    self->filter_data = filter_data;
-    memcpy(self->fixed_fields, fixed_fields, sizeof(fixed_fields));
     return 0;
 }
 

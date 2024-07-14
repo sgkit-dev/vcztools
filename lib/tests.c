@@ -366,7 +366,7 @@ test_variant_encoder_fields_all_missing(void)
     const char alt_data[] = "T";
     const float qual_data[] = { 9 };
     const char filter_id_data[] = "PASS";
-    const int8_t filter_data[] = { 1 };
+    const int8_t filter_data[] = { 0 };
     const int32_t an_data[] = { -1 };
     const char *aa_data = ".";
     const int8_t flag_data[] = { 0 };
@@ -382,7 +382,7 @@ test_variant_encoder_fields_all_missing(void)
     int64_t ret;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
-        "X\t123\t.\tA\tT\t9\tPASS\t.\t.\t.\t.",
+        "X\t123\t.\tA\tT\t9\t.\t.\t.\t.\t.",
     };
 
     ret = vcz_variant_encoder_init(&writer, num_rows, 2);
@@ -432,8 +432,50 @@ test_variant_encoder_bad_fields(void)
     ret = vcz_variant_encoder_init(&writer, 0, 0);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
-    /* ret = vcz_variant_encoder_add_info_field( */
-    /*     &writer, "AA", VCZ_TYPE_STRING, 1, 1, aa_data); */
+    ret = vcz_variant_encoder_add_info_field(&writer, "FIELD", 0, 1, 1, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_TYPE);
+    ret = vcz_variant_encoder_add_info_field(&writer, "FIELD", VCZ_TYPE_INT, 3, 1, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE);
+    ret = vcz_variant_encoder_add_info_field(&writer, "FIELD", VCZ_TYPE_INT, 4, 0, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS);
+    CU_ASSERT_EQUAL_FATAL(writer.num_info_fields, 0);
+
+    ret = vcz_variant_encoder_add_format_field(&writer, "FIELD", 0, 1, 1, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_TYPE);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "FIELD", VCZ_TYPE_INT, 3, 1, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "FIELD", VCZ_TYPE_INT, 4, 0, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS);
+    CU_ASSERT_EQUAL_FATAL(writer.num_format_fields, 0);
+
+    vcz_variant_encoder_free(&writer);
+}
+
+static void
+test_variant_encoder_many_fields(void)
+{
+    vcz_variant_encoder_t writer;
+    int ret;
+    size_t j;
+
+    ret = vcz_variant_encoder_init(&writer, 0, 0);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    /* We're basically just testing the realloc behavior here and making sure we don't
+     * leak memory */
+    for (j = 0; j < 3 * writer.field_array_size_increment; j++) {
+        /* We don't check for uniqueness of names */
+        ret = vcz_variant_encoder_add_info_field(
+            &writer, "FIELD", VCZ_TYPE_INT, 4, 1, NULL);
+        CU_ASSERT_EQUAL_FATAL(ret, 0);
+        /* vcz_variant_encoder_print_state(&writer, stdout); */
+        CU_ASSERT_EQUAL_FATAL(writer.num_info_fields, j + 1);
+        ret = vcz_variant_encoder_add_format_field(
+            &writer, "FIELD", VCZ_TYPE_INT, 4, 1, NULL);
+        CU_ASSERT_EQUAL_FATAL(ret, 0);
+        CU_ASSERT_EQUAL_FATAL(writer.num_format_fields, j + 1);
+    }
 
     vcz_variant_encoder_free(&writer);
 }
@@ -653,6 +695,7 @@ main(int argc, char **argv)
         { "test_variant_encoder_fields_all_missing",
             test_variant_encoder_fields_all_missing },
         { "test_variant_encoder_bad_fields", test_variant_encoder_bad_fields },
+        { "test_variant_encoder_many_fields", test_variant_encoder_many_fields },
         { "test_itoa_small", test_itoa_small },
         { "test_itoa_pow10", test_itoa_pow10 },
         { "test_itoa_boundary", test_itoa_boundary },

@@ -751,6 +751,7 @@ vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name
 
     if (self->num_info_fields == self->max_info_fields) {
         self->max_info_fields += self->field_array_size_increment;
+        /* self->info_fields is initially NULL */
         tmp = realloc(
             self->info_fields, self->max_info_fields * sizeof(*self->info_fields));
         if (tmp == NULL) {
@@ -778,7 +779,7 @@ vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *na
 
     if (self->num_format_fields == self->max_format_fields) {
         self->max_format_fields += self->field_array_size_increment;
-        /* NOTE: assuming realloc(NULL) is safe and portable. check */
+        /* self->format_fields is initially NULL */
         tmp = realloc(
             self->format_fields, self->max_format_fields * sizeof(*self->format_fields));
         if (tmp == NULL) {
@@ -788,9 +789,12 @@ vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *na
         self->format_fields = tmp;
     }
     field = self->format_fields + self->num_format_fields;
-    self->num_format_fields++;
 
     ret = vcz_field_init(field, name, type, item_size, num_columns, data);
+    if (ret != 0) {
+        goto out;
+    }
+    self->num_format_fields++;
 out:
     return ret;
 }

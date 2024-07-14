@@ -66,12 +66,20 @@ validate_encoder(
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_variant_encoder_write_row(encoder, j, buf, (size_t) buflen);
         /* printf("ret = %d\n", (int) ret); */
-        /* printf("GOT:%s\n", buf); */
-        /* printf("EXP:%s\n", expected[j]); */
+        /* printf("GOT:'%s'\n", buf); */
+        /* printf("EXP:'%s'\n", expected[j]); */
         /* printf("GOT:%d\n", (int) strlen(buf)); */
         /* printf("EXP:%d\n", (int) strlen(expected[j])); */
+        /* int64_t c; */
+        /* for (c = 0; c < ret; c++) { */
+        /*     if (buf[c] != expected[j][c]) { */
+        /*         printf("Mismatch at %d: %c != %c\n", (int) c, buf[c], expected[j][c]);
+         */
+
+        /*     } */
+        /* } */
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
-        CU_ASSERT_NSTRING_EQUAL(buf, expected[j], ret);
+        CU_ASSERT_NSTRING_EQUAL_FATAL(buf, expected[j], ret);
         free(buf);
     }
 }
@@ -179,7 +187,63 @@ test_field_bad_num_columns(void)
 }
 
 static void
-test_int_field_1d(void)
+test_int8_field_1d(void)
+{
+    const int8_t data[] = { 1, 2, 127, -1, -100 };
+    const char *expected[] = { "1", "2", "127", ".", "-100" };
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_INT,
+        .item_size = 1,
+        .num_columns = 1,
+        .data = (const char *) data };
+
+    validate_field(&field, sizeof(data) / sizeof(*data), expected);
+}
+
+static void
+test_int8_field_2d(void)
+{
+    const int8_t data[] = { 1, 2, 3, 123, 127, -2, -1, -2, -2, -2, -2, -2 };
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_INT,
+        .item_size = 1,
+        .num_columns = 3,
+        .data = (const char *) data };
+    const char *expected[] = { "1,2,3", "123,127", ".", "" };
+
+    validate_field(&field, 4, expected);
+}
+
+static void
+test_int16_field_1d(void)
+{
+    const int16_t data[] = { 1, 2, 127, -1, -100 };
+    const char *expected[] = { "1", "2", "127", ".", "-100" };
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_INT,
+        .item_size = 2,
+        .num_columns = 1,
+        .data = (const char *) data };
+
+    validate_field(&field, sizeof(data) / sizeof(*data), expected);
+}
+
+static void
+test_int16_field_2d(void)
+{
+    const int16_t data[] = { 1, 2, 3, 123, 127, -2, -1, -2, -2, -2, -2, -2 };
+    vcz_field_t field = { .name = "test",
+        .type = VCZ_TYPE_INT,
+        .item_size = 2,
+        .num_columns = 3,
+        .data = (const char *) data };
+    const char *expected[] = { "1,2,3", "123,127", ".", "" };
+
+    validate_field(&field, 4, expected);
+}
+
+static void
+test_int32_field_1d(void)
 {
     const int32_t data[] = { 1, 2, 12345789, -1, -100 };
     const char *expected[] = { "1", "2", "12345789", ".", "-100" };
@@ -193,7 +257,7 @@ test_int_field_1d(void)
 }
 
 static void
-test_int_field_2d(void)
+test_int32_field_2d(void)
 {
     const int32_t data[] = { 1, 2, 3, 1234, 5678, -2, -1, -2, -2, -2, -2, -2 };
     vcz_field_t field = { .name = "test",
@@ -417,6 +481,204 @@ test_variant_encoder_fields_all_missing(void)
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_format_field(
         &writer, "GL", VCZ_TYPE_FLOAT, 4, 2, gl_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    validate_encoder(&writer, num_rows, expected);
+    vcz_variant_encoder_free(&writer);
+}
+
+/* NOTE: the duplication in the next three tests is pretty ugly, but it's
+ * an effective way to make sure we are definely using the correct size
+ * pointers. We can always write other tests that are not so ugly. */
+static void
+test_variant_encoder_int8_fields(void)
+{
+    const size_t num_rows = 4;
+    const size_t num_samples = 1;
+    const char contig_data[] = "1234";
+    const int32_t pos_data[] = { 1, 2, 3, 4 };
+    const char id_data[] = "1234";
+    const char ref_data[] = "1234";
+    const char alt_data[] = "1234";
+    const float qual_data[] = { 1, 2, 3, 4 };
+    const char filter_id_data[] = "PASS";
+    const int8_t filter_data[] = { 1, 1, 1, 1 };
+    const int8_t gt_data[] = { 0, 1, 2, 3, -1, 5, -1, -1 };
+    const int8_t gt_phased_data[] = { 1, 1, 1, 1, 1, 1, 1, 1 };
+    const int8_t ii1_data[] = { 1, 2, 3, -1 };
+    const int8_t if1_data[] = { 1, 2, 3, -1 };
+    const int8_t ii2_data[] = { 1, 2, 3, 4, 5, -1, -1, -1 };
+    const int8_t if2_data[] = { 1, 2, 3, 4, -1, 6, -1, -1 };
+    int64_t ret;
+    vcz_variant_encoder_t writer;
+    const char *expected[] = {
+        "1\t1\t1\t1\t1\t1\tPASS\tII1=1;II2=1,2\tGT:IF1:IF2\t0|1:1:1,2",
+        "2\t2\t2\t2\t2\t2\tPASS\tII1=2;II2=3,4\tGT:IF1:IF2\t2|3:2:3,4",
+        "3\t3\t3\t3\t3\t3\tPASS\tII1=3;II2=5,.\tGT:IF1:IF2\t.|5:3:.,6",
+        "4\t4\t4\t4\t4\t4\tPASS\t.\t.\t.",
+    };
+
+    ret = vcz_variant_encoder_init(&writer, num_rows, num_samples);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_chrom_field(&writer, 1, contig_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_pos_field(&writer, pos_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_id_field(&writer, 1, 1, id_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_ref_field(&writer, 1, ref_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_alt_field(&writer, 1, 1, alt_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_filter_field(
+        &writer, 4, 1, filter_id_data, filter_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    ret = vcz_variant_encoder_add_gt_field(&writer, 1, 2, gt_data, gt_phased_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "II1", VCZ_TYPE_INT, 1, 1, ii1_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "II2", VCZ_TYPE_INT, 1, 2, ii2_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "IF1", VCZ_TYPE_INT, 1, 1, if1_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "IF2", VCZ_TYPE_INT, 1, 2, if2_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    validate_encoder(&writer, num_rows, expected);
+    vcz_variant_encoder_free(&writer);
+}
+
+static void
+test_variant_encoder_int16_fields(void)
+{
+    const size_t num_rows = 4;
+    const size_t num_samples = 1;
+    const char contig_data[] = "1234";
+    const int32_t pos_data[] = { 1, 2, 3, 4 };
+    const char id_data[] = "1234";
+    const char ref_data[] = "1234";
+    const char alt_data[] = "1234";
+    const float qual_data[] = { 1, 2, 3, 4 };
+    const char filter_id_data[] = "PASS";
+    const int8_t filter_data[] = { 1, 1, 1, 1 };
+    const int8_t gt_phased_data[] = { 1, 1, 1, 1, 1, 1, 1, 1 };
+    const int16_t gt_data[] = { 0, 1, 2, 3, -1, 5, -1, -1 };
+    const int16_t ii1_data[] = { 1, 2, 3, -1 };
+    const int16_t if1_data[] = { 1, 2, 3, -1 };
+    const int16_t ii2_data[] = { 1, 2, 3, 4, 5, -1, -1, -1 };
+    const int16_t if2_data[] = { 1, 2, 3, 4, -1, 6, -1, -1 };
+    int64_t ret;
+    vcz_variant_encoder_t writer;
+    const char *expected[] = {
+        "1\t1\t1\t1\t1\t1\tPASS\tII1=1;II2=1,2\tGT:IF1:IF2\t0|1:1:1,2",
+        "2\t2\t2\t2\t2\t2\tPASS\tII1=2;II2=3,4\tGT:IF1:IF2\t2|3:2:3,4",
+        "3\t3\t3\t3\t3\t3\tPASS\tII1=3;II2=5,.\tGT:IF1:IF2\t.|5:3:.,6",
+        "4\t4\t4\t4\t4\t4\tPASS\t.\t.\t.",
+    };
+
+    ret = vcz_variant_encoder_init(&writer, num_rows, num_samples);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_chrom_field(&writer, 1, contig_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_pos_field(&writer, pos_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_id_field(&writer, 1, 1, id_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_ref_field(&writer, 1, ref_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_alt_field(&writer, 1, 1, alt_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_filter_field(
+        &writer, 4, 1, filter_id_data, filter_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    ret = vcz_variant_encoder_add_gt_field(&writer, 2, 2, gt_data, gt_phased_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "II1", VCZ_TYPE_INT, 2, 1, ii1_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "II2", VCZ_TYPE_INT, 2, 2, ii2_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "IF1", VCZ_TYPE_INT, 2, 1, if1_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "IF2", VCZ_TYPE_INT, 2, 2, if2_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    validate_encoder(&writer, num_rows, expected);
+    vcz_variant_encoder_free(&writer);
+}
+
+static void
+test_variant_encoder_int32_fields(void)
+{
+    const size_t num_rows = 4;
+    const size_t num_samples = 1;
+    const char contig_data[] = "1234";
+    const int32_t pos_data[] = { 1, 2, 3, 4 };
+    const char id_data[] = "1234";
+    const char ref_data[] = "1234";
+    const char alt_data[] = "1234";
+    const float qual_data[] = { 1, 2, 3, 4 };
+    const char filter_id_data[] = "PASS";
+    const int8_t filter_data[] = { 1, 1, 1, 1 };
+    const int8_t gt_phased_data[] = { 1, 1, 1, 1, 1, 1, 1, 1 };
+    const int32_t gt_data[] = { 0, 1, 2, 3, -1, 5, -1, -1 };
+    const int32_t ii1_data[] = { 1, 2, 3, -1 };
+    const int32_t if1_data[] = { 1, 2, 3, -1 };
+    const int32_t ii2_data[] = { 1, 2, 3, 4, 5, -1, -1, -1 };
+    const int32_t if2_data[] = { 1, 2, 3, 4, -1, 6, -1, -1 };
+    int64_t ret;
+    vcz_variant_encoder_t writer;
+    const char *expected[] = {
+        "1\t1\t1\t1\t1\t1\tPASS\tII1=1;II2=1,2\tGT:IF1:IF2\t0|1:1:1,2",
+        "2\t2\t2\t2\t2\t2\tPASS\tII1=2;II2=3,4\tGT:IF1:IF2\t2|3:2:3,4",
+        "3\t3\t3\t3\t3\t3\tPASS\tII1=3;II2=5,.\tGT:IF1:IF2\t.|5:3:.,6",
+        "4\t4\t4\t4\t4\t4\tPASS\t.\t.\t.",
+    };
+
+    ret = vcz_variant_encoder_init(&writer, num_rows, num_samples);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_chrom_field(&writer, 1, contig_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_pos_field(&writer, pos_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_id_field(&writer, 1, 1, id_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_ref_field(&writer, 1, ref_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_alt_field(&writer, 1, 1, alt_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_filter_field(
+        &writer, 4, 1, filter_id_data, filter_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    ret = vcz_variant_encoder_add_gt_field(&writer, 4, 2, gt_data, gt_phased_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "II1", VCZ_TYPE_INT, 4, 1, ii1_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "II2", VCZ_TYPE_INT, 4, 2, ii2_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "IF1", VCZ_TYPE_INT, 4, 1, if1_data);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "IF2", VCZ_TYPE_INT, 4, 2, if2_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
 
     validate_encoder(&writer, num_rows, expected);
@@ -685,8 +947,12 @@ main(int argc, char **argv)
         { "test_field_bad_type", test_field_bad_type },
         { "test_field_bad_item_size", test_field_bad_item_size },
         { "test_field_bad_num_columns", test_field_bad_num_columns },
-        { "test_int_field_1d", test_int_field_1d },
-        { "test_int_field_2d", test_int_field_2d },
+        { "test_int8_field_1d", test_int8_field_1d },
+        { "test_int8_field_2d", test_int8_field_2d },
+        { "test_int16_field_1d", test_int16_field_1d },
+        { "test_int16_field_2d", test_int16_field_2d },
+        { "test_int32_field_1d", test_int32_field_1d },
+        { "test_int32_field_2d", test_int32_field_2d },
         { "test_float_field_1d", test_float_field_1d },
         { "test_float_field_2d", test_float_field_2d },
         { "test_string_field_1d", test_string_field_1d },
@@ -694,6 +960,9 @@ main(int argc, char **argv)
         { "test_variant_encoder_minimal", test_variant_encoder_minimal },
         { "test_variant_encoder_fields_all_missing",
             test_variant_encoder_fields_all_missing },
+        { "test_variant_encoder_int8_fields", test_variant_encoder_int8_fields },
+        { "test_variant_encoder_int16_fields", test_variant_encoder_int16_fields },
+        { "test_variant_encoder_int32_fields", test_variant_encoder_int32_fields },
         { "test_variant_encoder_bad_fields", test_variant_encoder_bad_fields },
         { "test_variant_encoder_many_fields", test_variant_encoder_many_fields },
         { "test_itoa_small", test_itoa_small },

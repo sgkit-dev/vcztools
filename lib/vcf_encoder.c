@@ -173,6 +173,32 @@ bool_all_missing(const int8_t *restrict data, size_t n)
 }
 
 static bool
+int8_all_missing(const int8_t *restrict data, size_t n)
+{
+    size_t j;
+
+    for (j = 0; j < n; j++) {
+        if (data[j] != VCZ_INT_FILL && data[j] != VCZ_INT_MISSING) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool
+int16_all_missing(const int16_t *restrict data, size_t n)
+{
+    size_t j;
+
+    for (j = 0; j < n; j++) {
+        if (data[j] != VCZ_INT_FILL && data[j] != VCZ_INT_MISSING) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool
 int32_all_missing(const int32_t *restrict data, size_t n)
 {
     size_t j;
@@ -214,8 +240,8 @@ string_all_missing(const char *restrict data, size_t item_size, size_t n)
 }
 
 static int64_t
-string_write_entry(size_t num_columns, size_t item_size, const void *data,
-    char *buf, int64_t buflen, int64_t offset)
+string_write_entry(size_t num_columns, size_t item_size, const void *data, char *buf,
+    int64_t buflen, int64_t offset)
 {
     const char *source = (const char *) data;
     size_t column, byte;
@@ -237,6 +263,58 @@ string_write_entry(size_t num_columns, size_t item_size, const void *data,
                 }
             }
             source_offset++;
+        }
+    }
+out:
+    return offset;
+}
+
+static int64_t
+int8_write_entry(size_t num_columns, const void *restrict data, char *buf,
+    int64_t buflen, int64_t offset, char separator)
+{
+    const int8_t *restrict source = (const int8_t *) data;
+    size_t column;
+
+    for (column = 0; column < num_columns; column++) {
+        if (source[column] == VCZ_INT_FILL) {
+            break;
+        }
+        if (column > 0) {
+            offset = append_char(buf, separator, offset, buflen);
+            if (offset < 0) {
+                goto out;
+            }
+        }
+        offset = append_int(buf, source[column], offset, buflen);
+        if (offset < 0) {
+            goto out;
+        }
+    }
+out:
+    return offset;
+}
+
+static int64_t
+int16_write_entry(size_t num_columns, const void *restrict data, char *buf,
+    int64_t buflen, int64_t offset, char separator)
+{
+    const int16_t *restrict source = (const int16_t *) data;
+    size_t column;
+
+    for (column = 0; column < num_columns; column++) {
+        if (source[column] == VCZ_INT_FILL) {
+            break;
+        }
+        if (column > 0) {
+            offset = append_char(buf, separator, offset, buflen);
+            if (offset < 0) {
+                goto out;
+            }
+        }
+        offset = append_int(buf, source[column], offset, buflen);
+        if (offset < 0) {
+            goto out;
         }
     }
 out:
@@ -270,8 +348,8 @@ out:
 }
 
 static int64_t
-float32_write_entry(size_t num_columns, const void *restrict data,
-    char *restrict buf, int64_t buflen, int64_t offset)
+float32_write_entry(size_t num_columns, const void *restrict data, char *restrict buf,
+    int64_t buflen, int64_t offset)
 {
     const float *restrict source = (const float *restrict) data;
     const int32_t *restrict int32_source = (const int32_t *restrict) data;
@@ -299,12 +377,19 @@ out:
 }
 
 static int64_t
-write_entry(int type, size_t item_size, size_t num_columns, const void *data,
-    char *buf, int64_t buflen, int64_t offset)
+write_entry(int type, size_t item_size, size_t num_columns, const void *data, char *buf,
+    int64_t buflen, int64_t offset)
 {
     if (type == VCZ_TYPE_INT) {
-        assert(item_size == 4);
-        return int32_write_entry(num_columns, data, buf, buflen, offset, ',');
+        switch (item_size) {
+            case 1:
+                return int8_write_entry(num_columns, data, buf, buflen, offset, ',');
+            case 2:
+                return int16_write_entry(num_columns, data, buf, buflen, offset, ',');
+            default:
+                assert(item_size == 4);
+                return int32_write_entry(num_columns, data, buf, buflen, offset, ',');
+        }
     } else if (type == VCZ_TYPE_FLOAT) {
         assert(item_size == 4);
         return float32_write_entry(num_columns, data, buf, buflen, offset);
@@ -322,8 +407,15 @@ static bool
 all_missing(int type, size_t item_size, size_t n, const char *restrict data)
 {
     if (type == VCZ_TYPE_INT) {
-        assert(item_size == 4);
-        return int32_all_missing((const int32_t *) data, n);
+        switch (item_size) {
+            case 1:
+                return int8_all_missing((const int8_t *) data, n);
+            case 2:
+                return int16_all_missing((const int16_t *) data, n);
+            default:
+                assert(item_size == 4);
+                return int32_all_missing((const int32_t *) data, n);
+        }
     } else if (type == VCZ_TYPE_FLOAT) {
         assert(item_size == 4);
         return float32_all_missing((const float *) data, n);
@@ -418,6 +510,8 @@ vcz_field_init(vcz_field_t *self, const char *name, int type, size_t item_size,
         }
     } else if (type == VCZ_TYPE_INT) {
         switch (item_size) {
+            case 1:
+            case 2:
             case 4:
                 break;
             default:
@@ -452,13 +546,22 @@ static int64_t
 vcz_variant_encoder_write_sample_gt(const vcz_variant_encoder_t *self, size_t variant,
     size_t sample, char *buf, int64_t buflen, int64_t offset)
 {
-    const size_t ploidy = self->gt.num_columns;
-    size_t source_offset = variant * self->num_samples * ploidy + sample * ploidy;
-    const int32_t *source = ((const int32_t *) self->gt.data) + source_offset;
+    const vcz_field_t gt = self->gt;
+    size_t row_size = gt.num_columns * gt.item_size * self->num_samples;
+    const void *data
+        = gt.data + variant * row_size + sample * gt.num_columns * gt.item_size;
     const bool phased = self->gt_phased_data[variant * self->num_samples + sample];
     char sep = phased ? '|' : '/';
 
-    return int32_write_entry(ploidy, source, buf, buflen, offset, sep);
+    switch (gt.item_size) {
+        case 1:
+            return int8_write_entry(gt.num_columns, data, buf, buflen, offset, sep);
+        case 2:
+            return int16_write_entry(gt.num_columns, data, buf, buflen, offset, sep);
+        default:
+            assert(gt.item_size == 4);
+            return int32_write_entry(gt.num_columns, data, buf, buflen, offset, sep);
+    }
 }
 
 static int64_t
@@ -549,8 +652,8 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
             goto out;
         }
         for (j = 0; j < self->num_format_fields; j++) {
-            missing[j] = vcz_field_is_missing_2d(
-                &self->format_fields[j], variant, num_samples);
+            missing[j]
+                = vcz_field_is_missing_2d(&self->format_fields[j], variant, num_samples);
             if (!missing[j]) {
                 all_missing = false;
             }

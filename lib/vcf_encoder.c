@@ -383,26 +383,66 @@ vcz_field_print_state(const vcz_field_t *self, FILE *out)
         self->type, (int) self->item_size, (int) self->num_columns, self->data);
 }
 
-static int
+int
 vcz_field_init(vcz_field_t *self, const char *name, int type, size_t item_size,
     size_t num_columns, const void *data)
 {
     int ret = 0;
 
     self->name_length = strlen(name);
-    if (self->name_length >= VCZ_MAX_FIELD_NAME_LEN) {
+    if (self->name_length > VCZ_MAX_FIELD_NAME_LEN) {
         ret = VCZ_ERR_FIELD_NAME_TOO_LONG;
         goto out;
     }
-    // TODO MORE CHECKS
-    if (type == VCZ_TYPE_BOOL && item_size != 1) {
+    if (!(type == VCZ_TYPE_INT || type == VCZ_TYPE_BOOL || type == VCZ_TYPE_STRING
+            || type == VCZ_TYPE_FLOAT)) {
         ret = VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
         goto out;
     }
+    if (item_size <= 0) {
+        ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
+        goto out;
+    }
+    if (num_columns <= 0) {
+        ret = VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS;
+        goto out;
+    }
+
+    if (type == VCZ_TYPE_BOOL) {
+        switch (item_size) {
+            case 1:
+                break;
+            default:
+                ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
+                goto out;
+        }
+    } else if (type == VCZ_TYPE_INT) {
+        switch (item_size) {
+            case 4:
+                break;
+            default:
+                ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
+                goto out;
+        }
+    } else if (type == VCZ_TYPE_FLOAT) {
+        switch (item_size) {
+            case 4:
+                break;
+            default:
+                ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
+                goto out;
+        }
+    } else {
+        assert(type == VCZ_TYPE_STRING);
+    }
+
+    // strcpy includes the terminating NULL byte.
     strcpy(self->name, name);
     self->type = type;
     self->item_size = item_size;
     self->num_columns = num_columns;
+    /* NOTE: we don't make any checks on data because NULL is a valid input if the
+     * number of variants is zero */
     self->data = data;
 out:
     return ret;

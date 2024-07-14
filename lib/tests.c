@@ -77,6 +77,108 @@ validate_encoder(
 }
 
 static void
+test_field_name_too_long(void)
+{
+    vcz_field_t field;
+    char *long_name = malloc(VCZ_MAX_FIELD_NAME_LEN + 2);
+    int ret;
+
+    CU_ASSERT_FATAL(long_name != NULL);
+    memset(long_name, 'A', VCZ_MAX_FIELD_NAME_LEN + 1);
+    long_name[VCZ_MAX_FIELD_NAME_LEN + 1] = '\0';
+    CU_ASSERT_EQUAL_FATAL(strlen(long_name), VCZ_MAX_FIELD_NAME_LEN + 1);
+    ret = vcz_field_init(&field, long_name, VCZ_TYPE_INT, 1, 1, NULL);
+    CU_ASSERT_EQUAL(ret, VCZ_ERR_FIELD_NAME_TOO_LONG);
+
+    long_name[VCZ_MAX_FIELD_NAME_LEN] = '\0';
+    CU_ASSERT_EQUAL_FATAL(strlen(long_name), VCZ_MAX_FIELD_NAME_LEN);
+    ret = vcz_field_init(&field, long_name, VCZ_TYPE_INT, 4, 1, NULL);
+    CU_ASSERT_EQUAL(ret, 0);
+    CU_ASSERT_EQUAL(field.name_length, VCZ_MAX_FIELD_NAME_LEN);
+    free(long_name);
+}
+
+static void
+test_field_bad_type(void)
+{
+    vcz_field_t field;
+    int cases[] = { -1, 0, 5, 100 };
+    int ret;
+    size_t j;
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        ret = vcz_field_init(&field, "NAME", cases[j], 1, 1, NULL);
+        CU_ASSERT_EQUAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_TYPE);
+    }
+}
+
+static void
+test_field_bad_item_size(void)
+{
+    vcz_field_t field;
+    struct test_case {
+        int type;
+        size_t item_size;
+    };
+    struct test_case cases[] = {
+        { VCZ_TYPE_INT, 0 },
+        { VCZ_TYPE_BOOL, 0 },
+        { VCZ_TYPE_STRING, 0 },
+        { VCZ_TYPE_FLOAT, 0 },
+        { VCZ_TYPE_INT, 3 },
+        { VCZ_TYPE_INT, 5 },
+        { VCZ_TYPE_INT, 6 },
+        { VCZ_TYPE_INT, 7 },
+        { VCZ_TYPE_INT, 8 },
+        { VCZ_TYPE_INT, 100 },
+        { VCZ_TYPE_FLOAT, 1 },
+        { VCZ_TYPE_FLOAT, 2 },
+        { VCZ_TYPE_FLOAT, 3 },
+        { VCZ_TYPE_FLOAT, 7 },
+        { VCZ_TYPE_FLOAT, 8 },
+        { VCZ_TYPE_FLOAT, 100 },
+        { VCZ_TYPE_BOOL, 2 },
+        { VCZ_TYPE_BOOL, 3 },
+        { VCZ_TYPE_BOOL, 4 },
+        { VCZ_TYPE_BOOL, 5 },
+        { VCZ_TYPE_BOOL, 6 },
+        { VCZ_TYPE_BOOL, 8 },
+        { VCZ_TYPE_BOOL, 100 },
+    };
+    int ret;
+    size_t j;
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        ret = vcz_field_init(&field, "NAME", cases[j].type, cases[j].item_size, 1, NULL);
+        CU_ASSERT_EQUAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE);
+    }
+}
+
+static void
+test_field_bad_num_columns(void)
+{
+    vcz_field_t field;
+    struct test_case {
+        int type;
+        size_t num_columns;
+    };
+    struct test_case cases[] = {
+        { VCZ_TYPE_INT, 0 },
+        { VCZ_TYPE_BOOL, 0 },
+        { VCZ_TYPE_STRING, 0 },
+        { VCZ_TYPE_FLOAT, 0 },
+    };
+    int ret;
+    size_t j;
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        ret = vcz_field_init(
+            &field, "NAME", cases[j].type, 1, cases[j].num_columns, NULL);
+        CU_ASSERT_EQUAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS);
+    }
+}
+
+static void
 test_int_field_1d(void)
 {
     const int32_t data[] = { 1, 2, 12345789, -1, -100 };
@@ -229,7 +331,8 @@ test_variant_encoder_minimal(void)
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = vcz_variant_encoder_add_filter_field(&writer, 5, 2, filter_id_data, filter_data);
+    ret = vcz_variant_encoder_add_filter_field(
+        &writer, 5, 2, filter_id_data, filter_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_gt_field(&writer, 4, 2, gt_data, gt_phased_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -296,7 +399,8 @@ test_variant_encoder_fields_all_missing(void)
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_qual_field(&writer, qual_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
-    ret = vcz_variant_encoder_add_filter_field(&writer, 4, 1, filter_id_data, filter_data);
+    ret = vcz_variant_encoder_add_filter_field(
+        &writer, 4, 1, filter_id_data, filter_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
     ret = vcz_variant_encoder_add_gt_field(&writer, 4, 2, gt_data, gt_phased_data);
     CU_ASSERT_EQUAL_FATAL(ret, 0);
@@ -535,6 +639,10 @@ int
 main(int argc, char **argv)
 {
     CU_TestInfo tests[] = {
+        { "test_field_name_too_long", test_field_name_too_long },
+        { "test_field_bad_type", test_field_bad_type },
+        { "test_field_bad_item_size", test_field_bad_item_size },
+        { "test_field_bad_num_columns", test_field_bad_num_columns },
         { "test_int_field_1d", test_int_field_1d },
         { "test_int_field_2d", test_int_field_2d },
         { "test_float_field_1d", test_float_field_1d },

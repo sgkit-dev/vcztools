@@ -119,7 +119,7 @@ VcfEncoder_store_fixed_array(VcfEncoder *self, PyArrayObject *array, const char 
         goto out;
     }
     if (PyArray_DTYPE(array)->type_num != type) {
-        PyErr_Format(PyExc_ValueError, "Array %s is not of the correct type", name);
+        PyErr_Format(PyExc_ValueError, "Wrong dtype for %s", name);
         goto out;
     }
 
@@ -189,7 +189,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
-    /* NOTE: we generalise this pattern for CHROM also to save a bit of time
+    /* NOTE: we could generalise this pattern for CHROM also to save a bit of time
      * in building numpy String arrays */
     assert(PyArray_CheckExact(filter_ids));
     if (!PyArray_CHKFLAGS(filter_ids, NPY_ARRAY_IN_ARRAY)) {
@@ -209,7 +209,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
     if (VcfEncoder_add_array(self, "IDS/", "FILTER", filter_ids) != 0) {
         goto out;
     }
-    if (VcfEncoder_store_fixed_array(self, filter, "filter", NPY_BOOL, 2, num_variants)
+    if (VcfEncoder_store_fixed_array(self, filter, "FILTER", NPY_BOOL, 2, num_variants)
         != 0) {
         goto out;
     }

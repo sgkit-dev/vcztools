@@ -260,7 +260,7 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         encoder.add_format_field(name, array)
 
     for j in range(num_variants):
-        line = encoder.encode_row(j, 2**20)
+        line = encoder.encode(j, 2**20)
         print(line, file=output)
 
 

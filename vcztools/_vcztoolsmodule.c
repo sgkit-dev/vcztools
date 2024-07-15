@@ -4,6 +4,7 @@
 
 #include <Python.h>
 #include <stddef.h> /* for offsetof() */
+#include <stdbool.h>
 #include <numpy/arrayobject.h>
 
 #include "vcf_encoder.h"
@@ -273,7 +274,7 @@ out:
 
 static int
 VcfEncoder_add_field_array(VcfEncoder *self, const char *name, PyArrayObject *array,
-    npy_intp dimension, const char *prefix)
+    npy_intp dimension, const char *prefix, bool is_format_field)
 {
     int ret = -1;
     npy_intp *shape;
@@ -297,6 +298,15 @@ VcfEncoder_add_field_array(VcfEncoder *self, const char *name, PyArrayObject *ar
             "Array must have first dimension equal to number of variants");
         goto out;
     }
+    if (is_format_field) {
+        if (shape[1] != (npy_intp) self->vcf_encoder->num_samples) {
+            PyErr_SetString(PyExc_ValueError,
+                "Array must have second dimension equal to number of samples");
+            goto out;
+        }
+    }
+
+
 
     if (VcfEncoder_add_array(self, prefix, name, array) != 0) {
         goto out;
@@ -341,10 +351,13 @@ VcfEncoder_add_info_field(VcfEncoder *self, PyObject *args)
     const char *name;
     int err, type;
 
+    if (VcfEncoder_check_state(self) != 0) {
+        goto out;
+    }
     if (!PyArg_ParseTuple(args, "sO!", &name, &PyArray_Type, &array)) {
         goto out;
     }
-    if (VcfEncoder_add_field_array(self, name, array, 2, "INFO/") != 0) {
+    if (VcfEncoder_add_field_array(self, name, array, 2, "INFO/", false) != 0) {
         goto out;
     }
     type = np_type_to_vcz_type(name, array);
@@ -353,7 +366,6 @@ VcfEncoder_add_info_field(VcfEncoder *self, PyObject *args)
     }
     err = vcz_variant_encoder_add_info_field(self->vcf_encoder, name, type,
         PyArray_ITEMSIZE(array), PyArray_DIMS(array)[1], PyArray_DATA(array));
-
     if (err < 0) {
         handle_library_error(err);
         goto out;
@@ -371,10 +383,13 @@ VcfEncoder_add_format_field(VcfEncoder *self, PyObject *args)
     const char *name;
     int err, type;
 
+    if (VcfEncoder_check_state(self) != 0) {
+        goto out;
+    }
     if (!PyArg_ParseTuple(args, "sO!", &name, &PyArray_Type, &array)) {
         goto out;
     }
-    if (VcfEncoder_add_field_array(self, name, array, 3, "FORMAT/") != 0) {
+    if (VcfEncoder_add_field_array(self, name, array, 3, "FORMAT/", true) != 0) {
         goto out;
     }
     type = np_type_to_vcz_type(name, array);
@@ -397,10 +412,8 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
 {
     PyArrayObject *gt = NULL;
     PyArrayObject *gt_phased = NULL;
-    PyArrayObject *array;
     PyObject *ret = NULL;
     int err;
-    npy_intp *shape;
 
     if (VcfEncoder_check_state(self) != 0) {
         goto out;
@@ -408,45 +421,10 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "O!O!", &PyArray_Type, &gt, &PyArray_Type, &gt_phased)) {
         goto out;
     }
-
-    array = gt;
-    assert(PyArray_CheckExact(array));
-    if (!PyArray_CHKFLAGS(array, NPY_ARRAY_IN_ARRAY)) {
-        PyErr_SetString(PyExc_ValueError, "Array must have NPY_ARRAY_IN_ARRAY flags.");
+    if (VcfEncoder_add_field_array(self, "GT", gt, 3, "FORMAT/", true) != 0) {
         goto out;
     }
-    if (PyArray_NDIM(array) != 3) {
-        PyErr_SetString(PyExc_ValueError, "Array wrong dimension");
-        goto out;
-    }
-    shape = PyArray_DIMS(array);
-    if (shape[0] != (npy_intp) self->vcf_encoder->num_variants) {
-        PyErr_SetString(PyExc_ValueError,
-            "Array must have first dimension equal to number of variants");
-        goto out;
-    }
-
-    if (VcfEncoder_add_array(self, "FORMAT/", "GT", array) != 0) {
-        goto out;
-    }
-
-    array = gt_phased;
-    assert(PyArray_CheckExact(array));
-    if (!PyArray_CHKFLAGS(array, NPY_ARRAY_IN_ARRAY)) {
-        PyErr_SetString(PyExc_ValueError, "Array must have NPY_ARRAY_IN_ARRAY flags.");
-        goto out;
-    }
-    if (PyArray_NDIM(array) != 2) {
-        PyErr_SetString(PyExc_ValueError, "Array wrong dimension");
-        goto out;
-    }
-    shape = PyArray_DIMS(array);
-    if (shape[0] != (npy_intp) self->vcf_encoder->num_variants) {
-        PyErr_SetString(PyExc_ValueError,
-            "Array must have first dimension equal to number of variants");
-        goto out;
-    }
-    if (VcfEncoder_add_array(self, "FORMAT/", "GT_phased", array) != 0) {
+    if (VcfEncoder_add_field_array(self, "GT_phased", gt_phased, 2, "FORMAT/", true) != 0) {
         goto out;
     }
     err = vcz_variant_encoder_add_gt_field(self->vcf_encoder, PyArray_ITEMSIZE(gt),
@@ -461,7 +439,7 @@ out:
 }
 
 static PyObject *
-VcfEncoder_encode_row(VcfEncoder *self, PyObject *args)
+VcfEncoder_encode(VcfEncoder *self, PyObject *args)
 {
     PyObject *ret = NULL;
     int row;
@@ -523,7 +501,14 @@ out:
 static PyObject *
 VcfEncoder_getarrays(VcfEncoder *self, void *closure)
 {
-    return PyDict_Copy(self->arrays);
+    PyObject *ret = NULL;
+
+    if (VcfEncoder_check_state(self) != 0) {
+        goto out;
+    }
+    ret = PyDict_Copy(self->arrays);
+out:
+    return ret;
 }
 
 static PyGetSetDef VcfEncoder_getsetters[] = {
@@ -549,8 +534,8 @@ static PyMethodDef VcfEncoder_methods[] = {
         .ml_meth = (PyCFunction) VcfEncoder_add_format_field,
         .ml_flags = METH_VARARGS,
         .ml_doc = "Add a format field to the encoder" },
-    { .ml_name = "encode_row",
-        .ml_meth = (PyCFunction) VcfEncoder_encode_row,
+    { .ml_name = "encode",
+        .ml_meth = (PyCFunction) VcfEncoder_encode,
         .ml_flags = METH_VARARGS,
         .ml_doc = "Return the specified row of VCF text" },
     { NULL } /* Sentinel */

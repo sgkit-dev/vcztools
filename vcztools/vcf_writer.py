@@ -258,9 +258,18 @@ def c_chunk_to_vcf(root, v_chunk, contigs, filters, output):
         if len(array.shape) == 2:
             array = array.reshape((num_variants, num_samples, 1))
         encoder.add_format_field(name, array)
-
+    # TODO: (1) make a guess at this based on number of fields and samples,
+    # and (2) log a DEBUG message when we have to double.
+    buflen = 1024
     for j in range(num_variants):
-        line = encoder.encode(j, 2**20)
+        failed = True
+        while failed:
+            try:
+                line = encoder.encode(j, buflen)
+                failed = False
+            except _vcztools.VczBufferTooSmall:
+                buflen *= 2
+                # print("Bumping buflen to", buflen)
         print(line, file=output)
 
 

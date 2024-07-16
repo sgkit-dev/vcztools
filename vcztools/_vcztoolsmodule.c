@@ -17,11 +17,20 @@ typedef struct {
 } VcfEncoder;
 // clang-format on
 
+static PyObject *VczBufferTooSmall;
+
 static void
 handle_library_error(int err)
 {
-    // TODO generate string messages.
-    PyErr_Format(PyExc_ValueError, "Error occured: %d: ", err);
+    switch (err) {
+        case VCZ_ERR_BUFFER_OVERFLOW:
+            PyErr_Format(
+                VczBufferTooSmall, "Error: %d; specified buffer size is too small", err);
+            break;
+        // TODO handle the other error types.
+        default:
+            PyErr_Format(PyExc_ValueError, "Error occured: %d: ", err);
+    }
 }
 
 static FILE *
@@ -575,6 +584,10 @@ PyInit__vcztools(void)
     }
     /* Initialise numpy */
     import_array();
+
+    VczBufferTooSmall = PyErr_NewException("_vcztools.VczBufferTooSmall", NULL, NULL);
+    Py_INCREF(VczBufferTooSmall);
+    PyModule_AddObject(module, "VczBufferTooSmall", VczBufferTooSmall);
 
     /* VcfEncoder type */
     if (PyType_Ready(&VcfEncoderType) < 0) {

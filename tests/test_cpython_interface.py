@@ -142,9 +142,19 @@ class TestEncode:
         s = encoder.encode(0, 1024)
         minlen = len(s)
         for length in range(minlen):
-            with pytest.raises(ValueError, match="-101"):
+            with pytest.raises(_vcztools.VczBufferTooSmall, match="-101"):
                 encoder.encode(0, length)
         assert s == encoder.encode(0, minlen)
+
+    @pytest.mark.parametrize("variant", [0, 999, 333, 501])
+    def test_large_example_overrun(self, variant):
+        encoder = example_encoder(1000, 100)
+        s = encoder.encode(variant, 1024 * 1024)
+        minlen = len(s)
+        for length in range(minlen):
+            with pytest.raises(_vcztools.VczBufferTooSmall, match="-101"):
+                encoder.encode(variant, length)
+        assert s == encoder.encode(variant, minlen)
 
 
 class TestFixedFieldInputChecking:

@@ -434,16 +434,15 @@ static PyObject *
 VcfEncoder_encode(VcfEncoder *self, PyObject *args)
 {
     PyObject *ret = NULL;
-    // FIXME these shouldn't be ints
-    int row;
-    int bufsize;
+    unsigned long long row;
+    unsigned long long bufsize;
     char *buf = NULL;
     int64_t line_length;
 
     if (VcfEncoder_check_state(self) != 0) {
         goto out;
     }
-    if (!PyArg_ParseTuple(args, "ii", &row, &bufsize)) {
+    if (!PyArg_ParseTuple(args, "KK", &row, &bufsize)) {
         goto out;
     }
     /* Interpret bufsize as the length of the Python string, so add one to
@@ -451,14 +450,16 @@ VcfEncoder_encode(VcfEncoder *self, PyObject *args)
     bufsize++;
     buf = PyMem_Malloc(bufsize);
     if (buf == NULL) {
+        PyErr_NoMemory();
         goto out;
     }
-    line_length = vcz_variant_encoder_encode(self->vcf_encoder, row, buf, bufsize);
+    line_length = vcz_variant_encoder_encode(
+        self->vcf_encoder, (size_t) row, buf, (size_t) bufsize);
     if (line_length < 0) {
         handle_library_error((int) line_length);
         goto out;
     }
-    ret = Py_BuildValue("s#", buf, line_length);
+    ret = Py_BuildValue("s#", buf, (Py_ssize_t) line_length);
 out:
     PyMem_Free(buf);
     return ret;

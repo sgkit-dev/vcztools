@@ -117,20 +117,25 @@ class TestEncode:
     @pytest.mark.parametrize("bad_arg", [None, {}, "0"])
     def test_bad_index_arg(self, bad_arg):
         encoder = example_encoder()
-        with pytest.raises(TypeError, match="integer"):
+        with pytest.raises(TypeError, match="int"):
             encoder.encode(bad_arg, 1)
 
     @pytest.mark.parametrize("bad_arg", [None, {}, "0"])
     def test_bad_len_arg(self, bad_arg):
         encoder = example_encoder()
-        with pytest.raises(TypeError, match="integer"):
+        with pytest.raises(TypeError, match="int"):
             encoder.encode(0, bad_arg)
 
-    @pytest.mark.parametrize("bad_row", [2, 3, 100, -1, 2**31 - 1])
+    @pytest.mark.parametrize("bad_row", [2, 3, 100, -1, 2**32, 2**63])
     def test_bad_variant_arg(self, bad_row):
         encoder = example_encoder(2)
         with pytest.raises(ValueError, match="102"):
             encoder.encode(bad_row, 1)
+
+    def test_buffer_malloc_fail(self):
+        encoder = example_encoder(1)
+        with pytest.raises(MemoryError):
+            encoder.encode(0, 2**63)
 
     def test_small_example_overrun(self):
         encoder = example_encoder(1, 2)
@@ -157,6 +162,14 @@ class TestFixedFieldInputChecking:
         data = example_fixed_data(num_variants)
         data[name] = np.zeros(data[name].shape, dtype=np.int64)
         with pytest.raises(ValueError, match=f"Wrong dtype for {name}"):
+            _vcztools.VcfEncoder(num_variants, 0, **data)
+
+    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])
+    def test_field_incorrect_dimension(self, name):
+        num_variants = 2
+        data = example_fixed_data(num_variants)
+        data[name] = np.expand_dims(data[name], -1)
+        with pytest.raises(ValueError, match=f"{name} has wrong dimension"):
             _vcztools.VcfEncoder(num_variants, 0, **data)
 
     @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])

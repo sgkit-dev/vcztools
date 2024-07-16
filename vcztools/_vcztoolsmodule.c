@@ -100,7 +100,6 @@ out:
 static int
 check_array(const char *name, PyArrayObject *array, npy_intp dimension)
 {
-
     int ret = -1;
 
     assert(PyArray_CheckExact(array));
@@ -142,10 +141,7 @@ VcfEncoder_add_field_array(VcfEncoder *self, const char *name, PyArrayObject *ar
             goto out;
         }
     }
-    if (VcfEncoder_add_array(self, prefix, name, array) != 0) {
-        goto out;
-    }
-    ret = 0;
+    ret = VcfEncoder_add_array(self, prefix, name, array);
 out:
     return ret;
 }
@@ -307,7 +303,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
     num_filters = PyArray_DIMS(filter_ids)[0];
-    if (VcfEncoder_add_array(self, "ids/", "filter", filter_ids) != 0) {
+    if (VcfEncoder_add_array(self, "", "filter_ids", filter_ids) != 0) {
         goto out;
     }
     if (VcfEncoder_store_fixed_array(self, filter, "filter", NPY_BOOL, 2) != 0) {
@@ -414,6 +410,7 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
         != 0) {
         goto out;
     }
+    // CHECK TYPES
     err = vcz_variant_encoder_add_gt_field(self->vcf_encoder, PyArray_ITEMSIZE(gt),
         PyArray_DIMS(gt)[2], PyArray_DATA(gt), PyArray_DATA(gt_phased));
     if (err != 0) {

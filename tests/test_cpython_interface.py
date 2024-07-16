@@ -27,11 +27,38 @@ def example_fixed_data(num_variants, num_samples=0):
     }
 
 
-def example_encoder(num_variants=1, num_samples=0):
+def example_info_data(num_variants):
+    d = {}
+    for num_columns in range(1, 3):
+        for dtype in ["i1", "i2", "i4", "f4", "?", "S1"]:
+            name = f"I{dtype}_{num_columns}"
+            data = np.arange(num_variants * num_columns).astype(dtype)
+            d[name] = data.reshape((num_variants, num_columns))
+    return d
+
+
+def example_format_data(num_variants, num_samples):
+    d = {}
+    for num_columns in range(1, 3):
+        for dtype in ["i1", "i2", "i4", "f4", "?", "S1"]:
+            name = f"F{dtype}_{num_columns}"
+            data = np.arange(num_variants * num_samples * num_columns).astype(dtype)
+            d[name] = data.reshape((num_variants, num_samples, num_columns))
+    return d
+
+
+def example_encoder(num_variants=1, num_samples=0, add_info=True):
     encoder = _vcztools.VcfEncoder(
         num_variants, num_samples, **example_fixed_data(num_variants, num_samples)
     )
-
+    if add_info:
+        for name, data in example_info_data(num_variants).items():
+            encoder.add_info_field(name, data)
+    if num_samples > 0:
+        for name, data in example_format_data(num_variants, num_samples).items():
+            encoder.add_format_field(name, data)
+    # import sys
+    # encoder.print_state(sys.stdout)
     return encoder
 
 
@@ -233,6 +260,39 @@ class TestAddFields:
         encoder = example_encoder(1, 1)
         with pytest.raises(ValueError, match="-203"):
             encoder.add_format_field("name", np.zeros((1, 1, 1), dtype=dtype))
+
+
+class TestArrays:
+    def test_stored_data_equal(self):
+        num_variants = 20
+        num_samples = 10
+        fixed_data = example_fixed_data(num_variants, num_samples)
+        encoder = _vcztools.VcfEncoder(num_variants, num_samples, **fixed_data)
+        info_data = example_info_data(num_variants)
+        format_data = example_format_data(num_variants, num_samples)
+        for name, data in info_data.items():
+            encoder.add_info_field(name, data)
+        for name, data in format_data.items():
+            encoder.add_format_field(name, data)
+        all_data = {**fixed_data}
+        for name, array in info_data.items():
+            all_data[f"INFO/{name}"] = array
+        for name, array in format_data.items():
+            all_data[f"FORMAT/{name}"] = array
+        encoder_arrays = encoder.arrays
+        assert set(encoder.arrays.keys()) == set(all_data.keys())
+        for name in all_data.keys():
+            # Strong identity assertion here for now, but this may change
+            assert all_data[name] is encoder_arrays[name]
+
+    def test_array_bad_alignment(self):
+        fixed_data = example_fixed_data(1)
+        a = fixed_data["pos"]
+        # Value is not aligned
+        a = np.frombuffer(b"\0\0\0\0\0", dtype=np.int32, offset=1)
+        fixed_data["pos"] = a
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _vcztools.VcfEncoder(1, 0, **fixed_data)
 
 
 class TestUninitialised:

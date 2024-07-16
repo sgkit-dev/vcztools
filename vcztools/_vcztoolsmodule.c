@@ -98,33 +98,104 @@ out:
 }
 
 static int
-VcfEncoder_store_fixed_array(VcfEncoder *self, PyArrayObject *array, const char *name,
-    int type, int dimension, int num_variants)
+check_array(const char *name, PyArrayObject *array, npy_intp dimension)
+{
+
+    int ret = -1;
+
+    assert(PyArray_CheckExact(array));
+    if (!PyArray_CHKFLAGS(array, NPY_ARRAY_IN_ARRAY)) {
+        PyErr_Format(
+            PyExc_ValueError, "Array %s must have NPY_ARRAY_IN_ARRAY flags.", name);
+        goto out;
+    }
+    if (PyArray_NDIM(array) != dimension) {
+        PyErr_Format(PyExc_ValueError, "Array %s has wrong dimension: %d != %d", name,
+            (int) PyArray_NDIM(array), (int) dimension);
+        goto out;
+    }
+    ret = 0;
+out:
+    return ret;
+}
+
+static int
+VcfEncoder_add_field_array(VcfEncoder *self, const char *name, PyArrayObject *array,
+    npy_intp dimension, const char *prefix, bool is_format_field)
 {
     int ret = -1;
     npy_intp *shape;
 
-    assert(PyArray_CheckExact(array));
-    if (!PyArray_CHKFLAGS(array, NPY_ARRAY_IN_ARRAY)) {
-        PyErr_SetString(PyExc_ValueError, "Array must have NPY_ARRAY_IN_ARRAY flags.");
-        goto out;
-    }
-    if (PyArray_NDIM(array) != dimension) {
-        PyErr_Format(PyExc_ValueError, "Array %s is of the wrong dimension", name);
+    if (check_array(name, array, dimension) != 0) {
         goto out;
     }
     shape = PyArray_DIMS(array);
-    if (shape[0] != (npy_intp) num_variants) {
+    if (shape[0] != (npy_intp) self->vcf_encoder->num_variants) {
         PyErr_Format(PyExc_ValueError,
             "Array %s must have first dimension equal to number of variants", name);
         goto out;
     }
-    if (PyArray_DTYPE(array)->type_num != type) {
-        PyErr_Format(PyExc_ValueError, "Wrong dtype for %s", name);
+    if (is_format_field) {
+        if (shape[1] != (npy_intp) self->vcf_encoder->num_samples) {
+            PyErr_Format(PyExc_ValueError,
+                "Array %s must have second dimension equal to number of samples", name);
+            goto out;
+        }
+    }
+    if (VcfEncoder_add_array(self, prefix, name, array) != 0) {
         goto out;
     }
+    ret = 0;
+out:
+    return ret;
+}
 
-    if (VcfEncoder_add_array(self, "", name, array) != 0) {
+static int
+np_type_to_vcz_type(const char *name, PyArrayObject *array)
+{
+    int ret = -1;
+
+    switch (PyArray_DTYPE(array)->kind) {
+        case 'i':
+            ret = VCZ_TYPE_INT;
+            break;
+        case 'f':
+            ret = VCZ_TYPE_FLOAT;
+            break;
+        case 'S':
+            ret = VCZ_TYPE_STRING;
+            break;
+        case 'b':
+            ret = VCZ_TYPE_BOOL;
+            break;
+        default:
+            PyErr_Format(
+                PyExc_ValueError, "Array '%s' has unsupported array dtype", name);
+            goto out;
+    }
+out:
+    return ret;
+}
+
+static int
+check_dtype(const char *name, PyArrayObject *array, int type) {
+    if (PyArray_DTYPE(array)->type_num != type) {
+        PyErr_Format(PyExc_ValueError, "Wrong dtype for %s", name);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+VcfEncoder_store_fixed_array(
+    VcfEncoder *self, PyArrayObject *array, const char *name, int type, int dimension)
+{
+    int ret = -1;
+
+    if (VcfEncoder_add_field_array(self, name, array, dimension, "", false) != 0) {
+        goto out;
+    }
+    if (check_dtype(name, array, type) != 0) {
         goto out;
     }
     ret = 0;
@@ -166,84 +237,56 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
-    if (VcfEncoder_store_fixed_array(self, chrom, "CHROM", NPY_STRING, 1, num_variants)
-        != 0) {
-        goto out;
-    }
-    if (VcfEncoder_store_fixed_array(self, pos, "POS", NPY_INT32, 1, num_variants)
-        != 0) {
-        goto out;
-    }
-    if (VcfEncoder_store_fixed_array(self, id, "ID", NPY_STRING, 2, num_variants) != 0) {
-        goto out;
-    }
-    if (VcfEncoder_store_fixed_array(self, ref, "REF", NPY_STRING, 1, num_variants)
-        != 0) {
-        goto out;
-    }
-    if (VcfEncoder_store_fixed_array(self, alt, "ALT", NPY_STRING, 2, num_variants)
-        != 0) {
-        goto out;
-    }
-    if (VcfEncoder_store_fixed_array(self, qual, "QUAL", NPY_FLOAT32, 1, num_variants)
-        != 0) {
-        goto out;
-    }
-
-    /* NOTE: we could generalise this pattern for CHROM also to save a bit of time
-     * in building numpy String arrays */
-    assert(PyArray_CheckExact(filter_ids));
-    if (!PyArray_CHKFLAGS(filter_ids, NPY_ARRAY_IN_ARRAY)) {
-        PyErr_SetString(PyExc_ValueError, "Array must have NPY_ARRAY_IN_ARRAY flags.");
-        goto out;
-    }
-    if (PyArray_DTYPE(filter_ids)->type_num != NPY_STRING) {
-        PyErr_Format(PyExc_ValueError, "filter_ids is not of the correct type");
-        goto out;
-    }
-
-    if (PyArray_NDIM(filter_ids) != 1) {
-        PyErr_Format(PyExc_ValueError, "filter_ids must be 1D");
-        goto out;
-    }
-    num_filters = PyArray_DIMS(filter_ids)[0];
-    if (VcfEncoder_add_array(self, "IDS/", "FILTER", filter_ids) != 0) {
-        goto out;
-    }
-    if (VcfEncoder_store_fixed_array(self, filter, "FILTER", NPY_BOOL, 2, num_variants)
-        != 0) {
-        goto out;
-    }
-    if (PyArray_DIMS(filter)[1] != num_filters) {
-        PyErr_Format(
-            PyExc_ValueError, "filters dimension must be (num_variants, num_filters)");
-        goto out;
-    }
-
     err = vcz_variant_encoder_init(self->vcf_encoder, num_variants, num_samples);
     if (err < 0) {
         handle_library_error(err);
         goto out;
     }
-    err = vcz_variant_encoder_add_chrom_field(
+
+    if (VcfEncoder_store_fixed_array(self, chrom, "chrom", NPY_STRING, 1) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, pos, "pos", NPY_INT32, 1) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, id, "id", NPY_STRING, 2) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, ref, "ref", NPY_STRING, 1) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, alt, "alt", NPY_STRING, 2) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, qual, "qual", NPY_FLOAT32, 1) != 0) {
+        goto out;
+    }
+
+    /* These calls cannot fail, so we don't check the output. */
+    vcz_variant_encoder_add_pos_field(self->vcf_encoder, PyArray_DATA(pos));
+    vcz_variant_encoder_add_qual_field(self->vcf_encoder, PyArray_DATA(qual));
+
+    /* In practise, these calls can't fail either because ITEMSIZE is always > 0.
+     * We keep the checks in case this changes for later versions of numpy.
+     */
+    vcz_variant_encoder_add_chrom_field(
         self->vcf_encoder, PyArray_ITEMSIZE(chrom), PyArray_DATA(chrom));
     if (err < 0) {
+        // TODO ADD NOCOVER
         handle_library_error(err);
         goto out;
     }
-    err = vcz_variant_encoder_add_pos_field(self->vcf_encoder, PyArray_DATA(pos));
+    vcz_variant_encoder_add_ref_field(
+        self->vcf_encoder, PyArray_ITEMSIZE(ref), PyArray_DATA(ref));
     if (err < 0) {
+        // TODO ADD NOCOVER
         handle_library_error(err);
         goto out;
     }
+    /* Note: the only provokable error here is the zero-sized second dimension,
+     * which we could catch easily above */
     err = vcz_variant_encoder_add_id_field(
         self->vcf_encoder, PyArray_ITEMSIZE(id), PyArray_DIMS(id)[1], PyArray_DATA(id));
-    if (err < 0) {
-        handle_library_error(err);
-        goto out;
-    }
-    err = vcz_variant_encoder_add_ref_field(
-        self->vcf_encoder, PyArray_ITEMSIZE(ref), PyArray_DATA(ref));
     if (err < 0) {
         handle_library_error(err);
         goto out;
@@ -254,9 +297,25 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         handle_library_error(err);
         goto out;
     }
-    err = vcz_variant_encoder_add_qual_field(self->vcf_encoder, PyArray_DATA(qual));
-    if (err < 0) {
-        handle_library_error(err);
+
+    /* NOTE: we could generalise this pattern for CHROM also to save a bit of time
+     * in building numpy String arrays */
+    if (check_array("filter_ids", filter_ids, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("filter_ids", filter_ids, NPY_STRING) != 0) {
+        goto out;
+    }
+    num_filters = PyArray_DIMS(filter_ids)[0];
+    if (VcfEncoder_add_array(self, "ids/", "filter", filter_ids) != 0) {
+        goto out;
+    }
+    if (VcfEncoder_store_fixed_array(self, filter, "filter", NPY_BOOL, 2) != 0) {
+        goto out;
+    }
+    if (PyArray_DIMS(filter)[1] != num_filters) {
+        PyErr_Format(
+            PyExc_ValueError, "filters dimension must be (num_variants, num_filters)");
         goto out;
     }
     err = vcz_variant_encoder_add_filter_field(self->vcf_encoder,
@@ -266,83 +325,10 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         handle_library_error(err);
         goto out;
     }
-
     ret = 0;
 out:
     return ret;
 }
-
-static int
-VcfEncoder_add_field_array(VcfEncoder *self, const char *name, PyArrayObject *array,
-    npy_intp dimension, const char *prefix, bool is_format_field)
-{
-    int ret = -1;
-    npy_intp *shape;
-
-    if (VcfEncoder_check_state(self) != 0) {
-        goto out;
-    }
-
-    assert(PyArray_CheckExact(array));
-    if (!PyArray_CHKFLAGS(array, NPY_ARRAY_IN_ARRAY)) {
-        PyErr_SetString(PyExc_ValueError, "Array must have NPY_ARRAY_IN_ARRAY flags.");
-        goto out;
-    }
-    if (PyArray_NDIM(array) != dimension) {
-        PyErr_SetString(PyExc_ValueError, "Array wrong dimension");
-        goto out;
-    }
-    shape = PyArray_DIMS(array);
-    if (shape[0] != (npy_intp) self->vcf_encoder->num_variants) {
-        PyErr_SetString(PyExc_ValueError,
-            "Array must have first dimension equal to number of variants");
-        goto out;
-    }
-    if (is_format_field) {
-        if (shape[1] != (npy_intp) self->vcf_encoder->num_samples) {
-            PyErr_SetString(PyExc_ValueError,
-                "Array must have second dimension equal to number of samples");
-            goto out;
-        }
-    }
-
-
-
-    if (VcfEncoder_add_array(self, prefix, name, array) != 0) {
-        goto out;
-    }
-    ret = 0;
-out:
-    return ret;
-}
-
-static int
-np_type_to_vcz_type(const char *name, PyArrayObject *array)
-{
-    int ret = -1;
-
-    switch (PyArray_DTYPE(array)->kind) {
-        case 'i':
-            ret = VCZ_TYPE_INT;
-            break;
-        case 'f':
-            ret = VCZ_TYPE_FLOAT;
-            break;
-        case 'S':
-            ret = VCZ_TYPE_STRING;
-            break;
-        case 'b':
-            ret = VCZ_TYPE_BOOL;
-            break;
-        default:
-            PyErr_Format(
-                PyExc_ValueError, "Array '%s' has unsupported array dtype", name);
-            goto out;
-    }
-out:
-    return ret;
-}
-
 static PyObject *
 VcfEncoder_add_info_field(VcfEncoder *self, PyObject *args)
 {
@@ -424,7 +410,8 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
     if (VcfEncoder_add_field_array(self, "GT", gt, 3, "FORMAT/", true) != 0) {
         goto out;
     }
-    if (VcfEncoder_add_field_array(self, "GT_phased", gt_phased, 2, "FORMAT/", true) != 0) {
+    if (VcfEncoder_add_field_array(self, "GT_phased", gt_phased, 2, "FORMAT/", true)
+        != 0) {
         goto out;
     }
     err = vcz_variant_encoder_add_gt_field(self->vcf_encoder, PyArray_ITEMSIZE(gt),

@@ -76,30 +76,51 @@ class TestEncodeOverrun:
                 encoder.encode(0, length)
 
 
-class TestTypeChecking:
+class TestFixedFieldInputChecking:
     @pytest.mark.parametrize("name", FIXED_FIELD_NAMES)
     def test_field_incorrect_length(self, name):
         num_variants = 5
         data = example_fixed_data(num_variants)
         data[name] = data[name][1:]
-        with pytest.raises(ValueError, match=f"Array {name.upper()} must have "):
+        with pytest.raises(ValueError, match=f"Array {name} must have "):
             _vcztools.VcfEncoder(num_variants, 0, **data)
 
-    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES)
+    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])
     def test_field_incorrect_dtype(self, name):
         num_variants = 5
         data = example_fixed_data(num_variants)
         data[name] = np.zeros(data[name].shape, dtype=np.int64)
-        with pytest.raises(ValueError, match=f"Wrong dtype for {name.upper()}"):
+        with pytest.raises(ValueError, match=f"Wrong dtype for {name}"):
             _vcztools.VcfEncoder(num_variants, 0, **data)
 
-    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES)
+    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])
     def test_field_incorrect_type(self, name):
         num_variants = 5
         data = example_fixed_data(num_variants)
         data[name] = "A Python string"
-        with pytest.raises(TypeError, match=f"must be numpy.ndarray"):
+        with pytest.raises(TypeError, match="must be numpy.ndarray"):
             _vcztools.VcfEncoder(num_variants, 0, **data)
+
+    @pytest.mark.parametrize("name", ["id", "alt"])
+    def test_zero_columns(self, name):
+        data = example_fixed_data(1)
+        arr = np.frombuffer(b"", dtype="S1").reshape(1, 0)
+        data[name] = arr
+        with pytest.raises(ValueError, match="-204"):
+            _vcztools.VcfEncoder(1, 0, **data)
+
+    def test_zero_filter_ids(self):
+        data = example_fixed_data(1)
+        data["filter_ids"] = np.array([], dtype="S")
+        data["filter"] = np.array([], dtype=bool).reshape(1, 0)
+        with pytest.raises(ValueError, match="-204"):
+            _vcztools.VcfEncoder(1, 0, **data)
+
+    def test_incorrect_num_filter_ids(self):
+        data = example_fixed_data(1)
+        data["filter_ids"] = np.array(["PASS", "1"], dtype="S")
+        with pytest.raises(ValueError, match="filters dimension must be"):
+            _vcztools.VcfEncoder(1, 0, **data)
 
 
 class TestAddFields:

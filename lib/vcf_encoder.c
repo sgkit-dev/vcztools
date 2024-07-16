@@ -577,8 +577,8 @@ vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t 
     if (self->num_info_fields > 0) {
         missing = malloc(self->num_info_fields * sizeof(*missing));
         if (missing == NULL) {
-            offset = VCZ_ERR_NO_MEMORY;
-            goto out;
+            offset = VCZ_ERR_NO_MEMORY; // GCOVR_EXCL_LINE
+            goto out;                   // GCOVR_EXCL_LINE
         }
         for (j = 0; j < self->num_info_fields; j++) {
             missing[j] = vcz_field_is_missing_1d(&self->info_fields[j], variant);
@@ -648,8 +648,8 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
     if (self->num_format_fields > 0) {
         missing = malloc(self->num_format_fields * sizeof(*missing));
         if (missing == NULL) {
-            offset = VCZ_ERR_NO_MEMORY;
-            goto out;
+            offset = VCZ_ERR_NO_MEMORY; // GCOVR_EXCL_LINE
+            goto out;                   // GCOVR_EXCL_LINE
         }
         for (j = 0; j < self->num_format_fields; j++) {
             missing[j]
@@ -775,11 +775,16 @@ out:
 }
 
 int64_t
-vcz_variant_encoder_write_row(
+vcz_variant_encoder_encode(
     const vcz_variant_encoder_t *self, size_t variant, char *buf, size_t buflen)
 {
     int64_t offset = 0;
     size_t j;
+
+    if (variant >= self->num_variants) {
+        offset = VCZ_ERR_VARIANT_OUT_OF_BOUNDS;
+        goto out;
+    }
 
     for (j = 0; j < VCZ_NUM_FIXED_FIELDS; j++) {
         if (vcz_field_is_missing_1d(&self->fixed_fields[j], variant)) {
@@ -858,8 +863,8 @@ vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *name
         tmp = realloc(
             self->info_fields, self->max_info_fields * sizeof(*self->info_fields));
         if (tmp == NULL) {
-            ret = VCZ_ERR_NO_MEMORY;
-            goto out;
+            ret = VCZ_ERR_NO_MEMORY; // GCOVR_EXCL_LINE
+            goto out;                // GCOVR_EXCL_LINE
         }
         self->info_fields = tmp;
     }
@@ -886,8 +891,8 @@ vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *na
         tmp = realloc(
             self->format_fields, self->max_format_fields * sizeof(*self->format_fields));
         if (tmp == NULL) {
-            ret = VCZ_ERR_NO_MEMORY;
-            goto out;
+            ret = VCZ_ERR_NO_MEMORY; // GCOVR_EXCL_LINE
+            goto out;                // GCOVR_EXCL_LINE
         }
         self->format_fields = tmp;
     }

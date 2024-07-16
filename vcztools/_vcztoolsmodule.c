@@ -174,7 +174,8 @@ out:
 }
 
 static int
-check_dtype(const char *name, PyArrayObject *array, int type) {
+check_dtype(const char *name, PyArrayObject *array, int type)
+{
     if (PyArray_DTYPE(array)->type_num != type) {
         PyErr_Format(PyExc_ValueError, "Wrong dtype for %s", name);
         return -1;
@@ -411,8 +412,7 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
         goto out;
     }
     if (PyArray_DTYPE(gt)->kind != 'i') {
-        PyErr_Format(
-            PyExc_ValueError, "Array 'gt' has unsupported array dtype");
+        PyErr_Format(PyExc_ValueError, "Array 'gt' has unsupported array dtype");
         goto out;
     }
     if (check_dtype("gt_phased", gt_phased, NPY_BOOL) != 0) {

@@ -37,6 +37,7 @@
 
 #define VCZ_ERR_NO_MEMORY (-100)
 #define VCZ_ERR_BUFFER_OVERFLOW (-101)
+#define VCZ_ERR_VARIANT_OUT_OF_BOUNDS (-102)
 
 /* Built-in-limitations */
 #define VCZ_ERR_FIELD_NAME_TOO_LONG (-201)
@@ -77,21 +78,6 @@ typedef struct {
     vcz_field_t *format_fields;
 } vcz_variant_encoder_t;
 
-/* // clang-format off */
-/* int vcz_variant_encoder_init(vcz_variant_encoder_t *self, */
-/*     size_t num_variants, size_t num_samples, */
-/*     const char *contig_data, size_t contig_item_size, */
-/*     const int32_t *position_data, */
-/*     const char *id_data, size_t id_item_size, size_t id_num_columns, */
-/*     const char *ref_data, size_t ref_item_size, */
-/*     const char *alt_data, size_t alt_item_size, size_t alt_num_columns, */
-/*     const float *qual_data, */
-/*     const char *filter_id_data, size_t filter_id_item_size, size_t
- * filter_id_num_columns, */
-/*     const int8_t *filter_data */
-/* ); */
-/* // clang-format on */
-
 int vcz_variant_encoder_init(
     vcz_variant_encoder_t *self, size_t num_variants, size_t num_samples);
 void vcz_variant_encoder_free(vcz_variant_encoder_t *self);
@@ -117,7 +103,7 @@ int vcz_variant_encoder_add_info_field(vcz_variant_encoder_t *self, const char *
 int vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *name,
     int type, size_t item_size, size_t num_columns, const void *data);
 
-int64_t vcz_variant_encoder_write_row(
+int64_t vcz_variant_encoder_encode(
     const vcz_variant_encoder_t *self, size_t row, char *buf, size_t buflen);
 
 int vcz_itoa(char *buf, int64_t v);

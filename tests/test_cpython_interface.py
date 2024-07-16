@@ -95,6 +95,11 @@ class TestPrintState:
             with pytest.raises(OSError, match="22"):
                 encoder.print_state(f)
 
+    def test_no_arg(self):
+        encoder = example_encoder()
+        with pytest.raises(TypeError, match="function takes"):
+            encoder.print_state()
+
     @pytest.mark.parametrize("fileobj", [None, "path"])
     def test_bad_file_arg(self, fileobj):
         encoder = example_encoder()
@@ -108,13 +113,33 @@ class TestPrintState:
             encoder.print_state(fileobj)
 
 
-class TestEncodeOverrun:
-    def test_fixed_fields(self):
+class TestEncode:
+    @pytest.mark.parametrize("bad_arg", [None, {}, "0"])
+    def test_bad_index_arg(self, bad_arg):
         encoder = example_encoder()
+        with pytest.raises(TypeError, match="integer"):
+            encoder.encode(bad_arg, 1)
+
+    @pytest.mark.parametrize("bad_arg", [None, {}, "0"])
+    def test_bad_len_arg(self, bad_arg):
+        encoder = example_encoder()
+        with pytest.raises(TypeError, match="integer"):
+            encoder.encode(0, bad_arg)
+
+    @pytest.mark.parametrize("bad_row", [2, 3, 100, -1, 2**31 - 1])
+    def test_bad_variant_arg(self, bad_row):
+        encoder = example_encoder(2)
+        with pytest.raises(ValueError, match="102"):
+            encoder.encode(bad_row, 1)
+
+    def test_small_example_overrun(self):
+        encoder = example_encoder(1, 2)
         s = encoder.encode(0, 1024)
-        for length in range(len(s)):
+        minlen = len(s)
+        for length in range(minlen):
             with pytest.raises(ValueError, match="-101"):
                 encoder.encode(0, length)
+        assert s == encoder.encode(0, minlen)
 
 
 class TestFixedFieldInputChecking:

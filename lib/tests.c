@@ -57,14 +57,14 @@ validate_encoder(
         for (buflen = 0; buflen < min_len; buflen++) {
             buf = malloc((size_t) buflen);
             CU_ASSERT_FATAL(buf != NULL);
-            ret = vcz_variant_encoder_write_row(encoder, j, buf, (size_t) buflen);
+            ret = vcz_variant_encoder_encode(encoder, j, buf, (size_t) buflen);
             free(buf);
             CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
         }
         buflen = min_len;
         buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
-        ret = vcz_variant_encoder_write_row(encoder, j, buf, (size_t) buflen);
+        ret = vcz_variant_encoder_encode(encoder, j, buf, (size_t) buflen);
         /* printf("ret = %d\n", (int) ret); */
         /* printf("GOT:'%s'\n", buf); */
         /* printf("EXP:'%s'\n", expected[j]); */
@@ -81,6 +81,10 @@ validate_encoder(
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
         CU_ASSERT_NSTRING_EQUAL_FATAL(buf, expected[j], ret);
         free(buf);
+    }
+    for (j = num_rows; j < num_rows + 5; j++) {
+        ret = vcz_variant_encoder_encode(encoder, j, buf, 0);
+        CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_VARIANT_OUT_OF_BOUNDS);
     }
 }
 
@@ -294,7 +298,7 @@ static void
 test_float_field_2d(void)
 {
     // clang-format off
-    int32_t data[] = { 
+    int32_t data[] = {
         VCZ_FLOAT32_MISSING_AS_INT32, VCZ_FLOAT32_MISSING_AS_INT32, VCZ_FLOAT32_MISSING_AS_INT32,
         VCZ_FLOAT32_MISSING_AS_INT32, VCZ_FLOAT32_MISSING_AS_INT32, VCZ_FLOAT32_FILL_AS_INT32,
         VCZ_FLOAT32_MISSING_AS_INT32, VCZ_FLOAT32_FILL_AS_INT32, VCZ_FLOAT32_FILL_AS_INT32,

@@ -775,11 +775,16 @@ out:
 }
 
 int64_t
-vcz_variant_encoder_write_row(
+vcz_variant_encoder_encode(
     const vcz_variant_encoder_t *self, size_t variant, char *buf, size_t buflen)
 {
     int64_t offset = 0;
     size_t j;
+
+    if (variant >= self->num_variants) {
+        offset = VCZ_ERR_VARIANT_OUT_OF_BOUNDS;
+        goto out;
+    }
 
     for (j = 0; j < VCZ_NUM_FIXED_FIELDS; j++) {
         if (vcz_field_is_missing_1d(&self->fixed_fields[j], variant)) {

@@ -434,6 +434,7 @@ static PyObject *
 VcfEncoder_encode(VcfEncoder *self, PyObject *args)
 {
     PyObject *ret = NULL;
+    // FIXME these shouldn't be ints
     int row;
     int bufsize;
     char *buf = NULL;
@@ -445,11 +446,14 @@ VcfEncoder_encode(VcfEncoder *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "ii", &row, &bufsize)) {
         goto out;
     }
+    /* Interpret bufsize as the length of the Python string, so add one to
+     * allow for the NULL byte */
+    bufsize++;
     buf = PyMem_Malloc(bufsize);
     if (buf == NULL) {
         goto out;
     }
-    line_length = vcz_variant_encoder_write_row(self->vcf_encoder, row, buf, bufsize);
+    line_length = vcz_variant_encoder_encode(self->vcf_encoder, row, buf, bufsize);
     if (line_length < 0) {
         handle_library_error((int) line_length);
         goto out;

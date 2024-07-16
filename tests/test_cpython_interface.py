@@ -220,10 +220,40 @@ class TestAddFields:
         with pytest.raises(ValueError, match="number of variants"):
             encoder.add_format_field("name", np.zeros((3, 1, 1), dtype=bool))
 
+    def test_add_gt_field_bad_gt_array_num_variants(self):
+        num_variants = 10
+        encoder = example_encoder(num_variants, 1)
+        with pytest.raises(ValueError, match="number of variants"):
+            encoder.add_gt_field(
+                np.zeros((2, 1, 1), dtype=np.int8), np.zeros((10, 1), dtype=bool)
+            )
+
+    def test_add_gt_field_bad_gt_phased_array_num_variants(self):
+        num_variants = 10
+        encoder = example_encoder(num_variants, 1)
+        with pytest.raises(ValueError, match="number of variants"):
+            encoder.add_gt_field(
+                np.zeros((10, 1, 1), dtype=np.int8), np.zeros((2, 1), dtype=bool)
+            )
+
     def test_add_format_field_bad_array_num_samples(self):
         encoder = example_encoder(5, 2)
         with pytest.raises(ValueError, match="number of samples"):
             encoder.add_format_field("name", np.zeros((5, 1, 1), dtype=bool))
+
+    def test_add_gt_field_bad_gt_array_num_samples(self):
+        encoder = example_encoder(5, 2)
+        with pytest.raises(ValueError, match="number of samples"):
+            encoder.add_gt_field(
+                np.zeros((5, 1, 1), dtype=np.int8), np.zeros((5, 2), dtype=bool)
+            )
+
+    def test_add_gt_field_bad_gt_phased_array_num_samples(self):
+        encoder = example_encoder(5, 2)
+        with pytest.raises(ValueError, match="number of samples"):
+            encoder.add_gt_field(
+                np.zeros((5, 2, 1), dtype=np.int8), np.zeros((5, 1), dtype=bool)
+            )
 
     @pytest.mark.parametrize("shape", [(), (5,), (5, 1, 1)])
     def test_add_info_field_wrong_dimension(self, shape):
@@ -237,6 +267,22 @@ class TestAddFields:
         with pytest.raises(ValueError, match="wrong dimension"):
             encoder.add_format_field("name", np.zeros(shape, dtype=bool))
 
+    @pytest.mark.parametrize("shape", [(), (5,), (5, 2), (5, 2, 1, 1)])
+    def test_add_gt_field_gt_wrong_dimension(self, shape):
+        encoder = example_encoder(5, 2)
+        with pytest.raises(ValueError, match="wrong dimension"):
+            encoder.add_gt_field(
+                np.zeros(shape, dtype=np.int8), np.zeros((5, 2), dtype=bool)
+            )
+
+    @pytest.mark.parametrize("shape", [(), (5,), (5, 2, 1), (5, 2, 1, 1)])
+    def test_add_gt_field_gt_phased_wrong_dimension(self, shape):
+        encoder = example_encoder(5, 2)
+        with pytest.raises(ValueError, match="wrong dimension"):
+            encoder.add_gt_field(
+                np.zeros((5, 2, 1), dtype=np.int8), np.zeros(shape, dtype=bool)
+            )
+
     @pytest.mark.parametrize("dtype", ["m", "c16", "O", "u1"])
     def test_add_info_field_unsupported_dtype(self, dtype):
         encoder = example_encoder(1)
@@ -249,6 +295,22 @@ class TestAddFields:
         with pytest.raises(ValueError, match="unsupported array dtype"):
             encoder.add_format_field("name", np.zeros((1, 1, 1), dtype=dtype))
 
+    @pytest.mark.parametrize("dtype", ["m", "c16", "O", "u1"])
+    def test_add_gt_field_gt_unsupported_dtype(self, dtype):
+        encoder = example_encoder(1, 1)
+        with pytest.raises(ValueError, match="unsupported array dtype"):
+            encoder.add_gt_field(
+                np.zeros((1, 1, 1), dtype=dtype), np.zeros((1, 1), dtype=bool)
+            )
+
+    @pytest.mark.parametrize("dtype", ["m", "c16", "O", "u1"])
+    def test_add_gt_field_gt_phased_unsupported_dtype(self, dtype):
+        encoder = example_encoder(1, 1)
+        with pytest.raises(ValueError, match="Wrong dtype for gt_phased"):
+            encoder.add_gt_field(
+                np.zeros((1, 1, 1), dtype=np.int8), np.zeros((1, 1), dtype=dtype)
+            )
+
     @pytest.mark.parametrize("dtype", ["i8", "f8"])
     def test_add_info_field_unsupported_width(self, dtype):
         encoder = example_encoder(1)
@@ -260,6 +322,13 @@ class TestAddFields:
         encoder = example_encoder(1, 1)
         with pytest.raises(ValueError, match="-203"):
             encoder.add_format_field("name", np.zeros((1, 1, 1), dtype=dtype))
+
+    def test_add_gt_field_unsupported_width(self):
+        encoder = example_encoder(1, 1)
+        with pytest.raises(ValueError, match="-203"):
+            encoder.add_gt_field(
+                np.zeros((1, 1, 1), dtype=np.int64), np.zeros((1, 1), dtype=bool)
+            )
 
 
 class TestArrays:

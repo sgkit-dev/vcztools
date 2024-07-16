@@ -403,17 +403,25 @@ VcfEncoder_add_gt_field(VcfEncoder *self, PyObject *args)
     if (!PyArg_ParseTuple(args, "O!O!", &PyArray_Type, &gt, &PyArray_Type, &gt_phased)) {
         goto out;
     }
-    if (VcfEncoder_add_field_array(self, "GT", gt, 3, "FORMAT/", true) != 0) {
+    if (VcfEncoder_add_field_array(self, "gt", gt, 3, "FORMAT/", true) != 0) {
         goto out;
     }
-    if (VcfEncoder_add_field_array(self, "GT_phased", gt_phased, 2, "FORMAT/", true)
+    if (VcfEncoder_add_field_array(self, "gt_phased", gt_phased, 2, "FORMAT/", true)
         != 0) {
         goto out;
     }
-    // CHECK TYPES
+    if (PyArray_DTYPE(gt)->kind != 'i') {
+        PyErr_Format(
+            PyExc_ValueError, "Array 'gt' has unsupported array dtype");
+        goto out;
+    }
+    if (check_dtype("gt_phased", gt_phased, NPY_BOOL) != 0) {
+        goto out;
+    }
     err = vcz_variant_encoder_add_gt_field(self->vcf_encoder, PyArray_ITEMSIZE(gt),
         PyArray_DIMS(gt)[2], PyArray_DATA(gt), PyArray_DATA(gt_phased));
     if (err != 0) {
+        handle_library_error(err);
         goto out;
     }
 

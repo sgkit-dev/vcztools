@@ -89,7 +89,7 @@ VcfEncoder_add_array(
     PyObject *key = PyUnicode_FromFormat("%s%s", prefix, name);
 
     if (array == NULL || key == NULL) {
-        goto out;
+        goto out; // GCOVR_EXCL_LINE
     }
     ret = PyDict_SetItem(self->arrays, key, (PyObject *) array);
 out:
@@ -223,8 +223,8 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
     self->vcf_encoder = PyMem_Calloc(1, sizeof(*self->vcf_encoder));
     self->arrays = PyDict_New();
     if (self->vcf_encoder == NULL || self->arrays == NULL) {
-        PyErr_NoMemory();
-        goto out;
+        PyErr_NoMemory(); // GCOVR_EXCL_LINE
+        goto out;         // GCOVR_EXCL_LINE
     }
 
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!O!O!O!", kwlist,
@@ -234,10 +234,12 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;
     }
 
+    // This function currently cannot fail as there's no memory allocation, but
+    // we keep the check in case this changes in later versions.
     err = vcz_variant_encoder_init(self->vcf_encoder, num_variants, num_samples);
     if (err < 0) {
-        handle_library_error(err);
-        goto out;
+        handle_library_error(err); // GCOVR_EXCL_LINE
+        goto out;                  // GCOVR_EXCL_LINE
     }
 
     if (VcfEncoder_store_fixed_array(self, chrom, "chrom", NPY_STRING, 1) != 0) {
@@ -269,16 +271,14 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
     vcz_variant_encoder_add_chrom_field(
         self->vcf_encoder, PyArray_ITEMSIZE(chrom), PyArray_DATA(chrom));
     if (err < 0) {
-        // TODO ADD NOCOVER
-        handle_library_error(err);
-        goto out;
+        handle_library_error(err); // GCOVR_EXCL_LINE
+        goto out;                  // GCOVR_EXCL_LINE
     }
     vcz_variant_encoder_add_ref_field(
         self->vcf_encoder, PyArray_ITEMSIZE(ref), PyArray_DATA(ref));
     if (err < 0) {
-        // TODO ADD NOCOVER
-        handle_library_error(err);
-        goto out;
+        handle_library_error(err); // GCOVR_EXCL_LINE
+        goto out;                  // GCOVR_EXCL_LINE
     }
     /* Note: the only provokable error here is the zero-sized second dimension,
      * which we could catch easily above */
@@ -305,7 +305,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
     }
     num_filters = PyArray_DIMS(filter_ids)[0];
     if (VcfEncoder_add_array(self, "", "filter_ids", filter_ids) != 0) {
-        goto out;
+        goto out; // GCOVR_EXCL_LINE
     }
     if (VcfEncoder_store_fixed_array(self, filter, "filter", NPY_BOOL, 2) != 0) {
         goto out;

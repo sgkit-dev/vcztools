@@ -57,4 +57,6 @@ def regions_to_selection(
     query = pyranges.PyRanges(chromosomes=chromosomes, starts=starts, ends=ends)
 
     overlap = variants.overlap(query)
+    if overlap.empty:
+        return np.empty((0, ), dtype=np.int64)
     return overlap.df["index"].to_numpy()

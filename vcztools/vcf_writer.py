@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import MutableMapping, Optional, TextIO, Union
 
 import numpy as np
-from vcztools.regions import parse_targets, regions_to_selection
+from vcztools.regions import parse_regions, parse_targets, regions_to_selection
 import zarr
 
 from . import _vcztools
@@ -81,7 +81,7 @@ def dims(arr):
 
 
 def write_vcf(
-    vcz, output, *, vcf_header: Optional[str] = None, variant_targets=None, implementation="numba"
+    vcz, output, *, vcf_header: Optional[str] = None, variant_regions=None, variant_targets=None, implementation="numba"
 ) -> None:
     """Convert a dataset to a VCF file.
 
@@ -164,13 +164,26 @@ def write_vcf(
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
 
-        if variant_targets is None:
+        if variant_regions is None and variant_targets is None:
             variant_mask = np.ones(pos.shape[0], dtype=bool)
+        elif variant_regions is not None:
+            regions = parse_regions(variant_regions)
+            variant_length = np.vectorize(len)(root["variant_allele"][:,0])
+            variant_selection = regions_to_selection(
+                root["contig_id"][:].astype("U").tolist(),
+                root["variant_contig"],
+                variant_length,
+                pos[:],
+                regions,
+            )
+            variant_mask = np.zeros(pos.shape[0], dtype=bool)
+            variant_mask[variant_selection] = 1
         else:
             regions = parse_targets(variant_targets)
             variant_selection = regions_to_selection(
                 root["contig_id"][:].astype("U").tolist(),
                 root["variant_contig"],
+                1,
                 pos[:],
                 regions,
             )

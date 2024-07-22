@@ -20,6 +20,10 @@ def parse_region(region: str) -> tuple[str, Optional[int], Optional[int]]:
         return contig, None, None
 
 
+def parse_regions(targets: str) -> list[tuple[str, Optional[int], Optional[int]]]:
+    return [parse_region(region) for region in targets.split(",")]
+
+
 def parse_targets(targets: str) -> list[tuple[str, Optional[int], Optional[int]]]:
     return [parse_region(region) for region in targets.split(",")]
 
@@ -28,12 +32,15 @@ def regions_to_selection(
     all_contigs: List[str],
     variant_contig: Any,
     variant_position: Any,
+    variant_length: Any,
     regions: list[tuple[str, Optional[int], Optional[int]]],
 ):
     # subtract 1 from start coordinate to convert intervals
     # from VCF (1-based, fully-closed) to Python (0-based, half-open)
+    variant_start = variant_position - 1
+    variant_end = variant_start + variant_length
+    df = pd.DataFrame({"Chromosome": variant_contig, "Start": variant_start, "End": variant_end})
 
-    df = pd.DataFrame({"Chromosome": variant_contig, "Start": variant_position - 1, "End": variant_position})
     # save original index as column so we can retrieve it after finding overlap
     df["index"] = df.index
     variants = pyranges.PyRanges(df)

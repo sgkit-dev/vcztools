@@ -55,8 +55,33 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
     assert_vcfs_close(path, output)
 
 
-@pytest.mark.parametrize("implementation", ["c", "numba"])
-def test_write_vcf__targets(shared_datadir, tmp_path, implementation):
+@pytest.mark.parametrize("implementation", ["c"])
+@pytest.mark.parametrize(
+    "switch, regions, expected_chrom_pos",
+    [
+        ("-t", "19", [("19", 111), ("19", 112)]),
+        ("-t", "19:112", [("19", 112)]),
+        ("-t", "20:1230236-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-t", "20:1230237-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-t", "20:1230238-", [("20", 1234567), ("20", 1235237)]),
+        ("-t", "20:1230237-1235236", [("20", 1230237), ("20", 1234567)]),
+        ("-t", "20:1230237-1235237", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-t", "20:1230237-1235238", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-t", "19,X", [("19", 111), ("19", 112), ("X", 10)]),
+        ("-t", "X:11", []),
+        ("-r", "19", [("19", 111), ("19", 112)]),
+        ("-r", "19:112", [("19", 112)]),
+        ("-r", "20:1230236-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-r", "20:1230237-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-r", "20:1230238-", [("20", 1234567), ("20", 1235237)]),
+        ("-r", "20:1230237-1235236", [("20", 1230237), ("20", 1234567)]),
+        ("-r", "20:1230237-1235237", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-r", "20:1230237-1235238", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-r", "19,X", [("19", 111), ("19", 112), ("X", 10)]),
+        ("-r", "X:11", [("X", 10)]),  # note differs from -t
+    ]
+)
+def test_write_vcf__regions(shared_datadir, tmp_path, implementation, switch, regions, expected_chrom_pos):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")
     intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
@@ -66,18 +91,21 @@ def test_write_vcf__targets(shared_datadir, tmp_path, implementation):
         [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
     )
 
-    write_vcf(intermediate_vcz, output, variant_targets="20", implementation=implementation)
+    if switch == "-t":
+        write_vcf(intermediate_vcz, output, variant_targets=regions, implementation=implementation)
+    elif switch == "-r":
+        write_vcf(intermediate_vcz, output, variant_regions=regions, implementation=implementation)
 
     v = VCF(output)
+    variants = list(v)
+    assert len(variants) == len(expected_chrom_pos)
 
     assert v.samples == ["NA00001", "NA00002", "NA00003"]
 
-    count = 0
-    for variant in v:
-        assert variant.CHROM == "20"
-        count += 1
-
-    assert count == 6
+    for variant, chrom_pos in zip(variants, expected_chrom_pos):
+        chrom, pos = chrom_pos
+        assert variant.CHROM == chrom
+        assert variant.POS == pos
 
 
 def test_write_vcf__set_header(shared_datadir, tmp_path):

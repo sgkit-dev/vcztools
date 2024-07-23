@@ -172,8 +172,8 @@ def write_vcf(
             variant_selection = regions_to_selection(
                 root["contig_id"][:].astype("U").tolist(),
                 root["variant_contig"],
-                variant_length,
                 pos[:],
+                variant_length,
                 regions,
             )
             variant_mask = np.zeros(pos.shape[0], dtype=bool)
@@ -183,8 +183,8 @@ def write_vcf(
             variant_selection = regions_to_selection(
                 root["contig_id"][:].astype("U").tolist(),
                 root["variant_contig"],
-                1,
                 pos[:],
+                1,
                 regions,
             )
             variant_mask = np.zeros(pos.shape[0], dtype=bool)

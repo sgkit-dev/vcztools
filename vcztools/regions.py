@@ -1,5 +1,5 @@
 import re
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -29,7 +29,7 @@ def parse_targets(targets: str) -> list[tuple[str, Optional[int], Optional[int]]
 
 
 def regions_to_selection(
-    all_contigs: List[str],
+    all_contigs: list[str],
     variant_contig: Any,
     variant_position: Any,
     variant_length: Any,
@@ -39,7 +39,9 @@ def regions_to_selection(
     # from VCF (1-based, fully-closed) to Python (0-based, half-open)
     variant_start = variant_position - 1
     variant_end = variant_start + variant_length
-    df = pd.DataFrame({"Chromosome": variant_contig, "Start": variant_start, "End": variant_end})
+    df = pd.DataFrame(
+        {"Chromosome": variant_contig, "Start": variant_start, "End": variant_end}
+    )
 
     # save original index as column so we can retrieve it after finding overlap
     df["index"] = df.index
@@ -53,7 +55,7 @@ def regions_to_selection(
             start = 0
         else:
             start -= 1
-        
+
         if end is None:
             end = np.iinfo(np.int64).max
 
@@ -65,5 +67,5 @@ def regions_to_selection(
 
     overlap = variants.overlap(query)
     if overlap.empty:
-        return np.empty((0, ), dtype=np.int64)
+        return np.empty((0,), dtype=np.int64)
     return overlap.df["index"].to_numpy()

@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from vcztools.regions import parse_regions, parse_targets, regions_to_selection
 import zarr
 
-from . import _vcztools
+from vcztools.regions import parse_regions, parse_targets, regions_to_selection
 
+from . import _vcztools
 from .constants import RESERVED_VARIABLE_NAMES
 
 # references to the VCF spec are for https://samtools.github.io/hts-specs/VCFv4.3.pdf
@@ -24,7 +24,8 @@ RESERVED_INFO_KEY_DESCRIPTIONS = {
     "AF": "Allele frequency for each ALT allele in the same order as listed",
     "AN": "Total number of alleles in called genotypes",
     "BQ": "RMS base quality",
-    "CIGAR": "Cigar string describing how to align an alternate allele to the reference allele",
+    "CIGAR": "Cigar string describing how to align an alternate allele to the \
+        reference allele",
     "DB": "dbSNP membership",
     "DP": "Combined depth across samples",
     "END": "End position on CHROM",
@@ -54,7 +55,8 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
     "HQ": "Haplotype quality",
     "MQ": "RMS mapping quality",
     "PL": "Phred-scaled genotype likelihoods rounded to the closest integer",
-    "PP": "Phred-scaled genotype posterior probabilities rounded to the closest integer",
+    "PP": "Phred-scaled genotype posterior probabilities rounded to the closest \
+        integer",
     "PQ": "Phasing quality",
     "PS": "Phase set",
 }
@@ -65,15 +67,20 @@ def dims(arr):
 
 
 def write_vcf(
-    vcz, output, *, vcf_header: Optional[str] = None, variant_regions=None, variant_targets=None
+    vcz,
+    output,
+    *,
+    vcf_header: Optional[str] = None,
+    variant_regions=None,
+    variant_targets=None,
 ) -> None:
     """Convert a dataset to a VCF file.
 
     The VCF header to use is dictated by either the ``vcf_header`` parameter or the
     ``vcf_header`` attribute on the input dataset.
 
-    If specified, the ``vcf_header`` parameter will be used, and any variables in the dataset
-    that are not in this header will not be included in the output.
+    If specified, the ``vcf_header`` parameter will be used, and any variables in the
+    dataset that are not in this header will not be included in the output.
 
     If the ``vcf_header`` parameter is left as the default (`None`) and a ``vcf_header``
     attribute is present in the dataset (such as one created by :func:`vcf_to_zarr`),
@@ -102,12 +109,6 @@ def write_vcf(
     post-process the output using external tools such as ``bgzip(1)``,
     ``bcftools(1)``, or ``tabix(1)``.
 
-    This example shows how to convert a Zarr dataset to bgzip-compressed VCF by
-    writing it to standard output then applying an external compressor::
-
-        python -c 'import sys; from sgkit.io.vcf import zarr_to_vcf; zarr_to_vcf("in.zarr", sys.stdout)'
-            | bgzip > out.vcf.gz
-
     Parameters
     ----------
     input
@@ -115,9 +116,9 @@ def write_vcf(
     output
         A path or text file object that the output VCF should be written to.
     vcf_header
-        The VCF header to use (including the line starting with ``#CHROM``). If None, then
-        a header will be generated from the dataset ``vcf_header`` attribute (if present),
-        or from scratch otherwise.
+        The VCF header to use (including the line starting with ``#CHROM``).
+        If None, then a header will be generated from the dataset ``vcf_header``
+        attribute (if present), or from scratch otherwise.
     """
 
     root = zarr.open(vcz, mode="r")
@@ -141,8 +142,8 @@ def write_vcf(
         if num_variants == 0:
             return
 
-        header_info_fields = _info_fields(vcf_header)
-        header_format_fields = _format_fields(vcf_header)
+        # header_info_fields = _info_fields(vcf_header)
+        # header_format_fields = _format_fields(vcf_header)
 
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
@@ -151,7 +152,7 @@ def write_vcf(
             variant_mask = np.ones(pos.shape[0], dtype=bool)
         elif variant_regions is not None:
             regions = parse_regions(variant_regions)
-            variant_length = np.vectorize(len)(root["variant_allele"][:,0])
+            variant_length = np.vectorize(len)(root["variant_allele"][:, 0])
             variant_selection = regions_to_selection(
                 root["contig_id"][:].astype("U").tolist(),
                 root["variant_contig"],
@@ -197,7 +198,9 @@ def get_block_selection(zarray, key, mask):
 def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
     chrom = contigs[get_block_selection(root.variant_contig, v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
-    pos = get_block_selection(root.variant_position, v_chunk, v_mask_chunk).astype(np.int32)
+    pos = get_block_selection(root.variant_position, v_chunk, v_mask_chunk).astype(
+        np.int32
+    )
     id = get_block_selection(root.variant_id, v_chunk, v_mask_chunk).astype("S")
     alleles = get_block_selection(root.variant_allele, v_chunk, v_mask_chunk)
     ref = alleles[:, 0].astype("S")

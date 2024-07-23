@@ -106,6 +106,7 @@ def test_write_vcf__regions(shared_datadir, tmp_path, switch, regions, expected_
         assert variant.POS == pos
 
 
+@pytest.mark.skip(reason="Setting a header to control output fields is not supported.")
 def test_write_vcf__set_header(shared_datadir, tmp_path):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")

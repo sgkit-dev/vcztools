@@ -11,8 +11,7 @@ from .utils import assert_vcfs_close
 
 
 @pytest.mark.parametrize("output_is_path", [True, False])
-@pytest.mark.parametrize("implementation", ["c", "numba"])
-def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
+def test_write_vcf(shared_datadir, tmp_path, output_is_path):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")
     intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
@@ -23,10 +22,10 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
     )
 
     if output_is_path:
-        write_vcf(intermediate_vcz, output, implementation=implementation)
+        write_vcf(intermediate_vcz, output)
     else:
         output_str = StringIO()
-        write_vcf(intermediate_vcz, output_str, implementation=implementation)
+        write_vcf(intermediate_vcz, output_str)
         with open(output, "w") as f:
             f.write(output_str.getvalue())
 
@@ -55,7 +54,6 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
     assert_vcfs_close(path, output)
 
 
-@pytest.mark.parametrize("implementation", ["c"])
 @pytest.mark.parametrize(
     "switch, regions, expected_chrom_pos",
     [
@@ -81,7 +79,7 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path, implementation):
         ("-r", "X:11", [("X", 10)]),  # note differs from -t
     ]
 )
-def test_write_vcf__regions(shared_datadir, tmp_path, implementation, switch, regions, expected_chrom_pos):
+def test_write_vcf__regions(shared_datadir, tmp_path, switch, regions, expected_chrom_pos):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")
     intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
@@ -92,9 +90,9 @@ def test_write_vcf__regions(shared_datadir, tmp_path, implementation, switch, re
     )
 
     if switch == "-t":
-        write_vcf(intermediate_vcz, output, variant_targets=regions, implementation=implementation)
+        write_vcf(intermediate_vcz, output, variant_targets=regions)
     elif switch == "-r":
-        write_vcf(intermediate_vcz, output, variant_regions=regions, implementation=implementation)
+        write_vcf(intermediate_vcz, output, variant_regions=regions)
 
     v = VCF(output)
     variants = list(v)

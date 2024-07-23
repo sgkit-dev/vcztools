@@ -2,7 +2,7 @@ import io
 import re
 from contextlib import ExitStack
 from pathlib import Path
-from typing import MutableMapping, Optional, TextIO, Union
+from typing import Optional
 
 import numpy as np
 from vcztools.regions import parse_regions, parse_targets, regions_to_selection
@@ -10,23 +10,7 @@ import zarr
 
 from . import _vcztools
 
-from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
-from .vcf_writer_utils import (
-    byte_buf_to_str,
-    create_mask,
-    interleave,
-    vcf_fixed_to_byte_buf,
-    vcf_fixed_to_byte_buf_size,
-    vcf_format_missing_to_byte_buf,
-    vcf_format_names_to_byte_buf,
-    vcf_format_names_to_byte_buf_size,
-    vcf_genotypes_to_byte_buf,
-    vcf_genotypes_to_byte_buf_size,
-    vcf_info_to_byte_buf,
-    vcf_info_to_byte_buf_size,
-    vcf_values_to_byte_buf,
-    vcf_values_to_byte_buf_size,
-)
+from .constants import RESERVED_VARIABLE_NAMES
 
 # references to the VCF spec are for https://samtools.github.io/hts-specs/VCFv4.3.pdf
 
@@ -81,7 +65,7 @@ def dims(arr):
 
 
 def write_vcf(
-    vcz, output, *, vcf_header: Optional[str] = None, variant_regions=None, variant_targets=None, implementation="numba"
+    vcz, output, *, vcf_header: Optional[str] = None, variant_regions=None, variant_targets=None
 ) -> None:
     """Convert a dataset to a VCF file.
 
@@ -105,9 +89,8 @@ def write_vcf(
     Exponent/scientific notation is *not* supported, so values less than
     ``5e-4`` will be rounded to zero.
 
-    Data is written sequentially to VCF, using Numba to optimize the write
-    throughput speed. Speeds in the region of 100 MB/s have been observed on
-    an Apple M1 machine from 2020.
+    Data is written sequentially to VCF, using C to optimize the write
+    throughput speed.
 
     Data is loaded into memory in chunks sized according to the chunking along
     the variants dimension. Chunking in other dimensions (such as samples) is
@@ -195,28 +178,16 @@ def write_vcf(
 
         for v_chunk in range(pos.cdata_shape[0]):
             v_mask_chunk = z_variant_mask.blocks[v_chunk]
-            if implementation == "numba":
-                numba_chunk_to_vcf(
+            count = np.sum(v_mask_chunk)
+            if count > 0:
+                c_chunk_to_vcf(
                     root,
                     v_chunk,
                     v_mask_chunk,
-                    header_info_fields,
-                    header_format_fields,
                     contigs,
                     filters,
                     output,
                 )
-            else:
-                count = np.sum(v_mask_chunk)
-                if count > 0:
-                    c_chunk_to_vcf(
-                        root,
-                        v_chunk,
-                        v_mask_chunk,
-                        contigs,
-                        filters,
-                        output,
-                    )
 
 
 def get_block_selection(zarray, key, mask):
@@ -310,208 +281,6 @@ def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
                 buflen *= 2
                 # print("Bumping buflen to", buflen)
         print(line, file=output)
-
-
-def numba_chunk_to_vcf(
-    root, v_chunk, v_mask_chunk, header_info_fields, header_format_fields, contigs, filters, output
-):
-    # fixed fields
-
-    chrom = get_block_selection(root.variant_contig, v_chunk, v_mask_chunk)
-    pos = get_block_selection(root.variant_position, v_chunk, v_mask_chunk)
-    id = get_block_selection(root.variant_id, v_chunk, v_mask_chunk).astype("S")
-    alleles = get_block_selection(root.variant_allele, v_chunk, v_mask_chunk).astype("S")
-    qual = get_block_selection(root.variant_quality, v_chunk, v_mask_chunk)
-    filter_ = get_block_selection(root.variant_filter, v_chunk, v_mask_chunk)
-
-    n_variants = len(pos)
-
-    # info fields
-
-    # preconvert all info fields to byte representations
-    info_bufs = []
-    info_mask = np.full((len(header_info_fields), n_variants), False, dtype=bool)
-    info_indexes = np.zeros((len(header_info_fields), n_variants + 1), dtype=np.int32)
-
-    k = 0
-    info_prefixes = []  # field names followed by '=' (except for flag/bool types)
-    for key in header_info_fields:
-        var = f"variant_{key}"
-        try:
-            arr = root[f"variant_{key}"]
-        except KeyError:
-            # We use the VCF header as the source of information about arrays,
-            # not the other way around. This is probably not what we want to
-            # do, but keeping it this way to preserve tests initially.
-            continue
-        values = get_block_selection(arr, v_chunk, v_mask_chunk)
-        if arr.dtype == bool:
-            info_mask[k] = create_mask(values)
-            info_bufs.append(np.zeros(0, dtype=np.uint8))
-            # info_indexes contains zeros so nothing is written for flag/bool
-            info_prefixes.append(key)
-            k += 1
-        else:
-            if values.dtype.kind == "O":
-                values = values.astype("S")  # convert to fixed-length strings
-            info_mask[k] = create_mask(values)
-            info_bufs.append(
-                np.empty(vcf_values_to_byte_buf_size(values), dtype=np.uint8)
-            )
-            vcf_values_to_byte_buf(info_bufs[k], 0, values, info_indexes[k])
-            info_prefixes.append(key + "=")
-            k += 1
-
-    info_mask = info_mask[:k]
-    info_indexes = info_indexes[:k]
-
-    info_prefixes = np.array(info_prefixes, dtype="S")
-
-    # format fields
-
-    # these can have different sizes for different fields, so store in sequences
-    format_values = []
-    format_bufs = []
-
-    format_mask = np.full((len(header_format_fields), n_variants), False, dtype=bool)
-
-    k = 0
-    format_fields = []
-    has_gt = False
-    n_samples = 0
-    for key in header_format_fields:
-        var = "call_genotype" if key == "GT" else f"call_{key}"
-        if var not in root:
-            continue
-        values = get_block_selection(root[var], v_chunk, v_mask_chunk)
-        if key == "GT":
-            n_samples = values.shape[1]
-            format_mask[k] = create_mask(values)
-            format_values.append(values)
-            format_bufs.append(
-                np.empty(vcf_genotypes_to_byte_buf_size(values[0]), dtype=np.uint8)
-            )
-            format_fields.append(key)
-            has_gt = True
-            k += 1
-        else:
-            if values.dtype.kind == "O":
-                values = values.astype("S")  # convert to fixed-length strings
-            format_mask[k] = create_mask(values)
-            format_values.append(values)
-            format_bufs.append(
-                np.empty(vcf_values_to_byte_buf_size(values[0]), dtype=np.uint8)
-            )
-            format_fields.append(key)
-            k += 1
-
-    format_mask = format_mask[:k]
-
-    # indexes are all the same size (number of samples) so store in a single array
-    format_indexes = np.empty((len(format_values), n_samples + 1), dtype=np.int32)
-
-    if "call_genotype_phased" in root:
-        call_genotype_phased = get_block_selection(root["call_genotype_phased"], v_chunk, v_mask_chunk)[:]
-    else:
-        call_genotype_phased = np.full((n_variants, n_samples), False, dtype=bool)
-
-    format_names = np.array(format_fields, dtype="S")
-
-    n_header_format_fields = len(header_format_fields)
-
-    buf_size = (
-        vcf_fixed_to_byte_buf_size(contigs, id, alleles, filters)
-        + vcf_info_to_byte_buf_size(info_prefixes, *info_bufs)
-        + vcf_format_names_to_byte_buf_size(format_names)
-        + sum(len(format_buf) for format_buf in format_bufs)
-    )
-
-    buf = np.empty(buf_size, dtype=np.uint8)
-
-    for i in range(n_variants):
-        # fixed fields
-        p = vcf_fixed_to_byte_buf(
-            buf, 0, i, contigs, chrom, pos, id, alleles, qual, filters, filter_
-        )
-
-        # info fields
-        p = vcf_info_to_byte_buf(
-            buf,
-            p,
-            i,
-            info_indexes,
-            info_mask,
-            info_prefixes,
-            *info_bufs,
-        )
-
-        # format fields
-        # convert each format field to bytes separately (for a variant), then interleave
-        # note that we can't numba jit this logic since format_values has different types, and
-        # we can't pass non-homogeneous tuples of format_values to numba
-        if n_header_format_fields > 0:
-            p = vcf_format_names_to_byte_buf(buf, p, i, format_mask, format_names)
-
-            n_format_fields = np.sum(~format_mask[:, i])
-
-            if n_format_fields == 0:  # all samples are missing
-                p = vcf_format_missing_to_byte_buf(buf, p, n_samples)
-            elif n_format_fields == 1:  # fast path if only one format field
-                for k in range(len(format_values)):
-                    # if format k is not present for variant i, then skip it
-                    if format_mask[k, i]:
-                        continue
-                    if k == 0 and has_gt:
-                        p = vcf_genotypes_to_byte_buf(
-                            buf,
-                            p,
-                            format_values[0][i],
-                            call_genotype_phased[i],
-                            format_indexes[0],
-                            ord("\t"),
-                        )
-                    else:
-                        p = vcf_values_to_byte_buf(
-                            buf,
-                            p,
-                            format_values[k][i],
-                            format_indexes[k],
-                            ord("\t"),
-                        )
-                    break
-            else:
-                for k in range(len(format_values)):
-                    # if format k is not present for variant i, then skip it
-                    if format_mask[k, i]:
-                        continue
-                    if k == 0 and has_gt:
-                        vcf_genotypes_to_byte_buf(
-                            format_bufs[0],
-                            0,
-                            format_values[0][i],
-                            call_genotype_phased[i],
-                            format_indexes[0],
-                        )
-                    else:
-                        vcf_values_to_byte_buf(
-                            format_bufs[k],
-                            0,
-                            format_values[k][i],
-                            format_indexes[k],
-                        )
-
-                p = interleave(
-                    buf,
-                    p,
-                    format_indexes,
-                    format_mask[:, i],
-                    ord(":"),
-                    ord("\t"),
-                    *format_bufs,
-                )
-
-        s = byte_buf_to_str(buf[:p])
-        print(s, file=output)
 
 
 def _generate_header(ds, original_header):
@@ -725,16 +494,3 @@ def _format_fields(header_str):
         fields.remove("GT")
         fields.insert(0, "GT")
     return fields
-
-
-def _variant_chunks(ds):
-    # generator for chunks of ds in the variants dimension
-    chunks = ds.variant_contig.chunksizes
-    if "variants" not in chunks:
-        yield ds
-    else:
-        offset = 0
-        for chunk in chunks["variants"]:
-            ds_chunk = ds.isel(variants=slice(offset, offset + chunk))
-            yield ds_chunk
-            offset += chunk

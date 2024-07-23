@@ -74,24 +74,9 @@ def parse_targets(targets: str) -> list[tuple[str, Optional[int], Optional[int]]
     return [parse_region(region) for region in targets.split(",")]
 
 
-def regions_to_selection(
-    regions: list[tuple[str, Optional[int], Optional[int]]],
-    all_contigs: list[str],
-    variant_contig: Any,
-    variant_position: Any,
-    variant_end: Any,
-):
-    # subtract 1 from start coordinate to convert intervals
-    # from VCF (1-based, fully-closed) to Python (0-based, half-open)
-    variant_start = variant_position - 1
-    df = pd.DataFrame(
-        {"Chromosome": variant_contig, "Start": variant_start, "End": variant_end}
-    )
-
-    # save original index as column so we can retrieve it after finding overlap
-    df["index"] = df.index
-    variants = pyranges.PyRanges(df)
-
+def regions_to_pyranges(
+    regions: list[tuple[str, Optional[int], Optional[int]]], all_contigs: list[str]
+) -> pyranges.PyRanges:
     chromosomes = []
     starts = []
     ends = []
@@ -108,7 +93,62 @@ def regions_to_selection(
         starts.append(start)
         ends.append(end)
 
-    query = pyranges.PyRanges(chromosomes=chromosomes, starts=starts, ends=ends)
+    return pyranges.PyRanges(chromosomes=chromosomes, starts=starts, ends=ends)
+
+
+def regions_to_chunk_indexes(
+    regions: list[tuple[str, Optional[int], Optional[int]]],
+    all_contigs: list[str],
+    regions_index: Any,
+    targets: bool,
+):
+    """Return chunks indexes that overlap the given regions."""
+    chunk_index = regions_index[:, 0]
+    contig_id = regions_index[:, 1]
+    start_position = regions_index[:, 2]
+    end_position = regions_index[:, 3]
+    max_end_position = regions_index[:, 4]
+    df = pd.DataFrame(
+        {
+            "chunk_index": chunk_index,
+            "Chromosome": contig_id,
+            "Start": start_position,
+            "End": end_position if targets else max_end_position,
+        }
+    )
+    chunks = pyranges.PyRanges(df)
+
+    query = regions_to_pyranges(regions, all_contigs)
+
+    overlap = chunks.overlap(query)
+    if overlap.empty:
+        return np.empty((0,), dtype=np.int64)
+    chunk_indexes = overlap.df["chunk_index"].to_numpy()
+    chunk_indexes = np.unique(chunk_indexes)
+    return chunk_indexes
+
+
+def regions_to_selection(
+    regions: list[tuple[str, Optional[int], Optional[int]]],
+    all_contigs: list[str],
+    variant_contig: Any,
+    variant_position: Any,
+    variant_end: Any,
+):
+    # subtract 1 from start coordinate to convert intervals
+    # from VCF (1-based, fully-closed) to Python (0-based, half-open)
+    variant_start = variant_position - 1
+    if variant_end is None:
+        variant_end = variant_position  # length 1
+    df = pd.DataFrame(
+        {"Chromosome": variant_contig, "Start": variant_start, "End": variant_end}
+    )
+
+    # save original index as column so we can retrieve it after finding overlap
+    df["index"] = df.index
+    variants = pyranges.PyRanges(df)
+
+    query = regions_to_pyranges(regions, all_contigs)
 
     overlap = variants.overlap(query)
     if overlap.empty:

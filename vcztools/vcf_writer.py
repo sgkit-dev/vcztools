@@ -7,7 +7,12 @@ from typing import Optional
 import numpy as np
 import zarr
 
-from vcztools.regions import parse_regions, parse_targets, regions_to_selection
+from vcztools.regions import (
+    parse_regions,
+    parse_targets,
+    regions_to_chunk_indexes,
+    regions_to_selection,
+)
 
 from . import _vcztools
 from .constants import RESERVED_VARIABLE_NAMES
@@ -160,29 +165,56 @@ def write_vcf(
                     output,
                 )
         else:
-            variant_start = pos[:]
             if variant_regions is not None:
                 regions = parse_regions(variant_regions)
-                variant_end = root["variant_position_end"][:]
             elif variant_targets is not None:
                 regions = parse_targets(variant_targets)
-                variant_end = variant_start + 1
+
+            # Use the region index to find the chunks that overlap the query regions
+            region_index = root["region_index"][:]
+            chunk_indexes = regions_to_chunk_indexes(
+                regions,
+                root["contig_id"][:].astype("U").tolist(),
+                region_index,
+                targets=(variant_targets is not None),
+            )
+
+            # Then use only load required variant_contig/position chunks
+            if len(chunk_indexes) == 0:
+                # no chunks
+                return
+            if len(chunk_indexes) == 1:
+                # single chunk
+                block_sel = chunk_indexes[0]
+            else:
+                # zarr.blocks doesn't support int array indexing - use that when it does
+                block_sel = slice(chunk_indexes[0], chunk_indexes[-1] + 1)
+
+            region_variant_contig = root["variant_contig"].blocks[block_sel][:]
+            region_variant_position = root["variant_position"].blocks[block_sel][:]
+
+            if variant_regions is not None:
+                region_variant_position_end = root["variant_position_end"].blocks[
+                    block_sel
+                ][:]
+            elif variant_targets is not None:
+                region_variant_position_end = None
 
             variant_selection = regions_to_selection(
                 regions,
                 root["contig_id"][:].astype("U").tolist(),
-                root["variant_contig"],
-                variant_start,
-                variant_end,
+                region_variant_contig,
+                region_variant_position,
+                region_variant_position_end,
             )
-            variant_mask = np.zeros(pos.shape[0], dtype=bool)
+            variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
             variant_mask[variant_selection] = 1
             # Use zarr arrays to get mask chunks aligned with the main data
             # for convenience.
             z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
 
-            for v_chunk in range(pos.cdata_shape[0]):
-                v_mask_chunk = z_variant_mask.blocks[v_chunk]
+            for i, v_chunk in enumerate(chunk_indexes):
+                v_mask_chunk = z_variant_mask.blocks[i]
                 count = np.sum(v_mask_chunk)
                 if count > 0:
                     c_chunk_to_vcf(

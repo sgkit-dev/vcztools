@@ -13,6 +13,7 @@ FLOAT32_MISSING_AS_INT32, FLOAT32_FILL_AS_INT32 = np.array(
 RESERVED_VARIABLE_NAMES = [
     "variant_contig",
     "variant_position",
+    "variant_position_end",
     "variant_id",
     "variant_id_mask",
     "variant_allele",

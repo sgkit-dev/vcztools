@@ -79,12 +79,11 @@ def regions_to_selection(
     all_contigs: list[str],
     variant_contig: Any,
     variant_position: Any,
-    variant_length: Any,
+    variant_end: Any,
 ):
     # subtract 1 from start coordinate to convert intervals
     # from VCF (1-based, fully-closed) to Python (0-based, half-open)
     variant_start = variant_position - 1
-    variant_end = variant_start + variant_length
     df = pd.DataFrame(
         {"Chromosome": variant_contig, "Start": variant_start, "End": variant_end}
     )

@@ -30,10 +30,9 @@ def vcz_path_cache(vcf_path):
         "field_type_combos.vcf.gz",
     ],
 )
-@pytest.mark.parametrize("implementation", ["c"])  # , "numba"])
-def test_vcf_to_zarr_to_vcf__real_files(tmp_path, vcf_file, implementation):
+def test_vcf_to_zarr_to_vcf__real_files(tmp_path, vcf_file):
     original = pathlib.Path("tests/data/vcf") / vcf_file
     vcz = vcz_path_cache(original)
     generated = tmp_path.joinpath("output.vcf")
-    write_vcf(vcz, generated, implementation=implementation)
+    write_vcf(vcz, generated)
     assert_vcfs_close(original, generated)

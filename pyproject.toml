@@ -12,7 +12,6 @@ authors = [
 ]
 dependencies = [
   "numpy>=1.23.5,<2",
-  "numba",
   "zarr>=2.17,<3",
   "click",
   "pyranges",

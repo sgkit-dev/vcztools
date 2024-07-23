@@ -160,19 +160,20 @@ def write_vcf(
                     output,
                 )
         else:
+            variant_start = pos[:]
             if variant_regions is not None:
                 regions = parse_regions(variant_regions)
-                variant_length = np.vectorize(len)(root["variant_allele"][:, 0])
+                variant_end = root["variant_position_end"][:]
             elif variant_targets is not None:
                 regions = parse_targets(variant_targets)
-                variant_length = 1
+                variant_end = variant_start + 1
 
             variant_selection = regions_to_selection(
                 regions,
                 root["contig_id"][:].astype("U").tolist(),
                 root["variant_contig"],
-                pos[:],
-                variant_length,
+                variant_start,
+                variant_end,
             )
             variant_mask = np.zeros(pos.shape[0], dtype=bool)
             variant_mask[variant_selection] = 1

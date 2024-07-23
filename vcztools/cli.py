@@ -5,7 +5,6 @@ import click
 from . import vcf_writer
 
 
-
 class NaturalOrderGroup(click.Group):
     """
     List commands in the order they are provided in the help text.
@@ -32,7 +31,9 @@ class NaturalOrderGroup(click.Group):
     help="Target regions to include.",
 )
 def view(path, regions, targets):
-    vcf_writer.write_vcf(path, sys.stdout, variant_regions=regions, variant_targets=targets)
+    vcf_writer.write_vcf(
+        path, sys.stdout, variant_regions=regions, variant_targets=targets
+    )
 
 
 @click.group(cls=NaturalOrderGroup, name="vcztools")

@@ -1,6 +1,5 @@
 import numpy
-from setuptools import Extension
-from setuptools import setup
+from setuptools import Extension, setup
 
 _vcztools_module = Extension(
     "vcztools._vcztools",

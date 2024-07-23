@@ -1,8 +1,8 @@
-import zarr
-import numcodecs
 import sys
 
 import _vcztools
+import numpy as np
+import zarr
 
 # From VCF fixed fields
 RESERVED_VARIABLE_NAMES = [
@@ -35,7 +35,7 @@ def copy_to_memory(group):
 def main(root):
     v_chunk = 0
     contigs = root["contig_id"][:].astype("S")
-    filters = root["filter_id"][:].astype("S")
+    # filters = root["filter_id"][:].astype("S")
     # print("contigs = ", contigs)
     # print("filters = ", contigs)
 
@@ -45,7 +45,7 @@ def main(root):
     alleles = root.variant_allele.blocks[v_chunk]
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
-    qual = root.variant_quality.blocks[v_chunk]
+    # qual = root.variant_quality.blocks[v_chunk]
     # filter_ = filters[root.variant_filter.blocks[v_chunk]]
 
     num_variants = len(pos)
@@ -132,7 +132,7 @@ def main(root):
         print(name, array.dtype, array.dtype.kind)
         encoder.add_format_field(name, array)
 
-    d = encoder.arrays
+    # d = encoder.arrays
     # pos = encoder.arrays["POS"]
     # print(pos)
     # # print(d)
@@ -147,7 +147,6 @@ def main(root):
     for j in range(num_variants):
         line = encoder.encode_row(j, 2**30)
         print(line)
-
 
 
 if __name__ == "__main__":

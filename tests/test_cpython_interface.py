@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 
 from vcztools import _vcztools
 
@@ -82,7 +82,7 @@ class TestPrintState:
         filename = tmp_path / "debug.txt"
         with open(filename, "w") as f:
             encoder.print_state(f)
-        with open(filename, "r") as f:
+        with open(filename) as f:
             s = f.read()
         assert "CHROM" in s
 
@@ -91,7 +91,7 @@ class TestPrintState:
         filename = tmp_path / "debug.txt"
         with open(filename, "w") as f:
             f.write("x")
-        with open(filename, "r") as f:
+        with open(filename) as f:
             with pytest.raises(OSError, match="22"):
                 encoder.print_state(f)
 
@@ -166,7 +166,7 @@ class TestFixedFieldInputChecking:
         with pytest.raises(ValueError, match=f"Array {name} must have "):
             _vcztools.VcfEncoder(num_variants, 0, **data)
 
-    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])
+    @pytest.mark.parametrize("name", [*FIXED_FIELD_NAMES, "filter_ids"])
     def test_field_incorrect_dtype(self, name):
         num_variants = 5
         data = example_fixed_data(num_variants)
@@ -174,7 +174,7 @@ class TestFixedFieldInputChecking:
         with pytest.raises(ValueError, match=f"Wrong dtype for {name}"):
             _vcztools.VcfEncoder(num_variants, 0, **data)
 
-    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])
+    @pytest.mark.parametrize("name", [*FIXED_FIELD_NAMES, "filter_ids"])
     def test_field_incorrect_dimension(self, name):
         num_variants = 2
         data = example_fixed_data(num_variants)
@@ -182,7 +182,7 @@ class TestFixedFieldInputChecking:
         with pytest.raises(ValueError, match=f"{name} has wrong dimension"):
             _vcztools.VcfEncoder(num_variants, 0, **data)
 
-    @pytest.mark.parametrize("name", FIXED_FIELD_NAMES + ["filter_ids"])
+    @pytest.mark.parametrize("name", [*FIXED_FIELD_NAMES, "filter_ids"])
     def test_field_incorrect_type(self, name):
         num_variants = 5
         data = example_fixed_data(num_variants)

@@ -1,10 +1,10 @@
 from io import StringIO
 
 import pytest
+from bio2zarr import vcf2zarr
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
-from bio2zarr import vcf2zarr
 from vcztools.vcf_writer import write_vcf
 
 from .utils import assert_vcfs_close
@@ -54,8 +54,9 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
     assert_vcfs_close(path, output)
 
 
+# fmt: off
 @pytest.mark.parametrize(
-    "switch, regions, expected_chrom_pos",
+    ("switch", "regions", "expected_chrom_pos"),
     [
         ("-t", "19", [("19", 111), ("19", 112)]),
         ("-t", "19:112", [("19", 112)]),
@@ -63,8 +64,8 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
         ("-t", "20:1230237-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
         ("-t", "20:1230238-", [("20", 1234567), ("20", 1235237)]),
         ("-t", "20:1230237-1235236", [("20", 1230237), ("20", 1234567)]),
-        ("-t", "20:1230237-1235237", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
-        ("-t", "20:1230237-1235238", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-t", "20:1230237-1235237", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),  # noqa: E501
+        ("-t", "20:1230237-1235238", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),  # noqa: E501
         ("-t", "19,X", [("19", 111), ("19", 112), ("X", 10)]),
         ("-t", "X:11", []),
         ("-r", "19", [("19", 111), ("19", 112)]),
@@ -73,13 +74,15 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
         ("-r", "20:1230237-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
         ("-r", "20:1230238-", [("20", 1234567), ("20", 1235237)]),
         ("-r", "20:1230237-1235236", [("20", 1230237), ("20", 1234567)]),
-        ("-r", "20:1230237-1235237", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
-        ("-r", "20:1230237-1235238", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
+        ("-r", "20:1230237-1235237", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),  # noqa: E501
+        ("-r", "20:1230237-1235238", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),  # noqa: E501
         ("-r", "19,X", [("19", 111), ("19", 112), ("X", 10)]),
         ("-r", "X:11", [("X", 10)]),  # note differs from -t
     ]
 )
-def test_write_vcf__regions(shared_datadir, tmp_path, switch, regions, expected_chrom_pos):
+# fmt: on
+def test_write_vcf__regions(shared_datadir, tmp_path, switch, regions,
+                            expected_chrom_pos):
     path = shared_datadir / "vcf" / "sample.vcf.gz"
     intermediate_icf = tmp_path.joinpath("intermediate.icf")
     intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
@@ -135,7 +138,7 @@ def test_write_vcf__set_header(shared_datadir, tmp_path):
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
 ##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA00001	NA00002	NA00003
-"""
+"""  # noqa: E501
 
     write_vcf(intermediate_vcz, output, vcf_header=vcf_header)
 

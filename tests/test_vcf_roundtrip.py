@@ -1,9 +1,10 @@
 import pathlib
 
 import pytest
-
 from bio2zarr import vcf2zarr
+
 from vcztools.vcf_writer import write_vcf
+
 from .utils import assert_vcfs_close
 
 
@@ -17,7 +18,9 @@ def vcz_path_cache(vcf_path):
         cache_path.mkdir()
     cached_vcz_path = (cache_path / vcf_path.name).with_suffix(".vcz")
     if not cached_vcz_path.exists():
-        vcf2zarr.convert([vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False)
+        vcf2zarr.convert(
+            [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
+        )
     return cached_vcz_path
 
 

@@ -2,7 +2,7 @@ import sys
 
 import click
 
-from . import vcf_writer
+from . import regions, vcf_writer
 
 
 class NaturalOrderGroup(click.Group):
@@ -12,6 +12,12 @@ class NaturalOrderGroup(click.Group):
 
     def list_commands(self, ctx):
         return self.commands.keys()
+
+
+@click.command
+@click.argument("path", type=click.Path())
+def index(path):
+    regions.create_index(path)
 
 
 @click.command
@@ -41,4 +47,5 @@ def vcztools_main():
     pass
 
 
+vcztools_main.add_command(index)
 vcztools_main.add_command(view)

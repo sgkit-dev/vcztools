@@ -167,8 +167,9 @@ def write_vcf(
         else:
             if variant_regions is not None:
                 regions = parse_regions(variant_regions)
+                complement = False
             elif variant_targets is not None:
-                regions = parse_targets(variant_targets)
+                complement, regions = parse_targets(variant_targets)
 
             # Use the region index to find the chunks that overlap the query regions
             region_index = root["region_index"][:]
@@ -177,6 +178,7 @@ def write_vcf(
                 root["contig_id"][:].astype("U").tolist(),
                 region_index,
                 targets=(variant_targets is not None),
+                complement=complement,
             )
 
             # Then use only load required variant_contig/position chunks
@@ -206,6 +208,7 @@ def write_vcf(
                 region_variant_contig,
                 region_variant_position,
                 region_variant_position_end,
+                complement=complement,
             )
             variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
             variant_mask[variant_selection] = 1

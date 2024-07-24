@@ -29,11 +29,11 @@ def parse_targets(targets: str) -> list[tuple[str, Optional[int], Optional[int]]
 
 
 def regions_to_selection(
+    regions: list[tuple[str, Optional[int], Optional[int]]],
     all_contigs: list[str],
     variant_contig: Any,
     variant_position: Any,
     variant_length: Any,
-    regions: list[tuple[str, Optional[int], Optional[int]]],
 ):
     # subtract 1 from start coordinate to convert intervals
     # from VCF (1-based, fully-closed) to Python (0-based, half-open)

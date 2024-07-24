@@ -5,6 +5,7 @@ from bio2zarr import vcf2zarr
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
+from vcztools.regions import create_index
 from vcztools.vcf_writer import write_vcf
 
 from .utils import assert_vcfs_close
@@ -91,6 +92,7 @@ def test_write_vcf__regions(shared_datadir, tmp_path, switch, regions,
     vcf2zarr.convert(
         [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
     )
+    create_index(intermediate_vcz)
 
     if switch == "-t":
         write_vcf(intermediate_vcz, output, variant_targets=regions)

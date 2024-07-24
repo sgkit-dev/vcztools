@@ -165,27 +165,25 @@ def write_vcf(
                     output,
                 )
         else:
-            if variant_regions is not None:
-                regions = parse_regions(variant_regions)
-                complement = False
-            elif variant_targets is not None:
-                complement, regions = parse_targets(variant_targets)
+            contigs_u = root["contig_id"][:].astype("U").tolist()
+            regions = parse_regions(variant_regions, contigs_u)
+            targets, complement = parse_targets(variant_targets, contigs_u)
 
-            # Use the region index to find the chunks that overlap the query regions
+            # Use the region index to find the chunks that overlap specfied regions or
+            # targets
             region_index = root["region_index"][:]
             chunk_indexes = regions_to_chunk_indexes(
                 regions,
-                root["contig_id"][:].astype("U").tolist(),
+                targets,
+                complement,
                 region_index,
-                targets=(variant_targets is not None),
-                complement=complement,
             )
 
             # Then use only load required variant_contig/position chunks
             if len(chunk_indexes) == 0:
-                # no chunks
+                # no chunks - no variants to write
                 return
-            if len(chunk_indexes) == 1:
+            elif len(chunk_indexes) == 1:
                 # single chunk
                 block_sel = chunk_indexes[0]
             else:
@@ -194,21 +192,18 @@ def write_vcf(
 
             region_variant_contig = root["variant_contig"].blocks[block_sel][:]
             region_variant_position = root["variant_position"].blocks[block_sel][:]
+            region_variant_position_end = root["variant_position_end"].blocks[
+                block_sel
+            ][:]
 
-            if variant_regions is not None:
-                region_variant_position_end = root["variant_position_end"].blocks[
-                    block_sel
-                ][:]
-            elif variant_targets is not None:
-                region_variant_position_end = None
-
+            # Find the final variant selection
             variant_selection = regions_to_selection(
                 regions,
-                root["contig_id"][:].astype("U").tolist(),
+                targets,
+                complement,
                 region_variant_contig,
                 region_variant_position,
                 region_variant_position_end,
-                complement=complement,
             )
             variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
             variant_mask[variant_selection] = 1

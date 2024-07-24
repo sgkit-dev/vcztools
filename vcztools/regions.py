@@ -66,12 +66,15 @@ def parse_region(region: str) -> tuple[str, Optional[int], Optional[int]]:
         return contig, None, None
 
 
-def parse_regions(targets: str) -> list[tuple[str, Optional[int], Optional[int]]]:
-    return [parse_region(region) for region in targets.split(",")]
+def parse_regions(regions: str) -> list[tuple[str, Optional[int], Optional[int]]]:
+    return [parse_region(region) for region in regions.split(",")]
 
 
-def parse_targets(targets: str) -> list[tuple[str, Optional[int], Optional[int]]]:
-    return [parse_region(region) for region in targets.split(",")]
+def parse_targets(
+    targets: str,
+) -> tuple[bool, list[tuple[str, Optional[int], Optional[int]]]]:
+    complement = targets.startswith("^")
+    return complement, parse_regions(targets[1:] if complement else targets)
 
 
 def regions_to_pyranges(
@@ -101,6 +104,7 @@ def regions_to_chunk_indexes(
     all_contigs: list[str],
     regions_index: Any,
     targets: bool,
+    complement: bool,
 ):
     """Return chunks indexes that overlap the given regions."""
     chunk_index = regions_index[:, 0]
@@ -120,7 +124,10 @@ def regions_to_chunk_indexes(
 
     query = regions_to_pyranges(regions, all_contigs)
 
-    overlap = chunks.overlap(query)
+    if complement:
+        overlap = chunks.subtract(query)
+    else:
+        overlap = chunks.overlap(query)
     if overlap.empty:
         return np.empty((0,), dtype=np.int64)
     chunk_indexes = overlap.df["chunk_index"].to_numpy()
@@ -134,6 +141,7 @@ def regions_to_selection(
     variant_contig: Any,
     variant_position: Any,
     variant_end: Any,
+    complement: bool,
 ):
     # subtract 1 from start coordinate to convert intervals
     # from VCF (1-based, fully-closed) to Python (0-based, half-open)
@@ -150,7 +158,10 @@ def regions_to_selection(
 
     query = regions_to_pyranges(regions, all_contigs)
 
-    overlap = variants.overlap(query)
+    if complement:
+        overlap = variants.subtract(query)
+    else:
+        overlap = variants.overlap(query)
     if overlap.empty:
         return np.empty((0,), dtype=np.int64)
     return overlap.df["index"].to_numpy()

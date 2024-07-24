@@ -83,6 +83,9 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
         (None, "19,X", [("19", 111), ("19", 112), ("X", 10)]),
         (None, "X:11", []),
         (None, "^19,20:1-1234567", [("20", 1235237), ("X", 10)]),  # complement
+
+        # regions and targets
+        ("20", "^20:1110696-", [("20", 14370), ("20", 17330)])
     ]
 )
 # fmt: on

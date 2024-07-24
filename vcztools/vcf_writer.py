@@ -149,50 +149,56 @@ def write_vcf(
         filters = root["filter_id"][:].astype("S")
 
         if variant_regions is None and variant_targets is None:
-            variant_mask = np.ones(pos.shape[0], dtype=bool)
-        elif variant_regions is not None:
-            regions = parse_regions(variant_regions)
-            variant_length = np.vectorize(len)(root["variant_allele"][:, 0])
-            variant_selection = regions_to_selection(
-                root["contig_id"][:].astype("U").tolist(),
-                root["variant_contig"],
-                pos[:],
-                variant_length,
-                regions,
-            )
-            variant_mask = np.zeros(pos.shape[0], dtype=bool)
-            variant_mask[variant_selection] = 1
-        else:
-            regions = parse_targets(variant_targets)
-            variant_selection = regions_to_selection(
-                root["contig_id"][:].astype("U").tolist(),
-                root["variant_contig"],
-                pos[:],
-                1,
-                regions,
-            )
-            variant_mask = np.zeros(pos.shape[0], dtype=bool)
-            variant_mask[variant_selection] = 1
-        # Use zarr arrays to get mask chunks aligned with the main data
-        # for convenience.
-        z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
-
-        for v_chunk in range(pos.cdata_shape[0]):
-            v_mask_chunk = z_variant_mask.blocks[v_chunk]
-            count = np.sum(v_mask_chunk)
-            if count > 0:
+            # no regions or targets selected
+            for v_chunk in range(pos.cdata_shape[0]):
                 c_chunk_to_vcf(
                     root,
                     v_chunk,
-                    v_mask_chunk,
+                    None,
                     contigs,
                     filters,
                     output,
                 )
+        else:
+            if variant_regions is not None:
+                regions = parse_regions(variant_regions)
+                variant_length = np.vectorize(len)(root["variant_allele"][:, 0])
+            elif variant_targets is not None:
+                regions = parse_targets(variant_targets)
+                variant_length = 1
+
+            variant_selection = regions_to_selection(
+                regions,
+                root["contig_id"][:].astype("U").tolist(),
+                root["variant_contig"],
+                pos[:],
+                variant_length,
+            )
+            variant_mask = np.zeros(pos.shape[0], dtype=bool)
+            variant_mask[variant_selection] = 1
+            # Use zarr arrays to get mask chunks aligned with the main data
+            # for convenience.
+            z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
+
+            for v_chunk in range(pos.cdata_shape[0]):
+                v_mask_chunk = z_variant_mask.blocks[v_chunk]
+                count = np.sum(v_mask_chunk)
+                if count > 0:
+                    c_chunk_to_vcf(
+                        root,
+                        v_chunk,
+                        v_mask_chunk,
+                        contigs,
+                        filters,
+                        output,
+                    )
 
 
 def get_block_selection(zarray, key, mask):
-    return zarray.blocks[key][mask]
+    if mask is None:
+        return zarray.blocks[key]
+    else:
+        return zarray.blocks[key][mask]
 
 
 def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):

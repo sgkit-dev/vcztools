@@ -114,13 +114,13 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
                                 val2,
                                 rtol=rtol,
                                 atol=atol,
-                                err_msg=f"FORMAT {field} not equal for \
-                                    variants\n{v1}{v2}",
+                                err_msg=f"FORMAT {field} not equal for "
+                                f"variants\n{v1}{v2}",
                             )
                         else:
                             np.testing.assert_array_equal(
                                 val1,
                                 val2,
-                                err_msg=f"FORMAT {field} not equal for \
-                                    variants\n{v1}{v2}",
+                                err_msg=f"FORMAT {field} not equal for "
+                                f"variants\n{v1}{v2}",
                             )

@@ -24,8 +24,8 @@ RESERVED_INFO_KEY_DESCRIPTIONS = {
     "AF": "Allele frequency for each ALT allele in the same order as listed",
     "AN": "Total number of alleles in called genotypes",
     "BQ": "RMS base quality",
-    "CIGAR": "Cigar string describing how to align an alternate allele to the \
-        reference allele",
+    "CIGAR": "Cigar string describing how to align an alternate allele to the reference"
+    "allele",
     "DB": "dbSNP membership",
     "DP": "Combined depth across samples",
     "END": "End position on CHROM",
@@ -55,8 +55,8 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
     "HQ": "Haplotype quality",
     "MQ": "RMS mapping quality",
     "PL": "Phred-scaled genotype likelihoods rounded to the closest integer",
-    "PP": "Phred-scaled genotype posterior probabilities rounded to the closest \
-        integer",
+    "PP": "Phred-scaled genotype posterior probabilities rounded to the closest "
+    "integer",
     "PQ": "Phasing quality",
     "PS": "Phase set",
 }

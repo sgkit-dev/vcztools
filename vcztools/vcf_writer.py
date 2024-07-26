@@ -192,9 +192,7 @@ def write_vcf(
 
             region_variant_contig = root["variant_contig"].blocks[block_sel][:]
             region_variant_position = root["variant_position"].blocks[block_sel][:]
-            region_variant_position_end = root["variant_position_end"].blocks[
-                block_sel
-            ][:]
+            region_variant_length = root["variant_length"].blocks[block_sel][:]
 
             # Find the final variant selection
             variant_selection = regions_to_selection(
@@ -203,7 +201,7 @@ def write_vcf(
                 complement,
                 region_variant_contig,
                 region_variant_position,
-                region_variant_position_end,
+                region_variant_length,
             )
             variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
             variant_mask[variant_selection] = 1

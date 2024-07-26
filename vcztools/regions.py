@@ -15,7 +15,7 @@ def create_index(vcz) -> None:
 
     contig = root["variant_contig"]
     pos = root["variant_position"]
-    end = root["variant_position_end"]
+    length = root["variant_length"]
 
     assert contig.cdata_shape == pos.cdata_shape
 
@@ -24,7 +24,7 @@ def create_index(vcz) -> None:
     for v_chunk in range(pos.cdata_shape[0]):
         c = contig.blocks[v_chunk]
         p = pos.blocks[v_chunk]
-        e = end.blocks[v_chunk]
+        e = p + length.blocks[v_chunk] - 1
 
         # create a row for each contig in the chunk
         d = np.diff(c, append=-1)
@@ -163,7 +163,7 @@ def regions_to_selection(
     complement: bool,
     variant_contig: Any,
     variant_position: Any,
-    variant_end: Any,
+    variant_length: Any,
 ):
     """Return a variant selection that corresponds to the given regions and targets.
 
@@ -176,6 +176,7 @@ def regions_to_selection(
     variant_start = variant_position - 1
 
     if regions is not None:
+        variant_end = variant_start + variant_length
         df = pd.DataFrame(
             {"Chromosome": variant_contig, "Start": variant_start, "End": variant_end}
         )

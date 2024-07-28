@@ -223,11 +223,14 @@ def write_vcf(
                     )
 
 
-def get_block_selection(zarray, key, mask):
-    if mask is None:
-        return zarray.blocks[key]
-    else:
-        return zarray.blocks[key][mask]
+def get_block_selection(zarray, v_chunk, mask):
+    v_chunksize = zarray.chunks[0]
+    start = v_chunksize * v_chunk
+    end = v_chunksize * (v_chunk + 1)
+    result = zarray[start:end]
+    if mask is not None:
+        result = result[mask]
+    return result
 
 
 def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):

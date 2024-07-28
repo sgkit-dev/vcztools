@@ -13,6 +13,7 @@ from vcztools.regions import (
     regions_to_chunk_indexes,
     regions_to_selection,
 )
+from vcztools.utils import search
 
 from . import _vcztools
 from .constants import RESERVED_VARIABLE_NAMES
@@ -78,6 +79,7 @@ def write_vcf(
     vcf_header: Optional[str] = None,
     variant_regions=None,
     variant_targets=None,
+    samples=None,
 ) -> None:
     """Convert a dataset to a VCF file.
 
@@ -132,12 +134,20 @@ def write_vcf(
         if isinstance(output, str) or isinstance(output, Path):
             output = stack.enter_context(open(output, mode="w"))
 
+        if samples is None:
+            sample_ids = root["sample_id"][:]
+            samples_selection = None
+        else:
+            all_samples = root["sample_id"][:]
+            sample_ids = np.array(samples.split(","))
+            samples_selection = search(all_samples, sample_ids)
+
         if vcf_header is None:
             if "vcf_header" in root.attrs:
                 original_header = root.attrs["vcf_header"]
             else:
                 original_header = None
-            vcf_header = _generate_header(root, original_header)
+            vcf_header = _generate_header(root, original_header, sample_ids)
 
         print(vcf_header, end="", file=output)
 
@@ -160,6 +170,7 @@ def write_vcf(
                     root,
                     v_chunk,
                     None,
+                    samples_selection,
                     contigs,
                     filters,
                     output,
@@ -217,34 +228,40 @@ def write_vcf(
                         root,
                         v_chunk,
                         v_mask_chunk,
+                        samples_selection,
                         contigs,
                         filters,
                         output,
                     )
 
 
-def get_block_selection(zarray, v_chunk, mask):
+def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
     v_chunksize = zarray.chunks[0]
     start = v_chunksize * v_chunk
     end = v_chunksize * (v_chunk + 1)
-    result = zarray[start:end]
+    if samples_selection is None:
+        result = zarray[start:end]
+    else:
+        result = zarray.oindex[start:end, samples_selection]
     if mask is not None:
         result = result[mask]
     return result
 
 
-def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
-    chrom = contigs[get_block_selection(root.variant_contig, v_chunk, v_mask_chunk)]
+def c_chunk_to_vcf(
+    root, v_chunk, v_mask_chunk, samples_selection, contigs, filters, output
+):
+    chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
-    pos = get_block_selection(root.variant_position, v_chunk, v_mask_chunk).astype(
+    pos = get_vchunk_array(root.variant_position, v_chunk, v_mask_chunk).astype(
         np.int32
     )
-    id = get_block_selection(root.variant_id, v_chunk, v_mask_chunk).astype("S")
-    alleles = get_block_selection(root.variant_allele, v_chunk, v_mask_chunk)
+    id = get_vchunk_array(root.variant_id, v_chunk, v_mask_chunk).astype("S")
+    alleles = get_vchunk_array(root.variant_allele, v_chunk, v_mask_chunk)
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
-    qual = get_block_selection(root.variant_quality, v_chunk, v_mask_chunk)
-    filter_ = get_block_selection(root.variant_filter, v_chunk, v_mask_chunk)
+    qual = get_vchunk_array(root.variant_quality, v_chunk, v_mask_chunk)
+    filter_ = get_vchunk_array(root.variant_filter, v_chunk, v_mask_chunk)
 
     num_variants = len(pos)
     if len(id.shape) == 1:
@@ -254,25 +271,29 @@ def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
     # we avoid retrieving stuff we don't need.
     format_fields = {}
     info_fields = {}
-    num_samples = None
+    num_samples = len(samples_selection) if samples_selection is not None else None
     for name, array in root.items():
         if name.startswith("call_") and not name.startswith("call_genotype"):
             vcf_name = name[len("call_") :]
-            format_fields[vcf_name] = get_block_selection(array, v_chunk, v_mask_chunk)
+            format_fields[vcf_name] = get_vchunk_array(
+                array, v_chunk, v_mask_chunk, samples_selection
+            )
             if num_samples is None:
                 num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
-            info_fields[vcf_name] = get_block_selection(array, v_chunk, v_mask_chunk)
+            info_fields[vcf_name] = get_vchunk_array(array, v_chunk, v_mask_chunk)
 
     gt = None
     gt_phased = None
     if "call_genotype" in root:
         array = root["call_genotype"]
-        gt = get_block_selection(array, v_chunk, v_mask_chunk)
+        gt = get_vchunk_array(array, v_chunk, v_mask_chunk, samples_selection)
         if "call_genotype_phased" in root:
             array = root["call_genotype_phased"]
-            gt_phased = get_block_selection(array, v_chunk, v_mask_chunk)
+            gt_phased = get_vchunk_array(
+                array, v_chunk, v_mask_chunk, samples_selection
+            )
         else:
             gt_phased = np.zeros_like(gt, dtype=bool)
 
@@ -324,7 +345,7 @@ def c_chunk_to_vcf(root, v_chunk, v_mask_chunk, contigs, filters, output):
         print(line, file=output)
 
 
-def _generate_header(ds, original_header):
+def _generate_header(ds, original_header, sample_ids):
     output = io.StringIO()
 
     contigs = list(ds["contig_id"][:])
@@ -465,9 +486,9 @@ def _generate_header(ds, original_header):
         file=output,
     )
 
-    if len(ds.sample_id) > 0:
+    if len(sample_ids) > 0:
         print(end="\t", file=output)
-        print("FORMAT", *ds.sample_id[:], sep="\t", file=output)
+        print("FORMAT", *sample_ids, sep="\t", file=output)
     else:
         print(file=output)
 

@@ -30,15 +30,26 @@ def index(path):
     help="Regions to include.",
 )
 @click.option(
+    "-s",
+    "--samples",
+    type=str,
+    default=None,
+    help="Samples to include.",
+)
+@click.option(
     "-t",
     "--targets",
     type=str,
     default=None,
     help="Target regions to include.",
 )
-def view(path, regions, targets):
+def view(path, regions, targets, samples):
     vcf_writer.write_vcf(
-        path, sys.stdout, variant_regions=regions, variant_targets=targets
+        path,
+        sys.stdout,
+        variant_regions=regions,
+        variant_targets=targets,
+        samples=samples,
     )
 
 

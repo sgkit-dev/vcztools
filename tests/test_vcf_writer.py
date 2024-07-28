@@ -115,6 +115,43 @@ def test_write_vcf__regions(shared_datadir, tmp_path, regions, targets,
         assert variant.CHROM == chrom
         assert variant.POS == pos
 
+@pytest.mark.parametrize(
+    ("samples", "expected_genotypes"),
+    [
+        ("NA00001", [[0, 0, True]]),
+        ("NA00001,NA00003", [[0, 0, True], [0, 1, False]]),
+        ("NA00003,NA00001", [[0, 1, False], [0, 0, True]]),
+    ]
+)
+def test_write_vcf__samples(shared_datadir, tmp_path, samples, expected_genotypes):
+    path = shared_datadir / "vcf" / "sample.vcf.gz"
+    intermediate_icf = tmp_path.joinpath("intermediate.icf")
+    intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
+    output = tmp_path.joinpath("output.vcf")
+
+    vcf2zarr.convert(
+        [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
+    )
+    create_index(intermediate_vcz)
+
+    write_vcf(intermediate_vcz, output, samples=samples)
+
+    v = VCF(output)
+
+    assert v.samples == samples.split(",")
+
+    variant = next(v)
+
+    assert variant.CHROM == "19"
+    assert variant.POS == 111
+    assert variant.ID is None
+    assert variant.REF == "A"
+    assert variant.ALT == ["C"]
+    assert variant.QUAL == pytest.approx(9.6)
+    assert variant.FILTER is None
+
+    assert variant.genotypes == expected_genotypes
+
 
 @pytest.mark.skip(reason="Setting a header to control output fields is not supported.")
 def test_write_vcf__set_header(shared_datadir, tmp_path):

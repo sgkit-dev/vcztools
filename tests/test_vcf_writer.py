@@ -1,32 +1,26 @@
+import pathlib
 from io import StringIO
 
 import pytest
-from bio2zarr import vcf2zarr
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
-from vcztools.regions import create_index
 from vcztools.vcf_writer import write_vcf
 
-from .utils import assert_vcfs_close
+from .utils import assert_vcfs_close, vcz_path_cache
 
 
 @pytest.mark.parametrize("output_is_path", [True, False])
-def test_write_vcf(shared_datadir, tmp_path, output_is_path):
-    path = shared_datadir / "vcf" / "sample.vcf.gz"
-    intermediate_icf = tmp_path.joinpath("intermediate.icf")
-    intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
+def test_write_vcf(tmp_path, output_is_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    vcf2zarr.convert(
-        [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
-    )
-
     if output_is_path:
-        write_vcf(intermediate_vcz, output)
+        write_vcf(vcz, output)
     else:
         output_str = StringIO()
-        write_vcf(intermediate_vcz, output_str)
+        write_vcf(vcz, output_str)
         with open(output, "w") as f:
             f.write(output_str.getvalue())
 
@@ -52,7 +46,7 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
     )
 
     # check headers are the same
-    assert_vcfs_close(path, output)
+    assert_vcfs_close(original, output)
 
 
 # fmt: off
@@ -89,19 +83,14 @@ def test_write_vcf(shared_datadir, tmp_path, output_is_path):
     ]
 )
 # fmt: on
-def test_write_vcf__regions(shared_datadir, tmp_path, regions, targets,
+def test_write_vcf__regions(tmp_path, regions, targets,
                             expected_chrom_pos):
-    path = shared_datadir / "vcf" / "sample.vcf.gz"
-    intermediate_icf = tmp_path.joinpath("intermediate.icf")
-    intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
+
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    vcf2zarr.convert(
-        [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
-    )
-    create_index(intermediate_vcz)
-
-    write_vcf(intermediate_vcz, output, variant_regions=regions,
+    write_vcf(vcz, output, variant_regions=regions,
               variant_targets=targets)
 
     v = VCF(output)
@@ -123,18 +112,12 @@ def test_write_vcf__regions(shared_datadir, tmp_path, regions, targets,
         ("NA00003,NA00001", [[0, 1, False], [0, 0, True]]),
     ]
 )
-def test_write_vcf__samples(shared_datadir, tmp_path, samples, expected_genotypes):
-    path = shared_datadir / "vcf" / "sample.vcf.gz"
-    intermediate_icf = tmp_path.joinpath("intermediate.icf")
-    intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
+def test_write_vcf__samples(tmp_path, samples, expected_genotypes):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    vcf2zarr.convert(
-        [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
-    )
-    create_index(intermediate_vcz)
-
-    write_vcf(intermediate_vcz, output, samples=samples)
+    write_vcf(vcz, output, samples=samples)
 
     v = VCF(output)
 
@@ -154,15 +137,10 @@ def test_write_vcf__samples(shared_datadir, tmp_path, samples, expected_genotype
 
 
 @pytest.mark.skip(reason="Setting a header to control output fields is not supported.")
-def test_write_vcf__set_header(shared_datadir, tmp_path):
-    path = shared_datadir / "vcf" / "sample.vcf.gz"
-    intermediate_icf = tmp_path.joinpath("intermediate.icf")
-    intermediate_vcz = tmp_path.joinpath("intermediate.vcz")
+def test_write_vcf__set_header(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
-
-    vcf2zarr.convert(
-        [path], intermediate_vcz, icf_path=intermediate_icf, worker_processes=0
-    )
 
     # specified header drops NS and HQ fields,
     # and adds H3 and GL fields (which are not in the data)
@@ -184,7 +162,7 @@ def test_write_vcf__set_header(shared_datadir, tmp_path):
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA00001	NA00002	NA00003
 """  # noqa: E501
 
-    write_vcf(intermediate_vcz, output, vcf_header=vcf_header)
+    write_vcf(vcz, output, vcf_header=vcf_header)
 
     v = VCF(output)
     # check dropped fields are not present in VCF header

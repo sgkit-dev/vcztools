@@ -1,27 +1,11 @@
 import pathlib
 
 import pytest
-from bio2zarr import vcf2zarr
 
+from tests.utils import vcz_path_cache
 from vcztools.vcf_writer import write_vcf
 
 from .utils import assert_vcfs_close
-
-
-def vcz_path_cache(vcf_path):
-    """
-    Store converted files in a cache to speed up tests. We're not testing
-    vcf2zarr here, so no point in running over and over again.
-    """
-    cache_path = pathlib.Path("vcz_test_cache")
-    if not cache_path.exists():
-        cache_path.mkdir()
-    cached_vcz_path = (cache_path / vcf_path.name).with_suffix(".vcz")
-    if not cached_vcz_path.exists():
-        vcf2zarr.convert(
-            [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
-        )
-    return cached_vcz_path
 
 
 @pytest.mark.parametrize(

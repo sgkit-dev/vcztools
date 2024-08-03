@@ -77,6 +77,7 @@ def write_vcf(
     output,
     *,
     vcf_header: Optional[str] = None,
+    no_header: bool = False,
     variant_regions=None,
     variant_targets=None,
     samples=None,
@@ -142,14 +143,15 @@ def write_vcf(
             sample_ids = np.array(samples.split(","))
             samples_selection = search(all_samples, sample_ids)
 
-        if vcf_header is None:
+        if not no_header and vcf_header is None:
             if "vcf_header" in root.attrs:
                 original_header = root.attrs["vcf_header"]
             else:
                 original_header = None
             vcf_header = _generate_header(root, original_header, sample_ids)
 
-        print(vcf_header, end="", file=output)
+        if not no_header:
+            print(vcf_header, end="", file=output)
 
         pos = root["variant_position"]
         num_variants = pos.shape[0]

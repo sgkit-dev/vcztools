@@ -1,9 +1,11 @@
+import pathlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from itertools import zip_longest
 
 import cyvcf2
 import numpy as np
+from bio2zarr import vcf2zarr
 
 
 @contextmanager
@@ -124,3 +126,19 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
                                 err_msg=f"FORMAT {field} not equal for "
                                 f"variants\n{v1}{v2}",
                             )
+
+
+def vcz_path_cache(vcf_path):
+    """
+    Store converted files in a cache to speed up tests. We're not testing
+    vcf2zarr here, so no point in running over and over again.
+    """
+    cache_path = pathlib.Path("vcz_test_cache")
+    if not cache_path.exists():
+        cache_path.mkdir()
+    cached_vcz_path = (cache_path / vcf_path.name).with_suffix(".vcz")
+    if not cached_vcz_path.exists():
+        vcf2zarr.convert(
+            [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
+        )
+    return cached_vcz_path

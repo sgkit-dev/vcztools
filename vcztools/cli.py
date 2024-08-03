@@ -23,6 +23,11 @@ def index(path):
 @click.command
 @click.argument("path", type=click.Path())
 @click.option(
+    "--no-version",
+    is_flag=True,
+    help="Do not append version and command line information to the output VCF header.",
+)
+@click.option(
     "-r",
     "--regions",
     type=str,
@@ -43,7 +48,7 @@ def index(path):
     default=None,
     help="Target regions to include.",
 )
-def view(path, regions, targets, samples):
+def view(path, no_version, regions, targets, samples):
     vcf_writer.write_vcf(
         path,
         sys.stdout,

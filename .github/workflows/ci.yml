@@ -19,6 +19,9 @@ jobs:
   python_test:
     name: Python tests
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash -el {0}
     strategy:
       matrix:
         # Use macos-13 because pip binary packages for ARM aren't
@@ -37,12 +40,15 @@ jobs:
             python-version: "3.10"
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up Miniconda with Python ${{ matrix.python-version }}
+        uses: conda-incubator/setup-miniconda@v3
         with:
+          auto-update-conda: true
           python-version: ${{ matrix.python-version }}
+          channels: conda-forge,bioconda
       - name: Install dependencies
         run: |
+          conda install bcftools
           python -m pip install --upgrade pip
           python -m pip install '.[dev]'
           # Build the extension module in-place so pytest can find it

@@ -77,6 +77,7 @@ def write_vcf(
     output,
     *,
     vcf_header: Optional[str] = None,
+    header_only: bool = False,
     no_header: bool = False,
     variant_regions=None,
     variant_targets=None,
@@ -152,6 +153,9 @@ def write_vcf(
 
         if not no_header:
             print(vcf_header, end="", file=output)
+
+        if header_only:
+            return
 
         pos = root["variant_position"]
         num_variants = pos.shape[0]

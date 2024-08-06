@@ -23,6 +23,12 @@ def index(path):
 @click.command
 @click.argument("path", type=click.Path())
 @click.option(
+    "-h",
+    "--header-only",
+    is_flag=True,
+    help="Output the VCF header only.",
+)
+@click.option(
     "-H",
     "--no-header",
     is_flag=True,
@@ -54,10 +60,11 @@ def index(path):
     default=None,
     help="Target regions to include.",
 )
-def view(path, no_header, no_version, regions, targets, samples):
+def view(path, header_only, no_header, no_version, regions, targets, samples):
     vcf_writer.write_vcf(
         path,
         sys.stdout,
+        header_only=header_only,
         no_header=no_header,
         variant_regions=regions,
         variant_targets=targets,

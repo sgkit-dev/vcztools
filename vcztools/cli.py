@@ -3,7 +3,8 @@ import sys
 import click
 
 from . import query as query_module
-from . import regions, stats, vcf_writer
+from . import regions, vcf_writer
+from . import stats as stats_module
 
 
 class NaturalOrderGroup(click.Group):
@@ -23,9 +24,17 @@ class NaturalOrderGroup(click.Group):
     is_flag=True,
     help="Print the number of records (variants).",
 )
-def index(path, nrecords):
+@click.option(
+    "-s",
+    "--stats",
+    is_flag=True,
+    help="Print per contig stats.",
+)
+def index(path, nrecords, stats):
     if nrecords:
-        stats.nrecords(path, sys.stdout)
+        stats_module.nrecords(path, sys.stdout)
+    elif stats:
+        stats_module.stats(path, sys.stdout)
     else:
         regions.create_index(path)
 

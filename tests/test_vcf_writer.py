@@ -136,6 +136,25 @@ def test_write_vcf__samples(tmp_path, samples, expected_genotypes):
     assert variant.genotypes == expected_genotypes
 
 
+def test_write_vcf__header_flags(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    output_header = StringIO()
+    write_vcf(vcz, output_header, header_only=True)
+
+    output_no_header = StringIO()
+    write_vcf(vcz, output_no_header, no_header=True)
+    assert not output_no_header.getvalue().startswith("#")
+
+    # combine outputs and check VCFs match
+    output_str = output_header.getvalue() + output_no_header.getvalue()
+    with open(output, "w") as f:
+        f.write(output_str)
+    assert_vcfs_close(original, output)
+
+
 @pytest.mark.skip(reason="Setting a header to control output fields is not supported.")
 def test_write_vcf__set_header(tmp_path):
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"

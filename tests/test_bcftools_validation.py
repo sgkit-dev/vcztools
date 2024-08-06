@@ -74,6 +74,8 @@ def test_vcf_output(tmp_path, args, vcf_file):
     [
         ("index -n", "sample.vcf.gz"),
         ("index --nrecords", "1kg_2020_chrM.vcf.gz"),
+        ("index -s", "sample.vcf.gz"),
+        ("index --stats", "1kg_2020_chrM.vcf.gz"),
         ("query -l", "sample.vcf.gz"),
         ("query --list-samples", "1kg_2020_chrM.vcf.gz"),
     ],

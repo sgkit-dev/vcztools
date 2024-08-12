@@ -1,8 +1,13 @@
+import pathlib
+
+import numpy as np
 import pyparsing as pp
 import pytest
+import zarr
 from numpy.testing import assert_array_equal
 
-from vcztools.utils import FilterExpressionParser, search
+from tests.utils import vcz_path_cache
+from vcztools.utils import FilterExpressionEvaluator, FilterExpressionParser, search
 
 
 @pytest.mark.parametrize(
@@ -100,5 +105,29 @@ class TestFilterExpressionParser:
             ),
         ],
     )
-    def test_validd_expressions(self, parser, expression, expected_result):
+    def test_valid_expressions(self, parser, expression, expected_result):
         assert parser(expression).as_list() == expected_result
+
+
+class TestFilterExpressionEvaluator:
+    @pytest.mark.parametrize(
+        ("expression", "expected_result"),
+        [
+            ("FMT/GQ > 20", [0, 0, 1, 1, 1, 1, 1, 0, 0]),
+            ("FMT/DP > 10 && FMT/GQ > 10", [0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            ("QUAL > 10 || FMT/GQ>10", [0, 0, 1, 1, 1, 1, 1, 0, 0]),
+            ("(QUAL > 10 || FMT/GQ>10) && POS > 100000", [0, 0, 0, 0, 1, 1, 1, 0, 0]),
+        ],
+    )
+    def test(self, expression, expected_result):
+        original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+        vcz = vcz_path_cache(original)
+        root = zarr.open(vcz, mode="r")
+
+        parser = FilterExpressionParser()
+        parse_results = parser(expression)[0]
+        evaluator = FilterExpressionEvaluator(parse_results)
+        assert_array_equal(evaluator(root, 0), expected_result)
+
+        invert_evaluator = FilterExpressionEvaluator(parse_results, invert=True)
+        assert_array_equal(invert_evaluator(root, 0), np.logical_not(expected_result))

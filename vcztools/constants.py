@@ -20,3 +20,13 @@ RESERVED_VARIABLE_NAMES = [
     "variant_quality",
     "variant_filter",
 ]
+
+RESERVED_VCF_FIELDS = {
+    "CHROM": "variant_contig",
+    "POS": "variant_position",
+    "ID": "variant_id",
+    "REF": "variant_allele",
+    "ALT": "variant_allele",
+    "QUAL": "variant_quality",
+    "FILTER": "variant_filter",
+}

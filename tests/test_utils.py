@@ -7,7 +7,12 @@ import zarr
 from numpy.testing import assert_array_equal
 
 from tests.utils import vcz_path_cache
-from vcztools.utils import FilterExpressionEvaluator, FilterExpressionParser, search
+from vcztools.utils import (
+    FilterExpressionEvaluator,
+    FilterExpressionParser,
+    search,
+    vcf_to_vcz,
+)
 
 
 @pytest.mark.parametrize(
@@ -21,6 +26,30 @@ from vcztools.utils import FilterExpressionEvaluator, FilterExpressionParser, se
 )
 def test_search(a, v, expected_ind):
     assert_array_equal(search(a, v), expected_ind)
+
+
+@pytest.mark.parametrize(
+    ("vczs", "vcf", "expected_vcz"),
+    [
+        (set(), "GT", "call_genotype"),
+        (set(), "FMT/GT", "call_genotype"),
+        ({"call_DP"}, "DP", "call_DP"),
+        ({"variant_DP"}, "DP", "variant_DP"),
+        ({"call_DP", "variant_DP"}, "DP", "call_DP"),
+        ({"call_DP", "variant_DP"}, "INFO/DP", "variant_DP"),
+        ({"call_DP", "variant_DP"}, "FORMAT/DP", "call_DP"),
+        ({"variant_DP"}, "FORMAT/DP", "call_DP"),
+        (set(), "CHROM", "variant_contig"),
+        (set(), "POS", "variant_position"),
+        (set(), "ID", "variant_id"),
+        (set(), "REF", "variant_allele"),
+        (set(), "ALT", "variant_allele"),
+        (set(), "QUAL", "variant_quality"),
+        (set(), "FILTER", "variant_filter"),
+    ],
+)
+def test_vcf_to_vcz(vczs, vcf, expected_vcz):
+    assert vcf_to_vcz(vczs, vcf) == expected_vcz
 
 
 class TestFilterExpressionParser:
@@ -106,7 +135,7 @@ class TestFilterExpressionParser:
         ],
     )
     def test_valid_expressions(self, parser, expression, expected_result):
-        assert parser(expression).as_list() == expected_result
+        assert parser(expression=expression).as_list() == expected_result
 
 
 class TestFilterExpressionEvaluator:
@@ -117,6 +146,8 @@ class TestFilterExpressionEvaluator:
             ("FMT/DP > 10 && FMT/GQ > 10", [0, 0, 0, 0, 0, 0, 0, 0, 0]),
             ("QUAL > 10 || FMT/GQ>10", [0, 0, 1, 1, 1, 1, 1, 0, 0]),
             ("(QUAL > 10 || FMT/GQ>10) && POS > 100000", [0, 0, 0, 0, 1, 1, 1, 0, 0]),
+            ("INFO/DP > 10", [0, 0, 1, 1, 0, 1, 0, 0, 0]),
+            ("GT > 0", [1, 1, 1, 1, 1, 0, 1, 0, 1]),
         ],
     )
     def test(self, expression, expected_result):

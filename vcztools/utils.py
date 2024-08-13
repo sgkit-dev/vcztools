@@ -145,7 +145,8 @@ class FilterExpressionEvaluator:
             array = zarray[start:end]
 
             if array.ndim > 1:
-                return np.any(comparator(array, parse_results[2]), axis=1)
+                axis = tuple(range(1, array.ndim))
+                return np.any(comparator(array, parse_results[2]), axis=axis)
             else:
                 return comparator(array, parse_results[2])
 

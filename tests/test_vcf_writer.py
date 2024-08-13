@@ -1,4 +1,5 @@
 import pathlib
+import re
 from io import StringIO
 
 import pytest
@@ -47,6 +48,43 @@ def test_write_vcf(tmp_path, output_is_path):
 
     # check headers are the same
     assert_vcfs_close(original, output)
+
+
+@pytest.mark.parametrize(
+    ("include", "exclude", "expected_chrom_pos"),
+    [
+        ("POS < 1000", None, [("19", 111), ("19", 112), ("X", 10)]),
+        (
+            None,
+            "POS < 1000",
+            [
+                ("20", 14370),
+                ("20", 17330),
+                ("20", 1110696),
+                ("20", 1230237),
+                ("20", 1234567),
+                ("20", 1235237),
+            ],
+        ),
+    ],
+)
+def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    write_vcf(vcz, output, include=include, exclude=exclude)
+
+    v = VCF(str(output))
+    variants = list(v)
+
+    assert len(variants) == len(expected_chrom_pos)
+    assert v.samples == ["NA00001", "NA00002", "NA00003"]
+
+    for variant, chrom_pos in zip(variants, expected_chrom_pos):
+        chrom, pos = chrom_pos
+        assert variant.CHROM == chrom
+        assert variant.POS == pos
 
 
 # fmt: off
@@ -134,6 +172,65 @@ def test_write_vcf__samples(tmp_path, samples, expected_genotypes):
     assert variant.FILTER is None
 
     assert variant.genotypes == expected_genotypes
+
+
+@pytest.mark.parametrize(
+    ("regions", "targets", "samples", "include", "expected_chrom_pos"),
+    [
+        # Test that sample filtering takes place after include filtering.
+        ("20", None, "NA00001", "FMT/GQ > 60", [("20", 1230237)]),
+        # Test that region filtering and include expression are combined.
+        ("19", None, "NA00001", "FMT/GQ > 60", []),
+        # Test that target filtering and include expression are combined.
+        (None, "19", "NA00001", "FMT/GQ > 60", [])
+    ],
+)
+def test_write_vcf__regions_samples_filtering(
+        tmp_path,
+        regions,
+        targets,
+        samples,
+        include,
+        expected_chrom_pos
+):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    write_vcf(
+        vcz,
+        output,
+        variant_regions=regions,
+        variant_targets=targets,
+        samples=samples,
+        include=include)
+
+    v = VCF(str(output))
+    variants = list(v)
+
+    assert len(variants) == len(expected_chrom_pos)
+    assert v.samples == ["NA00001"]
+
+    for variant, chrom_pos in zip(variants, expected_chrom_pos):
+        chrom, pos = chrom_pos
+        assert variant.CHROM == chrom
+        assert variant.POS == pos
+
+
+def test_write_vcf__include_exclude(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    variant_site_filter = "POS > 1"
+
+    with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "Cannot handle both an include expression and an exclude expression."
+            )
+    ):
+        write_vcf(vcz, output, include=variant_site_filter, exclude=variant_site_filter)
 
 
 def test_write_vcf__header_flags(tmp_path):

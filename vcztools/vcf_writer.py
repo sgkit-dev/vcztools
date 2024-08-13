@@ -1,3 +1,4 @@
+import functools
 import io
 import re
 from contextlib import ExitStack
@@ -13,7 +14,7 @@ from vcztools.regions import (
     regions_to_chunk_indexes,
     regions_to_selection,
 )
-from vcztools.utils import search
+from vcztools.utils import FilterExpressionEvaluator, FilterExpressionParser, search
 
 from . import _vcztools
 from .constants import RESERVED_VARIABLE_NAMES
@@ -82,6 +83,8 @@ def write_vcf(
     variant_regions=None,
     variant_targets=None,
     samples=None,
+    include: Optional[str] = None,
+    exclude: Optional[str] = None,
 ) -> None:
     """Convert a dataset to a VCF file.
 
@@ -169,13 +172,28 @@ def write_vcf(
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
 
+        if include and exclude:
+            raise ValueError(
+                "Cannot handle both an include expression and an exclude expression."
+            )
+        elif include or exclude:
+            parser = FilterExpressionParser()
+            parse_results = parser(include or exclude)[0]
+            filter_evaluator = FilterExpressionEvaluator(
+                parse_results, invert=bool(exclude)
+            )
+            filter_evaluator = functools.partial(filter_evaluator, root)
+        else:
+            filter_evaluator = None
+
         if variant_regions is None and variant_targets is None:
             # no regions or targets selected
             for v_chunk in range(pos.cdata_shape[0]):
+                v_mask_chunk = filter_evaluator(v_chunk) if filter_evaluator else None
                 c_chunk_to_vcf(
                     root,
                     v_chunk,
-                    None,
+                    v_mask_chunk,
                     samples_selection,
                     contigs,
                     filters,
@@ -228,6 +246,12 @@ def write_vcf(
 
             for i, v_chunk in enumerate(chunk_indexes):
                 v_mask_chunk = z_variant_mask.blocks[i]
+
+                if np.sum(v_mask_chunk) > 0 and filter_evaluator:
+                    v_mask_chunk = np.logical_and(
+                        v_mask_chunk, filter_evaluator(v_chunk)
+                    )
+
                 count = np.sum(v_mask_chunk)
                 if count > 0:
                     c_chunk_to_vcf(

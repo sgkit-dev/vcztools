@@ -60,7 +60,23 @@ def index(path):
     default=None,
     help="Target regions to include.",
 )
-def view(path, header_only, no_header, no_version, regions, targets, samples):
+@click.option(
+    "-i", "--include", type=str, help="Filter expression to include variant sites."
+)
+@click.option(
+    "-e", "--exclude", type=str, help="Filter expression to exclude variant sites."
+)
+def view(
+    path,
+    header_only,
+    no_header,
+    no_version,
+    regions,
+    targets,
+    samples,
+    include,
+    exclude,
+):
     vcf_writer.write_vcf(
         path,
         sys.stdout,
@@ -69,6 +85,8 @@ def view(path, header_only, no_header, no_version, regions, targets, samples):
         variant_regions=regions,
         variant_targets=targets,
         samples=samples,
+        include=include,
+        exclude=exclude,
     )
 
 

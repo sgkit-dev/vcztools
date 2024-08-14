@@ -44,12 +44,14 @@ class FilterExpressionParser:
         )
         and_pattern <<= (
             pp.Group(
-                parentheses_pattern + pp.Keyword("&&") + and_pattern
+                parentheses_pattern + (pp.Keyword("&&") | pp.Keyword("&")) + and_pattern
             ).set_results_name("and")
             | parentheses_pattern
         )
         or_pattern <<= (
-            pp.Group(and_pattern + pp.Keyword("||") + or_pattern).set_results_name("or")
+            pp.Group(
+                and_pattern + (pp.Keyword("||") | pp.Keyword("|")) + or_pattern
+            ).set_results_name("or")
             | and_pattern
         )
 

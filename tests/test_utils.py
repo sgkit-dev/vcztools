@@ -152,12 +152,16 @@ class TestFilterExpressionEvaluator:
     @pytest.mark.parametrize(
         ("expression", "expected_result"),
         [
+            ("POS < 1000", [1, 1, 0, 0, 0, 0, 0, 0, 1]),
             ("FMT/GQ > 20", [0, 0, 1, 1, 1, 1, 1, 0, 0]),
-            ("FMT/DP > 10 && FMT/GQ > 10", [0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            ("FMT/DP >= 5 && FMT/GQ > 10", [0, 0, 1, 1, 1, 0, 0, 0, 0]),
+            ("FMT/DP >= 5 & FMT/GQ>10", [0, 0, 1, 0, 1, 0, 0, 0, 0]),
             ("QUAL > 10 || FMT/GQ>10", [0, 0, 1, 1, 1, 1, 1, 0, 0]),
             ("(QUAL > 10 || FMT/GQ>10) && POS > 100000", [0, 0, 0, 0, 1, 1, 1, 0, 0]),
+            ("(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000", [0, 0, 0, 0, 0, 1, 0, 0, 0]),
             ("INFO/DP > 10", [0, 0, 1, 1, 0, 1, 0, 0, 0]),
             ("GT > 0", [1, 1, 1, 1, 1, 0, 1, 0, 1]),
+            ("GT > 0 & FMT/HQ >= 10", [0, 0, 1, 1, 1, 0, 0, 0, 0]),
         ],
     )
     def test(self, expression, expected_result):

@@ -113,7 +113,11 @@ class FilterExpressionEvaluator:
             "<": operator.lt,
             "<=": operator.le,
         }
-        evaluator = self._compose_evaluator(parse_results)
+        base_evaluator = self._compose_evaluator(parse_results)
+
+        def evaluator(root, variant_chunk_index: int) -> np.ndarray:
+            base_array = base_evaluator(root, variant_chunk_index)
+            return np.any(base_array, axis=tuple(range(1, base_array.ndim)))
 
         if invert:
 
@@ -145,17 +149,18 @@ class FilterExpressionEvaluator:
             start = variant_chunk_len * variant_chunk_index
             end = start + variant_chunk_len
             array = zarray[start:end]
+            array = comparator(array, parse_results[2])
 
-            if array.ndim > 1:
-                axis = tuple(range(1, array.ndim))
-                return np.any(comparator(array, parse_results[2]), axis=axis)
+            if array.ndim > 2:
+                return np.any(array, axis=tuple(range(2, array.ndim)))
             else:
-                return comparator(array, parse_results[2])
+                return array
 
         return evaluator
 
     def _compose_and_evaluator(self, parse_results: pp.ParseResults) -> Callable:
         assert len(parse_results) == 3
+        assert parse_results[1] in {"&", "&&"}
 
         left_evaluator = self._compose_evaluator(parse_results[0])
         right_evaluator = self._compose_evaluator(parse_results[2])
@@ -163,12 +168,21 @@ class FilterExpressionEvaluator:
         def evaluator(root, variant_chunk_index):
             left_array = left_evaluator(root, variant_chunk_index)
             right_array = right_evaluator(root, variant_chunk_index)
-            return np.logical_and(left_array, right_array)
+
+            if parse_results[1] == "&":
+                return np.logical_and(left_array, right_array)
+            else:
+                left_array = np.any(left_array, axis=tuple(range(1, left_array.ndim)))
+                right_array = np.any(
+                    right_array, axis=tuple(range(1, right_array.ndim))
+                )
+                return np.logical_and(left_array, right_array)
 
         return evaluator
 
     def _compose_or_evaluator(self, parse_results: pp.ParseResults) -> Callable:
         assert len(parse_results) == 3
+        assert parse_results[1] in {"|", "||"}
 
         left_evaluator = self._compose_evaluator(parse_results[0])
         right_evaluator = self._compose_evaluator(parse_results[2])
@@ -176,7 +190,15 @@ class FilterExpressionEvaluator:
         def evaluator(root, variant_chunk_index: int):
             left_array = left_evaluator(root, variant_chunk_index)
             right_array = right_evaluator(root, variant_chunk_index)
-            return np.logical_or(left_array, right_array)
+
+            if parse_results[1] == "|":
+                return np.logical_or(left_array, right_array)
+            else:
+                left_array = np.any(left_array, axis=tuple(range(1, left_array.ndim)))
+                right_array = np.any(
+                    right_array, axis=tuple(range(1, right_array.ndim))
+                )
+                return np.logical_or(left_array, right_array)
 
         return evaluator
 

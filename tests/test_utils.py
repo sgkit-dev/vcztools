@@ -123,6 +123,16 @@ class TestFilterExpressionParser:
                 ],
             ),
             (
+                "QUAL>10 | FMT/DP>10 & FMT/GQ>10",
+                [
+                    [
+                        ["QUAL", ">", 10],
+                        "|",
+                        [["FMT/DP", ">", 10], "&", ["FMT/GQ", ">", 10]],
+                    ],
+                ],
+            ),
+            (
                 "(QUAL>10 || FMT/DP>10) && FMT/GQ>10",
                 [
                     [

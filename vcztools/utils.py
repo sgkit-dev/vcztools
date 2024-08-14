@@ -75,26 +75,34 @@ class FilterExpressionParser:
         return self._parser(expression)
 
 
-def vcf_to_vcz(vczs: set[str], vcf: str):
-    split = vcf.split("/")
+def vcf_name_to_vcz_name(vcz_names: set[str], vcf_name: str) -> str:
+    """
+    Convert the name of a VCF field to the name of the corresponding VCF Zarr array.
+
+    :param set[str] vcz_names: A set of potential VCF Zarr field names
+    :param str vcf_name: The name of the VCF field
+    :return: The name of the corresponding VCF Zarr array
+    :rtype: str
+    """
+    split = vcf_name.split("/")
     assert 1 <= len(split) <= 2
     is_genotype_field = split[-1] == "GT"
     is_format_field = (
         split[0] in {"FORMAT", "FMT"}
         if len(split) > 1
-        else is_genotype_field or f"call_{split[-1]}" in vczs
+        else is_genotype_field or f"call_{split[-1]}" in vcz_names
     )
     is_info_field = split[0] == "INFO" or split[-1] not in RESERVED_VCF_FIELDS
 
     if is_format_field:
-        if split[-1] == "GT":
+        if is_genotype_field:
             return "call_genotype"
         else:
             return "call_" + split[-1]
     elif is_info_field:
         return f"variant_{split[-1]}"
     else:
-        return RESERVED_VCF_FIELDS[vcf]
+        return RESERVED_VCF_FIELDS[vcf_name]
 
 
 class FilterExpressionEvaluator:
@@ -143,11 +151,13 @@ class FilterExpressionEvaluator:
         def evaluator(root, variant_chunk_index: int) -> np.ndarray:
             vcf_name = parse_results[0]
             vcz_names = set(name for name, _array in root.items())
-            vcz_name = vcf_to_vcz(vcz_names, vcf_name)
+            vcz_name = vcf_name_to_vcz_name(vcz_names, vcf_name)
             zarray = root[vcz_name]
             variant_chunk_len = zarray.chunks[0]
             start = variant_chunk_len * variant_chunk_index
             end = start + variant_chunk_len
+            # We load all samples (regardless of sample filtering)
+            # to match bcftools' behavior.
             array = zarray[start:end]
             array = comparator(array, parse_results[2])
 

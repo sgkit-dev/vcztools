@@ -11,7 +11,7 @@ from vcztools.utils import (
     FilterExpressionEvaluator,
     FilterExpressionParser,
     search,
-    vcf_to_vcz,
+    vcf_name_to_vcz_name,
 )
 
 
@@ -49,7 +49,7 @@ def test_search(a, v, expected_ind):
     ],
 )
 def test_vcf_to_vcz(vczs, vcf, expected_vcz):
-    assert vcf_to_vcz(vczs, vcf) == expected_vcz
+    assert vcf_name_to_vcz_name(vczs, vcf) == expected_vcz
 
 
 class TestFilterExpressionParser:

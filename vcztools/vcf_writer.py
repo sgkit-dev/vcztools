@@ -247,13 +247,11 @@ def write_vcf(
             for i, v_chunk in enumerate(chunk_indexes):
                 v_mask_chunk = z_variant_mask.blocks[i]
 
-                if np.sum(v_mask_chunk) > 0 and filter_evaluator:
+                if filter_evaluator and np.any(v_mask_chunk):
                     v_mask_chunk = np.logical_and(
                         v_mask_chunk, filter_evaluator(v_chunk)
                     )
-
-                count = np.sum(v_mask_chunk)
-                if count > 0:
+                if np.any(v_mask_chunk):
                     c_chunk_to_vcf(
                         root,
                         v_chunk,

@@ -28,6 +28,7 @@ dev = [
   "bio2zarr @ git+https://github.com/sgkit-dev/bio2zarr.git",
   "cyvcf2",
   "pytest",
+  "pytest-cov",
   "pytest-datadir",
 ]
 
@@ -36,6 +37,7 @@ packages = ["vcztools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=vcztools --cov-report=term-missing"
 
 [tool.setuptools_scm]
 write_to = "vcztools/_version.py"

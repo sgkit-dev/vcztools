@@ -72,7 +72,7 @@ jobs:
       - name: Install python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy pytest
+          python -m pip install numpy pytest pytest_cov
       - name: Build module with coverage
         run: |
           # Build the extension module in-place so pytest can find it

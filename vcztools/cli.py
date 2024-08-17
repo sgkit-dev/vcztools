@@ -2,6 +2,7 @@ import sys
 
 import click
 
+from . import query as query_module
 from . import regions, vcf_writer
 
 
@@ -18,6 +19,20 @@ class NaturalOrderGroup(click.Group):
 @click.argument("path", type=click.Path())
 def index(path):
     regions.create_index(path)
+
+
+@click.command
+@click.argument("path", type=click.Path())
+@click.option(
+    "-l",
+    "--list-samples",
+    is_flag=True,
+    help="List the sample IDs and exit.",
+)
+def query(path, list_samples):
+    if list_samples:
+        query_module.list_samples(path)
+        return
 
 
 @click.command
@@ -96,4 +111,5 @@ def vcztools_main():
 
 
 vcztools_main.add_command(index)
+vcztools_main.add_command(query)
 vcztools_main.add_command(view)

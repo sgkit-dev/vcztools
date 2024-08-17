@@ -52,7 +52,7 @@ def run_vcztools(args: str) -> str:
     ]
 )
 # fmt: on
-def test(tmp_path, args, vcf_file):
+def test_vcf_output(tmp_path, args, vcf_file):
     original = pathlib.Path("tests/data/vcf") / vcf_file
     vcz = vcz_path_cache(original)
 
@@ -67,3 +67,20 @@ def test(tmp_path, args, vcf_file):
         f.write(vcztools_out)
 
     assert_vcfs_close(bcftools_out_file, vcztools_out_file)
+
+
+@pytest.mark.parametrize(
+    ("args", "vcf_name"),
+    [
+        ("query -l", "sample.vcf.gz"),
+        ("query --list-samples", "1kg_2020_chrM.vcf.gz"),
+    ],
+)
+def test_output(tmp_path, args, vcf_name):
+    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
+    vcz_path = vcz_path_cache(vcf_path)
+
+    bcftools_output = run_bcftools(f"{args} {vcf_path}")
+    vcztools_output = run_vcztools(f"{args} {vcz_path}")
+
+    assert vcztools_output == bcftools_output

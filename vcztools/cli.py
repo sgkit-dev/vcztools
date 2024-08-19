@@ -90,6 +90,13 @@ def query(path, list_samples, format):
     help="Samples to include.",
 )
 @click.option(
+    "-G",
+    "--drop_genotypes",
+    type=bool,
+    is_flag=True,
+    help="Drop genotypes.",
+)
+@click.option(
     "-t",
     "--targets",
     type=str,
@@ -110,6 +117,7 @@ def view(
     regions,
     targets,
     samples,
+    drop_genotypes,
     include,
     exclude,
 ):
@@ -121,6 +129,7 @@ def view(
         variant_regions=regions,
         variant_targets=targets,
         samples=samples,
+        drop_genotypes=drop_genotypes,
         include=include,
         exclude=exclude,
     )

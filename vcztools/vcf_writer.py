@@ -85,6 +85,7 @@ def write_vcf(
     variant_regions=None,
     variant_targets=None,
     samples=None,
+    drop_genotypes: bool = False,
     include: Optional[str] = None,
     exclude: Optional[str] = None,
 ) -> None:
@@ -138,7 +139,14 @@ def write_vcf(
     root = zarr.open(vcz, mode="r")
 
     with open_file_like(output) as output:
-        if samples is None:
+        if samples and drop_genotypes:
+            raise ValueError(
+                "Cannot select samples and drop genotypes."
+            )
+        elif drop_genotypes:
+            sample_ids = []
+            samples_selection = np.array([])
+        elif samples is None:
             sample_ids = root["sample_id"][:]
             samples_selection = None
         else:
@@ -301,19 +309,20 @@ def c_chunk_to_vcf(
     num_samples = len(samples_selection) if samples_selection is not None else None
     for name, array in root.items():
         if name.startswith("call_") and not name.startswith("call_genotype"):
-            vcf_name = name[len("call_") :]
-            format_fields[vcf_name] = get_vchunk_array(
-                array, v_chunk, v_mask_chunk, samples_selection
-            )
-            if num_samples is None:
-                num_samples = array.shape[1]
+            if num_samples != 0:
+                vcf_name = name[len("call_") :]
+                format_fields[vcf_name] = get_vchunk_array(
+                    array, v_chunk, v_mask_chunk, samples_selection
+                )
+                if num_samples is None:
+                    num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
             info_fields[vcf_name] = get_vchunk_array(array, v_chunk, v_mask_chunk)
 
     gt = None
     gt_phased = None
-    if "call_genotype" in root:
+    if "call_genotype" in root and num_samples != 0:
         array = root["call_genotype"]
         gt = get_vchunk_array(array, v_chunk, v_mask_chunk, samples_selection)
         if "call_genotype_phased" in root:
@@ -351,7 +360,7 @@ def c_chunk_to_vcf(
         encoder.add_info_field(name, array)
 
     for name, array in format_fields.items():
-        assert num_samples > 0
+        #assert num_samples > 0
         if array.dtype.kind in ("O", "U"):
             array = array.astype("S")
         if len(array.shape) == 2:

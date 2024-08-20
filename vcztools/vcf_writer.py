@@ -1,8 +1,6 @@
 import functools
 import io
 import re
-from contextlib import ExitStack
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -14,7 +12,12 @@ from vcztools.regions import (
     regions_to_chunk_indexes,
     regions_to_selection,
 )
-from vcztools.utils import FilterExpressionEvaluator, FilterExpressionParser, search
+from vcztools.utils import (
+    FilterExpressionEvaluator,
+    FilterExpressionParser,
+    open_file_like,
+    search,
+)
 
 from . import _vcztools
 from .constants import RESERVED_VARIABLE_NAMES
@@ -135,10 +138,7 @@ def write_vcf(
 
     root = zarr.open(vcz, mode="r")
 
-    with ExitStack() as stack:
-        if isinstance(output, str) or isinstance(output, Path):
-            output = stack.enter_context(open(output, mode="w"))
-
+    with open_file_like(output) as output:
         if samples is None:
             sample_ids = root["sample_id"][:]
             samples_selection = None

@@ -663,9 +663,11 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
 
     if (all_missing) {
         for (j = 0; j < num_samples + 1; j++) {
-            offset = append_string(buf, ".\t", 2, offset, buflen);
-            if (offset < 0) {
-                goto out;
+            if (num_samples > 0) {
+                offset = append_string(buf, ".\t", 2, offset, buflen);
+                if (offset < 0) {
+                    goto out;
+                }
             }
         }
     } else {

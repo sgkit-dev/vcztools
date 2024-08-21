@@ -309,14 +309,13 @@ def c_chunk_to_vcf(
     info_fields = {}
     num_samples = len(samples_selection) if samples_selection is not None else None
     for name, array in root.items():
-        if name.startswith("call_") and not name.startswith("call_genotype"):
-            if num_samples != 0:
-                vcf_name = name[len("call_") :]
-                format_fields[vcf_name] = get_vchunk_array(
-                    array, v_chunk, v_mask_chunk, samples_selection
-                )
-                if num_samples is None:
-                    num_samples = array.shape[1]
+        if name.startswith("call_") and not name.startswith("call_genotype") and num_samples != 0:
+            vcf_name = name[len("call_") :]
+            format_fields[vcf_name] = get_vchunk_array(
+                array, v_chunk, v_mask_chunk, samples_selection
+            )
+            if num_samples is None:
+                num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
             info_fields[vcf_name] = get_vchunk_array(array, v_chunk, v_mask_chunk)
@@ -361,7 +360,7 @@ def c_chunk_to_vcf(
         encoder.add_info_field(name, array)
 
     for name, array in format_fields.items():
-        #assert num_samples > 0
+        assert num_samples > 0
         if array.dtype.kind in ("O", "U"):
             array = array.astype("S")
         if len(array.shape) == 2:
@@ -390,7 +389,7 @@ def _generate_header(ds, original_header, sample_ids):
     info_fields = []
     format_fields = []
 
-    if "call_genotype" in ds:
+    if "call_genotype" in ds and len(sample_ids) > 0:
         # GT must be the first field if present, per the spec (section 1.6.2)
         format_fields.append("GT")
 
@@ -405,7 +404,8 @@ def _generate_header(ds, original_header, sample_ids):
             key = var[len("variant_") :]
             info_fields.append(key)
         elif (
-            var.startswith("call_")
+            len(sample_ids) > 0
+            and var.startswith("call_")
             and not var.endswith("_fill")
             and not var.endswith("_mask")
             and dims(arr)[0] == "variants"

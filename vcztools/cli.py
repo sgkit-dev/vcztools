@@ -91,7 +91,7 @@ def query(path, list_samples, format):
 )
 @click.option(
     "-G",
-    "--drop_genotypes",
+    "--drop-genotypes",
     type=bool,
     is_flag=True,
     help="Drop genotypes.",

@@ -168,3 +168,12 @@ class QueryFormatGenerator:
                 yield "".join(results)
 
         return generate
+
+
+def write_query(vcz, output=None, *, query_format: str):
+    root = zarr.open(vcz, mode="r")
+    generator = QueryFormatGenerator(query_format)
+
+    with open_file_like(output) as output:
+        for result in generator(root):
+            print(result, sep="", end="", file=output)

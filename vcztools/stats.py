@@ -15,6 +15,12 @@ def nrecords(vcz, output):
 def stats(vcz, output):
     root = zarr.open(vcz, mode="r")
 
+    if "region_index" not in root:
+        raise ValueError(
+            "Could not load 'region_index' variable. "
+            "Use 'vcztools index' to create an index."
+        )
+
     with open_file_like(output) as output:
         contigs = root["contig_id"][:].astype("U").tolist()
         if "contig_length" in root:

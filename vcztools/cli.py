@@ -47,6 +47,9 @@ def query(path, list_samples):
 @click.command
 @click.argument("path", type=click.Path())
 @click.option(
+    "-o", "--output", type=str, default=None, help="File path to write output to."
+)
+@click.option(
     "-h",
     "--header-only",
     is_flag=True,
@@ -92,6 +95,7 @@ def query(path, list_samples):
 )
 def view(
     path,
+    output,
     header_only,
     no_header,
     no_version,
@@ -103,7 +107,7 @@ def view(
 ):
     vcf_writer.write_vcf(
         path,
-        sys.stdout,
+        output,
         header_only=header_only,
         no_header=no_header,
         variant_regions=regions,

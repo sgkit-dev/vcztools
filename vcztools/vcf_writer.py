@@ -13,14 +13,13 @@ from vcztools.regions import (
     regions_to_selection,
 )
 from vcztools.utils import (
-    FilterExpressionEvaluator,
-    FilterExpressionParser,
     open_file_like,
     search,
 )
 
 from . import _vcztools
 from .constants import RESERVED_VARIABLE_NAMES
+from .filter import FilterExpressionEvaluator, FilterExpressionParser
 
 # references to the VCF spec are for https://samtools.github.io/hts-specs/VCFv4.3.pdf
 

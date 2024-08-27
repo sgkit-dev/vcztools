@@ -76,6 +76,16 @@ def test_vcf_output(tmp_path, args, vcf_file):
         ("index --nrecords", "1kg_2020_chrM.vcf.gz"),
         ("query -l", "sample.vcf.gz"),
         ("query --list-samples", "1kg_2020_chrM.vcf.gz"),
+        (r"query -f 'A\n'", "sample.vcf.gz"),
+        (r"query -f '%CHROM:%POS\n'", "sample.vcf.gz"),
+        (r"query -f '%INFO/DP\n'", "sample.vcf.gz"),
+        (r"query -f '%AC{0}\n'", "sample.vcf.gz"),
+        (r"query -f '%REF\t%ALT\n'", "sample.vcf.gz"),
+        (r"query -f '%ALT{1}\n'", "sample.vcf.gz"),
+        (r"query -f '%ID\n'", "sample.vcf.gz"),
+        (r"query -f '%QUAL\n'", "sample.vcf.gz"),
+        (r"query -f '%FILTER\n'", "sample.vcf.gz"),
+        (r"query --format '%FILTER\n'", "1kg_2020_chrM.vcf.gz"),
     ],
 )
 def test_output(tmp_path, args, vcf_name):

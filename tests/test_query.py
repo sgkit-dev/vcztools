@@ -1,8 +1,12 @@
 import pathlib
 from io import StringIO
 
+import pyparsing as pp
+import pytest
+import zarr
+
 from tests.utils import vcz_path_cache
-from vcztools.query import list_samples
+from vcztools.query import QueryFormatGenerator, QueryFormatParser, list_samples
 
 
 def test_list_samples(tmp_path):
@@ -13,3 +17,87 @@ def test_list_samples(tmp_path):
     with StringIO() as output:
         list_samples(vcz_path, output)
         assert output.getvalue() == expected_output
+
+
+class TestQueryFormatParser:
+    @pytest.fixture()
+    def parser(self):
+        return QueryFormatParser()
+
+    @pytest.mark.parametrize(
+        ("expression", "expected_result"),
+        [
+            ("%CHROM", ["%CHROM"]),
+            (r"\n", ["\n"]),
+            (r"\t", ["\t"]),
+            (r"%CHROM\n", ["%CHROM", "\n"]),
+            ("%CHROM  %POS  %REF", ["%CHROM", "  ", "%POS", "  ", "%REF"]),
+            (r"%CHROM  %POS0  %REF\n", ["%CHROM", "  ", "%POS0", "  ", "%REF", "\n"]),
+            (
+                r"%CHROM\t%POS\t%REF\t%ALT{0}\n",
+                ["%CHROM", "\t", "%POS", "\t", "%REF", "\t", ["%ALT", 0], "\n"],
+            ),
+            (
+                r"%CHROM\t%POS0\t%END\t%ID\n",
+                ["%CHROM", "\t", "%POS0", "\t", "%END", "\t", "%ID", "\n"],
+            ),
+            (r"%CHROM:%POS\n", ["%CHROM", ":", "%POS", "\n"]),
+            (r"%AC{1}\n", [["%AC", 1], "\n"]),
+            (
+                r"Read depth: %INFO/DP\n",
+                ["Read", " ", "depth:", " ", "%INFO/DP", "\n"],
+            ),
+        ],
+    )
+    def test_valid_expressions(self, parser, expression, expected_result):
+        assert parser(expression).as_list() == expected_result
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "%ac",
+            "%AC {1}",
+            "% CHROM",
+        ],
+    )
+    def test_invalid_expressions(self, parser, expression):
+        with pytest.raises(pp.ParseException):
+            parser(expression)
+
+
+class TestQueryFormatEvaluator:
+    @pytest.fixture()
+    def root(self):
+        vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
+        vcz_path = vcz_path_cache(vcf_path)
+        return zarr.open(vcz_path, mode="r")
+
+    @pytest.mark.parametrize(
+        ("query_format", "expected_result"),
+        [
+            (r"A\t", "A\t" * 9),
+            (r"CHROM", "CHROM" * 9),
+            (
+                r"%CHROM:%POS\n",
+                "19:111\n19:112\n20:14370\n20:17330\n20:1110696\n20:1230237\n20:1234567\n20:1235237\nX:10\n",
+            ),
+            (r"%INFO/DP\n", ".\n.\n14\n11\n10\n13\n9\n.\n.\n"),
+            (r"%AC\n", ".\n.\n.\n.\n.\n.\n3,1\n.\n.\n"),
+            (r"%AC{0}\n", ".\n.\n.\n.\n.\n.\n3\n.\n.\n"),
+        ],
+    )
+    def test(self, root, query_format, expected_result):
+        generator = QueryFormatGenerator(query_format)
+        result = "".join(generator(root))
+        assert result == expected_result
+
+    @pytest.mark.parametrize(
+        ("query_format", "expected_result"),
+        [(r"%QUAL\n", "9.6\n10\n29\n3\n67\n47\n50\n.\n10\n")],
+    )
+    def test_with_parse_results(self, root, query_format, expected_result):
+        parser = QueryFormatParser()
+        parse_results = parser(query_format)
+        generator = QueryFormatGenerator(parse_results)
+        result = "".join(generator(root))
+        assert result == expected_result

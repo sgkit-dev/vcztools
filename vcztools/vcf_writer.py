@@ -140,9 +140,7 @@ def write_vcf(
 
     with open_file_like(output) as output:
         if samples and drop_genotypes:
-            raise ValueError(
-                "Cannot select samples and drop genotypes."
-            )
+            raise ValueError("Cannot select samples and drop genotypes.")
         elif drop_genotypes:
             sample_ids = []
             samples_selection = np.array([])
@@ -308,7 +306,11 @@ def c_chunk_to_vcf(
     info_fields = {}
     num_samples = len(samples_selection) if samples_selection is not None else None
     for name, array in root.items():
-        if name.startswith("call_") and not name.startswith("call_genotype") and num_samples != 0:
+        if (
+            name.startswith("call_")
+            and not name.startswith("call_genotype")
+            and num_samples != 0
+        ):
             vcf_name = name[len("call_") :]
             format_fields[vcf_name] = get_vchunk_array(
                 array, v_chunk, v_mask_chunk, samples_selection

@@ -49,6 +49,10 @@ def run_vcztools(args: str) -> str:
                 "view --no-version -e '(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000'",
                 "sample.vcf.gz"
         ),
+        (
+                "view --no-version -G",
+                "sample.vcf.gz"
+        ),
     ]
 )
 # fmt: on

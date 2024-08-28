@@ -174,6 +174,18 @@ def test_write_vcf__samples(tmp_path, samples, expected_genotypes):
     assert variant.genotypes == expected_genotypes
 
 
+def test_write_vcf__no_samples(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    write_vcf(vcz, output, drop_genotypes=True)
+
+    v = VCF(output)
+
+    assert v.samples == []
+
+
 @pytest.mark.parametrize(
     ("regions", "targets", "samples", "include", "expected_chrom_pos"),
     [

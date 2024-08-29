@@ -72,6 +72,27 @@ def test_vcf_output(tmp_path, args, vcf_file):
 
     assert_vcfs_close(bcftools_out_file, vcztools_out_file)
 
+@pytest.mark.parametrize(
+    ("args", "vcf_file"),
+    [
+        ("view --no-version", "sample.vcf.gz")
+    ],
+)
+def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
+    vcf_path = pathlib.Path("tests/data/vcf") / vcf_file
+    vcz_path = vcz_path_cache(vcf_path)
+
+    bcftools_out_file = tmp_path.joinpath("bcftools_out.vcf")
+    vcztools_out_file = tmp_path.joinpath("vcztools_out.vcf")
+
+    bcftools_args = f"{args} -o {bcftools_out_file}"
+    vcztools_args = f"{args} -o {vcztools_out_file}"
+
+    run_bcftools(f"{bcftools_args} {vcf_path}")
+    run_vcztools(f"{vcztools_args} {vcz_path}")
+
+    assert_vcfs_close(bcftools_out_file, vcztools_out_file)
+
 
 @pytest.mark.parametrize(
     ("args", "vcf_name"),

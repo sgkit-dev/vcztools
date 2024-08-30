@@ -18,10 +18,10 @@ def test_write_vcf(tmp_path, output_is_path):
     output = tmp_path.joinpath("output.vcf")
 
     if output_is_path:
-        write_vcf(vcz, output)
+        write_vcf(vcz, output, no_version=True)
     else:
         output_str = StringIO()
-        write_vcf(vcz, output_str)
+        write_vcf(vcz, output_str, no_version=True)
         with open(output, "w") as f:
             f.write(output_str.getvalue())
 
@@ -251,10 +251,10 @@ def test_write_vcf__header_flags(tmp_path):
     output = tmp_path.joinpath("output.vcf")
 
     output_header = StringIO()
-    write_vcf(vcz, output_header, header_only=True)
+    write_vcf(vcz, output_header, header_only=True, no_version=True)
 
     output_no_header = StringIO()
-    write_vcf(vcz, output_no_header, no_header=True)
+    write_vcf(vcz, output_no_header, no_header=True, no_version=True)
     assert not output_no_header.getvalue().startswith("#")
 
     # combine outputs and check VCFs match

@@ -134,6 +134,7 @@ def view(
         output,
         header_only=header_only,
         no_header=no_header,
+        no_version=no_version,
         variant_regions=regions,
         variant_targets=targets,
         samples=samples,

@@ -1,6 +1,8 @@
 import functools
 import io
 import re
+import sys
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -82,6 +84,7 @@ def write_vcf(
     vcf_header: Optional[str] = None,
     header_only: bool = False,
     no_header: bool = False,
+    no_version: bool = False,
     variant_regions=None,
     variant_targets=None,
     samples=None,
@@ -157,7 +160,9 @@ def write_vcf(
                 original_header = root.attrs["vcf_header"]
             else:
                 original_header = None
-            vcf_header = _generate_header(root, original_header, sample_ids)
+            vcf_header = _generate_header(
+                root, original_header, sample_ids, no_version=no_version
+            )
 
         if not no_header:
             print(vcf_header, end="", file=output)
@@ -382,7 +387,7 @@ def c_chunk_to_vcf(
         print(line, file=output)
 
 
-def _generate_header(ds, original_header, sample_ids):
+def _generate_header(ds, original_header, sample_ids, *, no_version: bool = False):
     output = io.StringIO()
 
     contigs = list(ds["contig_id"][:])
@@ -508,6 +513,12 @@ def _generate_header(ds, original_header, sample_ids):
             print(f"##contig=<ID={contig}>", file=output)
         else:
             print(f"##contig=<ID={contig},length={contig_lengths[i]}>", file=output)
+
+    if not no_version:
+        print(
+            f"##vcztools_viewCommand={' '.join(sys.argv[1:])}; Date={datetime.now()}",
+            file=output,
+        )
 
     # [1.5 Header line syntax]
     print(

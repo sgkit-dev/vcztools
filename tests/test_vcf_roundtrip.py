@@ -21,5 +21,5 @@ def test_vcf_to_zarr_to_vcf__real_files(tmp_path, vcf_file):
     original = pathlib.Path("tests/data/vcf") / vcf_file
     vcz = vcz_path_cache(original)
     generated = tmp_path.joinpath("output.vcf")
-    write_vcf(vcz, generated)
+    write_vcf(vcz, generated, no_version=True)
     assert_vcfs_close(original, generated)

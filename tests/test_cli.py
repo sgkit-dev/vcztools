@@ -7,6 +7,15 @@ from tests.test_bcftools_validation import run_vcztools
 from tests.utils import vcz_path_cache
 
 
+def test_version_header():
+    vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
+    vcz_path = vcz_path_cache(vcf_path)
+
+    output = run_vcztools(f"view {vcz_path}")
+    assert output.find("##vcztools_viewCommand=") >= 0
+    assert output.find("Date=") >= 0
+
+
 def test_view_bad_output(tmp_path):
     vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
     vcz_path = vcz_path_cache(vcf_path)

@@ -125,6 +125,10 @@ def view(
     include,
     exclude,
 ):
+    if output and not output.endswith(".vcf"):
+        split = output.split(".")
+        raise ValueError(f"Output file extension must be .vcf, got: .{split[-1]}")
+
     vcf_writer.write_vcf(
         path,
         output,

@@ -86,11 +86,24 @@ def query(path, list_samples, format):
     help="Regions to include.",
 )
 @click.option(
+    "-I",
+    "--no-update",
+    is_flag=True,
+    help="Do not recalculate INFO fields for the sample subset.",
+)
+@click.option(
     "-s",
     "--samples",
     type=str,
     default=None,
     help="Samples to include.",
+)
+@click.option(
+    "-S",
+    "--samples-file",
+    type=str,
+    default=None,
+    help="File of sample names to include.",
 )
 @click.option(
     "-G",
@@ -120,7 +133,9 @@ def view(
     no_version,
     regions,
     targets,
+    no_update,
     samples,
+    samples_file,
     drop_genotypes,
     include,
     exclude,
@@ -128,6 +143,13 @@ def view(
     if output and not output.endswith(".vcf"):
         split = output.split(".")
         raise ValueError(f"Output file extension must be .vcf, got: .{split[-1]}")
+
+    if samples_file:
+        with open(samples_file) as file:
+            samples = samples or ""
+            samples += ",".join(line.strip() for line in file.readlines())
+
+    # TODO: use no_update when fixing https://github.com/sgkit-dev/vcztools/issues/75
 
     vcf_writer.write_vcf(
         path,

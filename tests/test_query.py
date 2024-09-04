@@ -82,8 +82,8 @@ class TestQueryFormatEvaluator:
                 "19:111\n19:112\n20:14370\n20:17330\n20:1110696\n20:1230237\n20:1234567\n20:1235237\nX:10\n",
             ),
             (r"%INFO/DP\n", ".\n.\n14\n11\n10\n13\n9\n.\n.\n"),
-            (r"%AC\n", ".\n.\n.\n.\n.\n.\n3,1\n.\n.\n"),
-            (r"%AC{0}\n", ".\n.\n.\n.\n.\n.\n3\n.\n.\n"),
+            (r"%AC\n", ".\n.\n.\n.\n.\n.\n1,1\n.\n.\n"),
+            (r"%AC{0}\n", ".\n.\n.\n.\n.\n.\n1\n.\n.\n"),
         ],
     )
     def test(self, root, query_format, expected_result):

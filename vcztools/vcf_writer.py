@@ -153,6 +153,8 @@ def write_vcf(
         else:
             all_samples = root["sample_id"][:]
             sample_ids = np.array(samples.split(","))
+            if np.all(sample_ids == np.array("")):
+                sample_ids = np.empty((0,))
             samples_selection = search(all_samples, sample_ids)
 
         if not no_header and vcf_header is None:
@@ -347,6 +349,7 @@ def c_chunk_to_vcf(
         else:
             gt = get_vchunk_array(array, v_chunk, v_mask_chunk)
 
+        # Recompute INFO/AC and INFO/AN
         if samples_selection is not None:
             flatter_gt = gt.reshape((gt.shape[0], gt.shape[1] * gt.shape[2]))
 
@@ -363,7 +366,10 @@ def c_chunk_to_vcf(
             computed_AN = np.count_nonzero(computed_AN + 1, axis=1).astype(np.int8)
             info_fields["AC"] = computed_AC
             info_fields["AN"] = computed_AN
-        if "call_genotype_phased" in root and not drop_genotypes:
+
+        if num_samples == 0:
+            gt = None
+        if "call_genotype_phased" in root and not drop_genotypes and num_samples > 0:
             array = root["call_genotype_phased"]
             gt_phased = get_vchunk_array(
                 array, v_chunk, v_mask_chunk, samples_selection
@@ -397,13 +403,13 @@ def c_chunk_to_vcf(
             array = array.reshape((num_variants, 1))
         encoder.add_info_field(name, array)
 
-    for name, array in format_fields.items():
-        assert num_samples > 0
-        if array.dtype.kind in ("O", "U"):
-            array = array.astype("S")
-        if len(array.shape) == 2:
-            array = array.reshape((num_variants, num_samples, 1))
-        encoder.add_format_field(name, array)
+    if num_samples != 0:
+        for name, array in format_fields.items():
+            if array.dtype.kind in ("O", "U"):
+                array = array.astype("S")
+            if len(array.shape) == 2:
+                array = array.reshape((num_variants, num_samples, 1))
+            encoder.add_format_field(name, array)
     # TODO: (1) make a guess at this based on number of fields and samples,
     # and (2) log a DEBUG message when we have to double.
     buflen = 1024

@@ -86,6 +86,9 @@ def query(path, list_samples, format):
     help="Regions to include.",
 )
 @click.option(
+    "--force-samples", is_flag=True, help="Only warn about unknown sample subsets."
+)
+@click.option(
     "-I",
     "--no-update",
     is_flag=True,
@@ -133,6 +136,7 @@ def view(
     no_version,
     regions,
     targets,
+    force_samples,
     no_update,
     samples,
     samples_file,

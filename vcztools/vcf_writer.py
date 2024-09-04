@@ -19,7 +19,7 @@ from vcztools.utils import (
     search,
 )
 
-from . import _vcztools
+from . import _vcztools, constants
 from .constants import RESERVED_VARIABLE_NAMES
 from .filter import FilterExpressionEvaluator, FilterExpressionParser
 
@@ -208,6 +208,7 @@ def write_vcf(
                     contigs,
                     filters,
                     output,
+                    drop_genotypes=drop_genotypes,
                 )
         else:
             contigs_u = root["contig_id"][:].astype("U").tolist()
@@ -270,6 +271,7 @@ def write_vcf(
                         contigs,
                         filters,
                         output,
+                        drop_genotypes=drop_genotypes,
                     )
 
 
@@ -287,7 +289,15 @@ def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
 
 
 def c_chunk_to_vcf(
-    root, v_chunk, v_mask_chunk, samples_selection, contigs, filters, output
+    root,
+    v_chunk,
+    v_mask_chunk,
+    samples_selection,
+    contigs,
+    filters,
+    output,
+    *,
+    drop_genotypes,
 ):
     chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
@@ -328,10 +338,32 @@ def c_chunk_to_vcf(
 
     gt = None
     gt_phased = None
-    if "call_genotype" in root and num_samples != 0:
+
+    if "call_genotype" in root and not drop_genotypes:
         array = root["call_genotype"]
-        gt = get_vchunk_array(array, v_chunk, v_mask_chunk, samples_selection)
-        if "call_genotype_phased" in root:
+
+        if samples_selection is not None and num_samples != 0:
+            gt = get_vchunk_array(array, v_chunk, v_mask_chunk, samples_selection)
+        else:
+            gt = get_vchunk_array(array, v_chunk, v_mask_chunk)
+
+        if samples_selection is not None:
+            flatter_gt = gt.reshape((gt.shape[0], gt.shape[1] * gt.shape[2]))
+
+            def filter_and_bincount(values: np.ndarray):
+                positive = values[values > 0]
+                return np.bincount(positive, minlength=alleles.shape[1])[1:]
+
+            computed_AC = np.apply_along_axis(
+                filter_and_bincount, 1, flatter_gt
+            ).astype(np.int8)
+            computed_AC[alt == b""] = constants.INT_FILL
+            computed_AN = np.copy(flatter_gt)
+            computed_AN[computed_AN < -1] = -1
+            computed_AN = np.count_nonzero(computed_AN + 1, axis=1).astype(np.int8)
+            info_fields["AC"] = computed_AC
+            info_fields["AN"] = computed_AN
+        if "call_genotype_phased" in root and not drop_genotypes:
             array = root["call_genotype_phased"]
             gt_phased = get_vchunk_array(
                 array, v_chunk, v_mask_chunk, samples_selection

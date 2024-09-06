@@ -163,6 +163,7 @@ def view(
         no_version=no_version,
         variant_regions=regions,
         variant_targets=targets,
+        no_update=no_update,
         samples=samples,
         drop_genotypes=drop_genotypes,
         include=include,

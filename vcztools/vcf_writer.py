@@ -87,6 +87,7 @@ def write_vcf(
     no_version: bool = False,
     variant_regions=None,
     variant_targets=None,
+    no_update=None,
     samples=None,
     drop_genotypes: bool = False,
     include: Optional[str] = None,
@@ -211,6 +212,7 @@ def write_vcf(
                     filters,
                     output,
                     drop_genotypes=drop_genotypes,
+                    no_update=no_update,
                 )
         else:
             contigs_u = root["contig_id"][:].astype("U").tolist()
@@ -274,6 +276,7 @@ def write_vcf(
                         filters,
                         output,
                         drop_genotypes=drop_genotypes,
+                        no_update=no_update,
                     )
 
 
@@ -300,6 +303,7 @@ def c_chunk_to_vcf(
     output,
     *,
     drop_genotypes,
+    no_update,
 ):
     chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
@@ -350,7 +354,7 @@ def c_chunk_to_vcf(
             gt = get_vchunk_array(array, v_chunk, v_mask_chunk)
 
         # Recompute INFO/AC and INFO/AN
-        if samples_selection is not None:
+        if not no_update and samples_selection is not None:
             flatter_gt = gt.reshape((gt.shape[0], gt.shape[1] * gt.shape[2]))
 
             def filter_and_bincount(values: np.ndarray):

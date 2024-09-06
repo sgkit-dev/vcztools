@@ -2,11 +2,13 @@ import pathlib
 import re
 from io import StringIO
 
+import numpy as np
 import pytest
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
-from vcztools.vcf_writer import write_vcf
+from vcztools.constants import INT_FILL, INT_MISSING
+from vcztools.vcf_writer import _compute_info_fields, write_vcf
 
 from .utils import assert_vcfs_close, vcz_path_cache
 
@@ -311,3 +313,37 @@ def test_write_vcf__set_header(tmp_path):
         assert variant.genotypes is not None
         count += 1
     assert count == 9
+
+
+def test_compute_info_fields():
+    gt = np.array([
+        [[0, 0], [0, 1], [1, 1]],
+        [[0, 0], [0, 2], [2, 2]],
+        [[0, 1], [1, 2], [2, 2]],
+        [[INT_MISSING, INT_MISSING], [INT_MISSING, INT_MISSING], [INT_FILL, INT_FILL]],
+        [[INT_MISSING, INT_MISSING], [0, 3], [INT_FILL, INT_FILL]],
+    ])
+    alt = np.array([
+        [b"A", b"B", b""],
+        [b"A", b"B", b"C"],
+        [b"A", b"B", b"C"],
+        [b"", b"", b""],
+        [b"A", b"B", b"C"]
+    ])
+    expected_result = {
+        "AC": np.array([
+            [3, 0, INT_FILL],
+            [0, 3, 0],
+            [2, 3, 0],
+            [INT_FILL, INT_FILL, INT_FILL],
+            [0, 0, 1],
+        ]),
+        "AN": np.array([6, 6, 6, 0, 2]),
+    }
+
+    computed_info_fields = _compute_info_fields(gt, alt)
+
+    assert expected_result.keys() == computed_info_fields.keys()
+
+    for key in expected_result.keys():
+        np.testing.assert_array_equal(expected_result[key], computed_info_fields[key])

@@ -353,24 +353,9 @@ def c_chunk_to_vcf(
         else:
             gt = get_vchunk_array(array, v_chunk, v_mask_chunk)
 
-        # Recompute INFO/AC and INFO/AN
         if not no_update and samples_selection is not None:
-            flatter_gt = gt.reshape((gt.shape[0], gt.shape[1] * gt.shape[2]))
-
-            def filter_and_bincount(values: np.ndarray):
-                positive = values[values > 0]
-                return np.bincount(positive, minlength=alleles.shape[1])[1:]
-
-            computed_AC = np.apply_along_axis(
-                filter_and_bincount, 1, flatter_gt
-            ).astype(np.int8)
-            computed_AC[alt == b""] = constants.INT_FILL
-            computed_AN = np.copy(flatter_gt)
-            computed_AN[computed_AN < -1] = -1
-            computed_AN = np.count_nonzero(computed_AN + 1, axis=1).astype(np.int8)
-            info_fields["AC"] = computed_AC
-            info_fields["AN"] = computed_AN
-
+            # Recompute INFO/AC and INFO/AN
+            info_fields |= _compute_info_fields(gt, alt)
         if num_samples == 0:
             gt = None
         if "call_genotype_phased" in root and not drop_genotypes and num_samples > 0:
@@ -647,3 +632,25 @@ def _format_fields(header_str):
         fields.remove("GT")
         fields.insert(0, "GT")
     return fields
+
+
+def _compute_info_fields(gt: np.ndarray, alt: np.ndarray):
+    flatter_gt = gt.reshape((gt.shape[0], gt.shape[1] * gt.shape[2]))
+    allele_count = alt.shape[1] + 1
+
+    def filter_and_bincount(values: np.ndarray):
+        positive = values[values > 0]
+        return np.bincount(positive, minlength=allele_count)[1:]
+
+    computed_ac = np.apply_along_axis(filter_and_bincount, 1, flatter_gt).astype(
+        np.int32
+    )
+    computed_ac[alt == b""] = constants.INT_FILL
+    computed_an = np.copy(flatter_gt)
+    computed_an[computed_an < -1] = -1
+    computed_an = np.count_nonzero(computed_an + 1, axis=1).astype(np.int32)
+
+    return {
+        "AC": computed_ac,
+        "AN": computed_an,
+    }

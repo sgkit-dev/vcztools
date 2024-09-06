@@ -639,7 +639,7 @@ def _format_fields(header_str):
 
 
 def _compute_info_fields(gt: np.ndarray, alt: np.ndarray):
-    flatter_gt = gt.reshape((gt.shape[0], gt.shape[1] * gt.shape[2]))
+    flatter_gt = gt.reshape((gt.shape[0], -1))
     allele_count = alt.shape[1] + 1
 
     def filter_and_bincount(values: np.ndarray):
@@ -650,9 +650,7 @@ def _compute_info_fields(gt: np.ndarray, alt: np.ndarray):
         np.int32
     )
     computed_ac[alt == b""] = constants.INT_FILL
-    computed_an = np.copy(flatter_gt)
-    computed_an[computed_an < -1] = -1
-    computed_an = np.count_nonzero(computed_an + 1, axis=1).astype(np.int32)
+    computed_an = np.sum(flatter_gt >= 0, axis=1, dtype=np.int32)
 
     return {
         "AC": computed_ac,

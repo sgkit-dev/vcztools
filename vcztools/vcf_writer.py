@@ -358,7 +358,11 @@ def c_chunk_to_vcf(
             info_fields |= _compute_info_fields(gt, alt)
         if num_samples == 0:
             gt = None
-        if "call_genotype_phased" in root and not drop_genotypes and num_samples > 0:
+        if (
+            "call_genotype_phased" in root
+            and not drop_genotypes
+            and (samples_selection is None or num_samples > 0)
+        ):
             array = root["call_genotype_phased"]
             gt_phased = get_vchunk_array(
                 array, v_chunk, v_mask_chunk, samples_selection

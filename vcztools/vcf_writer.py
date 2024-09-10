@@ -153,10 +153,18 @@ def write_vcf(
             samples_selection = None
         else:
             all_samples = root["sample_id"][:]
+            exclude_samples = samples.startswith("^")
+            samples = samples.lstrip("^")
             sample_ids = np.array(samples.split(","))
             if np.all(sample_ids == np.array("")):
                 sample_ids = np.empty((0,))
+
             samples_selection = search(all_samples, sample_ids)
+            if exclude_samples:
+                samples_selection = np.setdiff1d(
+                    np.arange(all_samples.size), samples_selection
+                )
+                sample_ids = all_samples[samples_selection]
 
         if not no_header and vcf_header is None:
             if "vcf_header" in root.attrs:

@@ -150,6 +150,9 @@ def test_write_vcf__regions(tmp_path, regions, targets,
         ("NA00001", [[0, 0, True]]),
         ("NA00001,NA00003", [[0, 0, True], [0, 1, False]]),
         ("NA00003,NA00001", [[0, 1, False], [0, 0, True]]),
+        ("^NA00002", [[0, 0, True], [0, 1, False]]),
+        ("^NA00003,NA00002", [[0, 0, True]]),
+        ("^NA00003,NA00002,NA00003", [[0, 0, True]]),
     ]
 )
 def test_write_vcf__samples(tmp_path, samples, expected_genotypes):
@@ -161,7 +164,12 @@ def test_write_vcf__samples(tmp_path, samples, expected_genotypes):
 
     v = VCF(output)
 
-    assert v.samples == samples.split(",")
+    if samples.startswith("^"):
+        # There are three samples in the sample VCF.
+        assert len(set(v.samples)) + len(set(samples[1:].split(","))) == 3
+        assert len(set(v.samples) & set(samples[1:].split(","))) == 0
+    else:
+        assert v.samples == samples.split(",")
 
     variant = next(v)
 

@@ -149,8 +149,13 @@ def view(
         raise ValueError(f"Output file extension must be .vcf, got: .{split[-1]}")
 
     if samples_file:
+        exclude_samples_file = samples_file.startswith("^")
+        samples_file = samples_file.lstrip("^")
         with open(samples_file) as file:
             samples = samples or ""
+            assert samples == "" or samples_file.startswith("^") == exclude_samples_file
+            if exclude_samples_file and not samples.startswith("^"):
+                samples = "^" + samples
             samples += ",".join(line.strip() for line in file.readlines())
 
     # TODO: use no_update when fixing https://github.com/sgkit-dev/vcztools/issues/75

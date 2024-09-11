@@ -65,6 +65,7 @@ def run_vcztools(args: str) -> str:
         ("view --no-version -s ^NA00001", "sample.vcf.gz"),
         ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
         ("view --no-version -s ^NA00003,NA00002,NA00003", "sample.vcf.gz"),
+        ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
     ]
 )
 # fmt: on

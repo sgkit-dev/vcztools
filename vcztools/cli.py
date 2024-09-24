@@ -6,6 +6,13 @@ from . import query as query_module
 from . import regions, vcf_writer
 from . import stats as stats_module
 
+include = click.option(
+    "-i", "--include", type=str, help="Filter expression to include variant sites."
+)
+exclude = click.option(
+    "-e", "--exclude", type=str, help="Filter expression to exclude variant sites."
+)
+
 
 class NaturalOrderGroup(click.Group):
     """
@@ -122,12 +129,8 @@ def query(path, list_samples, format):
     default=None,
     help="Target regions to include.",
 )
-@click.option(
-    "-i", "--include", type=str, help="Filter expression to include variant sites."
-)
-@click.option(
-    "-e", "--exclude", type=str, help="Filter expression to exclude variant sites."
-)
+@include
+@exclude
 def view(
     path,
     output,

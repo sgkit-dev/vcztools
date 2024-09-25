@@ -7,6 +7,7 @@ import numpy as np
 import pyparsing as pp
 import zarr
 
+from vcztools.filter import FilterExpressionEvaluator, FilterExpressionParser
 from vcztools.utils import open_file_like, vcf_name_to_vcz_name
 
 
@@ -54,7 +55,13 @@ class QueryFormatParser:
 
 
 class QueryFormatGenerator:
-    def __init__(self, query_format: Union[str, pp.ParseResults]):
+    def __init__(
+        self,
+        query_format: Union[str, pp.ParseResults],
+        *,
+        include: Optional[str] = None,
+        exclude: Optional[str] = None,
+    ):
         if isinstance(query_format, str):
             parser = QueryFormatParser()
             parse_results = parser(query_format)
@@ -62,7 +69,9 @@ class QueryFormatGenerator:
             assert isinstance(query_format, pp.ParseResults)
             parse_results = query_format
 
-        self._generator = self._compose_generator(parse_results)
+        self._generator = self._compose_generator(
+            parse_results, include=include, exclude=exclude
+        )
 
     def __call__(self, *args, **kwargs):
         assert len(args) == 1
@@ -155,17 +164,58 @@ class QueryFormatGenerator:
 
             return generate
 
-    def _compose_generator(self, parse_results: pp.ParseResults) -> Callable:
+    def _compose_filter_generator(
+        self, *, include: Optional[str] = None, exclude: Optional[str] = None
+    ) -> Callable:
+        assert not (include and exclude)
+
+        if not include and not exclude:
+
+            def generate(root):
+                variant_count = root["variant_position"].shape[0]
+                yield from itertools.repeat(True, variant_count)
+
+            return generate
+
+        parser = FilterExpressionParser()
+        parse_results = parser(include or exclude)[0]
+        filter_evaluator = FilterExpressionEvaluator(
+            parse_results, invert=bool(exclude)
+        )
+
+        def generate(root):
+            nonlocal filter_evaluator
+
+            filter_evaluator = functools.partial(filter_evaluator, root)
+            variant_chunk_count = root["variant_position"].cdata_shape[0]
+
+            for variant_chunk_index in range(variant_chunk_count):
+                yield from filter_evaluator(variant_chunk_index)
+
+        return generate
+
+    def _compose_generator(
+        self,
+        parse_results: pp.ParseResults,
+        *,
+        include: Optional[str] = None,
+        exclude: Optional[str] = None,
+    ) -> Callable:
         generators = (
             self._compose_element_generator(element) for element in parse_results
+        )
+        filter_generator = self._compose_filter_generator(
+            include=include, exclude=exclude
         )
 
         def generate(root) -> str:
             iterables = (generator(root) for generator in generators)
+            filter_iterable = filter_generator(root)
 
-            for results in zip(*iterables):
-                results = map(str, results)
-                yield "".join(results)
+            for results, filter_indicator in zip(zip(*iterables), filter_iterable):
+                if filter_indicator:
+                    results = map(str, results)
+                    yield "".join(results)
 
         return generate
 
@@ -184,7 +234,7 @@ def write_query(
         )
 
     root = zarr.open(vcz, mode="r")
-    generator = QueryFormatGenerator(query_format)
+    generator = QueryFormatGenerator(query_format, include=include, exclude=exclude)
 
     with open_file_like(output) as output:
         for result in generator(root):

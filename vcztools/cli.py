@@ -55,12 +55,16 @@ def index(path, nrecords, stats):
     help="List the sample IDs and exit.",
 )
 @click.option("-f", "--format", type=str, help="The format of the output.")
-def query(path, list_samples, format):
+@include
+@exclude
+def query(path, list_samples, format, include, exclude):
     if list_samples:
         query_module.list_samples(path)
         return
 
-    query_module.write_query(path, query_format=format)
+    query_module.write_query(
+        path, query_format=format, include=include, exclude=exclude
+    )
 
 
 @click.command

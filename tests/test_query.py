@@ -1,4 +1,5 @@
 import pathlib
+import re
 from io import StringIO
 
 import pyparsing as pp
@@ -6,7 +7,12 @@ import pytest
 import zarr
 
 from tests.utils import vcz_path_cache
-from vcztools.query import QueryFormatGenerator, QueryFormatParser, list_samples
+from vcztools.query import (
+    QueryFormatGenerator,
+    QueryFormatParser,
+    list_samples,
+    write_query,
+)
 
 
 def test_list_samples(tmp_path):
@@ -101,3 +107,26 @@ class TestQueryFormatEvaluator:
         generator = QueryFormatGenerator(parse_results)
         result = "".join(generator(root))
         assert result == expected_result
+
+
+def test_write_query__include_exclude(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    query_format = r"%POS\n"
+    variant_site_filter = "POS > 1"
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Cannot handle both an include expression and an exclude expression."
+        ),
+    ):
+        write_query(
+            vcz,
+            output,
+            query_format=query_format,
+            include=variant_site_filter,
+            exclude=variant_site_filter,
+        )

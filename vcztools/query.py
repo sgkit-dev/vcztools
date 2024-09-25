@@ -1,7 +1,7 @@
 import functools
 import itertools
 import math
-from typing import Callable, Union
+from typing import Callable, Optional, Union
 
 import numpy as np
 import pyparsing as pp
@@ -170,7 +170,19 @@ class QueryFormatGenerator:
         return generate
 
 
-def write_query(vcz, output=None, *, query_format: str):
+def write_query(
+    vcz,
+    output=None,
+    *,
+    query_format: str,
+    include: Optional[str] = None,
+    exclude: Optional[str] = None,
+):
+    if include and exclude:
+        raise ValueError(
+            "Cannot handle both an include expression and an exclude expression."
+        )
+
     root = zarr.open(vcz, mode="r")
     generator = QueryFormatGenerator(query_format)
 

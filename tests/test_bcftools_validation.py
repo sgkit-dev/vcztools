@@ -126,6 +126,8 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         (r"query -f '%QUAL\n'", "sample.vcf.gz"),
         (r"query -f '%FILTER\n'", "sample.vcf.gz"),
         (r"query --format '%FILTER\n'", "1kg_2020_chrM.vcf.gz"),
+        (r"query -f '%POS\n' -i 'POS=112'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -e 'POS=112'", "sample.vcf.gz")
     ],
 )
 def test_output(tmp_path, args, vcf_name):

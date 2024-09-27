@@ -269,55 +269,6 @@ def test_write_vcf__header_flags(tmp_path):
     assert_vcfs_close(original, output)
 
 
-@pytest.mark.skip(reason="Setting a header to control output fields is not supported.")
-def test_write_vcf__set_header(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-    output = tmp_path.joinpath("output.vcf")
-
-    # specified header drops NS and HQ fields,
-    # and adds H3 and GL fields (which are not in the data)
-    vcf_header = """##fileformat=VCFv4.3
-##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">
-##INFO=<ID=AC,Number=.,Type=Integer,Description="Allele count in genotypes, for each ALT allele, in the same order as listed">
-##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">
-##INFO=<ID=AF,Number=.,Type=Float,Description="Allele Frequency">
-##INFO=<ID=AA,Number=1,Type=String,Description="Ancestral Allele">
-##INFO=<ID=DB,Number=0,Type=Flag,Description="dbSNP membership, build 129">
-##INFO=<ID=H2,Number=0,Type=Flag,Description="HapMap2 membership">
-##INFO=<ID=H3,Number=0,Type=Flag,Description="HapMap3 membership">
-##FILTER=<ID=s50,Description="Less than 50% of samples have data">
-##FILTER=<ID=q10,Description="Quality below 10">
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
-##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
-##FORMAT=<ID=GL,Number=G,Type=Float,Description="Genotype likelihoods">
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA00001	NA00002	NA00003
-"""  # noqa: E501
-
-    write_vcf(vcz, output, vcf_header=vcf_header)
-
-    v = VCF(output)
-    # check dropped fields are not present in VCF header
-    assert "##INFO=<ID=NS" not in v.raw_header
-    assert "##FORMAT=<ID=HQ" not in v.raw_header
-    # check added fields are present in VCF header
-    assert "##INFO=<ID=H3" in v.raw_header
-    assert "##FORMAT=<ID=GL" in v.raw_header
-    count = 0
-    for variant in v:
-        # check dropped fields are not present in VCF data
-        assert "NS" not in dict(variant.INFO).keys()
-        assert "HQ" not in variant.FORMAT
-        # check added fields are not present in VCF data
-        assert "H3" not in dict(variant.INFO).keys()
-        assert "GL" not in variant.FORMAT
-
-        assert variant.genotypes is not None
-        count += 1
-    assert count == 9
-
-
 def test_compute_info_fields():
     gt = np.array([
         [[0, 0], [0, 1], [1, 1]],

@@ -81,7 +81,6 @@ def write_vcf(
     vcz,
     output,
     *,
-    vcf_header: Optional[str] = None,
     header_only: bool = False,
     no_header: bool = False,
     no_version: bool = False,
@@ -95,20 +94,13 @@ def write_vcf(
 ) -> None:
     """Convert a dataset to a VCF file.
 
-    The VCF header to use is dictated by either the ``vcf_header`` parameter or the
-    ``vcf_header`` attribute on the input dataset.
-
-    If specified, the ``vcf_header`` parameter will be used, and any variables in the
-    dataset that are not in this header will not be included in the output.
-
-    If the ``vcf_header`` parameter is left as the default (`None`) and a ``vcf_header``
-    attribute is present in the dataset (such as one created by :func:`vcf_to_zarr`),
+    If a VCF header is required and ``vcf_header`` attribute is present in the dataset,
     it will be used to generate the new VCF header. In this case, any variables in the
     dataset that are not specified in this header will have corresponding header lines
     added, and any lines in the header without a corresponding variable in the dataset
     will be omitted.
 
-    In the case of no ``vcf_header`` parameter or attribute, a VCF header will
+    In the case of no ``vcf_header`` attribute, a VCF header will
     be generated, and will include all variables in the dataset.
 
     Float fields are written with up to 3 decimal places of precision.
@@ -134,10 +126,6 @@ def write_vcf(
         Dataset to convert to VCF.
     output
         A path or text file object that the output VCF should be written to.
-    vcf_header
-        The VCF header to use (including the line starting with ``#CHROM``).
-        If None, then a header will be generated from the dataset ``vcf_header``
-        attribute (if present), or from scratch otherwise.
     """
 
     root = zarr.open(vcz, mode="r")
@@ -166,16 +154,11 @@ def write_vcf(
                 )
                 sample_ids = all_samples[samples_selection]
 
-        if not no_header and vcf_header is None:
-            if "vcf_header" in root.attrs:
-                original_header = root.attrs["vcf_header"]
-            else:
-                original_header = None
+        if not no_header:
+            original_header = root.attrs.get("vcf_header", None)
             vcf_header = _generate_header(
                 root, original_header, sample_ids, no_version=no_version
             )
-
-        if not no_header:
             print(vcf_header, end="", file=output)
 
         if header_only:
@@ -186,9 +169,6 @@ def write_vcf(
 
         if num_variants == 0:
             return
-
-        # header_info_fields = _info_fields(vcf_header)
-        # header_format_fields = _format_fields(vcf_header)
 
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
@@ -621,29 +601,6 @@ def _array_to_vcf_type(a):
         return "String"
     else:
         raise ValueError(f"Unsupported dtype: {a.dtype}")
-
-
-def _info_fields(header_str):
-    p = re.compile("ID=([^,>]+)")
-    return [
-        p.findall(line)[0]
-        for line in header_str.split("\n")
-        if line.startswith("##INFO=")
-    ]
-
-
-def _format_fields(header_str):
-    p = re.compile("ID=([^,>]+)")
-    fields = [
-        p.findall(line)[0]
-        for line in header_str.split("\n")
-        if line.startswith("##FORMAT=")
-    ]
-    # GT must be the first field if present, per the spec (section 1.6.2)
-    if "GT" in fields:
-        fields.remove("GT")
-        fields.insert(0, "GT")
-    return fields
 
 
 def _compute_info_fields(gt: np.ndarray, alt: np.ndarray):

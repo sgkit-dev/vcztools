@@ -4,6 +4,8 @@ from io import StringIO
 
 import numpy as np
 import pytest
+import zarr
+from bio2zarr import vcf2zarr
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
@@ -267,6 +269,48 @@ def test_write_vcf__header_flags(tmp_path):
     with open(output, "w") as f:
         f.write(output_str)
     assert_vcfs_close(original, output)
+
+
+def test_write_vcf__generate_header(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    # don't use cache here since we mutate the vcz
+    vcz = tmp_path.joinpath("intermediate.vcz")
+    vcf2zarr.convert([original], vcz, worker_processes=0, local_alleles=False)
+
+    # remove vcf_header
+    root = zarr.open(vcz, mode="r+")
+    del root.attrs["vcf_header"]
+
+    output_header = StringIO()
+    write_vcf(vcz, output_header, header_only=True, no_version=True)
+
+    expected_vcf_header = """##fileformat=VCFv4.3
+##source={}
+##INFO=<ID=AA,Number=1,Type=String,Description="Ancestral Allele">
+##INFO=<ID=AC,Number=2,Type=Integer,Description="Allele count in genotypes, for each ALT allele, in the same order as listed">
+##INFO=<ID=AF,Number=2,Type=Float,Description="Allele Frequency">
+##INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">
+##INFO=<ID=DB,Number=0,Type=Flag,Description="dbSNP membership, build 129">
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">
+##INFO=<ID=H2,Number=0,Type=Flag,Description="HapMap2 membership">
+##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of Samples With Data">
+##FILTER=<ID=PASS,Description="">
+##FILTER=<ID=s50,Description="">
+##FILTER=<ID=q10,Description="">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
+##FORMAT=<ID=HQ,Number=2,Type=Integer,Description="Haplotype Quality">
+##contig=<ID=19>
+##contig=<ID=20>
+##contig=<ID=X>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA00001	NA00002	NA00003
+"""  # noqa: E501
+
+    # substitute value of source
+    expected_vcf_header = expected_vcf_header.format(root.attrs["source"])
+
+    assert output_header.getvalue() == expected_vcf_header
 
 
 def test_compute_info_fields():

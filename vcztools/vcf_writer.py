@@ -445,8 +445,6 @@ def _generate_header(ds, original_header, sample_ids, *, no_version: bool = Fals
         # [1.4.1 File format]
         print("##fileformat=VCFv4.3", file=output)
 
-        print('##FILTER=<ID=PASS,Description="All filters passed">', file=output)
-
         if "source" in ds.attrs:
             print(f'##source={ds.attrs["source"]}', file=output)
 

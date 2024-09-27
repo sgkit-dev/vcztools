@@ -489,10 +489,9 @@ def _generate_header(ds, original_header, sample_ids, *, no_version: bool = Fals
         category = "INFO"
         vcf_number = _array_to_vcf_number(category, key, arr)
         vcf_type = _array_to_vcf_type(arr)
-        if "comment" in arr.attrs:
-            vcf_description = arr.attrs["comment"]
-        else:
-            vcf_description = RESERVED_INFO_KEY_DESCRIPTIONS.get(key, "")
+        vcf_description = arr.attrs.get(
+            "description", RESERVED_INFO_KEY_DESCRIPTIONS.get(key, "")
+        )
         print(
             f'##INFO=<ID={key},Number={vcf_number},Type={vcf_type},Description="{vcf_description}">',
             file=output,
@@ -514,10 +513,9 @@ def _generate_header(ds, original_header, sample_ids, *, no_version: bool = Fals
             category = "FORMAT"
             vcf_number = _array_to_vcf_number(category, key, arr)
             vcf_type = _array_to_vcf_type(arr)
-            if "comment" in arr.attrs:
-                vcf_description = arr.attrs["comment"]
-            else:
-                vcf_description = RESERVED_FORMAT_KEY_DESCRIPTIONS.get(key, "")
+            vcf_description = arr.attrs.get(
+                "description", RESERVED_FORMAT_KEY_DESCRIPTIONS.get(key, "")
+            )
             print(
                 f'##FORMAT=<ID={key},Number={vcf_number},Type={vcf_type},Description="{vcf_description}">',
                 file=output,

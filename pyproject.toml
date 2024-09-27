@@ -18,7 +18,26 @@ dependencies = [
   "pyparsing"
 ]
 requires-python = ">=3.9"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: MacOS :: MacOS X",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering"
+]
 dynamic = ["version"]
+
+[project.urls]
+repository = "https://github.com/sgkit-dev/vcztools"
 
 [project.scripts]
 vcztools = "vcztools.cli:vcztools_main"

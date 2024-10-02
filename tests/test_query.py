@@ -53,6 +53,42 @@ class TestQueryFormatParser:
                 r"Read depth: %INFO/DP\n",
                 ["Read", " ", "depth:", " ", "%INFO/DP", "\n"],
             ),
+            (
+                r"%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT]\n",
+                [
+                    "%CHROM",
+                    "\t",
+                    "%POS",
+                    "\t",
+                    "%REF",
+                    "\t",
+                    "%ALT",
+                    ["\t", "%SAMPLE", "=", "%GT"],
+                    "\n",
+                ],
+            ),
+            (
+                r"%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT{0}]\n",
+                [
+                    "%CHROM",
+                    "\t",
+                    "%POS",
+                    "\t",
+                    "%REF",
+                    "\t",
+                    "%ALT",
+                    ["\t", "%SAMPLE", "=", ["%GT", 0]],
+                    "\n",
+                ],
+            ),
+            (
+                r"GQ:[ %GQ] \t GT:[ %GT]\n",
+                ["GQ:", [" ", "%GQ"], " ", "\t", " ", "GT:", [" ", "%GT"], "\n"],
+            ),
+            (
+                r"[%SAMPLE %GT %DP\n]",
+                [["%SAMPLE", " ", "%GT", " ", "%DP", "\n"]],
+            ),
         ],
     )
     def test_valid_expressions(self, parser, expression, expected_result):

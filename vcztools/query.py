@@ -35,17 +35,21 @@ class QueryFormatParser:
         )
         newline_pattern = pp.Literal("\\n").set_parse_action(pp.replace_with("\n"))
         tab_pattern = pp.Literal("\\t").set_parse_action(pp.replace_with("\t"))
-        pattern = pp.ZeroOrMore(
-            subscript_pattern
+        format_pattern = pp.Forward()
+        sample_loop_pattern = pp.Group(
+            pp.Literal("[").suppress() + format_pattern + pp.Literal("]").suppress()
+        )
+        format_pattern <<= pp.ZeroOrMore(
+            sample_loop_pattern
+            | subscript_pattern
             | tag_pattern
             | newline_pattern
             | tab_pattern
             | pp.White()
             | pp.Word(pp.printables, exclude_chars=r"\{}[]%")
-        )
-        pattern = pattern.leave_whitespace()
+        ).leave_whitespace()
 
-        self._parser = functools.partial(pattern.parse_string, parse_all=True)
+        self._parser = functools.partial(format_pattern.parse_string, parse_all=True)
 
     def __call__(self, *args, **kwargs):
         assert len(args) == 1

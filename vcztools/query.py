@@ -7,6 +7,7 @@ import numpy as np
 import pyparsing as pp
 import zarr
 
+from vcztools import constants
 from vcztools.filter import FilterExpressionEvaluator, FilterExpressionParser
 from vcztools.utils import open_file_like, vcf_name_to_vcz_name
 
@@ -83,11 +84,64 @@ class QueryFormatGenerator:
 
         yield from self._generator(args[0])
 
+    def _compose_gt_generator(self) -> Callable:
+        def generate(root):
+            gt_zarray = root["call_genotype"]
+            v_chunk_size = gt_zarray.chunks[0]
+
+            if "call_genotype_phased" in root:
+                phase_zarray = root["call_genotype_phased"]
+                assert gt_zarray.chunks[:2] == phase_zarray.chunks
+                assert gt_zarray.shape[:2] == phase_zarray.shape
+
+                for v_chunk_index in range(gt_zarray.cdata_shape[0]):
+                    start = v_chunk_index * v_chunk_size
+                    end = start + v_chunk_size
+
+                    for gt_row, phase in zip(
+                        gt_zarray[start:end], phase_zarray[start:end]
+                    ):
+
+                        def stringify(gt_and_phase: tuple):
+                            gt, phase = gt_and_phase
+                            gt = [
+                                str(allele) if allele != constants.INT_MISSING else "."
+                                for allele in gt
+                                if allele != constants.INT_FILL
+                            ]
+                            separator = "|" if phase else "/"
+                            return separator.join(gt)
+
+                        gt_row = gt_row.tolist()
+                        yield map(stringify, zip(gt_row, phase))
+            else:
+                for v_chunk_index in range(gt_zarray.cdata_shape[0]):
+                    start = v_chunk_index * v_chunk_size
+                    end = start + v_chunk_size
+
+                    for gt_row in gt_zarray[start:end]:
+
+                        def stringify(gt: list[int]):
+                            gt = [
+                                str(allele) if allele != constants.INT_MISSING else "."
+                                for allele in gt
+                                if allele != constants.INT_FILL
+                            ]
+                            return "/".join(gt)
+
+                        gt_row = gt_row.tolist()
+                        yield map(stringify, gt_row)
+
+        return generate
+
     def _compose_tag_generator(
         self, tag: str, *, subfield=False, sample_loop=False
     ) -> Callable:
         assert tag.startswith("%")
         tag = tag[1:]
+
+        if tag == "GT":
+            return self._compose_gt_generator()
 
         def generate(root):
             vcz_names = set(name for name, _zarray in root.items())
@@ -124,8 +178,10 @@ class QueryFormatGenerator:
                             row = "."
                         else:
                             row = f"{row:g}"
-                    if not subfield and (
-                        isinstance(row, np.ndarray) or isinstance(row, list)
+                    if (
+                        not subfield
+                        and not sample_loop
+                        and (isinstance(row, np.ndarray) or isinstance(row, list))
                     ):
                         row = ",".join(map(str, row))
 
@@ -133,7 +189,11 @@ class QueryFormatGenerator:
 
                     if sample_loop:
                         sample_count = root["sample_id"].shape[0]
-                        yield itertools.repeat(row, sample_count)
+
+                        if isinstance(row, np.ndarray) or isinstance(row, list):
+                            yield row
+                        else:
+                            yield itertools.repeat(row, sample_count)
                     else:
                         yield result
 

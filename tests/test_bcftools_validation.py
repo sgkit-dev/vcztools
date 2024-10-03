@@ -131,6 +131,9 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         (r"query -f '[%CHROM\t]\n'", "sample.vcf.gz"),
         (r"query -f '[%CHROM\t]\n' -i 'POS=112'", "sample.vcf.gz"),
         (r"query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n'", "sample.vcf.gz"),
+        (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]\n'", "sample.vcf.gz"),
+        (r"query -f '[%CHROM:%POS %GT\n]'", "sample.vcf.gz"),
+        (r"query -f '[%GT %DP\n]'", "sample.vcf.gz"),
     ],
 )
 def test_output(tmp_path, args, vcf_name):

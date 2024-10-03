@@ -115,22 +115,8 @@ class QueryFormatGenerator:
                         gt_row = gt_row.tolist()
                         yield map(stringify, zip(gt_row, phase))
             else:
-                for v_chunk_index in range(gt_zarray.cdata_shape[0]):
-                    start = v_chunk_index * v_chunk_size
-                    end = start + v_chunk_size
-
-                    for gt_row in gt_zarray[start:end]:
-
-                        def stringify(gt: list[int]):
-                            gt = [
-                                str(allele) if allele != constants.INT_MISSING else "."
-                                for allele in gt
-                                if allele != constants.INT_FILL
-                            ]
-                            return "/".join(gt)
-
-                        gt_row = gt_row.tolist()
-                        yield map(stringify, gt_row)
+                # TODO: Support datasets without the phasing data
+                raise NotImplementedError
 
         return generate
 
@@ -164,8 +150,7 @@ class QueryFormatGenerator:
                     if tag == "REF":
                         row = row[0]
                     if tag == "ALT":
-                        row = [allele for allele in row[1:] if allele]
-                        row = row or "."
+                        row = [allele for allele in row[1:] if allele] or "."
                     if tag == "FILTER":
                         assert filter_ids is not None
 
@@ -185,17 +170,23 @@ class QueryFormatGenerator:
                     ):
                         row = ",".join(map(str, row))
 
-                    result = row if not is_missing else "."
-
                     if sample_loop:
                         sample_count = root["sample_id"].shape[0]
 
-                        if isinstance(row, np.ndarray) or isinstance(row, list):
+                        if isinstance(row, np.ndarray):
+                            row = row.tolist()
+                            row = [
+                                str(element)
+                                if element != constants.INT_MISSING
+                                else "."
+                                for element in row
+                                if element != constants.INT_FILL
+                            ]
                             yield row
                         else:
-                            yield itertools.repeat(row, sample_count)
+                            yield itertools.repeat(str(row), sample_count)
                     else:
-                        yield result
+                        yield row if not is_missing else "."
 
         return generate
 

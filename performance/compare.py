@@ -1,3 +1,12 @@
+# This script requires pv.
+
+# https://www.ivarch.com/programs/pv.shtml
+
+# There is a Homebrew formula to install pv on macOS.
+
+# This script also depends on the simulation data:
+# make -C data
+
 import subprocess
 import sys
 

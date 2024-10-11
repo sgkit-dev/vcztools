@@ -1,3 +1,14 @@
+# The make recipes require bcftools and bgzip.
+
+# https://samtools.github.io/bcftools/howtos/install.html
+# https://www.htslib.org/doc/bgzip.html
+
+# On macOS, there are Homebrew formulas for bcftools and htslib,
+# which contains bgzip.
+
+# The Python requirements are listed in requirements.txt:
+# pip install -r requirements.txt
+
 .PHONY: all clean
 
 all: sim_10k.vcz

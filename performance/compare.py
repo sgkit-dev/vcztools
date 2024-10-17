@@ -32,6 +32,9 @@ if __name__ == "__main__":
         (r"query -f '%CHROM %POS %REF %ALT{0}\n'", "sim_10k"),
         (r"query -f '%CHROM:%POS\n' -i 'POS=49887394 | POS=50816415'", "sim_10k"),
         ("view -s '' --force-samples", "sim_10k"),
+        ("view -i 'FMT/DP>10 & FMT/GQ>10'", "chr22"),
+        ("view -i 'QUAL>10 || FMT/GQ>10'", "chr22"),
+        (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]\n'", "chr22"),
     ]
 
     if len(sys.argv) == 2 and sys.argv[1].isnumeric():

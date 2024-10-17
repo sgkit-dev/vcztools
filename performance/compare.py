@@ -27,24 +27,19 @@ def run_vcztools(command: str, dataset_name: str):
 
 if __name__ == "__main__":
     commands = [
-        "view",
-        "view -s tsk_7068,tsk_8769,tsk_8820",
-        r"query -f '%CHROM %POS %REF %ALT{0}\n'",
-        r"query -f '%CHROM:%POS\n' -i 'POS=49887394 | POS=50816415'",
-        "view -s '' --force-samples",
+        ("view", "sim_10k"),
+        ("view -s tsk_7068,tsk_8769,tsk_8820", "sim_10k"),
+        (r"query -f '%CHROM %POS %REF %ALT{0}\n'", "sim_10k"),
+        (r"query -f '%CHROM:%POS\n' -i 'POS=49887394 | POS=50816415'", "sim_10k"),
+        ("view -s '' --force-samples", "sim_10k"),
     ]
-    dataset = "sim_10k"
 
     if len(sys.argv) == 2 and sys.argv[1].isnumeric():
         index = int(sys.argv[1])
-        command = commands[index]
-        run_bcftools(command, dataset)
-        run_vcztools(command, dataset)
-    elif len(sys.argv) >= 2:
-        command = " ".join(sys.argv[1:])
+        command, dataset = commands[index]
         run_bcftools(command, dataset)
         run_vcztools(command, dataset)
     else:
-        for command in commands:
+        for command, dataset in commands:
             run_bcftools(command, dataset)
             run_vcztools(command, dataset)

@@ -151,7 +151,7 @@ def view(
     include,
     exclude,
 ):
-    if output and not output.endswith(".vcf"):
+    if output and not output.endswith(".vcf") and output != "/dev/null":
         split = output.split(".")
         raise ValueError(f"Output file extension must be .vcf, got: .{split[-1]}")
 

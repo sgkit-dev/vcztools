@@ -28,6 +28,7 @@ def run_vcztools(command: str, dataset_name: str):
 if __name__ == "__main__":
     commands = [
         ("view", "sim_10k"),
+        ("view", "chr22"),
         ("view -s tsk_7068,tsk_8769,tsk_8820", "sim_10k"),
         (r"query -f '%CHROM %POS %REF %ALT{0}\n'", "sim_10k"),
         (r"query -f '%CHROM:%POS\n' -i 'POS=49887394 | POS=50816415'", "sim_10k"),

@@ -1,3 +1,4 @@
+import concurrent.futures
 import functools
 import io
 import re
@@ -292,74 +293,139 @@ def c_chunk_to_vcf(
     drop_genotypes,
     no_update,
 ):
-    chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
-    # TODO check we don't truncate silently by doing this
-    pos = get_vchunk_array(root.variant_position, v_chunk, v_mask_chunk).astype(
-        np.int32
-    )
-    id = get_vchunk_array(root.variant_id, v_chunk, v_mask_chunk).astype("S")
-    alleles = get_vchunk_array(root.variant_allele, v_chunk, v_mask_chunk)
-    ref = alleles[:, 0].astype("S")
-    alt = alleles[:, 1:].astype("S")
-    qual = get_vchunk_array(root.variant_quality, v_chunk, v_mask_chunk)
-    filter_ = get_vchunk_array(root.variant_filter, v_chunk, v_mask_chunk)
-
-    num_variants = len(pos)
-    if len(id.shape) == 1:
-        id = id.reshape((num_variants, 1))
-
-    # TODO gathering fields and doing IO will be done separately later so that
-    # we avoid retrieving stuff we don't need.
+    chrom = None
+    pos = None
+    id = None
+    alleles = None
+    qual = None
+    filter_ = None
     format_fields = {}
     info_fields = {}
     num_samples = len(samples_selection) if samples_selection is not None else None
-    for name, array in root.items():
-        if (
-            name.startswith("call_")
-            and not name.startswith("call_genotype")
-            and num_samples != 0
-        ):
-            vcf_name = name[len("call_") :]
-            format_fields[vcf_name] = get_vchunk_array(
-                array, v_chunk, v_mask_chunk, samples_selection
-            )
-            if num_samples is None:
-                num_samples = array.shape[1]
-        elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
-            vcf_name = name[len("variant_") :]
-            info_fields[vcf_name] = get_vchunk_array(array, v_chunk, v_mask_chunk)
-
     gt = None
     gt_phased = None
 
+    def load_chrom():
+        nonlocal chrom
+        chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
+
+    def load_pos():
+        nonlocal pos
+        # TODO check we don't truncate silently by doing this
+        pos = get_vchunk_array(root.variant_position, v_chunk, v_mask_chunk).astype(
+            np.int32
+        )
+
+    def load_id():
+        nonlocal id
+        id = get_vchunk_array(root.variant_id, v_chunk, v_mask_chunk).astype("S")
+
+    def load_alleles():
+        nonlocal alleles
+        alleles = get_vchunk_array(root.variant_allele, v_chunk, v_mask_chunk)
+
+    def load_qual():
+        nonlocal qual
+        qual = get_vchunk_array(root.variant_quality, v_chunk, v_mask_chunk)
+
+    def load_filter():
+        nonlocal filter_
+        filter_ = get_vchunk_array(root.variant_filter, v_chunk, v_mask_chunk)
+
+    def load_format_field(name, zarray):
+        nonlocal format_fields, v_chunk, v_mask_chunk, samples_selection
+        vcf_name = name[len("call_") :]
+        format_fields[vcf_name] = get_vchunk_array(
+            zarray, v_chunk, v_mask_chunk, samples_selection
+        )
+
+    def load_info_field(name, zarray):
+        nonlocal info_fields, v_chunk, v_mask_chunk
+        vcf_name = name[len("variant_") :]
+        info_fields[vcf_name] = get_vchunk_array(zarray, v_chunk, v_mask_chunk)
+
+    def load_gt():
+        pass
+
+    def load_gt_phased():
+        pass
+
     if "call_genotype" in root and not drop_genotypes:
-        array = root["call_genotype"]
-
         if samples_selection is not None and num_samples != 0:
-            gt = get_vchunk_array(array, v_chunk, v_mask_chunk, samples_selection)
-        else:
-            gt = get_vchunk_array(array, v_chunk, v_mask_chunk)
 
-        if not no_update and samples_selection is not None:
-            # Recompute INFO/AC and INFO/AN
-            info_fields |= _compute_info_fields(gt, alt)
-        if num_samples == 0:
-            gt = None
+            def load_gt():
+                nonlocal gt
+                gt = get_vchunk_array(
+                    root["call_genotype"], v_chunk, v_mask_chunk, samples_selection
+                )
+        else:
+
+            def load_gt():
+                nonlocal gt
+                gt = get_vchunk_array(root["call_genotype"], v_chunk, v_mask_chunk)
+
         if (
             "call_genotype_phased" in root
             and not drop_genotypes
             and (samples_selection is None or num_samples > 0)
         ):
-            array = root["call_genotype_phased"]
-            gt_phased = get_vchunk_array(
-                array, v_chunk, v_mask_chunk, samples_selection
-            )
-        else:
-            gt_phased = np.zeros_like(gt, dtype=bool)
 
+            def load_gt_phased():
+                nonlocal gt_phased
+                gt_phased = get_vchunk_array(
+                    root["call_genotype_phased"],
+                    v_chunk,
+                    v_mask_chunk,
+                    samples_selection,
+                )
+        else:
+
+            def load_gt_phased():
+                nonlocal gt_phased
+                gt_phased = np.zeros_like(gt, dtype=bool)
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.submit(load_chrom)
+        executor.submit(load_pos)
+        executor.submit(load_id)
+        executor.submit(load_alleles)
+        executor.submit(load_qual)
+        executor.submit(load_filter)
+
+        for name, zarray in root.items():
+            if (
+                name.startswith("call_")
+                and not name.startswith("call_genotype")
+                and num_samples != 0
+            ):
+                executor.submit(load_format_field, name, zarray)
+                if num_samples is None:
+                    num_samples = zarray.shape[1]
+            elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
+                executor.submit(load_info_field, name, zarray)
+
+        executor.submit(load_gt)
+        executor.submit(load_gt_phased)
+
+    ref = alleles[:, 0].astype("S")
+    alt = alleles[:, 1:].astype("S")
+
+    if len(id.shape) == 1:
+        id = id.reshape((-1, 1))
+    if (
+        not no_update
+        and samples_selection is not None
+        and "call_genotype" in root
+        and not drop_genotypes
+    ):
+        # Recompute INFO/AC and INFO/AN
+        info_fields |= _compute_info_fields(gt, alt)
+    if num_samples == 0:
+        gt = None
     if gt is not None and num_samples is None:
         num_samples = gt.shape[1]
 
+    num_variants = len(pos)
     encoder = _vcztools.VcfEncoder(
         num_variants,
         num_samples if num_samples is not None else 0,
@@ -375,21 +441,21 @@ def c_chunk_to_vcf(
     # print(encoder.arrays)
     if gt is not None:
         encoder.add_gt_field(gt, gt_phased)
-    for name, array in info_fields.items():
+    for name, zarray in info_fields.items():
         # print(array.dtype.kind)
-        if array.dtype.kind in ("O", "U"):
-            array = array.astype("S")
-        if len(array.shape) == 1:
-            array = array.reshape((num_variants, 1))
-        encoder.add_info_field(name, array)
+        if zarray.dtype.kind in ("O", "U"):
+            zarray = zarray.astype("S")
+        if len(zarray.shape) == 1:
+            zarray = zarray.reshape((num_variants, 1))
+        encoder.add_info_field(name, zarray)
 
     if num_samples != 0:
-        for name, array in format_fields.items():
-            if array.dtype.kind in ("O", "U"):
-                array = array.astype("S")
-            if len(array.shape) == 2:
-                array = array.reshape((num_variants, num_samples, 1))
-            encoder.add_format_field(name, array)
+        for name, zarray in format_fields.items():
+            if zarray.dtype.kind in ("O", "U"):
+                zarray = zarray.astype("S")
+            if len(zarray.shape) == 2:
+                zarray = zarray.reshape((num_variants, num_samples, 1))
+            encoder.add_format_field(name, zarray)
     # TODO: (1) make a guess at this based on number of fields and samples,
     # and (2) log a DEBUG message when we have to double.
     buflen = 1024

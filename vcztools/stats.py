@@ -38,7 +38,7 @@ def stats(vcz, output):
         ).astype(np.int64)
 
         for contig, contig_length, nr in zip(
-            contigs, contig_lengths, num_records_per_contig
+            contigs, contig_lengths, num_records_per_contig, strict=False
         ):
             if nr > 0:
                 print(f"{contig}\t{contig_length}\t{nr}", file=output)

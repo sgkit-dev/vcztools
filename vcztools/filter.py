@@ -1,6 +1,6 @@
 import functools
 import operator
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import pyparsing as pp

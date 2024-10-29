@@ -3,6 +3,7 @@ import functools
 import io
 import re
 import sys
+from collections import deque
 from datetime import datetime
 
 import numpy as np
@@ -189,9 +190,12 @@ def write_vcf(
 
         if variant_regions is None and variant_targets is None:
             # no regions or targets selected
+            executor = concurrent.futures.ThreadPoolExecutor()
+            preceding_future = None
             for v_chunk in range(pos.cdata_shape[0]):
                 v_mask_chunk = filter_evaluator(v_chunk) if filter_evaluator else None
-                c_chunk_to_vcf(
+                future = executor.submit(
+                    c_chunk_to_vcf,
                     root,
                     v_chunk,
                     v_mask_chunk,
@@ -201,7 +205,16 @@ def write_vcf(
                     output,
                     drop_genotypes=drop_genotypes,
                     no_update=no_update,
+                    executor=executor,
                 )
+                if preceding_future:
+                    concurrent.futures.wait((preceding_future,))
+                preceding_future = future
+            if preceding_future:
+                concurrent.futures.wait((preceding_future,))
+            # We can't use a with-statement because the threads
+            # themselves submit tasks to the executor.
+            executor.shutdown()
         else:
             contigs_u = root["contig_id"][:].astype("U").tolist()
             regions = parse_regions(variant_regions, contigs_u)
@@ -246,7 +259,8 @@ def write_vcf(
             # Use zarr arrays to get mask chunks aligned with the main data
             # for convenience.
             z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
-
+            executor = concurrent.futures.ThreadPoolExecutor()
+            preceding_future = None
             for i, v_chunk in enumerate(chunk_indexes):
                 v_mask_chunk = z_variant_mask.blocks[i]
 
@@ -255,7 +269,8 @@ def write_vcf(
                         v_mask_chunk, filter_evaluator(v_chunk)
                     )
                 if np.any(v_mask_chunk):
-                    c_chunk_to_vcf(
+                    future = executor.submit(
+                        c_chunk_to_vcf,
                         root,
                         v_chunk,
                         v_mask_chunk,
@@ -265,7 +280,16 @@ def write_vcf(
                         output,
                         drop_genotypes=drop_genotypes,
                         no_update=no_update,
+                        executor=executor,
                     )
+                    if preceding_future:
+                        concurrent.futures.wait((preceding_future,))
+                    preceding_future = future
+                if preceding_future:
+                    concurrent.futures.wait((preceding_future,))
+                # We can't use a with-statement because the threads
+                # themselves submit tasks to the executor.
+                executor.shutdown()
 
 
 def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
@@ -292,6 +316,7 @@ def c_chunk_to_vcf(
     *,
     drop_genotypes,
     no_update,
+    executor: concurrent.futures.Executor,
 ):
     chrom = None
     pos = None
@@ -384,28 +409,29 @@ def c_chunk_to_vcf(
                 nonlocal gt_phased
                 gt_phased = np.zeros_like(gt, dtype=bool)
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        executor.submit(load_chrom)
-        executor.submit(load_pos)
-        executor.submit(load_id)
-        executor.submit(load_alleles)
-        executor.submit(load_qual)
-        executor.submit(load_filter)
+    futures = deque()
+    futures.append(executor.submit(load_chrom))
+    futures.append(executor.submit(load_pos))
+    futures.append(executor.submit(load_id))
+    futures.append(executor.submit(load_alleles))
+    futures.append(executor.submit(load_qual))
+    futures.append(executor.submit(load_filter))
 
-        for name, zarray in root.items():
-            if (
-                name.startswith("call_")
-                and not name.startswith("call_genotype")
-                and num_samples != 0
-            ):
-                executor.submit(load_format_field, name, zarray)
-                if num_samples is None:
-                    num_samples = zarray.shape[1]
-            elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
-                executor.submit(load_info_field, name, zarray)
+    for name, zarray in root.items():
+        if (
+            name.startswith("call_")
+            and not name.startswith("call_genotype")
+            and num_samples != 0
+        ):
+            futures.append(executor.submit(load_format_field, name, zarray))
+            if num_samples is None:
+                num_samples = zarray.shape[1]
+        elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
+            futures.append(executor.submit(load_info_field, name, zarray))
 
-        executor.submit(load_gt)
-        executor.submit(load_gt_phased)
+    futures.append(executor.submit(load_gt))
+    futures.append(executor.submit(load_gt_phased))
+    concurrent.futures.wait(futures)
 
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")

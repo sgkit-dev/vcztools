@@ -142,6 +142,9 @@ jobs:
   test-numpy-version:
     name: Test numpy versions
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
     strategy:
       matrix:
         numpy: ["==1.26", ">=2"]

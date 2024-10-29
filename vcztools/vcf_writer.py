@@ -206,6 +206,7 @@ def write_vcf(
                     drop_genotypes=drop_genotypes,
                     no_update=no_update,
                     executor=executor,
+                    preceding_future=preceding_future,
                 )
                 if preceding_future:
                     concurrent.futures.wait((preceding_future,))
@@ -281,6 +282,7 @@ def write_vcf(
                         drop_genotypes=drop_genotypes,
                         no_update=no_update,
                         executor=executor,
+                        preceding_future=preceding_future,
                     )
                     if preceding_future:
                         concurrent.futures.wait((preceding_future,))
@@ -317,6 +319,7 @@ def c_chunk_to_vcf(
     drop_genotypes,
     no_update,
     executor: concurrent.futures.Executor,
+    preceding_future: Optional[concurrent.futures.Future] = None,
 ):
     chrom = None
     pos = None
@@ -431,6 +434,8 @@ def c_chunk_to_vcf(
 
     futures.append(executor.submit(load_gt))
     futures.append(executor.submit(load_gt_phased))
+    if preceding_future:
+        futures.append(preceding_future)
     concurrent.futures.wait(futures)
 
     ref = alleles[:, 0].astype("S")

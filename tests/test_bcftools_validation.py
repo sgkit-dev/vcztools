@@ -34,6 +34,7 @@ def run_vcztools(args: str) -> str:
     ("args", "vcf_file"),
     [
         ("view --no-version", "sample.vcf.gz"),
+        ("view --no-version", "chr22.vcf.gz"),
         ("view --no-version -i 'INFO/DP > 10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5 && FMT/GQ > 10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5 & FMT/GQ>10'", "sample.vcf.gz"),

@@ -362,9 +362,6 @@ def c_chunk_to_vcf(
             vcf_name = name[len("variant_") :]
             info_fields[vcf_name] = get_vchunk_array(zarray, v_chunk, v_mask_chunk)
 
-    if preceding_future:
-        concurrent.futures.wait((preceding_future,))
-
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
 
@@ -414,6 +411,10 @@ def c_chunk_to_vcf(
             if len(zarray.shape) == 2:
                 zarray = zarray.reshape((num_variants, num_samples, 1))
             encoder.add_format_field(name, zarray)
+
+    if preceding_future:
+        concurrent.futures.wait((preceding_future,))
+
     # TODO: (1) make a guess at this based on number of fields and samples,
     # and (2) log a DEBUG message when we have to double.
     buflen = 1024

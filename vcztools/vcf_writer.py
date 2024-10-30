@@ -3,7 +3,6 @@ import functools
 import io
 import re
 import sys
-from collections import deque
 from datetime import datetime
 
 import numpy as np
@@ -190,32 +189,28 @@ def write_vcf(
 
         if variant_regions is None and variant_targets is None:
             # no regions or targets selected
-            executor = concurrent.futures.ThreadPoolExecutor()
-            preceding_future = None
-            for v_chunk in range(pos.cdata_shape[0]):
-                v_mask_chunk = filter_evaluator(v_chunk) if filter_evaluator else None
-                future = executor.submit(
-                    c_chunk_to_vcf,
-                    root,
-                    v_chunk,
-                    v_mask_chunk,
-                    samples_selection,
-                    contigs,
-                    filters,
-                    output,
-                    drop_genotypes=drop_genotypes,
-                    no_update=no_update,
-                    executor=executor,
-                    preceding_future=preceding_future,
-                )
-                if preceding_future:
-                    concurrent.futures.wait((preceding_future,))
-                preceding_future = future
-            if preceding_future:
-                concurrent.futures.wait((preceding_future,))
-            # We can't use a with-statement because the threads
-            # themselves submit tasks to the executor.
-            executor.shutdown()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                preceding_future = None
+                for v_chunk in range(pos.cdata_shape[0]):
+                    v_mask_chunk = (
+                        filter_evaluator(v_chunk) if filter_evaluator else None
+                    )
+                    future = executor.submit(
+                        c_chunk_to_vcf,
+                        root,
+                        v_chunk,
+                        v_mask_chunk,
+                        samples_selection,
+                        contigs,
+                        filters,
+                        output,
+                        drop_genotypes=drop_genotypes,
+                        no_update=no_update,
+                        preceding_future=preceding_future,
+                    )
+                    if preceding_future:
+                        concurrent.futures.wait((preceding_future,))
+                    preceding_future = future
         else:
             contigs_u = root["contig_id"][:].astype("U").tolist()
             regions = parse_regions(variant_regions, contigs_u)
@@ -260,38 +255,32 @@ def write_vcf(
             # Use zarr arrays to get mask chunks aligned with the main data
             # for convenience.
             z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
-            executor = concurrent.futures.ThreadPoolExecutor()
-            preceding_future = None
-            for i, v_chunk in enumerate(chunk_indexes):
-                v_mask_chunk = z_variant_mask.blocks[i]
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                preceding_future = None
+                for i, v_chunk in enumerate(chunk_indexes):
+                    v_mask_chunk = z_variant_mask.blocks[i]
 
-                if filter_evaluator and np.any(v_mask_chunk):
-                    v_mask_chunk = np.logical_and(
-                        v_mask_chunk, filter_evaluator(v_chunk)
-                    )
-                if np.any(v_mask_chunk):
-                    future = executor.submit(
-                        c_chunk_to_vcf,
-                        root,
-                        v_chunk,
-                        v_mask_chunk,
-                        samples_selection,
-                        contigs,
-                        filters,
-                        output,
-                        drop_genotypes=drop_genotypes,
-                        no_update=no_update,
-                        executor=executor,
-                        preceding_future=preceding_future,
-                    )
-                    if preceding_future:
-                        concurrent.futures.wait((preceding_future,))
-                    preceding_future = future
-                if preceding_future:
-                    concurrent.futures.wait((preceding_future,))
-                # We can't use a with-statement because the threads
-                # themselves submit tasks to the executor.
-                executor.shutdown()
+                    if filter_evaluator and np.any(v_mask_chunk):
+                        v_mask_chunk = np.logical_and(
+                            v_mask_chunk, filter_evaluator(v_chunk)
+                        )
+                    if np.any(v_mask_chunk):
+                        future = executor.submit(
+                            c_chunk_to_vcf,
+                            root,
+                            v_chunk,
+                            v_mask_chunk,
+                            samples_selection,
+                            contigs,
+                            filters,
+                            output,
+                            drop_genotypes=drop_genotypes,
+                            no_update=no_update,
+                            preceding_future=preceding_future,
+                        )
+                        if preceding_future:
+                            concurrent.futures.wait((preceding_future,))
+                        preceding_future = future
 
 
 def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
@@ -318,107 +307,44 @@ def c_chunk_to_vcf(
     *,
     drop_genotypes,
     no_update,
-    executor: concurrent.futures.Executor,
     preceding_future: Optional[concurrent.futures.Future] = None,
 ):
-    chrom = None
-    pos = None
-    id = None
-    alleles = None
-    qual = None
-    filter_ = None
+    chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
+    # TODO check we don't truncate silently by doing this
+    pos = get_vchunk_array(root.variant_position, v_chunk, v_mask_chunk).astype(
+        np.int32
+    )
+    id = get_vchunk_array(root.variant_id, v_chunk, v_mask_chunk).astype("S")
+    alleles = get_vchunk_array(root.variant_allele, v_chunk, v_mask_chunk)
+    qual = get_vchunk_array(root.variant_quality, v_chunk, v_mask_chunk)
+    filter_ = get_vchunk_array(root.variant_filter, v_chunk, v_mask_chunk)
     format_fields = {}
     info_fields = {}
     num_samples = len(samples_selection) if samples_selection is not None else None
     gt = None
     gt_phased = None
 
-    def load_chrom():
-        nonlocal chrom
-        chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
-
-    def load_pos():
-        nonlocal pos
-        # TODO check we don't truncate silently by doing this
-        pos = get_vchunk_array(root.variant_position, v_chunk, v_mask_chunk).astype(
-            np.int32
-        )
-
-    def load_id():
-        nonlocal id
-        id = get_vchunk_array(root.variant_id, v_chunk, v_mask_chunk).astype("S")
-
-    def load_alleles():
-        nonlocal alleles
-        alleles = get_vchunk_array(root.variant_allele, v_chunk, v_mask_chunk)
-
-    def load_qual():
-        nonlocal qual
-        qual = get_vchunk_array(root.variant_quality, v_chunk, v_mask_chunk)
-
-    def load_filter():
-        nonlocal filter_
-        filter_ = get_vchunk_array(root.variant_filter, v_chunk, v_mask_chunk)
-
-    def load_format_field(name, zarray):
-        nonlocal format_fields, v_chunk, v_mask_chunk, samples_selection
-        vcf_name = name[len("call_") :]
-        format_fields[vcf_name] = get_vchunk_array(
-            zarray, v_chunk, v_mask_chunk, samples_selection
-        )
-
-    def load_info_field(name, zarray):
-        nonlocal info_fields, v_chunk, v_mask_chunk
-        vcf_name = name[len("variant_") :]
-        info_fields[vcf_name] = get_vchunk_array(zarray, v_chunk, v_mask_chunk)
-
-    def load_gt():
-        pass
-
-    def load_gt_phased():
-        pass
-
     if "call_genotype" in root and not drop_genotypes:
         if samples_selection is not None and num_samples != 0:
-
-            def load_gt():
-                nonlocal gt
-                gt = get_vchunk_array(
-                    root["call_genotype"], v_chunk, v_mask_chunk, samples_selection
-                )
+            gt = get_vchunk_array(
+                root["call_genotype"], v_chunk, v_mask_chunk, samples_selection
+            )
         else:
-
-            def load_gt():
-                nonlocal gt
-                gt = get_vchunk_array(root["call_genotype"], v_chunk, v_mask_chunk)
+            gt = get_vchunk_array(root["call_genotype"], v_chunk, v_mask_chunk)
 
         if (
             "call_genotype_phased" in root
             and not drop_genotypes
             and (samples_selection is None or num_samples > 0)
         ):
-
-            def load_gt_phased():
-                nonlocal gt_phased
-                gt_phased = get_vchunk_array(
-                    root["call_genotype_phased"],
-                    v_chunk,
-                    v_mask_chunk,
-                    samples_selection,
-                )
+            gt_phased = get_vchunk_array(
+                root["call_genotype_phased"],
+                v_chunk,
+                v_mask_chunk,
+                samples_selection,
+            )
         else:
-
-            def load_gt_phased():
-                nonlocal gt_phased
-                gt_phased = np.zeros_like(gt, dtype=bool)
-
-    futures = deque()
-    futures.append(executor.submit(load_chrom))
-    futures.append(executor.submit(load_pos))
-    futures.append(executor.submit(load_id))
-    futures.append(executor.submit(load_alleles))
-    futures.append(executor.submit(load_qual))
-    futures.append(executor.submit(load_filter))
+            gt_phased = np.zeros_like(gt, dtype=bool)
 
     for name, zarray in root.items():
         if (
@@ -426,17 +352,18 @@ def c_chunk_to_vcf(
             and not name.startswith("call_genotype")
             and num_samples != 0
         ):
-            futures.append(executor.submit(load_format_field, name, zarray))
+            vcf_name = name[len("call_") :]
+            format_fields[vcf_name] = get_vchunk_array(
+                zarray, v_chunk, v_mask_chunk, samples_selection
+            )
             if num_samples is None:
                 num_samples = zarray.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
-            futures.append(executor.submit(load_info_field, name, zarray))
+            vcf_name = name[len("variant_") :]
+            info_fields[vcf_name] = get_vchunk_array(zarray, v_chunk, v_mask_chunk)
 
-    futures.append(executor.submit(load_gt))
-    futures.append(executor.submit(load_gt_phased))
     if preceding_future:
-        futures.append(preceding_future)
-    concurrent.futures.wait(futures)
+        concurrent.futures.wait((preceding_future,))
 
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")

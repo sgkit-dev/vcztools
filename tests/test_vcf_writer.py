@@ -85,7 +85,7 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
     assert len(variants) == len(expected_chrom_pos)
     assert v.samples == ["NA00001", "NA00002", "NA00003"]
 
-    for variant, chrom_pos in zip(variants, expected_chrom_pos, strict=False):
+    for variant, chrom_pos in zip(variants, expected_chrom_pos, strict=True):
         chrom, pos = chrom_pos
         assert variant.CHROM == chrom
         assert variant.POS == pos
@@ -141,7 +141,7 @@ def test_write_vcf__regions(tmp_path, regions, targets,
 
     assert v.samples == ["NA00001", "NA00002", "NA00003"]
 
-    for variant, chrom_pos in zip(variants, expected_chrom_pos, strict=False):
+    for variant, chrom_pos in zip(variants, expected_chrom_pos, strict=True):
         chrom, pos = chrom_pos
         assert variant.CHROM == chrom
         assert variant.POS == pos
@@ -230,7 +230,7 @@ def test_write_vcf__regions_samples_filtering(
     assert len(variants) == len(expected_chrom_pos)
     assert v.samples == ["NA00001"]
 
-    for variant, chrom_pos in zip(variants, expected_chrom_pos, strict=False):
+    for variant, chrom_pos in zip(variants, expected_chrom_pos, strict=True):
         chrom, pos = chrom_pos
         assert variant.CHROM == chrom
         assert variant.POS == pos

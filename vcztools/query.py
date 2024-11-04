@@ -99,7 +99,7 @@ class QueryFormatGenerator:
                     end = start + v_chunk_size
 
                     for gt_row, phase in zip(
-                        gt_zarray[start:end], phase_zarray[start:end], strict=False
+                        gt_zarray[start:end], phase_zarray[start:end], strict=True
                     ):
 
                         def stringify(gt_and_phase: tuple):
@@ -113,7 +113,7 @@ class QueryFormatGenerator:
                             return separator.join(gt)
 
                         gt_row = gt_row.tolist()
-                        yield map(stringify, zip(gt_row, phase, strict=False))
+                        yield map(stringify, zip(gt_row, phase, strict=True))
             else:
                 # TODO: Support datasets without the phasing data
                 raise NotImplementedError
@@ -219,8 +219,8 @@ class QueryFormatGenerator:
 
         def generate(root):
             iterables = (generator(root) for generator in generators)
-            zipped = zip(*iterables, strict=False)
-            zipped_zipped = (zip(*element, strict=False) for element in zipped)
+            zipped = zip(*iterables, strict=True)
+            zipped_zipped = (zip(*element, strict=True) for element in zipped)
             flattened_zipped_zipped = (
                 (
                     subsubelement
@@ -309,7 +309,7 @@ class QueryFormatGenerator:
             filter_iterable = filter_generator(root)
 
             for results, filter_indicator in zip(
-                zip(*iterables, strict=False), filter_iterable, strict=False
+                zip(*iterables, strict=True), filter_iterable, strict=True
             ):
                 if filter_indicator:
                     results = map(str, results)

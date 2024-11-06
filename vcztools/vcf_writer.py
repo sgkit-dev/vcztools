@@ -415,7 +415,19 @@ def c_chunk_to_vcf(
     if preceding_future:
         concurrent.futures.wait((preceding_future,))
 
-    encoder.encode_all()
+    # TODO: (1) make a guess at this based on number of fields and samples,
+    # and (2) log a DEBUG message when we have to double.
+    buflen = 1024
+    for j in range(num_variants):
+        failed = True
+        while failed:
+            try:
+                line = encoder.encode(j, buflen)
+                failed = False
+            except _vcztools.VczBufferTooSmall:
+                buflen *= 2
+                # print("Bumping buflen to", buflen)
+        print(line, file=output)
 
 
 def _generate_header(ds, original_header, sample_ids, *, no_version: bool = False):

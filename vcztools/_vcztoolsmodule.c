@@ -477,57 +477,6 @@ out:
 }
 
 static PyObject *
-VcfEncoder_encode_all(VcfEncoder *self, PyObject *args)
-{
-	bool allowed_threads = false;
-
-    if (VcfEncoder_check_state(self) != 0) {
-        goto out;
-    }
-
-    Py_BEGIN_ALLOW_THREADS
-	allowed_threads = true;
-	const size_t num_variants = self->vcf_encoder->num_variants;
-	size_t bufsize = 1024;
-
-	for (size_t row = 0; row < num_variants; row++) {
-		while (true) {
-			char* const buf = PyMem_RawMalloc(bufsize);
-
-			if (buf == NULL) {
-				PyErr_NoMemory();
-				goto out;
-			}
-
-			const int64_t line_length = vcz_variant_encoder_encode(
-				self->vcf_encoder, row, buf, bufsize);
-
-			if (line_length < 0) {
-				PyMem_RawFree(buf);
-
-				if (line_length == VCZ_ERR_BUFFER_OVERFLOW) {
-					bufsize *= 2;
-				} else {
-					handle_library_error((int) line_length);
-					goto out;
-				}
-			} else {
-				puts(buf);
-				PyMem_RawFree(buf);
-				break;
-			} // if (line_length < 0)
-		} // while (true)
-	}
-
-out:
-	if (allowed_threads) {
-    	Py_END_ALLOW_THREADS
-    }
-
-	Py_RETURN_NONE;
-}
-
-static PyObject *
 VcfEncoder_print_state(VcfEncoder *self, PyObject *args)
 {
     PyObject *ret = NULL;
@@ -597,10 +546,6 @@ static PyMethodDef VcfEncoder_methods[] = {
         .ml_meth = (PyCFunction) VcfEncoder_encode,
         .ml_flags = METH_VARARGS,
         .ml_doc = "Return the specified row of VCF text" },
-    { .ml_name = "encode_all",
-        .ml_meth = (PyCFunction) VcfEncoder_encode_all,
-        .ml_flags = METH_VARARGS,
-        .ml_doc = "Print all rows of VCF text" },
     { NULL } /* Sentinel */
 };
 

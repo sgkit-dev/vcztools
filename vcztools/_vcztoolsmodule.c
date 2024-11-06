@@ -480,21 +480,9 @@ static PyObject *
 VcfEncoder_encode_all(VcfEncoder *self, PyObject *args)
 {
 	bool allowed_threads = false;
-	int output_fd;
-	int is_pipe;
-	FILE* file = NULL;
 
     if (VcfEncoder_check_state(self) != 0) {
         goto out;
-    }
-    if (!PyArg_ParseTuple(args, "ip", &output_fd, &is_pipe)) {
-    	goto out;
-    }
-
-    file = fdopen(output_fd, "w");
-
-    if (file == NULL) {
-    	goto out;
     }
 
     Py_BEGIN_ALLOW_THREADS
@@ -524,8 +512,7 @@ VcfEncoder_encode_all(VcfEncoder *self, PyObject *args)
 					goto out;
 				}
 			} else {
-				fputs(buf, file);
-				fputc('\n', file);
+				puts(buf);
 				PyMem_RawFree(buf);
 				break;
 			} // if (line_length < 0)
@@ -533,13 +520,6 @@ VcfEncoder_encode_all(VcfEncoder *self, PyObject *args)
 	}
 
 out:
-	if (file != NULL) {
-		fflush(file);
-
-		if (is_pipe) {
-			fclose(file);
-		}
-	}
 	if (allowed_threads) {
     	Py_END_ALLOW_THREADS
     }

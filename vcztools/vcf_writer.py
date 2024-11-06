@@ -1,7 +1,6 @@
 import concurrent.futures
 import functools
 import io
-import os
 import re
 import sys
 from datetime import datetime
@@ -416,21 +415,7 @@ def c_chunk_to_vcf(
     if preceding_future:
         concurrent.futures.wait((preceding_future,))
 
-    output = output or sys.stdout
-    pipe = None
-    try:
-        output_fd = output.fileno()
-    except OSError:
-        pipe = os.pipe()
-        output_fd = pipe[1]
-
-    output.flush()
-    encoder.encode_all(output_fd, bool(pipe))
-
-    if pipe:
-        with io.FileIO(pipe[0], closefd=True) as pipe_reader:
-            output.write(pipe_reader.read().decode("ascii"))
-            output.flush()
+    encoder.encode_all()
 
 
 def _generate_header(ds, original_header, sample_ids, *, no_version: bool = False):

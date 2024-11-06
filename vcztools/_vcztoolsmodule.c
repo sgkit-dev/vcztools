@@ -462,10 +462,8 @@ VcfEncoder_encode(VcfEncoder *self, PyObject *args)
         PyErr_NoMemory();
         goto out;
     }
-    Py_BEGIN_ALLOW_THREADS
     line_length = vcz_variant_encoder_encode(
         self->vcf_encoder, (size_t) row, buf, (size_t) bufsize);
-    Py_END_ALLOW_THREADS
     if (line_length < 0) {
         handle_library_error((int) line_length);
         goto out;

@@ -309,15 +309,15 @@ def c_chunk_to_vcf(
     no_update,
     preceding_future: concurrent.futures.Future | None = None,
 ):
-    chrom = contigs[get_vchunk_array(root.variant_contig, v_chunk, v_mask_chunk)]
+    chrom = contigs[get_vchunk_array(root["variant_contig"], v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
-    pos = get_vchunk_array(root.variant_position, v_chunk, v_mask_chunk).astype(
+    pos = get_vchunk_array(root["variant_position"], v_chunk, v_mask_chunk).astype(
         np.int32
     )
-    id = get_vchunk_array(root.variant_id, v_chunk, v_mask_chunk).astype("S")
-    alleles = get_vchunk_array(root.variant_allele, v_chunk, v_mask_chunk)
-    qual = get_vchunk_array(root.variant_quality, v_chunk, v_mask_chunk)
-    filter_ = get_vchunk_array(root.variant_filter, v_chunk, v_mask_chunk)
+    id = get_vchunk_array(root["variant_id"], v_chunk, v_mask_chunk).astype("S")
+    alleles = get_vchunk_array(root["variant_allele"], v_chunk, v_mask_chunk)
+    qual = get_vchunk_array(root["variant_quality"], v_chunk, v_mask_chunk)
+    filter_ = get_vchunk_array(root["variant_filter"], v_chunk, v_mask_chunk)
     format_fields = {}
     info_fields = {}
     num_samples = len(samples_selection) if samples_selection is not None else None
@@ -346,7 +346,7 @@ def c_chunk_to_vcf(
         else:
             gt_phased = np.zeros_like(gt, dtype=bool)
 
-    for name, zarray in root.items():
+    for name, zarray in root.arrays():
         if (
             name.startswith("call_")
             and not name.startswith("call_genotype")
@@ -442,7 +442,8 @@ def _generate_header(ds, original_header, sample_ids, *, no_version: bool = Fals
         # GT must be the first field if present, per the spec (section 1.6.2)
         format_fields.append("GT")
 
-    for var, arr in ds.items():
+    for var in sorted(ds.keys()):
+        arr = ds[var]
         if (
             var.startswith("variant_")
             and not var.endswith("_fill")

@@ -113,7 +113,7 @@ class FilterExpressionEvaluator:
 
         def evaluator(root, variant_chunk_index: int) -> np.ndarray:
             vcf_name = parse_results[0]
-            vcz_names = set(name for name, _array in root.items())
+            vcz_names = set(root.keys())
             vcz_name = vcf_name_to_vcz_name(vcz_names, vcf_name)
             zarray = root[vcz_name]
             variant_chunk_len = zarray.chunks[0]

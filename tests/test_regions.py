@@ -12,7 +12,5 @@ from vcztools.regions import parse_region_string
         ("chr1:12-103", ("chr1", 12, 103)),
     ],
 )
-def test_parse_region_string(
-    targets: str, expected: tuple[str, int | None, int | None]
-):
+def test_parse_region_string(targets, expected):
     assert parse_region_string(targets) == expected

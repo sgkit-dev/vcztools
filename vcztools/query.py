@@ -141,7 +141,7 @@ class QueryFormatGenerator:
             return self._compose_sample_ids_generator()
 
         def generate(root):
-            vcz_names = set(name for name, _zarray in root.items())
+            vcz_names = set(root.keys())
             vcz_name = vcf_name_to_vcz_name(vcz_names, tag)
             zarray = root[vcz_name]
             contig_ids = root["contig_id"][:] if tag == "CHROM" else None

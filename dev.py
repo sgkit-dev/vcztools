@@ -56,7 +56,7 @@ def main(root):
     # we avoid retrieving stuff we don't need.
     format_fields = {}
     info_fields = {}
-    for name, array in root.items():
+    for name, array in root.arrays():
         if name.startswith("call_") and not name.startswith("call_genotype"):
             vcf_name = name[len("call_") :]
             format_fields[vcf_name] = array.blocks[v_chunk]

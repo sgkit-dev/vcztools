@@ -7,8 +7,6 @@ import cyvcf2
 import numpy as np
 from bio2zarr import vcf2zarr
 
-from vcztools.regions import create_index
-
 
 @contextmanager
 def open_vcf(path) -> Iterator[cyvcf2.VCF]:
@@ -152,5 +150,4 @@ def vcz_path_cache(vcf_path):
             vcf2zarr.convert(
                 [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
             )
-        create_index(cached_vcz_path)
     return cached_vcz_path

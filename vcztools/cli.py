@@ -3,8 +3,8 @@ import sys
 import click
 
 from . import query as query_module
-from . import regions, vcf_writer
 from . import stats as stats_module
+from . import vcf_writer
 
 include = click.option(
     "-i", "--include", type=str, help="Filter expression to include variant sites."
@@ -42,8 +42,6 @@ def index(path, nrecords, stats):
         stats_module.nrecords(path, sys.stdout)
     elif stats:
         stats_module.stats(path, sys.stdout)
-    else:
-        regions.create_index(path)
 
 
 @click.command

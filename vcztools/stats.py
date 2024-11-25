@@ -18,7 +18,7 @@ def stats(vcz, output):
     if "region_index" not in root:
         raise ValueError(
             "Could not load 'region_index' variable. "
-            "Use 'vcztools index' to create an index."
+            "Use 'vcz2zarr' to create an index."
         )
 
     with open_file_like(output) as output:

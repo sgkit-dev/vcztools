@@ -1,55 +1,9 @@
 import re
 from typing import Any
 
-import numcodecs
 import numpy as np
 import pandas as pd
-import zarr
 from pyranges import PyRanges
-
-
-def create_index(vcz) -> None:
-    """Create an index to support efficient region queries."""
-
-    root = zarr.open(vcz, mode="r+")
-
-    contig = root["variant_contig"]
-    pos = root["variant_position"]
-    length = root["variant_length"]
-
-    assert contig.cdata_shape == pos.cdata_shape
-
-    index = []
-
-    for v_chunk in range(pos.cdata_shape[0]):
-        c = contig.blocks[v_chunk]
-        p = pos.blocks[v_chunk]
-        e = p + length.blocks[v_chunk] - 1
-
-        # create a row for each contig in the chunk
-        d = np.diff(c, append=-1)
-        c_start_idx = 0
-        for c_end_idx in np.nonzero(d)[0]:
-            assert c[c_start_idx] == c[c_end_idx]
-            index.append(
-                (
-                    v_chunk,  # chunk index
-                    c[c_start_idx],  # contig ID
-                    p[c_start_idx],  # start
-                    p[c_end_idx],  # end
-                    np.max(e[c_start_idx : c_end_idx + 1]),  # max end
-                    c_end_idx - c_start_idx + 1,  # num records
-                )
-            )
-            c_start_idx = c_end_idx + 1
-
-    index = np.array(index, dtype=np.int32)
-    root.array(
-        "region_index",
-        data=index,
-        compressor=numcodecs.Blosc("zstd", clevel=9, shuffle=0),
-        overwrite=True,
-    )
 
 
 def parse_region_string(region: str) -> tuple[str, int | None, int | None]:

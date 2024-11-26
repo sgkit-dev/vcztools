@@ -120,6 +120,14 @@ class QueryFormatGenerator:
 
         return generate
 
+    def _compose_sample_ids_generator(self) -> Callable:
+        def generate(root):
+            variant_count = root["variant_position"].shape[0]
+            sample_ids = root["sample_id"][:].tolist()
+            yield from itertools.repeat(sample_ids, variant_count)
+
+        return generate
+
     def _compose_tag_generator(
         self, tag: str, *, subfield=False, sample_loop=False
     ) -> Callable:
@@ -128,6 +136,9 @@ class QueryFormatGenerator:
 
         if tag == "GT":
             return self._compose_gt_generator()
+
+        if tag == "SAMPLE":
+            return self._compose_sample_ids_generator()
 
         def generate(root):
             vcz_names = set(name for name, _zarray in root.items())

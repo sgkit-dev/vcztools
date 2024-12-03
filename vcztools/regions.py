@@ -1,12 +1,12 @@
 import re
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 from pyranges import PyRanges
 
 
-def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
+def parse_region_string(region: str) -> tuple[str, Optional[int], Optional[int]]:
     """Return the contig, start position and end position from a region string."""
     if re.search(r":\d+-\d*$", region):
         contig, start_end = region.rsplit(":", 1)
@@ -21,7 +21,7 @@ def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
 
 
 def regions_to_pyranges(
-    regions: list[tuple[str, int | None, int | None]], all_contigs: list[str]
+    regions: list[tuple[str, Optional[int], Optional[int]]], all_contigs: list[str]
 ) -> PyRanges:
     """Convert region tuples to a PyRanges object."""
 
@@ -44,7 +44,7 @@ def regions_to_pyranges(
     return PyRanges(chromosomes=chromosomes, starts=starts, ends=ends)
 
 
-def parse_regions(regions: str | None, all_contigs: list[str]) -> PyRanges | None:
+def parse_regions(regions: Optional[str], all_contigs: list[str]) -> Optional[PyRanges]:
     """Return a PyRanges object from a comma-separated set of region strings."""
     if regions is None:
         return None
@@ -54,21 +54,22 @@ def parse_regions(regions: str | None, all_contigs: list[str]) -> PyRanges | Non
 
 
 def parse_targets(
-    targets: str | None, all_contigs: list[str]
-) -> tuple[PyRanges | None, bool]:
+    targets: Optional[str], all_contigs: list[str]
+) -> tuple[Optional[PyRanges], bool]:
     """Return a PyRanges object from a comma-separated set of region strings,
     optionally preceeded by a ^ character to indicate complement."""
     if targets is None:
         return None, False
     complement = targets.startswith("^")
-    return parse_regions(
-        targets[1:] if complement else targets, all_contigs
-    ), complement
+    return (
+        parse_regions(targets[1:] if complement else targets, all_contigs),
+        complement,
+    )
 
 
 def regions_to_chunk_indexes(
-    regions: PyRanges | None,
-    targets: PyRanges | None,
+    regions: Optional[PyRanges],
+    targets: Optional[PyRanges],
     complement: bool,
     regions_index: Any,
 ):
@@ -112,8 +113,8 @@ def regions_to_chunk_indexes(
 
 
 def regions_to_selection(
-    regions: PyRanges | None,
-    targets: PyRanges | None,
+    regions: Optional[PyRanges],
+    targets: Optional[PyRanges],
     complement: bool,
     variant_contig: Any,
     variant_position: Any,

@@ -308,7 +308,7 @@ def c_chunk_to_vcf(
     *,
     drop_genotypes,
     no_update,
-    preceding_future: concurrent.futures.Future | None = None,
+    preceding_future=None,
 ):
     chrom = contigs[get_vchunk_array(root["variant_contig"], v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this

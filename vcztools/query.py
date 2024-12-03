@@ -1,7 +1,7 @@
 import functools
 import itertools
 import math
-from collections.abc import Callable
+from typing import Callable, Optional, Union
 
 import numpy as np
 import pyparsing as pp
@@ -62,10 +62,10 @@ class QueryFormatParser:
 class QueryFormatGenerator:
     def __init__(
         self,
-        query_format: str | pp.ParseResults,
+        query_format: Union[str, pp.ParseResults],
         *,
-        include: str | None = None,
-        exclude: str | None = None,
+        include: Optional[str] = None,
+        exclude: Optional[str] = None,
     ):
         if isinstance(query_format, str):
             parser = QueryFormatParser()
@@ -99,7 +99,7 @@ class QueryFormatGenerator:
                     end = start + v_chunk_size
 
                     for gt_row, phase in zip(
-                        gt_zarray[start:end], phase_zarray[start:end], strict=True
+                        gt_zarray[start:end], phase_zarray[start:end]
                     ):
 
                         def stringify(gt_and_phase: tuple):
@@ -113,7 +113,7 @@ class QueryFormatGenerator:
                             return separator.join(gt)
 
                         gt_row = gt_row.tolist()
-                        yield map(stringify, zip(gt_row, phase, strict=True))
+                        yield map(stringify, zip(gt_row, phase))
             else:
                 # TODO: Support datasets without the phasing data
                 raise NotImplementedError
@@ -230,8 +230,8 @@ class QueryFormatGenerator:
 
         def generate(root):
             iterables = (generator(root) for generator in generators)
-            zipped = zip(*iterables, strict=True)
-            zipped_zipped = (zip(*element, strict=True) for element in zipped)
+            zipped = zip(*iterables)
+            zipped_zipped = (zip(*element) for element in zipped)
             flattened_zipped_zipped = (
                 (
                     subsubelement
@@ -245,7 +245,7 @@ class QueryFormatGenerator:
         return generate
 
     def _compose_element_generator(
-        self, element: str | pp.ParseResults, *, sample_loop=False
+        self, element: Union[str, pp.ParseResults], *, sample_loop=False
     ) -> Callable:
         if isinstance(element, pp.ParseResults):
             if element.get_name() == "subfield":
@@ -272,7 +272,7 @@ class QueryFormatGenerator:
             return generate
 
     def _compose_filter_generator(
-        self, *, include: str | None = None, exclude: str | None = None
+        self, *, include: Optional[str] = None, exclude: Optional[str] = None
     ) -> Callable:
         assert not (include and exclude)
 
@@ -305,8 +305,8 @@ class QueryFormatGenerator:
         self,
         parse_results: pp.ParseResults,
         *,
-        include: str | None = None,
-        exclude: str | None = None,
+        include: Optional[str] = None,
+        exclude: Optional[str] = None,
     ) -> Callable:
         generators = (
             self._compose_element_generator(element) for element in parse_results
@@ -318,10 +318,7 @@ class QueryFormatGenerator:
         def generate(root) -> str:
             iterables = (generator(root) for generator in generators)
             filter_iterable = filter_generator(root)
-
-            for results, filter_indicator in zip(
-                zip(*iterables, strict=True), filter_iterable, strict=True
-            ):
+            for results, filter_indicator in zip(zip(*iterables), filter_iterable):
                 if filter_indicator:
                     results = map(str, results)
                     yield "".join(results)
@@ -334,8 +331,8 @@ def write_query(
     output=None,
     *,
     query_format: str,
-    include: str | None = None,
-    exclude: str | None = None,
+    include: Optional[str] = None,
+    exclude: Optional[str] = None,
 ):
     if include and exclude:
         raise ValueError(

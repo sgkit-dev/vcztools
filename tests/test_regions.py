@@ -1,3 +1,5 @@
+from typing import Optional
+
 import pytest
 
 from vcztools.regions import parse_region_string
@@ -13,6 +15,6 @@ from vcztools.regions import parse_region_string
     ],
 )
 def test_parse_region_string(
-    targets: str, expected: tuple[str, int | None, int | None]
+    targets: str, expected: tuple[str, Optional[int], Optional[int]]
 ):
     assert parse_region_string(targets) == expected

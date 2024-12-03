@@ -4,6 +4,7 @@ import io
 import re
 import sys
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import zarr
@@ -89,8 +90,8 @@ def write_vcf(
     no_update=None,
     samples=None,
     drop_genotypes: bool = False,
-    include: str | None = None,
-    exclude: str | None = None,
+    include: Optional[str] = None,
+    exclude: Optional[str] = None,
 ) -> None:
     """Convert a dataset to a VCF file.
 

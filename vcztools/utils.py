@@ -18,7 +18,7 @@ def open_file_like(file):
     """A context manager for opening a file path or string (and closing on exit),
     or passing a file-like object through."""
     with ExitStack() as stack:
-        if isinstance(file, str | Path):
+        if isinstance(file, (str, Path)):
             file = stack.enter_context(open(file, mode="w"))
         yield file
 

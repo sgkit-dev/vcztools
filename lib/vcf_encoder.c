@@ -62,30 +62,25 @@ vcz_itoa(char *restrict buf, int64_t value)
     return p;
 }
 
+
 int
 vcz_ftoa(char *restrict buf, float value)
 {
     int p = 0;
     int64_t i, d1, d2, d3;
 
-    if (isnan(value)) {
-        strcpy(buf, "nan");
-        return p + 3;
+    if (!isfinite(value) || fabs(value) > INT32_MAX + 1LL) {
+        return sprintf(buf, "%.3f", value);
     }
+
     if (value < 0) {
         buf[p] = '-';
         p++;
         value = -value;
     }
-    if (isinf(value)) {
-        strcpy(buf + p, "inf");
-        return p + 3;
-    }
 
     /* integer part */
     i = (int64_t) round(((double) value) * 1000);
-    /* printf("i = %ld\n", i); */
-    /* printf("i/ 1000 = %ld\n", i / 1000); */
     p += vcz_itoa(buf + p, i / 1000);
 
     /* fractional part */

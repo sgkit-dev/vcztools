@@ -32,7 +32,8 @@
 // arbitrary - we can increase if needs be
 #define VCZ_MAX_FIELD_NAME_LEN 255
 #define VCZ_INT32_BUF_SIZE 12 // 10 digits, leading '-' and terminating NULL
-// Safe limit for now: https://github.com/jeromekelleher/vcztools/issues/21
+// Safe limit, no point in trying to make it too tight as it's easy to represent
+// certain very large numbers of floating point.
 #define VCZ_FLOAT32_BUF_SIZE 256
 
 #define VCZ_ERR_NO_MEMORY (-100)

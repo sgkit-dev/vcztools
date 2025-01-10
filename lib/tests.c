@@ -277,7 +277,7 @@ test_int32_field_2d(void)
 static void
 test_float_field_1d(void)
 {
-    float data[] = { 0, 1.0f, 2.1f, INT32_MIN, 12345789.0f, -1, -100.123f };
+    float data[] = { 0, 1.0f, 2.1f, INT32_MIN, 12345789.0f, -1, -100.123f, FLT_MAX };
 
     const size_t num_rows = sizeof(data) / sizeof(*data);
     vcz_field_t field = { .name = "test",
@@ -285,8 +285,8 @@ test_float_field_1d(void)
         .item_size = 4,
         .num_columns = 1,
         .data = (const char *) data };
-    const char *expected[]
-        = { ".", "1", "2.1", "-2147483648", "12345789", "-1", "-100.123" };
+    const char *expected[] = { ".", "1", "2.1", "-2147483648", "12345789", "-1",
+        "-100.123", "340282346638528859811704183484516925440.000" };
     int32_t *int_data = (int32_t *) data;
 
     int_data[0] = VCZ_FLOAT32_MISSING_AS_INT32;
@@ -840,12 +840,12 @@ test_ftoa(void)
         {-16777216, "-16777216"},
         {INT32_MIN, "-2147483648"},
         {(float) INT32_MAX, "2147483648"},
+        {2 * (float) INT32_MAX, "4294967296.000"},
         {(float) DBL_MAX, "inf",},
         {(float) DBL_MIN, "0",},
         {FLT_MIN, "0",},
-        /* TODO test extreme value here, that push against the limits of f32 */
-        // FAILS https://github.com/jeromekelleher/vcztools/issues/21
-        /* {FLT_MAX, "340282346638528859811704183484516925440",}, */
+        {FLT_MAX, "340282346638528859811704183484516925440.000",},
+        {-FLT_MAX, "-340282346638528859811704183484516925440.000",},
     };
     // clang-format on
     int len;
@@ -854,8 +854,7 @@ test_ftoa(void)
 
     for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
         len = vcz_ftoa(buf, cases[j].val);
-        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected,
-         * buf); */
+        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected, buf); */
         CU_ASSERT_EQUAL_FATAL(len, strlen(cases[j].expected));
         CU_ASSERT_STRING_EQUAL_FATAL(buf, cases[j].expected);
     }

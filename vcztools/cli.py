@@ -74,13 +74,21 @@ def index(path, nrecords, stats):
     is_flag=True,
     help="List the sample IDs and exit.",
 )
-@click.option("-f", "--format", type=str, help="The format of the output.")
+@click.option(
+    "-f",
+    "--format",
+    type=str,
+    help="The format of the output.",
+    default=None,
+)
 @include
 @exclude
 def query(path, list_samples, format, include, exclude):
     if list_samples:
         query_module.list_samples(path)
         return
+    if format is None:
+        raise click.UsageError("Missing option -f / --format")
 
     query_module.write_query(
         path, query_format=format, include=include, exclude=exclude

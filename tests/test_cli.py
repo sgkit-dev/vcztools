@@ -122,3 +122,26 @@ class TestQuery:
     def test_list(self, vcz_path):
         result = run_vcztools(f"query -l {vcz_path}")
         assert list(result.splitlines()) == ["NA00001", "NA00002", "NA00003"]
+
+    def test_list_ignores_output(self, vcz_path, tmp_path):
+        output = tmp_path / "tmp.txt"
+        result = run_vcztools(f"query -l {vcz_path} -o {output}")
+        assert list(result.splitlines()) == ["NA00001", "NA00002", "NA00003"]
+        assert not output.exists()
+
+    def test_output(self, vcz_path, tmp_path):
+        output = tmp_path / "tmp.txt"
+        result = run_vcztools(f"query -f '%POS\n' {vcz_path} -o {output}")
+        assert list(result.splitlines()) == []
+        assert output.exists()
+
+
+def test_top_level():
+    runner = ct.CliRunner(mix_stderr=False)
+    result = runner.invoke(
+        cli.vcztools_main,
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert len(result.stdout) > 0
+    assert len(result.stderr) == 0

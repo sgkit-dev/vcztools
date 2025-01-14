@@ -9,15 +9,14 @@ import zarr
 
 from vcztools import constants
 from vcztools.filter import FilterExpressionEvaluator, FilterExpressionParser
-from vcztools.utils import open_file_like, vcf_name_to_vcz_name
+from vcztools.utils import vcf_name_to_vcz_name
 
 
-def list_samples(vcz_path, output=None):
+def list_samples(vcz_path, output):
     root = zarr.open(vcz_path, mode="r")
 
-    with open_file_like(output) as output:
-        sample_ids = root["sample_id"][:]
-        print("\n".join(sample_ids), file=output)
+    sample_ids = root["sample_id"][:]
+    print("\n".join(sample_ids), file=output)
 
 
 class QueryFormatParser:
@@ -328,7 +327,7 @@ class QueryFormatGenerator:
 
 def write_query(
     vcz,
-    output=None,
+    output,
     *,
     query_format: str,
     include: Optional[str] = None,
@@ -342,6 +341,5 @@ def write_query(
     root = zarr.open(vcz, mode="r")
     generator = QueryFormatGenerator(query_format, include=include, exclude=exclude)
 
-    with open_file_like(output) as output:
-        for result in generator(root):
-            print(result, sep="", end="", file=output)
+    for result in generator(root):
+        print(result, sep="", end="", file=output)

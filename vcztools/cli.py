@@ -67,10 +67,14 @@ class NaturalOrderGroup(click.Group):
     help="Print per contig stats.",
 )
 def index(path, nrecords, stats):
+    if nrecords and stats:
+        raise click.UsageError("Expected only one of --stats or --nrecords options")
     if nrecords:
         stats_module.nrecords(path, sys.stdout)
     elif stats:
         stats_module.stats(path, sys.stdout)
+    else:
+        raise click.UsageError("Building region indexes is not supported")
 
 
 @click.command

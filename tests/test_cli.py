@@ -136,6 +136,40 @@ class TestQuery:
         assert output.exists()
 
 
+class TestIndex:
+    def test_stats(self, vcz_path):
+        result = run_vcztools(f"index -s {vcz_path}")
+        assert list(result.splitlines()) == ["19\t.\t2", "20\t.\t6", "X\t.\t1"]
+
+    def test_nrecords(self, vcz_path):
+        result = run_vcztools(f"index -n {vcz_path}")
+        assert list(result.splitlines()) == ["9"]
+
+    def test_stats_and_nrecords(self, vcz_path):
+        runner = ct.CliRunner(mix_stderr=False)
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"index -ns {vcz_path}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 2
+        assert len(result.stdout) == 0
+        assert len(result.stderr) > 0
+        assert "Expected only one of --stats or --nrecords options" in result.stderr
+
+    def test_no_stats_or_nrecords(self, vcz_path):
+        runner = ct.CliRunner(mix_stderr=False)
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"index {vcz_path}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 2
+        assert len(result.stdout) == 0
+        assert len(result.stderr) > 0
+        assert "Error: Building region indexes is not supported" in result.stderr
+
+
 def test_top_level():
     runner = ct.CliRunner(mix_stderr=False)
     result = runner.invoke(

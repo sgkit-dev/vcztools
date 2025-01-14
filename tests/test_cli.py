@@ -94,3 +94,31 @@ def test_broken_pipe(mocked_dup2, mocked_exit, tmp_path):
             raise BrokenPipeError()
         mocked_dup2.assert_called_once()
         mocked_exit.assert_called_once_with(1)
+
+
+class TestQuery:
+    def test_format_required(self, vcz_path):
+        runner = ct.CliRunner(mix_stderr=False)
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"query {vcz_path} ",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 2
+        assert len(result.stdout) == 0
+        assert len(result.stderr) > 0
+
+    def test_path_required(self):
+        runner = ct.CliRunner(mix_stderr=False)
+        result = runner.invoke(
+            cli.vcztools_main,
+            "query --format=POS ",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 2
+        assert len(result.stdout) == 0
+        assert len(result.stderr) > 0
+
+    def test_list(self, vcz_path):
+        result = run_vcztools(f"query -l {vcz_path}")
+        assert list(result.splitlines()) == ["NA00001", "NA00002", "NA00003"]

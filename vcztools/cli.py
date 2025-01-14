@@ -1,3 +1,5 @@
+import contextlib
+import os
 import sys
 
 import click
@@ -5,6 +7,26 @@ import click
 from . import query as query_module
 from . import stats as stats_module
 from . import vcf_writer
+
+
+@contextlib.contextmanager
+def handle_broken_pipe(output):
+    """
+    Handle sigpipe following official advice:
+    https://docs.python.org/3/library/signal.html#note-on-sigpipe
+    """
+    try:
+        yield
+        # flush output here to force SIGPIPE to be triggered
+        # while inside this try block.
+        output.flush()
+    except BrokenPipeError:
+        # Python flushes standard streams on exit; redirect remaining output
+        # to devnull to avoid another BrokenPipeError at shutdown
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(1)  # Python exits with error code 1 on EPIPE
+
 
 include = click.option(
     "-i", "--include", type=str, help="Filter expression to include variant sites."
@@ -68,7 +90,11 @@ def query(path, list_samples, format, include, exclude):
 @click.command
 @click.argument("path", type=click.Path())
 @click.option(
-    "-o", "--output", type=str, default=None, help="File path to write output to."
+    "-o",
+    "--output",
+    type=click.File("w"),
+    default="-",
+    help="File path to write output to (defaults to stdout '-').",
 )
 @click.option(
     "-h",
@@ -149,9 +175,13 @@ def view(
     include,
     exclude,
 ):
-    if output and not output.endswith(".vcf") and output != "/dev/null":
-        split = output.split(".")
-        raise ValueError(f"Output file extension must be .vcf, got: .{split[-1]}")
+    suffix = output.name.split(".")[-1]
+    # Exclude suffixes which require bgzipped or BCF output:
+    # https://github.com/samtools/htslib/blob/329e7943b7ba3f0af15b0eaa00a367a1ac15bd83/vcf.c#L3815
+    if suffix in ["gz", "bcf", "bgz"]:
+        raise ValueError(
+            f"Only uncompressed VCF output supported, suffix .{suffix} not allowed"
+        )
 
     if samples_file:
         assert not samples, "vcztools does not support combining -s and -S"
@@ -165,22 +195,21 @@ def view(
                 samples = "^" + samples
             samples += ",".join(line.strip() for line in file.readlines())
 
-    # TODO: use no_update when fixing https://github.com/sgkit-dev/vcztools/issues/75
-
-    vcf_writer.write_vcf(
-        path,
-        output,
-        header_only=header_only,
-        no_header=no_header,
-        no_version=no_version,
-        variant_regions=regions,
-        variant_targets=targets,
-        no_update=no_update,
-        samples=samples,
-        drop_genotypes=drop_genotypes,
-        include=include,
-        exclude=exclude,
-    )
+    with handle_broken_pipe(output):
+        vcf_writer.write_vcf(
+            path,
+            output,
+            header_only=header_only,
+            no_header=no_header,
+            no_version=no_version,
+            variant_regions=regions,
+            variant_targets=targets,
+            no_update=no_update,
+            samples=samples,
+            drop_genotypes=drop_genotypes,
+            include=include,
+            exclude=exclude,
+        )
 
 
 @click.group(cls=NaturalOrderGroup, name="vcztools")

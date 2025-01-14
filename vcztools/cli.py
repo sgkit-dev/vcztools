@@ -34,6 +34,13 @@ include = click.option(
 exclude = click.option(
     "-e", "--exclude", type=str, help="Filter expression to exclude variant sites."
 )
+output = click.option(
+    "-o",
+    "--output",
+    type=click.File("w"),
+    default="-",
+    help="File path to write output to (defaults to stdout '-').",
+)
 
 
 class NaturalOrderGroup(click.Group):
@@ -68,6 +75,7 @@ def index(path, nrecords, stats):
 
 @click.command
 @click.argument("path", type=click.Path())
+@output
 @click.option(
     "-l",
     "--list-samples",
@@ -83,27 +91,25 @@ def index(path, nrecords, stats):
 )
 @include
 @exclude
-def query(path, list_samples, format, include, exclude):
+def query(path, output, list_samples, format, include, exclude):
     if list_samples:
-        query_module.list_samples(path)
+        # bcftools query -l ignores the --output option and always writes to stdout
+        output = sys.stdout
+        with handle_broken_pipe(output):
+            query_module.list_samples(path, output)
         return
+
     if format is None:
         raise click.UsageError("Missing option -f / --format")
-
-    query_module.write_query(
-        path, query_format=format, include=include, exclude=exclude
-    )
+    with handle_broken_pipe(output):
+        query_module.write_query(
+            path, output, query_format=format, include=include, exclude=exclude
+        )
 
 
 @click.command
 @click.argument("path", type=click.Path())
-@click.option(
-    "-o",
-    "--output",
-    type=click.File("w"),
-    default="-",
-    help="File path to write output to (defaults to stdout '-').",
-)
+@output
 @click.option(
     "-h",
     "--header-only",

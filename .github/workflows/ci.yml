@@ -26,7 +26,7 @@ jobs:
       matrix:
         # Use macos-13 because pip binary packages for ARM aren't
         # available for many dependencies
-        os: [macos-13, macos-14, ubuntu-latest]
+        os: [macos-13, macos-14, ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
         exclude:
           # Just run macos tests on one Python version

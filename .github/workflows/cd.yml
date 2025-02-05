@@ -22,11 +22,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install build twine validate-pyproject[all]
+          python -m pip install build twine auditwheel validate-pyproject[all]
       - name: Check and install package
         run: |
           validate-pyproject pyproject.toml
           python -m build
+          python -m auditwheel repair dist/*.whl
           python -m twine check --strict dist/*
           python -m pip install dist/*.whl
       - name: Check vcztools CLI

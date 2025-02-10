@@ -224,6 +224,7 @@ def view(
             variant_targets=targets,
             no_update=no_update,
             samples=samples,
+            force_samples=force_samples,
             drop_genotypes=drop_genotypes,
             include=include,
             exclude=exclude,

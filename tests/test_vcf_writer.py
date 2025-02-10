@@ -147,22 +147,26 @@ def test_write_vcf__regions(tmp_path, regions, targets,
         assert variant.POS == pos
 
 @pytest.mark.parametrize(
-    ("samples", "expected_samples", "expected_genotypes"),
+    ("samples", "force_samples", "expected_samples", "expected_genotypes"),
     [
-        ("NA00001", ["NA00001"], [[0, 0, True]]),
-        ("NA00001,NA00003", ["NA00001", "NA00003"], [[0, 0, True], [0, 1, False]]),
-        ("NA00003,NA00001", ["NA00003", "NA00001"], [[0, 1, False], [0, 0, True]]),
-        ("^NA00002", ["NA00001", "NA00003"], [[0, 0, True], [0, 1, False]]),
-        ("^NA00003,NA00002", ["NA00001"], [[0, 0, True]]),
-        ("^NA00003,NA00002,NA00003", ["NA00001"], [[0, 0, True]]),
+        ("NA00001", False, ["NA00001"], [[0, 0, True]]),
+        ("NA00001,NA00003", False, ["NA00001", "NA00003"],
+         [[0, 0, True], [0, 1, False]]),
+        ("NA00003,NA00001", False, ["NA00003", "NA00001"],
+         [[0, 1, False], [0, 0, True]]),
+        ("^NA00002", False, ["NA00001", "NA00003"], [[0, 0, True], [0, 1, False]]),
+        ("^NA00003,NA00002", False, ["NA00001"], [[0, 0, True]]),
+        ("^NA00003,NA00002,NA00003", False, ["NA00001"], [[0, 0, True]]),
+        ("NO_SAMPLE", True, [], None),
     ]
 )
-def test_write_vcf__samples(tmp_path, samples, expected_samples, expected_genotypes):
+def test_write_vcf__samples(tmp_path, samples, force_samples, expected_samples,
+                            expected_genotypes):
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    write_vcf(vcz, output, samples=samples)
+    write_vcf(vcz, output, samples=samples, force_samples=force_samples)
 
     v = VCF(output)
 
@@ -179,6 +183,21 @@ def test_write_vcf__samples(tmp_path, samples, expected_samples, expected_genoty
     assert variant.FILTER is None
 
     assert variant.genotypes == expected_genotypes
+
+
+def test_write_vcf__non_existent_sample(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    output = tmp_path.joinpath("output.vcf")
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            'subset called for sample(s) not in header: NO_SAMPLE. '
+            'Use "--force-samples" to ignore this error.'
+        ),
+    ):
+        write_vcf(vcz, output, samples="NO_SAMPLE")
 
 
 def test_write_vcf__no_samples(tmp_path):

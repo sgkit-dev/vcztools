@@ -1,6 +1,7 @@
 import concurrent.futures
 import functools
 import io
+import logging
 import re
 import sys
 from datetime import datetime
@@ -23,6 +24,8 @@ from vcztools.utils import (
 from . import _vcztools, constants
 from .constants import RESERVED_VARIABLE_NAMES
 from .filter import FilterExpressionEvaluator, FilterExpressionParser
+
+logger = logging.getLogger(__name__)
 
 # references to the VCF spec are for https://samtools.github.io/hts-specs/VCFv4.3.pdf
 
@@ -89,6 +92,7 @@ def write_vcf(
     variant_targets=None,
     no_update=None,
     samples=None,
+    force_samples: bool = False,
     drop_genotypes: bool = False,
     include: Optional[str] = None,
     exclude: Optional[str] = None,
@@ -148,12 +152,30 @@ def write_vcf(
             if np.all(sample_ids == np.array("")):
                 sample_ids = np.empty((0,))
 
+            unknown_samples = np.setdiff1d(sample_ids, all_samples)
+            if len(unknown_samples) > 0:
+                if force_samples:
+                    # remove unknown samples from sample_ids
+                    logger.warning(
+                        'subset called for sample(s) not in header: '
+                        f'{",".join(unknown_samples)}.'
+                    )
+                    sample_ids = np.delete(
+                        sample_ids, search(sample_ids, unknown_samples)
+                    )
+                else:
+                    raise ValueError(
+                        'subset called for sample(s) not in header: '
+                        f'{",".join(unknown_samples)}. '
+                        'Use "--force-samples" to ignore this error.'
+                    )
+
             samples_selection = search(all_samples, sample_ids)
             if exclude_samples:
                 samples_selection = np.setdiff1d(
                     np.arange(all_samples.size), samples_selection
                 )
-                sample_ids = all_samples[samples_selection]
+            sample_ids = all_samples[samples_selection]
 
         if not no_header:
             original_header = root.attrs.get("vcf_header", None)

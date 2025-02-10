@@ -138,29 +138,29 @@ def query(path, output, list_samples, format, include, exclude):
     default=None,
     help="Regions to include.",
 )
-# @click.option(
-#     "--force-samples", is_flag=True, help="Only warn about unknown sample subsets."
-# )
-# @click.option(
-#     "-I",
-#     "--no-update",
-#     is_flag=True,
-#     help="Do not recalculate INFO fields for the sample subset.",
-# )
-# @click.option(
-#     "-s",
-#     "--samples",
-#     type=str,
-#     default=None,
-#     help="Samples to include.",
-# )
-# @click.option(
-#     "-S",
-#     "--samples-file",
-#     type=str,
-#     default=None,
-#     help="File of sample names to include.",
-# )
+@click.option(
+    "--force-samples", is_flag=True, help="Only warn about unknown sample subsets."
+)
+@click.option(
+    "-I",
+    "--no-update",
+    is_flag=True,
+    help="Do not recalculate INFO fields for the sample subset.",
+)
+@click.option(
+    "-s",
+    "--samples",
+    type=str,
+    default=None,
+    help="Samples to include.",
+)
+@click.option(
+    "-S",
+    "--samples-file",
+    type=str,
+    default=None,
+    help="File of sample names to include.",
+)
 @click.option(
     "-G",
     "--drop-genotypes",
@@ -185,10 +185,10 @@ def view(
     no_version,
     regions,
     targets,
-    # force_samples,
-    # no_update,
-    # samples,
-    # samples_file,
+    force_samples,
+    no_update,
+    samples,
+    samples_file,
     drop_genotypes,
     include,
     exclude,
@@ -201,19 +201,17 @@ def view(
             f"Only uncompressed VCF output supported, suffix .{suffix} not allowed"
         )
 
-    # Dropping implementation here until it's reimplemented after initial release:
-    # https://github.com/sgkit-dev/vcztools/issues/121
-    # if samples_file:
-    #     assert not samples, "vcztools does not support combining -s and -S"
+    if samples_file:
+        assert not samples, "vcztools does not support combining -s and -S"
 
-    #     samples = ""
-    #     exclude_samples_file = samples_file.startswith("^")
-    #     samples_file = samples_file.lstrip("^")
+        samples = ""
+        exclude_samples_file = samples_file.startswith("^")
+        samples_file = samples_file.lstrip("^")
 
-    #     with open(samples_file) as file:
-    #         if exclude_samples_file:
-    #             samples = "^" + samples
-    #         samples += ",".join(line.strip() for line in file.readlines())
+        with open(samples_file) as file:
+            if exclude_samples_file:
+                samples = "^" + samples
+            samples += ",".join(line.strip() for line in file.readlines())
 
     with handle_broken_pipe(output):
         vcf_writer.write_vcf(
@@ -224,8 +222,8 @@ def view(
             no_version=no_version,
             variant_regions=regions,
             variant_targets=targets,
-            # no_update=no_update,
-            # samples=samples,
+            no_update=no_update,
+            samples=samples,
             drop_genotypes=drop_genotypes,
             include=include,
             exclude=exclude,

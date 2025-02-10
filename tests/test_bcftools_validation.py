@@ -54,21 +54,19 @@ def run_vcztools(args: str) -> str:
                 "view --no-version -G",
                 "sample.vcf.gz"
         ),
-        # Temporarily removing until sample handling fixed:
-        # https://github.com/sgkit-dev/vcztools/issues/121
-        # (
-        #         "view --no-update --no-version --samples-file "
-        #         "tests/data/txt/samples.txt",
-        #         "sample.vcf.gz"),
-        # ("view -I --no-version -S tests/data/txt/samples.txt", "sample.vcf.gz"),
-        # ("view --no-version -s NA00001", "sample.vcf.gz"),
-        # ("view --no-version -s NA00001,NA00003", "sample.vcf.gz"),
-        # ("view --no-version -s HG00096", "1kg_2020_chrM.vcf.gz"),
-        # ("view --no-version -s '' --force-samples", "sample.vcf.gz"),
-        # ("view --no-version -s ^NA00001", "sample.vcf.gz"),
-        # ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
-        # ("view --no-version -s ^NA00003,NA00002,NA00003", "sample.vcf.gz"),
-        # ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
+        (
+                "view --no-update --no-version --samples-file "
+                "tests/data/txt/samples.txt",
+                "sample.vcf.gz"),
+        ("view -I --no-version -S tests/data/txt/samples.txt", "sample.vcf.gz"),
+        ("view --no-version -s NA00001", "sample.vcf.gz"),
+        ("view --no-version -s NA00001,NA00003", "sample.vcf.gz"),
+        ("view --no-version -s HG00096", "1kg_2020_chrM.vcf.gz"),
+        ("view --no-version -s '' --force-samples", "sample.vcf.gz"),
+        ("view --no-version -s ^NA00001", "sample.vcf.gz"),
+        ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
+        ("view --no-version -s ^NA00003,NA00002,NA00003", "sample.vcf.gz"),
+        ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
     ]
 )
 # fmt: on

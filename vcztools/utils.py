@@ -7,7 +7,10 @@ from vcztools.constants import RESERVED_VCF_FIELDS
 
 
 def search(a, v):
-    """Like `np.searchsorted`, but array `a` does not have to be sorted."""
+    """
+    Finds the indices into an array a corresponding to the elements in v.
+    The behaviour is undefined if any elements in v are not in a.
+    """
     sorter = np.argsort(a)
     rank = np.searchsorted(a, v, sorter=sorter)
     return sorter[rank]

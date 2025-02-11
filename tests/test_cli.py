@@ -76,16 +76,14 @@ class TestOutput:
         assert "Is a directory" in result.stderr
 
 
-# Removing until we reimplement sample handling:
-# https://github.com/sgkit-dev/vcztools/issues/121
-# def test_excluding_and_including_samples(vcz_path):
-#     samples_file_path = pathlib.Path("tests/data/txt/samples.txt")
-#     error_message = re.escape("vcztools does not support combining -s and -S")
+def test_excluding_and_including_samples(vcz_path):
+    samples_file_path = pathlib.Path("tests/data/txt/samples.txt")
+    error_message = re.escape("vcztools does not support combining -s and -S")
 
-#     with pytest.raises(AssertionError, match=error_message):
-#         run_vcztools(f"view {vcz_path} -s NA00001 -S ^{samples_file_path}")
-#     with pytest.raises(AssertionError, match=error_message):
-#         run_vcztools(f"view {vcz_path} -s ^NA00001 -S {samples_file_path}")
+    with pytest.raises(AssertionError, match=error_message):
+        run_vcztools(f"view {vcz_path} -s NA00001 -S ^{samples_file_path}")
+    with pytest.raises(AssertionError, match=error_message):
+        run_vcztools(f"view {vcz_path} -s ^NA00001 -S {samples_file_path}")
 
 
 @mock.patch("sys.exit")

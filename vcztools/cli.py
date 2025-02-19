@@ -1,6 +1,7 @@
 import contextlib
 import os
 import sys
+from functools import wraps
 
 import click
 
@@ -26,6 +27,22 @@ def handle_broken_pipe(output):
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
         sys.exit(1)  # Python exits with error code 1 on EPIPE
+
+
+def handle_exception(func):
+    """
+    Handle application exceptions by converting to a ClickException,
+    so the message is written to stderr and a non-zero exit code is set.
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            raise click.ClickException(e) from e
+
+    return wrapper
 
 
 include = click.option(
@@ -66,6 +83,7 @@ class NaturalOrderGroup(click.Group):
     is_flag=True,
     help="Print per contig stats.",
 )
+@handle_exception
 def index(path, nrecords, stats):
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
@@ -95,6 +113,7 @@ def index(path, nrecords, stats):
 )
 @include
 @exclude
+@handle_exception
 def query(path, output, list_samples, format, include, exclude):
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
@@ -177,6 +196,7 @@ def query(path, output, list_samples, format, include, exclude):
 )
 @include
 @exclude
+@handle_exception
 def view(
     path,
     output,

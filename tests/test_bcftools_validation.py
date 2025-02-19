@@ -9,24 +9,34 @@ import vcztools.cli as cli
 from .utils import assert_vcfs_close, vcz_path_cache
 
 
-def run_bcftools(args: str) -> str:
-    """Run bcftools (which must be on the PATH) and return stdout as a string."""
+def run_bcftools(args: str, expect_error=False) -> tuple[str, str]:
+    """
+    Run bcftools (which must be on the PATH) and return stdout and stderr
+    as a pair of strings.
+    """
     completed = subprocess.run(
-        f"bcftools {args}", capture_output=True, check=True, shell=True
+        f"bcftools {args}", capture_output=True, check=False, shell=True
     )
-    return completed.stdout.decode("utf-8")
+    if expect_error:
+        assert completed.returncode != 0
+    else:
+        assert completed.returncode == 0
+    return completed.stdout.decode("utf-8"), completed.stderr.decode("utf-8")
 
 
-def run_vcztools(args: str) -> str:
-    """Run run_vcztools and return stdout as a string."""
+def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
+    """Run run_vcztools and return stdout and stderr as a pair of strings."""
     runner = ct.CliRunner(mix_stderr=False)
     result = runner.invoke(
         cli.vcztools_main,
         args,
         catch_exceptions=False,
     )
-    assert result.exit_code == 0
-    return result.stdout
+    if expect_error:
+        assert result.exit_code != 0
+    else:
+        assert result.exit_code == 0
+    return result.stdout, result.stderr
 
 
 # fmt: off
@@ -76,12 +86,12 @@ def test_vcf_output(tmp_path, args, vcf_file):
     original = pathlib.Path("tests/data/vcf") / vcf_file
     vcz = vcz_path_cache(original)
 
-    bcftools_out = run_bcftools(f"{args} {original}")
+    bcftools_out, _ = run_bcftools(f"{args} {original}")
     bcftools_out_file = tmp_path.joinpath("bcftools_out.vcf")
     with open(bcftools_out_file, "w") as f:
         f.write(bcftools_out)
 
-    vcztools_out = run_vcztools(f"{args} {vcz}")
+    vcztools_out, _ = run_vcztools(f"{args} {vcz}")
     vcztools_out_file = tmp_path.joinpath("vcztools_out.vcf")
     with open(vcztools_out_file, "w") as f:
         f.write(vcztools_out)
@@ -143,7 +153,26 @@ def test_output(tmp_path, args, vcf_name):
     vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
     vcz_path = vcz_path_cache(vcf_path)
 
-    bcftools_output = run_bcftools(f"{args} {vcf_path}")
-    vcztools_output = run_vcztools(f"{args} {vcz_path}")
+    bcftools_output, _ = run_bcftools(f"{args} {vcf_path}")
+    vcztools_output, _ = run_vcztools(f"{args} {vcz_path}")
 
     assert vcztools_output == bcftools_output
+
+
+@pytest.mark.parametrize(
+    ("args", "vcf_name"),
+    [
+        ("index -ns", "sample.vcf.gz"),
+        ("query -f '%POS\n' -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz"),
+        ("view -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz"),
+    ],
+)
+def test_error(tmp_path, args, vcf_name):
+    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
+    vcz_path = vcz_path_cache(vcf_path)
+
+    _, bcftools_error = run_bcftools(f"{args} {vcf_path}", expect_error=True)
+    assert bcftools_error.startswith("Error:") or bcftools_error.startswith("[E::")
+
+    _, vcztools_error = run_vcztools(f"{args} {vcz_path}", expect_error=True)
+    assert vcztools_error.startswith("Error:")

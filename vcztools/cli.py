@@ -31,15 +31,16 @@ def handle_broken_pipe(output):
 
 def handle_exception(func):
     """
-    Handle application exceptions by converting to a ClickException,
-    so the message is written to stderr and a non-zero exit code is set.
+    Handle known application exceptions (ValueError) by converting to
+    a ClickException, so the message is written to stderr and a non-zero exit
+    code is set.
     """
 
     @wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except Exception as e:
+        except ValueError as e:
             raise click.ClickException(e) from e
 
     return wrapper
@@ -222,7 +223,8 @@ def view(
         )
 
     if samples_file:
-        assert not samples, "vcztools does not support combining -s and -S"
+        if samples is not None:
+            raise ValueError("vcztools does not support combining -s and -S")
 
         samples = ""
         exclude_samples_file = samples_file.startswith("^")

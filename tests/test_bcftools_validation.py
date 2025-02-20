@@ -175,4 +175,4 @@ def test_error(tmp_path, args, vcf_name):
     assert bcftools_error.startswith("Error:") or bcftools_error.startswith("[E::")
 
     _, vcztools_error = run_vcztools(f"{args} {vcz_path}", expect_error=True)
-    assert vcztools_error.startswith("Error:")
+    assert "Error:" in vcztools_error

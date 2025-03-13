@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # [Table 1: Reserved INFO keys]
 RESERVED_INFO_KEY_DESCRIPTIONS = {
     "AA": "Ancestral allele",
-    "AC": "Allele count in genotypes, for each ALT allele, in the same order as listed",
+    "AC": "Allele count in genotypes",
     "AD": "Total read depth for each allele",
     "ADF": "Read depth for each allele on the forward strand",
     "ADR": "Read depth for each allele on the reverse strand",
@@ -136,6 +136,7 @@ def write_vcf(
     root = zarr.open(vcz, mode="r")
 
     with open_file_like(output) as output:
+        force_ac_an_header = False
         if samples and drop_genotypes:
             raise ValueError("Cannot select samples and drop genotypes.")
         elif drop_genotypes:
@@ -145,6 +146,7 @@ def write_vcf(
             sample_ids = root["sample_id"][:]
             samples_selection = None
         else:
+            force_ac_an_header = True
             all_samples = root["sample_id"][:]
             exclude_samples = samples.startswith("^")
             samples = samples.lstrip("^")
@@ -157,7 +159,7 @@ def write_vcf(
                 if force_samples:
                     # remove unknown samples from sample_ids
                     logger.warning(
-                        'subset called for sample(s) not in header: '
+                        "subset called for sample(s) not in header: "
                         f'{",".join(unknown_samples)}.'
                     )
                     sample_ids = np.delete(
@@ -165,7 +167,7 @@ def write_vcf(
                     )
                 else:
                     raise ValueError(
-                        'subset called for sample(s) not in header: '
+                        "subset called for sample(s) not in header: "
                         f'{",".join(unknown_samples)}. '
                         'Use "--force-samples" to ignore this error.'
                     )
@@ -180,7 +182,11 @@ def write_vcf(
         if not no_header:
             original_header = root.attrs.get("vcf_header", None)
             vcf_header = _generate_header(
-                root, original_header, sample_ids, no_version=no_version
+                root,
+                original_header,
+                sample_ids,
+                no_version=no_version,
+                force_ac_an=force_ac_an_header,
             )
             print(vcf_header, end="", file=output)
 
@@ -453,7 +459,14 @@ def c_chunk_to_vcf(
         print(line, file=output)
 
 
-def _generate_header(ds, original_header, sample_ids, *, no_version: bool = False):
+def _generate_header(
+    ds,
+    original_header,
+    sample_ids,
+    *,
+    no_version: bool = False,
+    force_ac_an: bool = False,
+):
     output = io.StringIO()
 
     contigs = list(ds["contig_id"][:])
@@ -488,7 +501,6 @@ def _generate_header(ds, original_header, sample_ids, *, no_version: bool = Fals
             if key in ("genotype", "genotype_phased"):
                 continue
             format_fields.append(key)
-
     if original_header is None:  # generate entire header
         # [1.4.1 File format]
         print("##fileformat=VCFv4.3", file=output)
@@ -542,6 +554,17 @@ def _generate_header(ds, original_header, sample_ids, *, no_version: bool = Fals
             f'##INFO=<ID={key},Number={vcf_number},Type={vcf_type},Description="{vcf_description}">',
             file=output,
         )
+
+    if force_ac_an:
+        # bcftools always recomputes the AC and AN fields when samples are specified,
+        # even if these fields don't exist before
+        for key, number in [("AC", "A"), ("AN", "1")]:
+            if key not in info_fields:
+                print(
+                    f"##INFO=<ID={key},Number={number},Type=Integer,"
+                    f'Description="{RESERVED_INFO_KEY_DESCRIPTIONS[key]}">',
+                    file=output,
+                )
 
     # [1.4.3 Filter field format]
     for filter in filters:

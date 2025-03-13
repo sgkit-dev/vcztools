@@ -178,7 +178,7 @@ jobs:
         shell: bash -el {0}
     strategy:
       matrix:
-        zarr: ["==2.18.3", ">=3"]
+        zarr: ["==2.18.3", ">=3,!=3.0.5"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Miniconda

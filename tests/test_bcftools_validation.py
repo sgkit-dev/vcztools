@@ -45,6 +45,7 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
     [
         ("view --no-version", "sample.vcf.gz"),
         ("view --no-version", "chr22.vcf.gz"),
+        ("view --no-version", "msprime_diploid.vcf.gz"),
         ("view --no-version -i 'INFO/DP > 10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5 && FMT/GQ > 10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5 & FMT/GQ>10'", "sample.vcf.gz"),
@@ -72,6 +73,7 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -s NA00001", "sample.vcf.gz"),
         ("view --no-version -s NA00001,NA00003", "sample.vcf.gz"),
         ("view --no-version -s HG00096", "1kg_2020_chrM.vcf.gz"),
+        ("view --no-version -s tsk_0,tsk_1", "msprime_diploid.vcf.gz"),
         ("view --no-version -s '' --force-samples", "sample.vcf.gz"),
         ("view --no-version -s 'NO_SAMPLE' --force-samples", "sample.vcf.gz"),
         ("view --no-version -s 'NO_SAMPLE,NA00001' --force-samples", "sample.vcf.gz"),

@@ -262,7 +262,6 @@ def vcz2plink(path, out):
     Convert VCF Zarr to plink, aiming for compatibility with plink1.9 --vcf behaviour
     where possible.
     """
-    print("vcz2plink", path, out)
     out_prefix = pathlib.Path(out)
     writer = plink.Writer(
         path,

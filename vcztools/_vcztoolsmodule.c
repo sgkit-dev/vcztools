@@ -567,7 +567,74 @@ static PyTypeObject VcfEncoderType = {
  *===================================================================
  */
 
+static PyObject *
+vcztools_encode_plink(PyObject *self, PyObject *args)
+{
+
+    PyObject *ret = NULL;
+    PyArrayObject *genotypes = NULL;
+    PyArrayObject *a12_allele = NULL;
+    PyArrayObject *encoded = NULL;
+    npy_intp num_variants, num_samples, bufsize;
+
+    if (!PyArg_ParseTuple(
+            args, "O!O!", &PyArray_Type, &genotypes, &PyArray_Type, &a12_allele)) {
+        goto out;
+    }
+    if (check_array("genotypes", genotypes, 3) != 0) {
+        goto out;
+    }
+    if (check_dtype("genotypes", genotypes, NPY_INT8) != 0) {
+        goto out;
+    }
+    if (check_array("a12_allele", a12_allele, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("a12_allele", a12_allele, NPY_INT8) != 0) {
+        goto out;
+    }
+    if (PyArray_DIMS(genotypes)[2] != 2) {
+        PyErr_Format(PyExc_ValueError, "Only diploid genotypes supported");
+        goto out;
+    }
+    num_variants = PyArray_DIMS(genotypes)[0];
+    num_samples = PyArray_DIMS(genotypes)[1];
+    if (PyArray_DIMS(a12_allele)[0] != num_variants) {
+        PyErr_Format(
+            PyExc_ValueError, "a12_allele and genotypes must have same first dimension");
+        goto out;
+    }
+    if (PyArray_DIMS(a12_allele)[1] != 2) {
+        PyErr_Format(PyExc_ValueError, "a12_allele must have exactly 2 columns");
+        goto out;
+    }
+    bufsize = ((num_samples + 3) / 4) * num_variants;
+    /* NOTE: it would probably make more sense to allocate a bytes buffer here
+     * directly, but it's not obvious to me how you do that. This is simpler. */
+    encoded = (PyArrayObject *) PyArray_SimpleNew(1, &bufsize, NPY_UINT8);
+    if (encoded == NULL) {
+        goto out; // GCOVR_EXCL_LINE
+    }
+
+    // clang-format off
+    Py_BEGIN_ALLOW_THREADS
+    vcz_encode_plink((size_t) num_variants, (size_t) num_samples,
+        PyArray_DATA(genotypes), PyArray_DATA(a12_allele), PyArray_DATA(encoded));
+    Py_END_ALLOW_THREADS
+    // clang-format on
+
+    ret = (PyObject *) encoded;
+    encoded = NULL;
+out:
+    Py_XDECREF(encoded);
+    return ret;
+}
+
 static PyMethodDef vcztools_methods[] = {
+    { .ml_name = "encode_plink",
+        .ml_meth = (PyCFunction) vcztools_encode_plink,
+        .ml_flags = METH_VARARGS,
+        .ml_doc = "Encode genotypes in plink format" },
     { NULL } /* Sentinel */
 };
 

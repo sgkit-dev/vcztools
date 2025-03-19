@@ -52,7 +52,7 @@ jobs:
           channels: conda-forge,bioconda
       - name: Install dependencies
         run: |
-          conda install bcftools
+          conda install bcftools plink
           python -m pip install --upgrade pip
           python -m pip install '.[dev]'
           # Build the extension module in-place so pytest can find it
@@ -158,7 +158,7 @@ jobs:
           channels: conda-forge,bioconda
       - name: Install dependencies
         run: |
-          conda install bcftools
+          conda install bcftools plink
           python -m pip install --upgrade pip
           python -m pip install '.[dev]'
           # Build the extension module in-place so pytest can find it
@@ -189,7 +189,7 @@ jobs:
           channels: conda-forge,bioconda
       - name: Install dependencies
         run: |
-          conda install bcftools
+          conda install bcftools plink
           python -m pip install --upgrade pip
           python -m pip install '.[dev]'
           # Build the extension module in-place so pytest can find it

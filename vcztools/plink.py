@@ -146,7 +146,8 @@ class Writer:
             f.write(generate_fam(self.root))
 
     def run(self):
-        max_alleles = self.root["variant_allele"].shape[1]
+        alleles = self.root["variant_allele"][:].astype(str)
+        max_alleles = alleles.shape[1]
         G = self.root["call_genotype"]
         num_samples = G.shape[1]
         num_variants = G.shape[0]
@@ -175,13 +176,13 @@ class Writer:
                     a += 1
                 a12_allele[j, 0] = a
                 assert a12_allele[j, 0] != a12_allele[j, 1]
-                if count[a12_allele[j, 0]] == 0:
+                if alleles[j][1] == "":
                     a12_allele[j, 0] = -1
                 # print(
                 #     self.root["variant_contig"][j],
                 #     self.root["variant_position"][j],
                 #     [j],
-                #     alleles[j],
+                #     self.root["variant_allele"][j],
                 #     count,
                 #     argsort,
                 #     a12_allele[j],

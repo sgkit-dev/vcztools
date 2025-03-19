@@ -1,13 +1,14 @@
 import contextlib
 import os
+import pathlib
 import sys
 from functools import wraps
 
 import click
 
+from . import plink, vcf_writer
 from . import query as query_module
 from . import stats as stats_module
-from . import vcf_writer
 
 
 @contextlib.contextmanager
@@ -253,6 +254,23 @@ def view(
         )
 
 
+@click.command(name="plink1.9-vcf")
+@click.argument("path", type=click.Path())
+@click.option("--out", default="plink")
+def plink1_9_vcf(path, out):
+    """
+    Convert VCZ to plink, compatible with plink1.9 --vcf.
+    """
+    out_prefix = pathlib.Path(out)
+    writer = plink.Writer(
+        path,
+        bed_path=out_prefix.with_suffix(".bed"),
+        fam_path=out_prefix.with_suffix(".fam"),
+        bim_path=out_prefix.with_suffix(".bim"),
+    )
+    writer.run()
+
+
 @click.group(cls=NaturalOrderGroup, name="vcztools")
 def vcztools_main():
     pass
@@ -261,3 +279,4 @@ def vcztools_main():
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
+vcztools_main.add_command(plink1_9_vcf)

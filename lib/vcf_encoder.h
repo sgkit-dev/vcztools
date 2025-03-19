@@ -109,3 +109,11 @@ int64_t vcz_variant_encoder_encode(
 
 int vcz_itoa(char *buf, int64_t v);
 int vcz_ftoa(char *buf, float v);
+
+
+#define VCZ_PLINK_HOM_A1 0x0  /* 00 */
+#define VCZ_PLINK_HOM_A2 0x3  /* 11 */
+#define VCZ_PLINK_HET 0x2     /* 10 */
+#define VCZ_PLINK_MISSING 0x1 /* 01 */
+int vcz_encode_plink(size_t num_variants, size_t num_samples, const int8_t *genotypes,
+    const int8_t *a12_allele, char *buf);

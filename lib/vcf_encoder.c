@@ -1051,7 +1051,7 @@ vcz_encode_plink(size_t num_variants, size_t num_samples, const int8_t *genotype
 
     variant_offset = 0;
 
-    memset(buf, 0, bytes_per_variant * num_samples);
+    memset(buf, 0, bytes_per_variant * num_variants);
 
     for (j = 0; j < num_variants; j++) {
         allele_1 = a12_allele[j * 2];

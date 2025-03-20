@@ -6,49 +6,18 @@ import numpy as np
 import pandas as pd
 import zarr
 
+from vcztools import _vcztools
 
-def encode_genotypes(g, allele_1, allele_2):
-    # Missing genotype: 01 in PLINK format
-    # Homozygous allele 1: 00 in PLINK format
-    # Homozygous allele 2: 11 in PLINK format
-    # Heterozygous: 10 in PLINK format
-    HOM_A1 = 0b00
-    HOM_A2 = 0b11
-    HET = 0b10
-    MISSING = 0b01
 
-    num_samples = g.shape[0]
-    assert g.shape[1] == 2
-    bytes_per_variant = (num_samples + 3) // 4
-    buff = bytearray(bytes_per_variant)
-    for j in range(num_samples):
-        byte_idx = j // 4
-        bit_pos = (j % 4) * 2
-        code = MISSING
-        a, b = g[j]
-        if b == -2:
-            # Treated as a haploid call by plink
-            if a == allele_1:
-                code = HOM_A1
-            elif a == allele_2:
-                code = HOM_A2
-        else:
-            if a == allele_1:
-                if b == allele_1:
-                    code = HOM_A1
-                elif b == allele_2:
-                    code = HET
-            elif a == allele_2:
-                if b == allele_2:
-                    code = HOM_A2
-                elif b == allele_1:
-                    code = HET
-            if allele_1 == -1 and (code == HOM_A1 or code == HET):
-                code = MISSING
-        # print("\t", a, b, code)
-        mask = ~(0b11 << bit_pos)
-        buff[byte_idx] = (buff[byte_idx] & mask) | (code << bit_pos)
-    return buff
+def encode_genotypes(genotypes, a12_allele=None):
+    G = np.asarray(genotypes, dtype=np.int8)
+    if a12_allele is None:
+        a12_allele = np.zeros((G.shape[0], 2), dtype=G.dtype)
+        a12_allele[:, 0] = 1
+    a12_allele = np.asarray(a12_allele, dtype=G.dtype)
+    # TODO: not sure if this is taking a copy. See the point about
+    # allocating a numpy array in the C code.
+    return bytes(_vcztools.encode_plink(G, a12_allele).data)
 
 
 def generate_fam(root):
@@ -96,13 +65,6 @@ class Writer:
         self.bim_path = bim_path
         self.fam_path = fam_path
         self.bed_path = bed_path
-
-    def _encode_genotypes(self, G, a12):
-        assert G.shape[0] == a12.shape[0]
-        ret = bytearray()
-        for j in range(G.shape[0]):
-            ret.extend(encode_genotypes(G[j], a12[j, 0], a12[j, 1]))
-        return ret
 
     def _compute_alleles(self, G, alleles):
         """
@@ -158,7 +120,7 @@ class Writer:
                 G = call_genotype.blocks[v_chunk]
                 a12 = self._compute_alleles(G, variant_allele.blocks[v_chunk])
                 print("Got a12")
-                buff = self._encode_genotypes(G, a12)
+                buff = encode_genotypes(G, a12)
                 print("Genotypes")
                 bed_file.write(buff)
                 a12_allele.blocks[v_chunk] = a12

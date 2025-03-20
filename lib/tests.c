@@ -854,9 +854,106 @@ test_ftoa(void)
 
     for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
         len = vcz_ftoa(buf, cases[j].val);
-        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected, buf); */
+        /* printf("j = %d %f->%s=='%s'\n", (int) j, cases[j].val, cases[j].expected,
+         * buf); */
         CU_ASSERT_EQUAL_FATAL(len, strlen(cases[j].expected));
         CU_ASSERT_STRING_EQUAL_FATAL(buf, cases[j].expected);
+    }
+}
+
+static void
+test_encode_plink_single_genotype(void)
+{
+    struct test_case {
+        int8_t genotype[2];
+        char expected;
+    };
+    // clang-format off
+    struct test_case cases[] = {
+        {{-1, -1}, VCZ_PLINK_MISSING},
+        {{-2, -1}, VCZ_PLINK_MISSING},
+        {{-1, -2}, VCZ_PLINK_MISSING},
+        {{-2, -2}, VCZ_PLINK_MISSING},
+        /* Unknown alleles are treated as missing */
+        {{2, 2}, VCZ_PLINK_MISSING},
+        {{-1, 2}, VCZ_PLINK_MISSING},
+        {{2, -1}, VCZ_PLINK_MISSING},
+        /* Half-calls are homozygous */
+        {{0, -2}, VCZ_PLINK_HOM_A2},
+        {{1, -2}, VCZ_PLINK_HOM_A1},
+        /* Nominal cases */
+        {{1, 0}, VCZ_PLINK_HET},
+        {{0, 1}, VCZ_PLINK_HET},
+        {{0, 0}, VCZ_PLINK_HOM_A2},
+        {{1, 1}, VCZ_PLINK_HOM_A1},
+    };
+    // clang-format on
+    size_t j;
+    char buf;
+    int8_t a12[] = { 1, 0 };
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        vcz_encode_plink(1, 1, cases[j].genotype, a12, &buf);
+        /* printf("j = %d [%d,%d]->%d==%d'\n", (int) j, cases[j].genotype[0], */
+        /*     cases[j].genotype[1], cases[j].expected, buf); */
+        CU_ASSERT_EQUAL_FATAL(buf, cases[j].expected);
+    }
+}
+
+static void
+test_encode_plink_example(void)
+{
+
+    const size_t num_variants = 3;
+    const size_t num_samples = 3;
+    int j;
+    // clang-format off
+    int8_t genotypes[] = {
+        0, 0, 0, 1, 0, 0,
+        1, 0, 1, 1, 0, -2,
+        1, 1, 0, 1, -1,-1,
+    };
+    // clang-format on
+    int8_t a12[] = { 1, 0, 1, 0, 1, 0 };
+    int8_t expected[] = { 59, 50, 24 };
+    char buf[3];
+
+    vcz_encode_plink(num_variants, num_samples, genotypes, a12, buf);
+    for (j = 0; j < 3; j++) {
+        /* printf("%d\n", buf[j]); */
+        CU_ASSERT_EQUAL_FATAL(buf[j], expected[j]);
+    }
+}
+
+static void
+test_encode_plink_single_genotype_vary_a12(void)
+{
+    struct test_case {
+        int8_t genotype[2];
+        int8_t a12[2];
+        char expected;
+    };
+    // clang-format off
+    struct test_case cases[] = {
+        {{-1, -1}, {0, 1}, VCZ_PLINK_MISSING},
+        {{0, -2}, {0, 1}, VCZ_PLINK_HOM_A1},
+        {{1, -2}, {0, 1}, VCZ_PLINK_HOM_A2},
+        {{0, 0}, {1, 2}, VCZ_PLINK_MISSING},
+        /* Nominal cases */
+        {{2, 3}, {2, 3}, VCZ_PLINK_HET},
+        {{3, 2}, {2, 3}, VCZ_PLINK_HET},
+        {{3, 3}, {2, 3}, VCZ_PLINK_HOM_A2},
+        {{2, 2}, {2, 3}, VCZ_PLINK_HOM_A1},
+    };
+    // clang-format on
+    size_t j;
+    char buf;
+
+    for (j = 0; j < sizeof(cases) / sizeof(*cases); j++) {
+        vcz_encode_plink(1, 1, cases[j].genotype, cases[j].a12, &buf);
+        /* printf("j = %d [%d,%d]->%d==%d'\n", (int) j, cases[j].genotype[0], */
+        /*     cases[j].genotype[1], cases[j].expected, buf); */
+        CU_ASSERT_EQUAL_FATAL(buf, cases[j].expected);
     }
 }
 
@@ -972,6 +1069,10 @@ main(int argc, char **argv)
         { "test_itoa_pow10", test_itoa_pow10 },
         { "test_itoa_boundary", test_itoa_boundary },
         { "test_ftoa", test_ftoa },
+        { "test_encode_plink_single_genotype", test_encode_plink_single_genotype },
+        { "test_encode_plink_single_genotype_vary_a12",
+            test_encode_plink_single_genotype_vary_a12 },
+        { "test_encode_plink_example", test_encode_plink_example },
         { NULL, NULL },
     };
     return test_main(tests, argc, argv);

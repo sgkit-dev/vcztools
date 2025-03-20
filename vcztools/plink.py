@@ -157,7 +157,9 @@ class Writer:
             for v_chunk in range(call_genotype.cdata_shape[0]):
                 G = call_genotype.blocks[v_chunk]
                 a12 = self._compute_alleles(G, variant_allele.blocks[v_chunk])
+                print("Got a12")
                 buff = self._encode_genotypes(G, a12)
+                print("Genotypes")
                 bed_file.write(buff)
                 a12_allele.blocks[v_chunk] = a12
         return a12_allele[:]

@@ -1,3 +1,4 @@
+import os
 import pathlib
 import subprocess
 
@@ -38,7 +39,8 @@ def test_conversion_identical(tmp_path, args, vcf_file):
 
     plink_workdir = tmp_path / "plink1.9"
     plink_workdir.mkdir()
-    cmd = f"plink1.9 --vcf {original.absolute()} {args}"
+    plink_bin = os.environ.get("PLINK_BIN", "plink")
+    cmd = f"{plink_bin} --vcf {original.absolute()} {args}"
     result = subprocess.run(cmd, shell=True, cwd=plink_workdir, capture_output=True)
     assert result.returncode == 0
 

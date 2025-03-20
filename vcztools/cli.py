@@ -254,13 +254,12 @@ def view(
         )
 
 
-@click.command
+@click.command(name="plink1.9-vcf")
 @click.argument("path", type=click.Path())
 @click.option("--out", default="plink")
-def vcz2plink(path, out):
+def plink1_9_vcf(path, out):
     """
-    Convert VCF Zarr to plink, aiming for compatibility with plink1.9 --vcf behaviour
-    where possible.
+    Convert VCZ to plink, compatible with plink1.9 --vcf.
     """
     out_prefix = pathlib.Path(out)
     writer = plink.Writer(
@@ -280,4 +279,4 @@ def vcztools_main():
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
-vcztools_main.add_command(vcz2plink)
+vcztools_main.add_command(plink1_9_vcf)

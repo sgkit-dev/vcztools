@@ -51,52 +51,6 @@ def encode_genotypes(g, allele_1, allele_2):
     return buff
 
 
-def genotype_to_plink_bed(genotypes, out_buffer):
-    """
-    Convert genotypes from Zarr format to PLINK BED format
-
-    In Zarr:
-      - Genotypes are stored as int8 with values 0 (REF), 1+ (ALT), -1 (missing)
-
-    In PLINK BED format (2 bits per genotype):
-      - 00 (0b00): Homozygous for first allele (0/0)
-      - 01 (0b01): Missing genotype
-      - 10 (0b10): Heterozygous (0/1 or 1/0)
-      - 11 (0b11): Homozygous for second allele (1/1)
-
-    Each byte in BED stores 4 genotypes (2 bits each), with sample ordering:
-    - Lowest sample index in least significant bits
-    - Highest sample index in most significant bits
-    """
-    n_variants, n_samples, ploidy = genotypes.shape
-    bytes_per_variant = (n_samples + 3) // 4
-
-    for var_idx in range(n_variants):
-        for sam_idx in range(n_samples):
-            # Determine which byte and bit position this genotype belongs to
-            byte_idx = var_idx * bytes_per_variant + (sam_idx // 4)
-            bit_pos = (sam_idx % 4) * 2
-
-            a1 = genotypes[var_idx, sam_idx, 0]
-            a2 = genotypes[var_idx, sam_idx, 1] if ploidy > 1 else a1
-
-            if a1 == -1 or a2 == -1:
-                # Missing genotype: 01 in PLINK format
-                code = 0b01
-            elif a1 == 0 and a2 == 0:
-                # Homozygous REF: 00 in PLINK format
-                code = 0b00
-            elif a1 == 1 and a2 == 1:
-                # Homozygous ALT: 11 in PLINK format
-                code = 0b11
-            else:
-                # Heterozygous: 10 in PLINK format
-                code = 0b10
-
-            mask = ~(0b11 << bit_pos)
-            out_buffer[byte_idx] = (out_buffer[byte_idx] & mask) | (code << bit_pos)
-
-
 def generate_fam(root):
     # TODO generate an error if sample_id contains a space
     sample_id = root["sample_id"][:].astype(str)
@@ -142,53 +96,77 @@ class Writer:
         self.bim_path = bim_path
         self.fam_path = fam_path
         self.bed_path = bed_path
-        with open(fam_path, "w") as f:
-            f.write(generate_fam(self.root))
 
-    def run(self):
-        alleles = self.root["variant_allele"][:].astype(str)
+    def _encode_genotypes(self, G, a12):
+        assert G.shape[0] == a12.shape[0]
+        ret = bytearray()
+        for j in range(G.shape[0]):
+            ret.extend(encode_genotypes(G[j], a12[j, 0], a12[j, 1]))
+        return ret
+
+    def _compute_alleles(self, G, alleles):
+        """
+        Returns the a12 alleles for the specified chunk of data.
+        """
         max_alleles = alleles.shape[1]
-        G = self.root["call_genotype"]
-        num_samples = G.shape[1]
         num_variants = G.shape[0]
+        num_samples = G.shape[1]
         a12_allele = np.zeros((num_variants, 2), dtype=int) - 1
+        for j, g in enumerate(G):
+            g = g.reshape(num_samples * 2)
+            assert np.all(g >= -2)
+            count = np.bincount(g + 2, minlength=max_alleles + 2)
+            # [dimension pad, missing data, reference, allele 1, ...]
+            count = count[2:]
+            argsort = np.argsort(count)
+            a12_allele[j, 1] = 0
+            if argsort[-1] == 0:
+                # print("Ref allele most frequent")
+                # Ref allele is most frequent - chose lowest allele from next most
+                # frequent class
+                f = count[argsort[-2]]
+            else:
+                # print("Ref allele not most frequent")
+                f = count[argsort[-1]]
+            a = 1
+            while count[a] != f:
+                a += 1
+            a12_allele[j, 0] = a
+            assert a12_allele[j, 0] != a12_allele[j, 1]
+            if alleles[j][1] == "":
+                a12_allele[j, 0] = -1
+            # print(
+            #     self.root["variant_contig"][j],
+            #     self.root["variant_position"][j],
+            #     [j],
+            #     self.root["variant_allele"][j],
+            #     count,
+            #     argsort,
+            #     a12_allele[j],
+            # )
+        return a12_allele
 
+    def _write_genotypes(self):
+        call_genotype = self.root["call_genotype"]
+        variant_allele = self.root["variant_allele"]
+        a12_allele = zarr.zeros(
+            (call_genotype.shape[0], 2), chunks=call_genotype.chunks[0], dtype=int
+        )
         with open(self.bed_path, "wb") as bed_file:
             bed_file.write(bytes([0x6C, 0x1B, 0x01]))
-            for j, g in enumerate(self.root["call_genotype"]):
-                g = g.reshape(num_samples * 2)
-                assert np.all(g >= -2)
-                count = np.bincount(g + 2, minlength=max_alleles + 2)
-                # [dimension pad, missing data, reference, allele 1, ...]
-                count = count[2:]
-                argsort = np.argsort(count)
-                a12_allele[j, 1] = 0
-                if argsort[-1] == 0:
-                    # print("Ref allele most frequent")
-                    # Ref allele is most frequent - chose lowest allele from next most
-                    # frequent class
-                    f = count[argsort[-2]]
-                else:
-                    # print("Ref allele not most frequent")
-                    f = count[argsort[-1]]
-                a = 1
-                while count[a] != f:
-                    a += 1
-                a12_allele[j, 0] = a
-                assert a12_allele[j, 0] != a12_allele[j, 1]
-                if alleles[j][1] == "":
-                    a12_allele[j, 0] = -1
-                # print(
-                #     self.root["variant_contig"][j],
-                #     self.root["variant_position"][j],
-                #     [j],
-                #     self.root["variant_allele"][j],
-                #     count,
-                #     argsort,
-                #     a12_allele[j],
-                # )
-                encoded = encode_genotypes(g.reshape(num_samples, 2), *a12_allele[j])
-                bed_file.write(encoded)
+            for v_chunk in range(call_genotype.cdata_shape[0]):
+                G = call_genotype.blocks[v_chunk]
+                a12 = self._compute_alleles(G, variant_allele.blocks[v_chunk])
+                buff = self._encode_genotypes(G, a12)
+                bed_file.write(buff)
+                a12_allele.blocks[v_chunk] = a12
+        return a12_allele[:]
+
+    def run(self):
+        a12_allele = self._write_genotypes()
 
         with open(self.bim_path, "w") as f:
             f.write(generate_bim(self.root, a12_allele))
+
+        with open(self.fam_path, "w") as f:
+            f.write(generate_fam(self.root))

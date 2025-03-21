@@ -146,3 +146,19 @@ class TestEncodeGenotypes:
         b2 = plink.encode_genotypes(g)
         assert b1 == b2
         assert b1 == bytearray(0xFF for _ in range(num_variants * num_samples // 4))
+
+    @pytest.mark.parametrize(
+        ("num_variants", "num_samples"),
+        [
+            (1, 33),
+            (10, 1000),
+        ],
+    )
+    def test_nonsensical_data(self, num_variants, num_samples):
+        g = np.arange((num_variants * num_samples * 2), dtype=np.int8).reshape(
+            (num_variants, num_samples, 2)
+        )
+        a12 = np.arange(num_variants * 2, dtype=np.int8).reshape((num_variants, 2))
+        b1 = encode_genotypes(g, a12)
+        b2 = plink.encode_genotypes(g, a12)
+        assert b1 == b2

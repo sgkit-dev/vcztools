@@ -998,48 +998,6 @@ vcz_variant_encoder_free(vcz_variant_encoder_t *self)
     }
 }
 
-/* def encode_genotypes(g, allele_1, allele_2): */
-/*     # Missing genotype: 01 in PLINK format */
-/*     # Homozygous allele 1: 00 in PLINK format */
-/*     # Homozygous allele 2: 11 in PLINK format */
-/*     # Heterozygous: 10 in PLINK format */
-/*     HOM_A1 = 0b00 */
-/*     HOM_A2 = 0b11 */
-/*     HET = 0b10 */
-/*     MISSING = 0b01 */
-
-/*     num_samples = g.shape[0] */
-/*     assert g.shape[1] == 2 */
-/*     bytes_per_variant = (num_samples + 3) // 4 */
-/*     buff = bytearray(bytes_per_variant) */
-/*     for j in range(num_samples): */
-/*         byte_idx = j // 4 */
-/*         bit_pos = (j % 4) * 2 */
-/*         code = MISSING */
-/*         a, b = g[j] */
-/*         if b == -2: */
-/*             # Treated as a haploid call by plink */
-/*             if a == allele_1: */
-/*                 code = HOM_A1 */
-/*             elif a == allele_2: */
-/*                 code = HOM_A2 */
-/*         else: */
-/*             if a == allele_1: */
-/*                 if b == allele_1: */
-/*                     code = HOM_A1 */
-/*                 elif b == allele_2: */
-/*                     code = HET */
-/*             elif a == allele_2: */
-/*                 if b == allele_2: */
-/*                     code = HOM_A2 */
-/*                 elif b == allele_1: */
-/*                     code = HET */
-/*             if allele_1 == -1 and (code == HOM_A1 or code == HET): */
-/*                 code = MISSING */
-/*         # print("\t", a, b, code) */
-/*         mask = ~(0b11 << bit_pos) */
-/*         buff[byte_idx] = (buff[byte_idx] & mask) | (code << bit_pos) */
-/*     return buff */
 int
 vcz_encode_plink(size_t num_variants, size_t num_samples, const int8_t *genotypes,
     const int8_t *a12_allele, char *buf)
@@ -1087,7 +1045,8 @@ vcz_encode_plink(size_t num_variants, size_t num_samples, const int8_t *genotype
                 }
             }
 
-            /* printf("a=%d b=%d a1=%d a2=%d code = %d\n", a, b, allele_1, allele_2, code); */
+            /* printf("a=%d b=%d a1=%d a2=%d code = %d\n", a, b, allele_1, allele_2,
+             * code); */
             byte_offset = variant_offset + k / 4;
             bit_pos = (k % 4) * 2;
             mask = ~(0x3 << bit_pos);

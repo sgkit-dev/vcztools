@@ -957,6 +957,43 @@ test_encode_plink_single_genotype_vary_a12(void)
     }
 }
 
+static void
+test_encode_plink_all_zeros_instance(size_t num_variants, size_t num_samples)
+{
+    int8_t *genotypes = calloc(num_variants * num_samples, 2);
+    int8_t *a12 = calloc(num_variants, 2);
+    char *buf = malloc(num_variants * num_samples / 4);
+    size_t j;
+
+    CU_ASSERT_FATAL(num_samples % 4 == 0);
+    CU_ASSERT_FATAL(genotypes != NULL);
+    CU_ASSERT_FATAL(a12 != NULL);
+    CU_ASSERT_FATAL(buf != NULL);
+
+    for (j = 0; j < num_variants; j++) {
+        a12[2 * j] = 1;
+    }
+    /* printf("variants=%d samples=%d\n", (int) num_variants, (int) num_samples); */
+    vcz_encode_plink(num_variants, num_samples, genotypes, a12, buf);
+    for (j = 0; j < num_variants * num_samples / 4; j++) {
+        /* printf("%d %d\n", (int) j, buf[j]); */
+        CU_ASSERT_EQUAL_FATAL(buf[j], -1);
+    }
+
+    free(genotypes);
+    free(a12);
+    free(buf);
+}
+
+static void
+test_encode_plink_all_zeros(void)
+{
+    test_encode_plink_all_zeros_instance(1, 4);
+    test_encode_plink_all_zeros_instance(10, 4);
+    test_encode_plink_all_zeros_instance(1, 400);
+    test_encode_plink_all_zeros_instance(100, 400);
+}
+
 /*=================================================
   Test suite management
   =================================================
@@ -1073,6 +1110,7 @@ main(int argc, char **argv)
         { "test_encode_plink_single_genotype_vary_a12",
             test_encode_plink_single_genotype_vary_a12 },
         { "test_encode_plink_example", test_encode_plink_example },
+        { "test_encode_plink_all_zeros", test_encode_plink_all_zeros },
         { NULL, NULL },
     };
     return test_main(tests, argc, argv);

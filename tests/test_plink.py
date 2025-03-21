@@ -4,7 +4,7 @@ import numpy as np
 from vcztools import plink
 
 
-def _encode_genotypes(g, allele_1, allele_2):
+def _encode_genotypes_row(g, allele_1, allele_2):
     # Missing genotype: 01 in PLINK format
     # Homozygous allele 1: 00 in PLINK format
     # Homozygous allele 2: 11 in PLINK format
@@ -57,7 +57,7 @@ def encode_genotypes(G, a12_allele=None):
     assert G.shape[2] == 2
     buff = bytearray()
     for j in range(len(G)):
-        buff.extend(_encode_genotypes(G[j], *a12_allele[j]))
+        buff.extend(_encode_genotypes_row(G[j], *a12_allele[j]))
     return bytes(buff)
 
 
@@ -107,11 +107,46 @@ class TestEncodeGenotypes:
             (1, 101),
             (1, 101),
             (10, 1),
+            (100, 1),
+            (10, 2),
+            (10, 3),
+            (10, 4),
+            (10, 5),
+            (10, 6),
+            (10, 7),
+            (10, 8),
+            (10, 9),
         ],
     )
-    def test_shapes_01_alleles(self, num_variants, num_samples):
-        g = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+    @pytest.mark.parametrize("value", [-1, 0, 1, 2])
+    def test_shapes_01_alleles(self, value, num_variants, num_samples):
+        g = np.zeros((num_variants, num_samples, 2), dtype=np.int8) + value
         b1 = encode_genotypes(g)
         b2 = plink.encode_genotypes(g)
         # assert len(b1) == len(b2)
         assert b1 == b2
+
+    @pytest.mark.parametrize(
+        ["num_variants", "num_samples"],
+        [
+            (1, 4),
+            (1, 4),
+            (1, 8),
+            (1, 16),
+            (1, 32),
+            (1, 100),
+            (33, 4),
+            (33, 4),
+            (33, 8),
+            (33, 16),
+            (33, 32),
+            (33, 100),
+        ],
+    )
+    def test_all_zeros_div_4(self, num_variants, num_samples):
+        assert num_samples % 4 == 0
+        g = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        b1 = encode_genotypes(g)
+        b2 = plink.encode_genotypes(g)
+        assert b1 == b2
+        assert b1 == bytearray(0xFF for _ in range(num_variants * num_samples // 4))

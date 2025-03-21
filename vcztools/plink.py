@@ -2,6 +2,8 @@
 Convert VCZ to plink 1 binary format.
 """
 
+import time
+
 import numpy as np
 import pandas as pd
 import zarr
@@ -117,11 +119,25 @@ class Writer:
         with open(self.bed_path, "wb") as bed_file:
             bed_file.write(bytes([0x6C, 0x1B, 0x01]))
             for v_chunk in range(call_genotype.cdata_shape[0]):
+                before = time.perf_counter()
                 G = call_genotype.blocks[v_chunk]
+                duration = time.perf_counter() - before
+                print(
+                    f"Decoded genotypes {G.nbytes / 1024**2:.2f}MiB in {duration:.2g}s"
+                )
+
+                before = time.perf_counter()
                 a12 = self._compute_alleles(G, variant_allele.blocks[v_chunk])
-                print("Got a12")
+                duration = time.perf_counter() - before
+
+                print(f"a12 alleles in {duration:.2g}s")
+                before = time.perf_counter()
                 buff = encode_genotypes(G, a12)
-                print("Genotypes")
+                duration = time.perf_counter() - before
+                print(
+                    f"encoded in {duration:.2g}s @ {(G.nbytes / 1024**2) / duration:.2f}MiB/s"
+                )
+
                 bed_file.write(buff)
                 a12_allele.blocks[v_chunk] = a12
         return a12_allele[:]

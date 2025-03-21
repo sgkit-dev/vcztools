@@ -453,3 +453,83 @@ class TestUninitialised:
         encoder = cls.__new__(cls)
         with pytest.raises(SystemError, match="not initialised"):
             getattr(encoder, name)
+
+
+class TestEncodePlink:
+    def test_bad_num_arguments(self):
+        with pytest.raises(TypeError):
+            _vcztools.encode_plink()
+        with pytest.raises(TypeError):
+            _vcztools.encode_plink(0)
+
+    @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
+    def test_bad_types(self, bad_type):
+        array = np.zeros(5, dtype=np.int8)
+        with pytest.raises(TypeError):
+            _vcztools.encode_plink(bad_type, array)
+        with pytest.raises(TypeError):
+            _vcztools.encode_plink(array, bad_type)
+
+    def test_wrong_genotype_dims(self):
+        with pytest.raises(ValueError, match="genotypes has wrong dimension"):
+            _vcztools.encode_plink(
+                np.zeros((1, 1), dtype=np.int8), np.zeros((1, 2), dtype=np.int8)
+            )
+
+    def test_wrong_a12_allele_dims(self):
+        with pytest.raises(ValueError, match="a12_allele has wrong dimension"):
+            _vcztools.encode_plink(
+                np.zeros((1, 1, 2), dtype=np.int8), np.zeros((1, 2, 3), dtype=np.int8)
+            )
+
+    @pytest.mark.parametrize("bad_dtype", [np.int16, np.int64, np.float64, "S1"])
+    def test_bad_genotype_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for genotypes"):
+            _vcztools.encode_plink(
+                np.zeros((1, 1, 2), dtype=bad_dtype), np.zeros((1, 2), dtype=np.int8)
+            )
+
+    @pytest.mark.parametrize("bad_dtype", [np.int16, np.int64, np.float64, "S1"])
+    def test_bad_a12_allele_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for a12_allele"):
+            _vcztools.encode_plink(
+                np.zeros((1, 1, 2), dtype=np.int8), np.zeros((1, 2), dtype=bad_dtype)
+            )
+
+    @pytest.mark.parametrize("bad_ploidy", [1, 3])
+    def test_bad_ploidy(self, bad_ploidy):
+        with pytest.raises(ValueError, match="Only diploid genotypes"):
+            _vcztools.encode_plink(
+                np.zeros((1, 1, bad_ploidy), dtype=np.int8),
+                np.zeros((1, 2), dtype=np.int8),
+            )
+
+    @pytest.mark.parametrize("num_variants", [1, 3])
+    def test_num_variants_mismatch(self, num_variants):
+        with pytest.raises(ValueError, match="same first dimension"):
+            _vcztools.encode_plink(
+                np.zeros((2, 1, 2), dtype=np.int8),
+                np.zeros((num_variants, 2), dtype=np.int8),
+            )
+
+    @pytest.mark.parametrize("num_cols", [1, 3])
+    def test_bad_a12_allele_cols(self, num_cols):
+        with pytest.raises(ValueError, match="exactly 2 columns"):
+            _vcztools.encode_plink(
+                np.zeros((2, 1, 2), dtype=np.int8),
+                np.zeros((2, num_cols), dtype=np.int8),
+            )
+
+    def test_example(self):
+        G = np.array(
+            [
+                [[0, 0], [0, 1], [0, 0]],
+                [[1, 0], [1, 1], [0, -2]],
+                [[1, 1], [0, 1], [-1, -1]],
+            ],
+            dtype=np.int8,
+        )
+        a12_allele = np.array([[1, 0], [1, 0], [1, 0]], dtype=np.int8)
+        enc = _vcztools.encode_plink(G, a12_allele)
+        assert enc.dtype == np.uint8
+        assert list(enc) == [59, 50, 24]

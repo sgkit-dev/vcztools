@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 
 from vcztools import plink
 
@@ -62,7 +62,6 @@ def encode_genotypes(G, a12_allele=None):
 
 
 class TestEncodeGenotypes:
-
     @pytest.mark.parametrize(
         "genotypes",
         [
@@ -94,7 +93,7 @@ class TestEncodeGenotypes:
         assert b1 == b2
 
     @pytest.mark.parametrize(
-        ["num_variants", "num_samples"],
+        ("num_variants", "num_samples"),
         [
             (0, 0),
             (1, 0),
@@ -104,7 +103,6 @@ class TestEncodeGenotypes:
             (1, 4),
             (1, 16),
             (1, 100),
-            (1, 101),
             (1, 101),
             (10, 1),
             (100, 1),
@@ -127,15 +125,13 @@ class TestEncodeGenotypes:
         assert b1 == b2
 
     @pytest.mark.parametrize(
-        ["num_variants", "num_samples"],
+        ("num_variants", "num_samples"),
         [
-            (1, 4),
             (1, 4),
             (1, 8),
             (1, 16),
             (1, 32),
             (1, 100),
-            (33, 4),
             (33, 4),
             (33, 8),
             (33, 16),

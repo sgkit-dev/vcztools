@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 
 from vcztools import _vcztools
 
@@ -456,7 +456,6 @@ class TestUninitialised:
 
 
 class TestEncodePlink:
-
     def test_bad_num_arguments(self):
         with pytest.raises(TypeError):
             _vcztools.encode_plink()

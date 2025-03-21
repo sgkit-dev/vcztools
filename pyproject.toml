@@ -76,7 +76,7 @@ indent-width = 4
 [tool.ruff.lint]
 select = ["E", "F", "B", "W", "I", "N", "UP", "A", "RUF", "PT"]
 #Allow uppercase names for e.g. call_AD
-ignore = ["N806", "N802", "A001", "A002"]
+ignore = ["N806", "N802", "N803", "A001", "A002"]
 
 fixable = ["ALL"]
 unfixable = []

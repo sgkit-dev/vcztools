@@ -613,10 +613,16 @@ vcztools_encode_plink(PyObject *self, PyObject *args)
      * directly, but it's not obvious to me how you do that. This is simpler. */
     encoded = (PyArrayObject *) PyArray_SimpleNew(1, &bufsize, NPY_UINT8);
     if (encoded == NULL) {
-        goto out;
+        goto out; // GCOVR_EXCL_LINE
     }
+
+    // clang-format off
+    Py_BEGIN_ALLOW_THREADS
     vcz_encode_plink((size_t) num_variants, (size_t) num_samples,
         PyArray_DATA(genotypes), PyArray_DATA(a12_allele), PyArray_DATA(encoded));
+    Py_END_ALLOW_THREADS
+    // clang-format on
+
     ret = (PyObject *) encoded;
     encoded = NULL;
 out:

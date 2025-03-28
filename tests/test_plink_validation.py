@@ -44,7 +44,7 @@ def test_conversion_identical(tmp_path, args, vcf_file):
     result = subprocess.run(cmd, shell=True, cwd=plink_workdir, capture_output=True)
     assert result.returncode == 0
 
-    cmd = f"plink1.9-vcf {vcz.absolute()} {args}"
+    cmd = f"view-plink1 {vcz.absolute()} {args}"
     runner = ct.CliRunner(mix_stderr=False)
     with runner.isolated_filesystem(tmp_path) as working_dir:
         vcz_workdir = pathlib.Path(working_dir)

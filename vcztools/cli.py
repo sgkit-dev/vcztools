@@ -254,12 +254,15 @@ def view(
         )
 
 
-@click.command(name="plink1.9-vcf")
+@click.command
 @click.argument("path", type=click.Path())
 @click.option("--out", default="plink")
-def plink1_9_vcf(path, out):
+def view_plink1(path, out):
     """
-    Convert VCZ to plink, compatible with plink1.9 --vcf.
+    Generate a plink1 binary fileset compatible with plink1.9 --vcf.
+    This command is equivalent to running ``vcztools view [filtering options]
+    -o intermediate.vcf && plink 1.9 --vcf intermediate.vcf [plink options]``
+    without generating the intermediate VCF.
     """
     out_prefix = pathlib.Path(out)
     writer = plink.Writer(
@@ -279,4 +282,4 @@ def vcztools_main():
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
-vcztools_main.add_command(plink1_9_vcf)
+vcztools_main.add_command(view_plink1)

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import zarr
 
-from vcztools import _vcztools
+from . import _vcztools, retrieval
 
 
 def encode_genotypes(genotypes, a12_allele=None):
@@ -62,6 +62,7 @@ def generate_bim(root, a12_allele):
 class Writer:
     def __init__(self, vcz_path, bed_path, fam_path, bim_path):
         self.root = zarr.open(vcz_path, mode="r")
+
         self.bim_path = bim_path
         self.fam_path = fam_path
         self.bed_path = bed_path
@@ -109,28 +110,22 @@ class Writer:
         return a12_allele
 
     def _write_genotypes(self):
+        ci = retrieval.variant_chunk_iter(
+            self.root, fields=["call_genotype", "variant_allele"]
+        )
         call_genotype = self.root["call_genotype"]
-        variant_allele = self.root["variant_allele"]
         a12_allele = zarr.zeros(
             (call_genotype.shape[0], 2), chunks=call_genotype.chunks[0], dtype=int
         )
         with open(self.bed_path, "wb") as bed_file:
             bed_file.write(bytes([0x6C, 0x1B, 0x01]))
-            for v_chunk in range(call_genotype.cdata_shape[0]):
-                # before = time.perf_counter()
-                G = call_genotype.blocks[v_chunk]
-                # duration = time.perf_counter() - before
 
-                # before = time.perf_counter()
-                a12 = self._compute_alleles(G, variant_allele.blocks[v_chunk])
-                # duration = time.perf_counter() - before
-
-                # before = time.perf_counter()
+            for j, chunk in enumerate(ci):
+                G = chunk["call_genotype"]
+                a12 = self._compute_alleles(G, chunk["variant_allele"])
                 buff = encode_genotypes(G, a12)
-                # duration = time.perf_counter() - before
-
                 bed_file.write(buff)
-                a12_allele.blocks[v_chunk] = a12
+                a12_allele.blocks[j] = a12
         return a12_allele[:]
 
     def run(self):

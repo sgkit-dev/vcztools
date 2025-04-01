@@ -4,6 +4,7 @@ import pathlib
 import sys
 from functools import wraps
 
+import zarr
 import click
 
 from . import plink, vcf_writer
@@ -256,8 +257,10 @@ def view(
 
 @click.command
 @click.argument("path", type=click.Path())
+@include
+@exclude
 @click.option("--out", default="plink")
-def view_plink1(path, out):
+def view_plink1(path, include, exclude, out):
     """
     Generate a plink1 binary fileset compatible with plink1.9 --vcf.
     This command is equivalent to running ``vcztools view [filtering options]

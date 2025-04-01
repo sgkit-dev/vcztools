@@ -46,25 +46,25 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version", "sample.vcf.gz"),
         ("view --no-version", "chr22.vcf.gz"),
         ("view --no-version", "msprime_diploid.vcf.gz"),
+        ("view --no-version -i 'ID == \"rs6054257\"'", "sample.vcf.gz"),
         ("view --no-version -i 'INFO/DP > 10'", "sample.vcf.gz"),
-        ("view --no-version -i 'FMT/DP >= 5 && FMT/GQ > 10'", "sample.vcf.gz"),
-        ("view --no-version -i 'FMT/DP >= 5 & FMT/GQ>10'", "sample.vcf.gz"),
-        (
-                "view --no-version -i '(QUAL > 10 || FMT/GQ>10) && POS > 100000'",
-                "sample.vcf.gz"
-        ),
-        (
-                "view --no-version -i '(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000'",
-                "sample.vcf.gz"
-        ),
-        (
-                "view --no-version -e '(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000'",
-                "sample.vcf.gz"
-        ),
-        (
-                "view --no-version -G",
-                "sample.vcf.gz"
-        ),
+        # Filters based on FMT values are currently disabled.
+        # https://github.com/sgkit-dev/vcztools/issues/180
+        # ("view --no-version -i 'FMT/DP >= 5 && FMT/GQ > 10'", "sample.vcf.gz"),
+        # ("view --no-version -i 'FMT/DP >= 5 & FMT/GQ>10'", "sample.vcf.gz"),
+        # (
+        #         "view --no-version -i '(QUAL > 10 || FMT/GQ>10) && POS > 100000'",
+        #         "sample.vcf.gz"
+        # ),
+        # (
+        #         "view --no-version -i '(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000'",
+        #         "sample.vcf.gz"
+        # ),
+        # (
+        #         "view --no-version -e '(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000'",
+        #         "sample.vcf.gz"
+        # ),
+        ("view --no-version -G", "sample.vcf.gz"),
         (
                 "view --no-update --no-version --samples-file "
                 "tests/data/txt/samples.txt",
@@ -83,10 +83,14 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
         ("view --no-version -s ^NA00003,NA00002,NA00003", "sample.vcf.gz"),
         ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
-    ]
+    ],
+    # This is necessary when trying to run individual tests, as the arguments above
+    # make for unworkable command lines
+    # ids=range(26),
 )
 # fmt: on
 def test_vcf_output(tmp_path, args, vcf_file):
+    # print("args:", args)
     original = pathlib.Path("tests/data/vcf") / vcf_file
     vcz = vcz_path_cache(original)
 
@@ -102,11 +106,10 @@ def test_vcf_output(tmp_path, args, vcf_file):
 
     assert_vcfs_close(bcftools_out_file, vcztools_out_file)
 
+
 @pytest.mark.parametrize(
     ("args", "vcf_file"),
-    [
-        ("view --no-version", "sample.vcf.gz")
-    ],
+    [("view --no-version", "sample.vcf.gz")],
 )
 def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
     vcf_path = pathlib.Path("tests/data/vcf") / vcf_file
@@ -151,6 +154,14 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]\n'", "sample.vcf.gz"),
         (r"query -f '[%CHROM:%POS %SAMPLE %GT\n]'", "sample.vcf.gz"),
         (r"query -f '[%SAMPLE %GT %DP\n]'", "sample.vcf.gz"),
+        (
+            r"query -f '[%POS %SAMPLE %GT %DP %GQ\n]' -i 'INFO/DP >= 5'",
+            "sample.vcf.gz",
+        ),
+        (
+            r"query -f '[%POS %QUAL\n]' -i'(QUAL > 10 && POS > 100000)'",
+            "sample.vcf.gz",
+        ),
     ],
 )
 def test_output(tmp_path, args, vcf_name):

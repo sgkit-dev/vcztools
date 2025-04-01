@@ -1,4 +1,3 @@
-import functools
 import io
 import logging
 import re
@@ -20,9 +19,9 @@ from vcztools.utils import (
     search,
 )
 
-from . import _vcztools, constants
+from . import _vcztools, constants, retrieval
+from . import filter as filter_mod
 from .constants import RESERVED_VARIABLE_NAMES
-from .filter import FilterExpressionEvaluator, FilterExpressionParser
 
 logger = logging.getLogger(__name__)
 
@@ -193,32 +192,20 @@ def write_vcf(
             return
 
         pos = root["variant_position"]
-        num_variants = pos.shape[0]
-
-        if num_variants == 0:
-            return
-
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
 
-        if include and exclude:
-            raise ValueError(
-                "Cannot handle both an include expression and an exclude expression."
-            )
-        elif include or exclude:
-            parser = FilterExpressionParser()
-            parse_results = parser(include or exclude)[0]
-            filter_evaluator = FilterExpressionEvaluator(
-                parse_results, invert=bool(exclude)
-            )
-            filter_evaluator = functools.partial(filter_evaluator, root)
-        else:
-            filter_evaluator = None
+        filter_expr = filter_mod.FilterExpression(
+            field_names=set(root), include=include, exclude=exclude
+        )
+        reader = retrieval.VariantChunkReader(root)
 
         if variant_regions is None and variant_targets is None:
             # no regions or targets selected
             for v_chunk in range(pos.cdata_shape[0]):
-                v_mask_chunk = filter_evaluator(v_chunk) if filter_evaluator else None
+                chunk_data = reader[v_chunk]
+                v_mask_chunk = filter_expr.evaluate(chunk_data)
+                # NOTE: we need to update c_chunk_to_vcf to accept the chunk_data array
                 c_chunk_to_vcf(
                     root,
                     v_chunk,
@@ -275,12 +262,12 @@ def write_vcf(
             # for convenience.
             z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
             for i, v_chunk in enumerate(chunk_indexes):
+                chunk_data = reader[v_chunk]
                 v_mask_chunk = z_variant_mask.blocks[i]
-
-                if filter_evaluator and np.any(v_mask_chunk):
-                    v_mask_chunk = np.logical_and(
-                        v_mask_chunk, filter_evaluator(v_chunk)
-                    )
+                # NOTE: Skipping optimisations while refactor is ongoing
+                v_mask_chunk = np.logical_and(
+                    v_mask_chunk, filter_expr.evaluate(chunk_data)
+                )
                 if np.any(v_mask_chunk):
                     c_chunk_to_vcf(
                         root,
@@ -320,11 +307,14 @@ def c_chunk_to_vcf(
     drop_genotypes,
     no_update,
 ):
-    chrom = contigs[get_vchunk_array(root["variant_contig"], v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
     pos = get_vchunk_array(root["variant_position"], v_chunk, v_mask_chunk).astype(
         np.int32
     )
+    num_variants = len(pos)
+    if num_variants == 0:
+        return ""
+    chrom = contigs[get_vchunk_array(root["variant_contig"], v_chunk, v_mask_chunk)]
     id = get_vchunk_array(root["variant_id"], v_chunk, v_mask_chunk).astype("S")
     alleles = get_vchunk_array(root["variant_allele"], v_chunk, v_mask_chunk)
     qual = get_vchunk_array(root["variant_quality"], v_chunk, v_mask_chunk)
@@ -391,7 +381,6 @@ def c_chunk_to_vcf(
     if gt is not None and num_samples is None:
         num_samples = gt.shape[1]
 
-    num_variants = len(pos)
     encoder = _vcztools.VcfEncoder(
         num_variants,
         num_samples if num_samples is not None else 0,

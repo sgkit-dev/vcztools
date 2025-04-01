@@ -60,7 +60,9 @@ def generate_bim(root, a12_allele):
 
 
 class Writer:
-    def __init__(self, vcz_path, bed_path, fam_path, bim_path):
+    def __init__(
+        self, vcz_path, bed_path, fam_path, bim_path, include=None, exclude=None
+    ):
         self.root = zarr.open(vcz_path, mode="r")
 
         self.bim_path = bim_path

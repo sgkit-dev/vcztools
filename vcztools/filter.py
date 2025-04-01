@@ -1,180 +1,159 @@
 import functools
+import logging
 import operator
-from typing import Callable
 
 import numpy as np
 import pyparsing as pp
 
-from vcztools.utils import vcf_name_to_vcz_name
+from .utils import vcf_name_to_vcz_name
+
+logger = logging.getLogger(__name__)
 
 
-class FilterExpressionParser:
-    def __init__(self):
-        constant_pattern = pp.common.number | pp.QuotedString('"')
-        standard_tag_pattern = pp.Word(pp.srange("[A-Z]"))
-
-        info_tag_pattern = pp.Combine(pp.Literal("INFO/") + standard_tag_pattern)
-        format_tag_pattern = pp.Combine(
-            (pp.Literal("FORMAT/") | pp.Literal("FMT/")) + standard_tag_pattern
-        )
-        tag_pattern = info_tag_pattern | format_tag_pattern | standard_tag_pattern
-
-        identifier_pattern = tag_pattern | constant_pattern
-        self._identifier_parser = functools.partial(
-            identifier_pattern.parse_string, parse_all=True
-        )
-
-        comparison_pattern = pp.Group(
-            tag_pattern + pp.one_of("== = != > >= < <=") + constant_pattern
-        ).set_results_name("comparison")
-
-        parentheses_pattern = pp.Forward()
-        and_pattern = pp.Forward()
-        or_pattern = pp.Forward()
-
-        parentheses_pattern <<= (
-            pp.Suppress("(") + or_pattern + pp.Suppress(")") | comparison_pattern
-        )
-        and_pattern <<= (
-            pp.Group(
-                parentheses_pattern + (pp.Keyword("&&") | pp.Keyword("&")) + and_pattern
-            ).set_results_name("and")
-            | parentheses_pattern
-        )
-        or_pattern <<= (
-            pp.Group(
-                and_pattern + (pp.Keyword("||") | pp.Keyword("|")) + or_pattern
-            ).set_results_name("or")
-            | and_pattern
-        )
-
-        self._parser = functools.partial(or_pattern.parse_string, parse_all=True)
-
-    def __call__(self, *args, **kwargs):
-        assert args or kwargs
-
-        if args:
-            assert len(args) == 1
-            assert not kwargs
-            expression = args[0]
-        else:
-            assert len(kwargs) == 1
-            assert "expression" in kwargs
-            expression = kwargs["expression"]
-
-        return self.parse(expression)
-
-    def parse(self, expression: str):
-        return self._parser(expression)
+# The parser and evaluation model here are based on the eval_arith example
+# in the pyparsing docs:
+# https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
 
 
-class FilterExpressionEvaluator:
-    def __init__(self, parse_results: pp.ParseResults, *, invert=False):
-        self._composers = {
-            "comparison": self._compose_comparison_evaluator,
-            "and": self._compose_and_evaluator,
-            "or": self._compose_or_evaluator,
-        }
-        self._comparators = {
-            "==": operator.eq,
-            "=": operator.eq,
-            "!=": operator.ne,
-            ">": operator.gt,
-            ">=": operator.ge,
-            "<": operator.lt,
-            "<=": operator.le,
-        }
-        base_evaluator = self._compose_evaluator(parse_results)
+class EvaluationNode:
+    """
+    Base class for all of the parsed nodes in the expression
+    evaluation tree.
+    """
 
-        def evaluator(root, variant_chunk_index: int) -> np.ndarray:
-            base_array = base_evaluator(root, variant_chunk_index)
-            return np.any(base_array, axis=tuple(range(1, base_array.ndim)))
+    def __init__(self, tokens):
+        self.tokens = tokens[0]
 
-        if invert:
 
-            def invert_evaluator(root, variant_chunk_index: int) -> np.ndarray:
-                return np.logical_not(evaluator(root, variant_chunk_index))
+class Constant(EvaluationNode):
+    def eval(self, data):
+        return self.tokens
 
-            self._evaluator = invert_evaluator
-        else:
-            self._evaluator = evaluator
 
-    def __call__(self, *args, **kwargs):
-        assert len(args) == 2
-        assert not kwargs
+class Identifier(EvaluationNode):
+    def __init__(self, mapper, tokens):
+        self.field_name = mapper(tokens[0])
+        logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
 
-        return self._evaluator(*args)
+    def eval(self, data):
+        return data[self.field_name]
 
-    def _compose_comparison_evaluator(self, parse_results: pp.ParseResults) -> Callable:
-        assert len(parse_results) == 3
 
-        comparator = parse_results[1]
-        comparator = self._comparators[comparator]
+class BinaryOperator(EvaluationNode):
+    op_map = {
+        "*": operator.mul,
+        "/": operator.truediv,
+        "+": operator.add,
+        "-": operator.sub,
+        # Note that by lumping logical operators in here we forgo any short
+        # circuit optimisations
+        "&": np.logical_and,
+        "|": np.logical_or,
+        # As we're only supporting 1D values for now, these are the same thing
+        "&&": np.logical_and,
+        "||": np.logical_or,
+    }
 
-        def evaluator(root, variant_chunk_index: int) -> np.ndarray:
-            vcf_name = parse_results[0]
-            vcz_names = set(root.keys())
-            vcz_name = vcf_name_to_vcz_name(vcz_names, vcf_name)
-            zarray = root[vcz_name]
-            variant_chunk_len = zarray.chunks[0]
-            start = variant_chunk_len * variant_chunk_index
-            end = start + variant_chunk_len
-            # We load all samples (regardless of sample filtering)
-            # to match bcftools' behavior.
-            array = zarray[start:end]
-            array = comparator(array, parse_results[2])
+    def eval(self, data):
+        # start by eval()'ing the first operand
+        ret = self.tokens[0].eval(data)
 
-            if array.ndim > 2:
-                return np.any(array, axis=tuple(range(2, array.ndim)))
-            else:
-                return array
+        # get following operators and operands in pairs
+        ops = self.tokens[1::2]
+        operands = self.tokens[2::2]
+        for op, operand in zip(ops, operands):
+            # print(f"Eval {op}, {ret}, {operand}")
+            # update cumulative value by add/subtract/mult/divide the next operand
+            arith_fn = self.op_map[op]
+            ret = arith_fn(ret, operand.eval(data))
+        return ret
 
-        return evaluator
 
-    def _compose_and_evaluator(self, parse_results: pp.ParseResults) -> Callable:
-        assert len(parse_results) == 3
-        assert parse_results[1] in {"&", "&&"}
+class ComparisonOperator(EvaluationNode):
+    op_map = {
+        "=": operator.eq,
+        "==": operator.eq,
+        "<": operator.lt,
+        ">": operator.gt,
+        "!=": operator.ne,
+        ">=": operator.ge,
+        "<=": operator.le,
+    }
 
-        left_evaluator = self._compose_evaluator(parse_results[0])
-        right_evaluator = self._compose_evaluator(parse_results[2])
+    def eval(self, data):
+        op1, op, op2 = self.tokens
+        comparison_fn = self.op_map[op]
+        return comparison_fn(op1.eval(data), op2.eval(data))
 
-        def evaluator(root, variant_chunk_index):
-            left_array = left_evaluator(root, variant_chunk_index)
-            right_array = right_evaluator(root, variant_chunk_index)
 
-            if parse_results[1] == "&":
-                return np.logical_and(left_array, right_array)
-            else:
-                left_array = np.any(left_array, axis=tuple(range(1, left_array.ndim)))
-                right_array = np.any(
-                    right_array, axis=tuple(range(1, right_array.ndim))
-                )
-                return np.logical_and(left_array, right_array)
+def _identity(x):
+    return x
 
-        return evaluator
 
-    def _compose_or_evaluator(self, parse_results: pp.ParseResults) -> Callable:
-        assert len(parse_results) == 3
-        assert parse_results[1] in {"|", "||"}
+def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
+    if all_fields is None:
+        all_fields = set()
 
-        left_evaluator = self._compose_evaluator(parse_results[0])
-        right_evaluator = self._compose_evaluator(parse_results[2])
+    constant = (pp.common.number | pp.QuotedString('"')).set_parse_action(Constant)
+    identifier = pp.common.identifier()
 
-        def evaluator(root, variant_chunk_index: int):
-            left_array = left_evaluator(root, variant_chunk_index)
-            right_array = right_evaluator(root, variant_chunk_index)
+    vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
+    vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
 
-            if parse_results[1] == "|":
-                return np.logical_or(left_array, right_array)
-            else:
-                left_array = np.any(left_array, axis=tuple(range(1, left_array.ndim)))
-                right_array = np.any(
-                    right_array, axis=tuple(range(1, right_array.ndim))
-                )
-                return np.logical_or(left_array, right_array)
+    name_mapper = _identity
+    if map_vcf_identifiers:
+        name_mapper = functools.partial(vcf_name_to_vcz_name, all_fields)
+    identifier = vcf_identifier.set_parse_action(
+        functools.partial(Identifier, name_mapper)
+    )
+    comp_op = pp.oneOf("< = == > >= <= !=")
+    filter_expression = pp.infix_notation(
+        constant | identifier,
+        [
+            # ("-", 1, pp.OpAssoc.RIGHT, ),
+            (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+            (pp.one_of("+ -"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+            (comp_op, 2, pp.OpAssoc.LEFT, ComparisonOperator),
+            (pp.Keyword("&"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+            (pp.Keyword("&&"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+            (pp.Keyword("|"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+            (pp.Keyword("||"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+        ],
+    )
+    return filter_expression
 
-        return evaluator
 
-    def _compose_evaluator(self, parse_results: pp.ParseResults) -> Callable:
-        results_name = parse_results.get_name()
-        return self._composers[results_name](parse_results)
+class FilterExpression:
+    def __init__(self, *, field_names=None, include=None, exclude=None):
+        if field_names is None:
+            field_names = set()
+        self.parse_result = None
+        self.invert = False
+        expr = None
+        if include is not None and exclude is not None:
+            raise ValueError(
+                "Cannot handle both an include expression and an exclude expression."
+            )
+        if include is not None:
+            expr = include
+            self.invert = False
+        elif exclude is not None:
+            expr = exclude
+            self.invert = True
+
+        if expr is not None:
+            parser = make_bcftools_filter_parser(field_names)
+            self.parse_result = parser.parse_string(expr, parse_all=True)
+
+        # Setting to None for now so that we retrieve all fields
+        self.referenced_fields = None
+
+    def evaluate(self, chunk_data):
+        if self.parse_result is None:
+            num_variants = len(next(iter(chunk_data.values())))
+            return np.ones(num_variants, dtype=bool)
+
+        result = self.parse_result[0].eval(chunk_data)
+        if self.invert:
+            result = np.logical_not(result)
+        return result

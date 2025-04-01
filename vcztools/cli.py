@@ -4,7 +4,6 @@ import pathlib
 import sys
 from functools import wraps
 
-import zarr
 import click
 
 from . import plink, vcf_writer
@@ -273,6 +272,8 @@ def view_plink1(path, include, exclude, out):
         bed_path=out_prefix.with_suffix(".bed"),
         fam_path=out_prefix.with_suffix(".fam"),
         bim_path=out_prefix.with_suffix(".bim"),
+        include=include,
+        exclude=exclude,
     )
     writer.run()
 

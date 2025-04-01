@@ -1,5 +1,6 @@
 import pathlib
 import re
+import sys
 from io import StringIO
 
 import numpy as np
@@ -125,15 +126,13 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
     ]
 )
 # fmt: on
-def test_write_vcf__regions(tmp_path, regions, targets,
-                            expected_chrom_pos):
+def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos):
 
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    write_vcf(vcz, output, variant_regions=regions,
-              variant_targets=targets)
+    write_vcf(vcz, output, variant_regions=regions, variant_targets=targets)
 
     v = VCF(output)
     variants = list(v)
@@ -146,22 +145,32 @@ def test_write_vcf__regions(tmp_path, regions, targets,
         assert variant.CHROM == chrom
         assert variant.POS == pos
 
+
 @pytest.mark.parametrize(
     ("samples", "force_samples", "expected_samples", "expected_genotypes"),
     [
         ("NA00001", False, ["NA00001"], [[0, 0, True]]),
-        ("NA00001,NA00003", False, ["NA00001", "NA00003"],
-         [[0, 0, True], [0, 1, False]]),
-        ("NA00003,NA00001", False, ["NA00003", "NA00001"],
-         [[0, 1, False], [0, 0, True]]),
+        (
+            "NA00001,NA00003",
+            False,
+            ["NA00001", "NA00003"],
+            [[0, 0, True], [0, 1, False]],
+        ),
+        (
+            "NA00003,NA00001",
+            False,
+            ["NA00003", "NA00001"],
+            [[0, 1, False], [0, 0, True]],
+        ),
         ("^NA00002", False, ["NA00001", "NA00003"], [[0, 0, True], [0, 1, False]]),
         ("^NA00003,NA00002", False, ["NA00001"], [[0, 0, True]]),
         ("^NA00003,NA00002,NA00003", False, ["NA00001"], [[0, 0, True]]),
         ("NO_SAMPLE", True, [], None),
-    ]
+    ],
 )
-def test_write_vcf__samples(tmp_path, samples, force_samples, expected_samples,
-                            expected_genotypes):
+def test_write_vcf__samples(
+    tmp_path, samples, force_samples, expected_samples, expected_genotypes
+):
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
@@ -193,7 +202,7 @@ def test_write_vcf__non_existent_sample(tmp_path):
     with pytest.raises(
         ValueError,
         match=re.escape(
-            'subset called for sample(s) not in header: NO_SAMPLE. '
+            "subset called for sample(s) not in header: NO_SAMPLE. "
             'Use "--force-samples" to ignore this error.'
         ),
     ):
@@ -212,24 +221,25 @@ def test_write_vcf__no_samples(tmp_path):
     assert v.samples == []
 
 
+# @pytest.mark.skip("Sample filtering not implemented: #180")
 @pytest.mark.parametrize(
     ("regions", "targets", "samples", "include", "expected_chrom_pos"),
     [
         # Test that sample filtering takes place after include filtering.
-        ("20", None, "NA00001", "FMT/GQ > 60", [("20", 1230237)]),
+        # Not supporting format fields in filtering for now: #180
+        # ("20", None, "NA00001", "FMT/GQ > 60", [("20", 1230237)]),
         # Test that region filtering and include expression are combined.
-        ("19", None, "NA00001", "FMT/GQ > 60", []),
+        ("19", None, "NA00001", "POS > 200", []),
         # Test that target filtering and include expression are combined.
-        (None, "19", "NA00001", "FMT/GQ > 60", [])
+        (None, "19", "NA00001", "POS > 200", []),
+        # Test that empty output in the no-regions cases works
+        (None, None, "NA00001", "POS < 1", []),
+        # Test that empty output in the no-regions cases works
+        (None, None, None, "POS < 1", []),
     ],
 )
 def test_write_vcf__regions_samples_filtering(
-        tmp_path,
-        regions,
-        targets,
-        samples,
-        include,
-        expected_chrom_pos
+    tmp_path, regions, targets, samples, include, expected_chrom_pos
 ):
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
@@ -241,13 +251,15 @@ def test_write_vcf__regions_samples_filtering(
         variant_regions=regions,
         variant_targets=targets,
         samples=samples,
-        include=include)
+        include=include,
+    )
 
     v = VCF(str(output))
     variants = list(v)
 
     assert len(variants) == len(expected_chrom_pos)
-    assert v.samples == ["NA00001"]
+    if samples is not None:
+        assert v.samples == [samples]
 
     for variant, chrom_pos in zip(variants, expected_chrom_pos):
         chrom, pos = chrom_pos
@@ -263,10 +275,10 @@ def test_write_vcf__include_exclude(tmp_path):
     variant_site_filter = "POS > 1"
 
     with pytest.raises(
-            ValueError,
-            match=re.escape(
-                "Cannot handle both an include expression and an exclude expression."
-            )
+        ValueError,
+        match=re.escape(
+            "Cannot handle both an include expression and an exclude expression."
+        ),
     ):
         write_vcf(vcz, output, include=variant_site_filter, exclude=variant_site_filter)
 
@@ -333,28 +345,38 @@ def test_write_vcf__generate_header(tmp_path):
 
 
 def test_compute_info_fields():
-    gt = np.array([
-        [[0, 0], [0, 1], [1, 1]],
-        [[0, 0], [0, 2], [2, 2]],
-        [[0, 1], [1, 2], [2, 2]],
-        [[INT_MISSING, INT_MISSING], [INT_MISSING, INT_MISSING], [INT_FILL, INT_FILL]],
-        [[INT_MISSING, INT_MISSING], [0, 3], [INT_FILL, INT_FILL]],
-    ])
-    alt = np.array([
-        [b"A", b"B", b""],
-        [b"A", b"B", b"C"],
-        [b"A", b"B", b"C"],
-        [b"", b"", b""],
-        [b"A", b"B", b"C"]
-    ])
+    gt = np.array(
+        [
+            [[0, 0], [0, 1], [1, 1]],
+            [[0, 0], [0, 2], [2, 2]],
+            [[0, 1], [1, 2], [2, 2]],
+            [
+                [INT_MISSING, INT_MISSING],
+                [INT_MISSING, INT_MISSING],
+                [INT_FILL, INT_FILL],
+            ],
+            [[INT_MISSING, INT_MISSING], [0, 3], [INT_FILL, INT_FILL]],
+        ]
+    )
+    alt = np.array(
+        [
+            [b"A", b"B", b""],
+            [b"A", b"B", b"C"],
+            [b"A", b"B", b"C"],
+            [b"", b"", b""],
+            [b"A", b"B", b"C"],
+        ]
+    )
     expected_result = {
-        "AC": np.array([
-            [3, 0, INT_FILL],
-            [0, 3, 0],
-            [2, 3, 0],
-            [INT_FILL, INT_FILL, INT_FILL],
-            [0, 0, 1],
-        ]),
+        "AC": np.array(
+            [
+                [3, 0, INT_FILL],
+                [0, 3, 0],
+                [2, 3, 0],
+                [INT_FILL, INT_FILL, INT_FILL],
+                [0, 0, 1],
+            ]
+        ),
         "AN": np.array([6, 6, 6, 0, 2]),
     }
 
@@ -364,3 +386,18 @@ def test_compute_info_fields():
 
     for key in expected_result.keys():
         np.testing.assert_array_equal(expected_result[key], computed_info_fields[key])
+
+
+
+class TestApiErrors:
+
+    @pytest.fixture()
+    def vcz(self):
+        original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+        return vcz_path_cache(original)
+
+    def test_samples_and_drop_genotypes(self, vcz):
+        with pytest.raises(
+            ValueError, match="Cannot select samples and drop genotypes"
+        ):
+            write_vcf(vcz, sys.stdout, samples=["NA00001"], drop_genotypes=True)

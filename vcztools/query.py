@@ -7,8 +7,8 @@ import numpy as np
 import pyparsing as pp
 import zarr
 
-from vcztools import constants
-from vcztools.filter import FilterExpressionEvaluator, FilterExpressionParser
+from vcztools import constants, retrieval
+from vcztools import filter as filter_mod
 from vcztools.utils import vcf_name_to_vcz_name
 
 
@@ -59,13 +59,7 @@ class QueryFormatParser:
 
 
 class QueryFormatGenerator:
-    def __init__(
-        self,
-        query_format: Union[str, pp.ParseResults],
-        *,
-        include: Optional[str] = None,
-        exclude: Optional[str] = None,
-    ):
+    def __init__(self, query_format, filter_expr=None):
         if isinstance(query_format, str):
             parser = QueryFormatParser()
             parse_results = parser(query_format)
@@ -73,9 +67,10 @@ class QueryFormatGenerator:
             assert isinstance(query_format, pp.ParseResults)
             parse_results = query_format
 
-        self._generator = self._compose_generator(
-            parse_results, include=include, exclude=exclude
-        )
+        if filter_expr is None:
+            filter_expr = filter_mod.FilterExpression()
+
+        self._generator = self._compose_generator(parse_results, filter_expr)
 
     def __call__(self, *args, **kwargs):
         assert len(args) == 1
@@ -186,9 +181,11 @@ class QueryFormatGenerator:
                         if isinstance(row, np.ndarray):
                             row = row.tolist()
                             row = [
-                                str(element)
-                                if element != constants.INT_MISSING
-                                else "."
+                                (
+                                    str(element)
+                                    if element != constants.INT_MISSING
+                                    else "."
+                                )
                                 for element in row
                                 if element != constants.INT_FILL
                             ]
@@ -270,49 +267,31 @@ class QueryFormatGenerator:
 
             return generate
 
-    def _compose_filter_generator(
-        self, *, include: Optional[str] = None, exclude: Optional[str] = None
-    ) -> Callable:
-        assert not (include and exclude)
-
-        if not include and not exclude:
-
-            def generate(root):
-                variant_count = root["variant_position"].shape[0]
-                yield from itertools.repeat(True, variant_count)
-
-            return generate
-
-        parser = FilterExpressionParser()
-        parse_results = parser(include or exclude)[0]
-        filter_evaluator = FilterExpressionEvaluator(
-            parse_results, invert=bool(exclude)
-        )
-
+    def _compose_filter_generator(self, filter_expr):
         def generate(root):
-            nonlocal filter_evaluator
-
-            filter_evaluator = functools.partial(filter_evaluator, root)
-            variant_chunk_count = root["variant_position"].cdata_shape[0]
-
-            for variant_chunk_index in range(variant_chunk_count):
-                yield from filter_evaluator(variant_chunk_index)
+            # NOTE: this should be done at the top-level when we've
+            # figured out what fields need to be retrieved from both
+            # the parsed query and filter expressions.
+            reader = retrieval.VariantChunkReader(
+                root, fields=filter_expr.referenced_fields
+            )
+            for v_chunk in range(root["variant_position"].cdata_shape[0]):
+                # print("Read v_chunk", v_chunk)
+                chunk_data = reader[v_chunk]
+                v_chunk_select = filter_expr.evaluate(chunk_data)
+                yield from v_chunk_select
 
         return generate
 
     def _compose_generator(
         self,
-        parse_results: pp.ParseResults,
-        *,
-        include: Optional[str] = None,
-        exclude: Optional[str] = None,
+        parse_results,
+        filter_expr,
     ) -> Callable:
         generators = (
             self._compose_element_generator(element) for element in parse_results
         )
-        filter_generator = self._compose_filter_generator(
-            include=include, exclude=exclude
-        )
+        filter_generator = self._compose_filter_generator(filter_expr)
 
         def generate(root) -> str:
             iterables = (generator(root) for generator in generators)
@@ -333,13 +312,11 @@ def write_query(
     include: Optional[str] = None,
     exclude: Optional[str] = None,
 ):
-    if include and exclude:
-        raise ValueError(
-            "Cannot handle both an include expression and an exclude expression."
-        )
-
     root = zarr.open(vcz, mode="r")
-    generator = QueryFormatGenerator(query_format, include=include, exclude=exclude)
+    filter_expr = filter_mod.FilterExpression(
+        field_names=set(root), include=include, exclude=exclude
+    )
+    generator = QueryFormatGenerator(query_format, filter_expr)
 
     for result in generator(root):
         print(result, sep="", end="", file=output)

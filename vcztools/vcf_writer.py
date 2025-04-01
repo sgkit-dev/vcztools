@@ -1,4 +1,3 @@
-import concurrent.futures
 import functools
 import io
 import logging
@@ -218,28 +217,19 @@ def write_vcf(
 
         if variant_regions is None and variant_targets is None:
             # no regions or targets selected
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                preceding_future = None
-                for v_chunk in range(pos.cdata_shape[0]):
-                    v_mask_chunk = (
-                        filter_evaluator(v_chunk) if filter_evaluator else None
-                    )
-                    future = executor.submit(
-                        c_chunk_to_vcf,
-                        root,
-                        v_chunk,
-                        v_mask_chunk,
-                        samples_selection,
-                        contigs,
-                        filters,
-                        output,
-                        drop_genotypes=drop_genotypes,
-                        no_update=no_update,
-                        preceding_future=preceding_future,
-                    )
-                    if preceding_future:
-                        concurrent.futures.wait((preceding_future,))
-                    preceding_future = future
+            for v_chunk in range(pos.cdata_shape[0]):
+                v_mask_chunk = filter_evaluator(v_chunk) if filter_evaluator else None
+                c_chunk_to_vcf(
+                    root,
+                    v_chunk,
+                    v_mask_chunk,
+                    samples_selection,
+                    contigs,
+                    filters,
+                    output,
+                    drop_genotypes=drop_genotypes,
+                    no_update=no_update,
+                )
         else:
             contigs_u = root["contig_id"][:].astype("U").tolist()
             regions = parse_regions(variant_regions, contigs_u)
@@ -284,32 +274,25 @@ def write_vcf(
             # Use zarr arrays to get mask chunks aligned with the main data
             # for convenience.
             z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                preceding_future = None
-                for i, v_chunk in enumerate(chunk_indexes):
-                    v_mask_chunk = z_variant_mask.blocks[i]
+            for i, v_chunk in enumerate(chunk_indexes):
+                v_mask_chunk = z_variant_mask.blocks[i]
 
-                    if filter_evaluator and np.any(v_mask_chunk):
-                        v_mask_chunk = np.logical_and(
-                            v_mask_chunk, filter_evaluator(v_chunk)
-                        )
-                    if np.any(v_mask_chunk):
-                        future = executor.submit(
-                            c_chunk_to_vcf,
-                            root,
-                            v_chunk,
-                            v_mask_chunk,
-                            samples_selection,
-                            contigs,
-                            filters,
-                            output,
-                            drop_genotypes=drop_genotypes,
-                            no_update=no_update,
-                            preceding_future=preceding_future,
-                        )
-                        if preceding_future:
-                            concurrent.futures.wait((preceding_future,))
-                        preceding_future = future
+                if filter_evaluator and np.any(v_mask_chunk):
+                    v_mask_chunk = np.logical_and(
+                        v_mask_chunk, filter_evaluator(v_chunk)
+                    )
+                if np.any(v_mask_chunk):
+                    c_chunk_to_vcf(
+                        root,
+                        v_chunk,
+                        v_mask_chunk,
+                        samples_selection,
+                        contigs,
+                        filters,
+                        output,
+                        drop_genotypes=drop_genotypes,
+                        no_update=no_update,
+                    )
 
 
 def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
@@ -336,7 +319,6 @@ def c_chunk_to_vcf(
     *,
     drop_genotypes,
     no_update,
-    preceding_future=None,
 ):
     chrom = contigs[get_vchunk_array(root["variant_contig"], v_chunk, v_mask_chunk)]
     # TODO check we don't truncate silently by doing this
@@ -440,9 +422,6 @@ def c_chunk_to_vcf(
             if len(zarray.shape) == 2:
                 zarray = zarray.reshape((num_variants, num_samples, 1))
             encoder.add_format_field(name, zarray)
-
-    if preceding_future:
-        concurrent.futures.wait((preceding_future,))
 
     # TODO: (1) make a guess at this based on number of fields and samples,
     # and (2) log a DEBUG message when we have to double.

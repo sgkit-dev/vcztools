@@ -162,6 +162,15 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
             r"query -f '[%POS %QUAL\n]' -i'(QUAL > 10 && POS > 100000)'",
             "sample.vcf.gz",
         ),
+        # Check arithmetic evaluation in filter queries. All these should
+        # result to POS=112, which exists.
+        (r"query -f '%POS\n' -i 'POS=(112 + 1)'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -i 'POS =(224 / 2)'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -i 'POS= (112 * 3) / 3'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -i 'POS=(112 * 3 / 3   )'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -i 'POS=25 * 4 + 24 / 2'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -i 'POS=112 * -1 * -1'", "sample.vcf.gz"),
+        (r"query -f '%POS\n' -i '-POS=-112'", "sample.vcf.gz"),
     ],
 )
 def test_output(tmp_path, args, vcf_name):
@@ -172,6 +181,35 @@ def test_output(tmp_path, args, vcf_name):
     vcztools_output, _ = run_vcztools(f"{args} {vcz_path}")
 
     assert vcztools_output == bcftools_output
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        # Check arithmetic evaluation in filter queries. All these should
+        # result to POS=112, which exists.
+        "POS=(111 + 1)",
+        "POS =(224 / 2)",
+        "POS= (112 * 3) / 3",
+        "POS=(112 * 3 / 3   )",
+        "POS=25 * 4 + 24 / 2",
+        "POS=112 * -1 * -1",
+        # "-POS=-112",
+    ],
+)
+def test_query_arithmethic(tmp_path, expr):
+
+    args = r"query -f '%POS\n'" + f" -i '{expr}'"
+    vcf_name = "sample.vcf.gz"
+    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
+    vcz_path = vcz_path_cache(vcf_path)
+
+    bcftools_output, _ = run_bcftools(f"{args} {vcf_path}")
+    vcztools_output, _ = run_vcztools(f"{args} {vcz_path}")
+
+    assert vcztools_output == bcftools_output
+    assert vcztools_output == "112\n"
+
 
 
 @pytest.mark.parametrize(

@@ -29,14 +29,27 @@ class Constant(EvaluationNode):
     def eval(self, data):
         return self.tokens
 
+    def __repr__(self):
+        return repr(self.tokens)
+
+    def referenced_fields(self):
+        return frozenset()
+
 
 class Identifier(EvaluationNode):
     def __init__(self, mapper, tokens):
         self.field_name = mapper(tokens[0])
         logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
+        # TODO add errors for unsupported things like call_ fields etc.
 
     def eval(self, data):
         return data[self.field_name]
+
+    def __repr__(self):
+        return self.field_name
+
+    def referenced_fields(self):
+        return frozenset([self.field_name])
 
 
 class BinaryOperator(EvaluationNode):
@@ -55,17 +68,29 @@ class BinaryOperator(EvaluationNode):
     }
 
     def eval(self, data):
-        # start by eval()'ing the first operand
-        ret = self.tokens[0].eval(data)
-
-        # get following operators and operands in pairs
+        # get the  operators and operands in pairs
+        operands = self.tokens[0::2]
         ops = self.tokens[1::2]
-        operands = self.tokens[2::2]
-        for op, operand in zip(ops, operands):
-            # print(f"Eval {op}, {ret}, {operand}")
-            # update cumulative value by add/subtract/mult/divide the next operand
+        # start by eval()'ing the first operand
+        ret = operands[0].eval(data)
+        for op, operand in zip(ops, operands[1:]):
             arith_fn = self.op_map[op]
             ret = arith_fn(ret, operand.eval(data))
+        return ret
+
+    def __repr__(self):
+        ops = self.tokens[1::2]
+        operands = self.tokens[0::2]
+        ret = f"({repr(operands[0])})"
+        for op, operand in zip(ops, operands[1:]):
+            ret += f"{op}({repr(operand)})"
+        return ret
+
+    def referenced_fields(self):
+        operands = self.tokens[0::2]
+        ret = operands[0].referenced_fields()
+        for operand in operands[1:]:
+            ret |= operand.referenced_fields()
         return ret
 
 
@@ -84,6 +109,14 @@ class ComparisonOperator(EvaluationNode):
         op1, op, op2 = self.tokens
         comparison_fn = self.op_map[op]
         return comparison_fn(op1.eval(data), op2.eval(data))
+
+    def __repr__(self):
+        op1, op, op2 = self.tokens
+        return f"({repr(op1)}){op}({repr(op2)})"
+
+    def referenced_fields(self):
+        op1, _, op2 = self.tokens
+        return op1.referenced_fields() | op2.referenced_fields()
 
 
 def _identity(x):
@@ -110,6 +143,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     filter_expression = pp.infix_notation(
         constant | identifier,
         [
+            # FIXME Does bcftools support unary minus?
             # ("-", 1, pp.OpAssoc.RIGHT, ),
             (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),
             (pp.one_of("+ -"), 2, pp.OpAssoc.LEFT, BinaryOperator),
@@ -128,6 +162,7 @@ class FilterExpression:
         if field_names is None:
             field_names = set()
         self.parse_result = None
+        self.referenced_fields = set()
         self.invert = False
         expr = None
         if include is not None and exclude is not None:
@@ -144,9 +179,8 @@ class FilterExpression:
         if expr is not None:
             parser = make_bcftools_filter_parser(field_names)
             self.parse_result = parser.parse_string(expr, parse_all=True)
-
-        # Setting to None for now so that we retrieve all fields
-        self.referenced_fields = None
+            # This isn't a very good pattern, fix
+            self.referenced_fields = self.parse_result[0].referenced_fields()
 
     def evaluate(self, chunk_data):
         if self.parse_result is None:

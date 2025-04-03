@@ -220,6 +220,9 @@ class TestBcftoolsParser:
             ("a | b", {"a": [0, 1], "b": [1, 1]}, [True, True]),
             ("a || b", {"a": [0, 1], "b": [1, 1]}, [True, True]),
             ("(a < 2) & (b > 1)", {"a": [0, 1], "b": [1, 2]}, [False, True]),
+            # AND has precedence over OR
+            ("t | f & f", {"t": [1], "f": [0]}, [True or False and False]),
+            ("(t | f) & f", {"t": [1], "f": [0]}, [(True or False) and False]),
         ],
     )
     def test_boolean_operator_expressions_data(self, expr, data, expected):

@@ -1,6 +1,9 @@
 import collections.abc
 
 
+# NOTE:  this class is just a skeleton for now. The idea is that this
+# will provide readahead, caching etc, and will be the central location
+# for fetching bulk Zarr data.
 class VariantChunkReader(collections.abc.Sequence):
     """
     Retrieve data from a Zarr store and return chunk-by-chunk in the

@@ -272,9 +272,7 @@ class QueryFormatGenerator:
             # NOTE: this should be done at the top-level when we've
             # figured out what fields need to be retrieved from both
             # the parsed query and filter expressions.
-            reader = retrieval.VariantChunkReader(
-                root, fields=filter_expr.referenced_fields
-            )
+            reader = retrieval.VariantChunkReader(root)
             for v_chunk in range(root["variant_position"].cdata_shape[0]):
                 # print("Read v_chunk", v_chunk)
                 chunk_data = reader[v_chunk]

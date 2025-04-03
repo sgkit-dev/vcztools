@@ -86,6 +86,33 @@ class TestFilterExpression:
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            ("a == b", {"variant_a", "variant_b"}),
+            ("a == b + c", {"variant_a", "variant_b", "variant_c"}),
+            ("(a + 1) < (b + c) - d / a", {f"variant_{x}" for x in "abcd"}),
+        ],
+    )
+    def test_referenced_fields(self, expr, expected):
+        fe = filter_mod.FilterExpression(include=expr)
+        assert fe.referenced_fields == expected
+
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            ("a == b", "(variant_a)==(variant_b)"),
+            ("a + 1", "(variant_a)+(1)"),
+            ("a + 1 + 2", "(variant_a)+(1)+(2)"),
+            ("a + (1 + 2)", "(variant_a)+((1)+(2))"),
+            ("POS<10", "(variant_position)<(10)"),
+            ('CHROM=="chr1"', "(variant_contig)==('chr1')"),
+        ],
+    )
+    def test_repr(self, expr, expected):
+        fe = filter_mod.FilterExpression(include=expr)
+        assert repr(fe.parse_result[0]) == expected
+
 
 class TestBcftoolsParser:
     @pytest.mark.parametrize(

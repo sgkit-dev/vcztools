@@ -9,6 +9,9 @@ from .utils import vcf_name_to_vcz_name
 
 logger = logging.getLogger(__name__)
 
+# Parsing is WAY slower without this!
+pp.ParserElement.enablePackrat()
+
 
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
@@ -50,6 +53,27 @@ class Identifier(EvaluationNode):
 
     def referenced_fields(self):
         return frozenset([self.field_name])
+
+
+# NOTE we should perhaps add a Operator superclass of UnaryMinus,
+# BinaryOperator and ComparisonOperator to reduce duplication
+# when doing things like referenced_fields. We should probably
+# be extracting the operators and operands once.
+
+
+class UnaryMinus(EvaluationNode):
+    def eval(self, data):
+        op, operand = self.tokens
+        assert op == "-"
+        return -1 * operand.eval(data)
+
+    def __repr__(self):
+        _, operand = self.tokens
+        return f"-({repr(operand)})"
+
+    def referenced_fields(self):
+        _, operand = self.tokens
+        return operand.referenced_fields()
 
 
 class BinaryOperator(EvaluationNode):
@@ -143,8 +167,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     filter_expression = pp.infix_notation(
         constant | identifier,
         [
-            # FIXME Does bcftools support unary minus?
-            # ("-", 1, pp.OpAssoc.RIGHT, ),
+            ("-", 1, pp.OpAssoc.RIGHT, UnaryMinus),
             (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),
             (pp.one_of("+ -"), 2, pp.OpAssoc.LEFT, BinaryOperator),
             (comp_op, 2, pp.OpAssoc.LEFT, ComparisonOperator),

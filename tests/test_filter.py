@@ -121,6 +121,18 @@ class TestFilterExpression:
         nt.assert_array_equal(result, expected)
 
     @pytest.mark.parametrize(
+        "expression",
+        [
+            "FORMAT/AD > 30",
+            "FMT/AD > 30",
+            "GT > 30",
+        ],
+    )
+    def test_sample_evaluation_unsupported(self, expression):
+        with pytest.raises(filter_mod.UnsupportedSampleFilteringError):
+            filter_mod.FilterExpression(include=expression)
+
+    @pytest.mark.parametrize(
         ("expr", "expected"),
         [
             ("a == b", {"variant_a", "variant_b"}),

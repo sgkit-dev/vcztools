@@ -47,6 +47,11 @@ class UnsupportedFileReferenceError(UnsupportedFilteringFeatureError):
     feature = "File references"
 
 
+class UnsupportedSampleFilteringError(UnsupportedFilteringFeatureError):
+    issue = "180"
+    feature = "Per-sample filter expressions"
+
+
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
@@ -90,6 +95,8 @@ class FileReference(Constant):
 class Identifier(EvaluationNode):
     def __init__(self, mapper, tokens):
         self.field_name = mapper(tokens[0])
+        if self.field_name.startswith("call_"):
+            raise UnsupportedSampleFilteringError()
         logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
         # TODO add errors for unsupported things like call_ fields etc.
 
@@ -103,12 +110,10 @@ class Identifier(EvaluationNode):
         return frozenset([self.field_name])
 
 
-class IndexedIdentifier(Identifier):
-    def __init__(self, mapper, tokens):
-        super().__init__(mapper, tokens[0])
-        # Only literal integers are supported as indexes in bcftools
-        # assert isinstance(self.index, str)
-        self.index = tokens[0][1]
+class IndexedIdentifier(EvaluationNode):
+    def __init__(self, tokens):
+        # The tokens here are the already resolved idenfitier
+        # and the index
         raise UnsupportedArraySubscriptError()
 
 
@@ -244,9 +249,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     identifier = vcf_identifier.set_parse_action(
         functools.partial(Identifier, name_mapper)
     )
-    indexed_identifier = indexed_identifier.set_parse_action(
-        functools.partial(IndexedIdentifier, name_mapper)
-    )
+    indexed_identifier = indexed_identifier.set_parse_action(IndexedIdentifier)
     comp_op = pp.oneOf("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
         constant | indexed_identifier | identifier | file_expr,

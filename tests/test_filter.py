@@ -11,6 +11,10 @@ from vcztools import filter as filter_mod
 
 
 class TestFilterExpressionParser:
+    @pytest.fixture()
+    def parser(self):
+        return filter_mod.make_bcftools_filter_parser(map_vcf_identifiers=False)
+
     @pytest.mark.parametrize(
         "expression",
         [
@@ -20,9 +24,18 @@ class TestFilterExpressionParser:
             '"stri + 2',
         ],
     )
-    def test_invalid_expressions(self, expression):
-        parser = filter_mod.make_bcftools_filter_parser(map_vcf_identifiers=False)
+    def test_invalid_expressions(self, parser, expression):
         with pytest.raises(pp.ParseException):
+            parser.parse_string(expression, parse_all=True)
+
+    @pytest.mark.parametrize(
+        ("expression", "exception_class"),
+        [
+            ('INFO/HAYSTACK ~ "needle"', filter_mod.UnsupportedRegexError),
+        ],
+    )
+    def test_unsupported_syntax(self, parser, expression, exception_class):
+        with pytest.raises(exception_class):
             parser.parse_string(expression, parse_all=True)
 
 

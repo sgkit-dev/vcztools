@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 pp.ParserElement.enablePackrat()
 
 
+class UnsupportedFilteringFeatureError(ValueError):
+    def __init__(self):
+        super().__init__(
+            f"Unsupported filtering feature: {self.feature}. Please see "
+            f"https://github.com/sgkit-dev/vcztools/issues/{self.issue} "
+            "for details and let us know if this is important to you."
+        )
+
+
+class UnsupportedRegexError(UnsupportedFilteringFeatureError):
+    issue = "174"
+    feature = "Regular expressions"
+
+
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
@@ -27,16 +41,16 @@ class EvaluationNode:
     def __init__(self, tokens):
         self.tokens = tokens[0]
 
-
-class Constant(EvaluationNode):
-    def eval(self, data):
-        return self.tokens
-
     def __repr__(self):
         return repr(self.tokens)
 
     def referenced_fields(self):
         return frozenset()
+
+
+class Constant(EvaluationNode):
+    def eval(self, data):
+        return self.tokens
 
 
 class Identifier(EvaluationNode):
@@ -53,6 +67,11 @@ class Identifier(EvaluationNode):
 
     def referenced_fields(self):
         return frozenset([self.field_name])
+
+
+class RegexOperator(EvaluationNode):
+    def __init__(self, tokens):
+        raise UnsupportedRegexError()
 
 
 # NOTE we should perhaps add a Operator superclass of UnaryMinus,
@@ -175,6 +194,9 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
             (pp.Keyword("&&"), 2, pp.OpAssoc.LEFT, BinaryOperator),
             (pp.Keyword("|"), 2, pp.OpAssoc.LEFT, BinaryOperator),
             (pp.Keyword("||"), 2, pp.OpAssoc.LEFT, BinaryOperator),
+            # NOTE Putting the Regex operator at the end for now as
+            # I haven't figured out what the actual precedence is.
+            (pp.one_of("~ !~"), 2, pp.OpAssoc.LEFT, RegexOperator),
         ],
     )
     return filter_expression

@@ -52,6 +52,11 @@ class UnsupportedSampleFilteringError(UnsupportedFilteringFeatureError):
     feature = "Per-sample filter expressions"
 
 
+class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
+    issue = "190"
+    feature = "Function evaluation"
+
+
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
@@ -92,13 +97,17 @@ class FileReference(Constant):
         raise UnsupportedFileReferenceError()
 
 
+class Function(EvaluationNode):
+    def __init__(self, tokens):
+        raise UnsupportedFunctionsError()
+
+
 class Identifier(EvaluationNode):
     def __init__(self, mapper, tokens):
         self.field_name = mapper(tokens[0])
         if self.field_name.startswith("call_"):
             raise UnsupportedSampleFilteringError()
         logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
-        # TODO add errors for unsupported things like call_ fields etc.
 
     def eval(self, data):
         return data[self.field_name]
@@ -250,9 +259,16 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
         functools.partial(Identifier, name_mapper)
     )
     indexed_identifier = indexed_identifier.set_parse_action(IndexedIdentifier)
+
+    expr = pp.Forward()
+    expr_list = pp.delimited_list(pp.Group(expr))
+    lpar, rpar = map(pp.Suppress, "()")
+    function = pp.common.identifier() + lpar - pp.Group(expr_list) + rpar
+    function = function.set_parse_action(Function)
+
     comp_op = pp.oneOf("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
-        constant | indexed_identifier | identifier | file_expr,
+        function | constant | indexed_identifier | identifier | file_expr,
         [
             ("-", 1, pp.OpAssoc.RIGHT, UnaryMinus),
             (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),
@@ -267,7 +283,8 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
             (pp.one_of("~ !~"), 2, pp.OpAssoc.LEFT, RegexOperator),
         ],
     )
-    return filter_expression
+    expr <<= filter_expression
+    return expr
 
 
 class FilterExpression:

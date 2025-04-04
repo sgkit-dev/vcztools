@@ -177,6 +177,11 @@ def write_vcf(
                 )
             sample_ids = all_samples[samples_selection]
 
+        filter_expr = filter_mod.FilterExpression(
+            field_names=set(root), include=include, exclude=exclude
+        )
+        reader = retrieval.VariantChunkReader(root)
+
         if not no_header:
             original_header = root.attrs.get("vcf_header", None)
             vcf_header = _generate_header(
@@ -194,11 +199,6 @@ def write_vcf(
         pos = root["variant_position"]
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
-
-        filter_expr = filter_mod.FilterExpression(
-            field_names=set(root), include=include, exclude=exclude
-        )
-        reader = retrieval.VariantChunkReader(root)
 
         if variant_regions is None and variant_targets is None:
             # no regions or targets selected

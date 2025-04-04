@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 pp.ParserElement.enablePackrat()
 
 
+class ParseError(ValueError):
+    def __init__(self, msg):
+        super().__init__(f"Filter expression parse error: {msg}")
+
+
 class UnsupportedFilteringFeatureError(ValueError):
     def __init__(self):
         super().__init__(
@@ -25,6 +30,11 @@ class UnsupportedFilteringFeatureError(ValueError):
 class UnsupportedRegexError(UnsupportedFilteringFeatureError):
     issue = "174"
     feature = "Regular expressions"
+
+
+class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
+    issue = "167"
+    feature = "Array subscripts"
 
 
 # The parser and evaluation model here are based on the eval_arith example
@@ -176,6 +186,17 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
     vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
 
+    # indexed_identifier = pp.Forward()
+    # indexed_identifier <<= identifier + (
+    #         pp.Literal("[") + pp.common.integer + pp.Literal("]"))
+    # fn_call = (ident + lpar - Group(expr_list) + rpar).setParseAction(
+    #                     insert_fn_argcount_tuple
+    #                             )
+
+    # lbrack, rbrack = map(pp.Suppress, "[]")
+    # indexed_identifier = identifier + lbrack - pp.Group(pp.common.integer) + rbrack
+    # print(indexed_identifier)
+
     name_mapper = _identity
     if map_vcf_identifiers:
         name_mapper = functools.partial(vcf_name_to_vcz_name, all_fields)
@@ -223,7 +244,10 @@ class FilterExpression:
 
         if expr is not None:
             parser = make_bcftools_filter_parser(field_names)
-            self.parse_result = parser.parse_string(expr, parse_all=True)
+            try:
+                self.parse_result = parser.parse_string(expr, parse_all=True)
+            except pp.ParseException as e:
+                raise ParseError(e) from None
             # This isn't a very good pattern, fix
             self.referenced_fields = self.parse_result[0].referenced_fields()
 

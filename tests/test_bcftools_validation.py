@@ -205,17 +205,17 @@ def test_query_arithmethic(tmp_path, expr):
 
 
 @pytest.mark.parametrize(
-    "expr",
+    ("expr", "expected"),
     [
         # Check boolean logic evaluation. Will evaluate this with
         # POS=112, so POS=112 is True and POS!=112 is False
-        "POS==112 || POS!=112",  # True
-        "POS==112 && POS!=112",  # True
-        "POS==112 || POS!=112 && POS!= 112",  # True
-        "(POS==112 || POS!=112) && POS!= 112",  # False
+        ("POS==112 || POS!=112",  True),
+        ("POS==112 && POS!=112",  False),
+        ("POS==112 || POS!=112 && POS!= 112", True),
+        ("(POS==112 || POS!=112) && POS!= 112",  False),
     ],
 )
-def test_query_logic_precendence(tmp_path, expr):
+def test_query_logic_precendence(tmp_path, expr, expected):
 
     args = r"query -f '%POS\n'" + f" -i 'POS=112 && ({expr})'"
     vcf_name = "sample.vcf.gz"
@@ -227,7 +227,7 @@ def test_query_logic_precendence(tmp_path, expr):
 
     assert vcztools_output == bcftools_output
     num_lines = len(list(vcztools_output.splitlines()))
-    assert num_lines in [0, 1]
+    assert num_lines == int(expected)
 
 
 @pytest.mark.parametrize(

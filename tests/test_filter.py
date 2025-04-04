@@ -31,13 +31,26 @@ class TestFilterExpressionParser:
     @pytest.mark.parametrize(
         ("expression", "exception_class"),
         [
-            # ('INFO/HAYSTACK ~ "needle"', filter_mod.UnsupportedRegexError),
+            ('INFO/HAYSTACK ~ "needle"', filter_mod.UnsupportedRegexError),
             ("INFO/X[0] == 1", filter_mod.UnsupportedArraySubscriptError),
+            ("INFO/AF[0] > 0.3", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/AD[0:0] > 30", filter_mod.UnsupportedArraySubscriptError),
+            ("DP4[*] == 0", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/DP[1-3] > 10", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/DP[1-] < 7", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/DP[0,2-4] > 20", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/AD[0:*]", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/AD[0:]", filter_mod.UnsupportedArraySubscriptError),
+            ("FORMAT/AD[*:1]", filter_mod.UnsupportedArraySubscriptError),
+            (
+                "(DP4[0]+DP4[1])/(DP4[2]+DP4[3]) > 0.3",
+                filter_mod.UnsupportedArraySubscriptError,
+            ),
         ],
     )
     def test_unsupported_syntax(self, parser, expression, exception_class):
-        # with pytest.raises(exception_class):
-        parser.parse_string(expression, parse_all=True)
+        with pytest.raises(exception_class):
+            parser.parse_string(expression, parse_all=True)
 
 
 class TestFilterExpressionSample:

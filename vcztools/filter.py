@@ -79,6 +79,15 @@ class Identifier(EvaluationNode):
         return frozenset([self.field_name])
 
 
+class IndexedIdentifier(Identifier):
+    def __init__(self, mapper, tokens):
+        super().__init__(mapper, tokens[0])
+        # Only literal integers are supported as indexes in bcftools
+        # assert isinstance(self.index, str)
+        self.index = tokens[0][1]
+        raise UnsupportedArraySubscriptError()
+
+
 class RegexOperator(EvaluationNode):
     def __init__(self, tokens):
         raise UnsupportedRegexError()
@@ -186,16 +195,18 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
     vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
 
-    # indexed_identifier = pp.Forward()
-    # indexed_identifier <<= identifier + (
-    #         pp.Literal("[") + pp.common.integer + pp.Literal("]"))
-    # fn_call = (ident + lpar - Group(expr_list) + rpar).setParseAction(
-    #                     insert_fn_argcount_tuple
-    #                             )
-
-    # lbrack, rbrack = map(pp.Suppress, "[]")
-    # indexed_identifier = identifier + lbrack - pp.Group(pp.common.integer) + rbrack
-    # print(indexed_identifier)
+    lbracket, rbracket = map(pp.Suppress, "[]")
+    # TODO we need to define the indexing grammar more carefully, but
+    # this at least let's us match correct strings and raise an informative
+    # error
+    index_expr = pp.OneOrMore(
+        pp.common.number
+        | pp.Literal("*")
+        | pp.Literal(":")
+        | pp.Literal("-")
+        | pp.Literal(",")
+    )
+    indexed_identifier = pp.Group(vcf_identifier + (lbracket + index_expr + rbracket))
 
     name_mapper = _identity
     if map_vcf_identifiers:
@@ -203,9 +214,12 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     identifier = vcf_identifier.set_parse_action(
         functools.partial(Identifier, name_mapper)
     )
+    indexed_identifier = indexed_identifier.set_parse_action(
+        functools.partial(IndexedIdentifier, name_mapper)
+    )
     comp_op = pp.oneOf("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
-        constant | identifier,
+        constant | indexed_identifier | identifier,
         [
             ("-", 1, pp.OpAssoc.RIGHT, UnaryMinus),
             (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),

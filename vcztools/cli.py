@@ -286,4 +286,4 @@ def vcztools_main():
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
-vcztools_main.add_command(view_plink1)
+# vcztools_main.add_command(view_plink1)

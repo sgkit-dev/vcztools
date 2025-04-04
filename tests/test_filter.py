@@ -261,6 +261,19 @@ class TestBcftoolsParser:
         nt.assert_array_equal(result, evaled)
 
     @pytest.mark.parametrize(
+        ("expr", "data"),
+        [
+            ("a", {"a": [[1], [2], [3]]}),
+        ],
+    )
+    def test_numpy_2d_arithmetic_expressions_data(self, expr, data):
+        parser = filter_mod.make_bcftools_filter_parser(map_vcf_identifiers=False)
+        parsed = parser.parse_string(expr, parse_all=True)
+        npdata = numpify_values(data)
+        with pytest.raises(filter_mod.Unsupported2DFieldsError):
+            parsed[0].eval(npdata)
+
+    @pytest.mark.parametrize(
         ("expr", "expected"),
         [
             ("1 & 1", True),

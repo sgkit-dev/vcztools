@@ -57,6 +57,11 @@ class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
     feature = "Function evaluation"
 
 
+class Unsupported2DFieldsError(UnsupportedFilteringFeatureError):
+    issue = "193"
+    feature = "2D INFO fields"
+
+
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
@@ -110,7 +115,10 @@ class Identifier(EvaluationNode):
         logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
 
     def eval(self, data):
-        return data[self.field_name]
+        value = np.asarray(data[self.field_name])
+        if len(value.shape) > 1:
+            raise Unsupported2DFieldsError()
+        return value
 
     def __repr__(self):
         return self.field_name

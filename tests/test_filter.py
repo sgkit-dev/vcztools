@@ -53,6 +53,10 @@ class TestFilterExpressionParser:
                 "(DP4[0]+DP4[1])/(DP4[2]+DP4[3]) > 0.3",
                 filter_mod.UnsupportedArraySubscriptError,
             ),
+            ("binom(FMT/AD)", filter_mod.UnsupportedFunctionsError),
+            ("fisher(INFO/DP4)", filter_mod.UnsupportedFunctionsError),
+            ("fisher(FMT/ADF,FMT/ADR)", filter_mod.UnsupportedFunctionsError),
+            ("N_PASS(GQ>90)", filter_mod.UnsupportedFunctionsError),
         ],
     )
     def test_unsupported_syntax(self, parser, expression, exception_class):

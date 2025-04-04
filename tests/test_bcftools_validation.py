@@ -140,6 +140,7 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         ("query --list-samples", "1kg_2020_chrM.vcf.gz"),
         (r"query -f 'A\n'", "sample.vcf.gz"),
         (r"query -f '%CHROM:%POS\n'", "sample.vcf.gz"),
+        (r"query -f '[%CHROM %POS %GT\n]'", "sample.vcf.gz"),
         (r"query -f '%INFO/DP\n'", "sample.vcf.gz"),
         (r"query -f '%AC{0}\n'", "sample.vcf.gz"),
         (r"query -f '%REF\t%ALT\n'", "sample.vcf.gz"),
@@ -152,8 +153,6 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         (r"query -f '%POS\n' -e 'POS=112'", "sample.vcf.gz"),
         (r"query -f '[%CHROM\t]\n'", "sample.vcf.gz"),
         (r"query -f '[%CHROM\t]\n' -i 'POS=112'", "sample.vcf.gz"),
-        (r"query -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT]\n'", "sample.vcf.gz"),
-        (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]\n'", "sample.vcf.gz"),
         (r"query -f '[%CHROM:%POS %SAMPLE %GT\n]'", "sample.vcf.gz"),
         (r"query -f '[%SAMPLE %GT %DP\n]'", "sample.vcf.gz"),
         (
@@ -164,6 +163,18 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
             r"query -f '[%POS %QUAL\n]' -i'(QUAL > 10 && POS > 100000)'",
             "sample.vcf.gz",
         ),
+        # Examples from bcftools query documentation
+        (r"query -f '%CHROM  %POS  %REF  %ALT{0}\n'", "sample.vcf.gz"),
+        (r"query -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT]\n'", "sample.vcf.gz"),
+        (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]\n'", "sample.vcf.gz"),
+        # POS0 not supported
+        # (r"query -f '%CHROM\t%POS0\t%END\t%ID\n'", "sample.vcf.gz"),
+        # Filtering on GT not supported
+        # (r"query -f [%CHROM:%POS %SAMPLE %GT\n]' -i'GT=\"alt\"'", "sample.vcf.gz"),
+        # Indexing not supported in filtering
+        # (r"query  -f '%AC{1}\n' -i 'AC[1]>10' ", "sample.vcf.gz"),
+        # TODO fill-out more of these when supported for more stuff is available
+        # in filtering
     ],
 )
 def test_output(tmp_path, args, vcf_name):
@@ -211,10 +222,10 @@ def test_query_arithmethic(tmp_path, expr):
     [
         # Check boolean logic evaluation. Will evaluate this with
         # POS=112, so POS=112 is True and POS!=112 is False
-        ("POS==112 || POS!=112",  True),
-        ("POS==112 && POS!=112",  False),
+        ("POS==112 || POS!=112", True),
+        ("POS==112 && POS!=112", False),
         ("POS==112 || POS!=112 && POS!= 112", True),
-        ("(POS==112 || POS!=112) && POS!= 112",  False),
+        ("(POS==112 || POS!=112) && POS!= 112", False),
     ],
 )
 def test_query_logic_precendence(tmp_path, expr, expected):

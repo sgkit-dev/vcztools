@@ -10,6 +10,7 @@ from bio2zarr import vcf2zarr
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
+from vcztools import filter as filter_mod
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, write_vcf
 
@@ -401,3 +402,10 @@ class TestApiErrors:
             ValueError, match="Cannot select samples and drop genotypes"
         ):
             write_vcf(vcz, sys.stdout, samples=["NA00001"], drop_genotypes=True)
+
+
+    def test_no_output_filter_parse_error(self, vcz):
+        output = StringIO()
+        with pytest.raises(filter_mod.ParseError):
+            write_vcf(vcz, output, include="Not a valid expression")
+        assert output.getvalue() == ""

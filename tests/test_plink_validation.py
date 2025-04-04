@@ -21,6 +21,7 @@ def assert_files_identical(path1, path2):
     assert b1 == b2
 
 
+@pytest.mark.skip("Removing plink from CLI for bugfix release")
 # fmt: off
 @pytest.mark.parametrize(
     ("args", "vcf_file"),
@@ -30,7 +31,7 @@ def assert_files_identical(path1, path2):
         ("", "1kg_2020_chrM.vcf.gz"),
         # FIXME this needs some extra args to deal with sample ID format
         # ("", "msprime_diploid.vcf.gz"),
-    ]
+    ],
 )
 # fmt: on
 def test_conversion_identical(tmp_path, args, vcf_file):

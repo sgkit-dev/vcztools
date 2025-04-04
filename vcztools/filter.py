@@ -37,6 +37,11 @@ class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
     feature = "Array subscripts"
 
 
+class UnsupportedStringsError(UnsupportedFilteringFeatureError):
+    issue = "189"
+    feature = "String values currently not supported"
+
+
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
@@ -61,6 +66,15 @@ class EvaluationNode:
 class Constant(EvaluationNode):
     def eval(self, data):
         return self.tokens
+
+
+class Number(Constant):
+    pass
+
+
+class String(Constant):
+    def __init__(self, tokens):
+        raise UnsupportedStringsError()
 
 
 class Identifier(EvaluationNode):
@@ -189,9 +203,11 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     if all_fields is None:
         all_fields = set()
 
-    constant = (pp.common.number | pp.QuotedString('"')).set_parse_action(Constant)
-    identifier = pp.common.identifier()
+    number = pp.common.number.set_parse_action(Number)
+    string = pp.QuotedString('"').set_parse_action(String)
+    constant = number | string
 
+    identifier = pp.common.identifier()
     vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
     vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
 

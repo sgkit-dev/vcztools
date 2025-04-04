@@ -31,7 +31,12 @@ class TestFilterExpressionParser:
     @pytest.mark.parametrize(
         ("expression", "exception_class"),
         [
-            ('INFO/HAYSTACK ~ "needle"', filter_mod.UnsupportedRegexError),
+            # NOTE: using an integer here so that we don't trigger the
+            # generic string issue. Can fix this later when we've gotten
+            # some partial string handling implemented
+            ("INFO/HAYSTACK ~ 0", filter_mod.UnsupportedRegexError),
+            ('CHROM="1"', filter_mod.UnsupportedStringsError),
+            ('FILTER="PASS"', filter_mod.UnsupportedStringsError),
             ("INFO/X[0] == 1", filter_mod.UnsupportedArraySubscriptError),
             ("INFO/AF[0] > 0.3", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/AD[0:0] > 30", filter_mod.UnsupportedArraySubscriptError),
@@ -135,7 +140,9 @@ class TestFilterExpression:
             ("a + 1 + 2", "(variant_a)+(1)+(2)"),
             ("a + (1 + 2)", "(variant_a)+((1)+(2))"),
             ("POS<10", "(variant_position)<(10)"),
-            ('CHROM=="chr1"', "(variant_contig)==('chr1')"),
+            # Filters based on strings disabled:
+            # https://github.com/sgkit-dev/vcztools/issues/189
+            # ('CHROM=="chr1"', "(variant_contig)==('chr1')"),
         ],
     )
     def test_repr(self, expr, expected):
@@ -148,8 +155,6 @@ class TestBcftoolsParser:
         "expr",
         [
             "2",
-            '"x"',
-            '"INFO/STRING"',
             "2 + 2",
             "(2 + 3) / 2",
             "2 / (2 + 3)",
@@ -167,8 +172,12 @@ class TestBcftoolsParser:
             "1 + 2 == 1 + 2 + 3",
             "(1 + 2) == (1 + 2 + 3)",
             "(1 == 1) != (2 == 2)",
-            '("x" == "x")',
             "-1 == 1 + 2 - 4",
+            # Filters based on strings disabled:
+            # https://github.com/sgkit-dev/vcztools/issues/189
+            # '("x" == "x")',
+            # '"x"',
+            # '"INFO/STRING"',
         ],
     )
     def test_python_arithmetic_expressions(self, expr):
@@ -176,6 +185,24 @@ class TestBcftoolsParser:
         parsed = parser.parse_string(expr, parse_all=True)
         result = parsed[0].eval({})
         assert result == eval(expr)
+
+    @pytest.mark.parametrize(
+        ("expr", "data"),
+        [
+            ('("x" == "x")', {}),
+            ('"x"', {}),
+            ('"INFO/STRING"', {}),
+            ('a == "string"', {"a": "string"}),
+        ],
+    )
+    def test_python_string_expressions_data(self, expr, data):
+        # Filters based on strings disabled:
+        # https://github.com/sgkit-dev/vcztools/issues/189
+        parser = filter_mod.make_bcftools_filter_parser()
+        with pytest.raises(filter_mod.UnsupportedStringsError):
+            parser.parse_string(expr, parse_all=True)
+            # result = parsed[0].eval({})
+            # assert result == eval(expr)
 
     @pytest.mark.parametrize(
         ("expr", "data"),
@@ -189,7 +216,6 @@ class TestBcftoolsParser:
             ("a == a", {"a": 1}),
             ("-a == -a", {"a": 1}),
             ("-a == b", {"a": 1, "b": -1}),
-            ('a == "string"', {"a": "string"}),
         ],
     )
     def test_python_arithmetic_expressions_data(self, expr, data):

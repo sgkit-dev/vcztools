@@ -39,7 +39,12 @@ class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
 
 class UnsupportedStringsError(UnsupportedFilteringFeatureError):
     issue = "189"
-    feature = "String values currently not supported"
+    feature = "String values temporarily removed"
+
+
+class UnsupportedFileReferenceError(UnsupportedFilteringFeatureError):
+    issue = "175"
+    feature = "File references"
 
 
 # The parser and evaluation model here are based on the eval_arith example
@@ -75,6 +80,11 @@ class Number(Constant):
 class String(Constant):
     def __init__(self, tokens):
         raise UnsupportedStringsError()
+
+
+class FileReference(Constant):
+    def __init__(self, tokens):
+        raise UnsupportedFileReferenceError()
 
 
 class Identifier(EvaluationNode):
@@ -207,6 +217,10 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     string = pp.QuotedString('"').set_parse_action(String)
     constant = number | string
 
+    file_expr = (pp.Literal("@") + pp.Word(pp.printables)).set_parse_action(
+        FileReference
+    )
+
     identifier = pp.common.identifier()
     vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
     vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
@@ -235,7 +249,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     )
     comp_op = pp.oneOf("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
-        constant | indexed_identifier | identifier,
+        constant | indexed_identifier | identifier | file_expr,
         [
             ("-", 1, pp.OpAssoc.RIGHT, UnaryMinus),
             (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),

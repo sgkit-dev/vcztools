@@ -37,6 +37,8 @@ class TestFilterExpressionParser:
             ("INFO/HAYSTACK ~ 0", filter_mod.UnsupportedRegexError),
             ('CHROM="1"', filter_mod.UnsupportedStringsError),
             ('FILTER="PASS"', filter_mod.UnsupportedStringsError),
+            ("ID!=@~/file", filter_mod.UnsupportedFileReferenceError),
+            ("INFO/TAG=@file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/X[0] == 1", filter_mod.UnsupportedArraySubscriptError),
             ("INFO/AF[0] > 0.3", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/AD[0:0] > 30", filter_mod.UnsupportedArraySubscriptError),

@@ -392,9 +392,7 @@ def _generate_header(
             )
 
     # [1.4.7 Contig field format]
-    contig_lengths = (
-        ds.attrs["contig_lengths"] if "contig_lengths" in ds.attrs else None
-    )
+    contig_lengths = ds["contig_length"] if "contig_length" in ds else None
     for i, contig in enumerate(contigs):
         if contig_lengths is None:
             print(f"##contig=<ID={contig}>", file=output)

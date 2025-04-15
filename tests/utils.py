@@ -5,7 +5,7 @@ from itertools import zip_longest
 
 import cyvcf2
 import numpy as np
-from bio2zarr import vcf2zarr
+from bio2zarr import icf
 
 
 @contextmanager
@@ -145,7 +145,7 @@ def vcz_path_cache(vcf_path):
     cached_vcz_path = (cache_path / vcf_path.name).with_suffix(".vcz")
     if not cached_vcz_path.exists():
         if vcf_path.name.startswith("chr22"):
-            vcf2zarr.convert(
+            icf.convert(
                 [vcf_path],
                 cached_vcz_path,
                 worker_processes=0,
@@ -153,7 +153,7 @@ def vcz_path_cache(vcf_path):
                 samples_chunk_size=10,
             )
         else:
-            vcf2zarr.convert(
+            icf.convert(
                 [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
             )
     return cached_vcz_path

@@ -6,7 +6,7 @@ from io import StringIO
 import numpy as np
 import pytest
 import zarr
-from bio2zarr import vcf2zarr
+from bio2zarr import vcf
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
@@ -305,7 +305,7 @@ def test_write_vcf__generate_header(tmp_path):
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     # don't use cache here since we mutate the vcz
     vcz = tmp_path.joinpath("intermediate.vcz")
-    vcf2zarr.convert([original], vcz, worker_processes=0, local_alleles=False)
+    vcf.convert([original], vcz, worker_processes=0, local_alleles=False)
 
     # remove vcf_header
     root = zarr.open(vcz, mode="r+")

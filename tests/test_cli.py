@@ -7,6 +7,7 @@ import pytest
 import vcztools.cli as cli
 from tests.test_bcftools_validation import run_vcztools
 from tests.utils import vcz_path_cache
+from vcztools import provenance
 
 
 @pytest.fixture()
@@ -184,3 +185,10 @@ def test_top_level():
     assert result.exit_code == 0
     assert len(result.stdout) > 0
     assert len(result.stderr) == 0
+
+
+def test_version():
+    runner = ct.CliRunner(mix_stderr=False)
+    result = runner.invoke(cli.vcztools_main, ["--version"], catch_exceptions=False)
+    s = f"version {provenance.__version__}\n"
+    assert result.stdout.endswith(s)

@@ -6,7 +6,7 @@ from functools import wraps
 
 import click
 
-from . import plink, vcf_writer
+from . import plink, provenance, vcf_writer
 from . import query as query_module
 from . import stats as stats_module
 
@@ -60,6 +60,7 @@ output = click.option(
     default="-",
     help="File path to write output to (defaults to stdout '-').",
 )
+version = click.version_option(version=f"{provenance.__version__}")
 
 
 class NaturalOrderGroup(click.Group):
@@ -278,6 +279,7 @@ def view_plink1(path, include, exclude, out):
     writer.run()
 
 
+@version
 @click.group(cls=NaturalOrderGroup, name="vcztools")
 def vcztools_main():
     pass

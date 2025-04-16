@@ -368,8 +368,17 @@ def _generate_header(
                 )
 
     # [1.4.3 Filter field format]
-    for filter in filters:
-        print(f'##FILTER=<ID={filter},Description="">', file=output)
+    filter_descriptions = (
+        ds["filter_description"] if "filter_description" in ds else None
+    )
+    for i, filter in enumerate(filters):
+        filter_description = (
+            "" if filter_descriptions is None else filter_descriptions[i]
+        )
+        print(
+            f'##FILTER=<ID={filter},Description="{filter_description}">',
+            file=output,
+        )
 
     # [1.4.4 Individual format field format]
     for key in format_fields:

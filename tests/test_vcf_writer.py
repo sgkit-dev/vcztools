@@ -6,7 +6,6 @@ from io import StringIO
 import numpy as np
 import pytest
 import zarr
-from bio2zarr import icf
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
@@ -301,15 +300,9 @@ def test_write_vcf__header_flags(tmp_path):
     assert_vcfs_close(original, output)
 
 
-def test_write_vcf__generate_header(tmp_path):
+def test_write_vcf__generate_header():
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    # don't use cache here since we mutate the vcz
-    vcz = tmp_path.joinpath("intermediate.vcz")
-    icf.convert([original], vcz, worker_processes=0, local_alleles=False)
-
-    # remove vcf_header
-    root = zarr.open(vcz, mode="r+")
-    del root.attrs["vcf_header"]
+    vcz = vcz_path_cache(original)
 
     output_header = StringIO()
     write_vcf(vcz, output_header, header_only=True, no_version=True)
@@ -324,9 +317,9 @@ def test_write_vcf__generate_header(tmp_path):
 ##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">
 ##INFO=<ID=H2,Number=0,Type=Flag,Description="HapMap2 membership">
 ##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of Samples With Data">
-##FILTER=<ID=PASS,Description="">
-##FILTER=<ID=s50,Description="">
-##FILTER=<ID=q10,Description="">
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=s50,Description="Less than 50% of samples have data">
+##FILTER=<ID=q10,Description="Quality below 10">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
 ##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
@@ -338,6 +331,7 @@ def test_write_vcf__generate_header(tmp_path):
 """  # noqa: E501
 
     # substitute value of source
+    root = zarr.open(vcz, mode="r+")
     expected_vcf_header = expected_vcf_header.format(root.attrs["source"])
 
     assert output_header.getvalue() == expected_vcf_header

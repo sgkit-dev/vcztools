@@ -29,6 +29,45 @@ def normalise_info_missingness(info_dict, key):
     return value
 
 
+def _get_headers(vcf, header_type):
+    def to_dict(header_field):
+        d = header_field.info(extra=True)
+        del d[b"IDX"]  # remove IDX since we don't care about ordering
+
+        # cyvcf2 duplicates some keys as strings and bytes, so remove the bytes one
+        for k in list(d.keys()):
+            if isinstance(k, bytes) and k.decode("utf-8") in d:
+                del d[k]
+        return d
+
+    return {
+        field["ID"]: to_dict(field)
+        for field in vcf.header_iter()
+        if field["HeaderType"] == header_type
+    }
+
+
+def _assert_vcf_headers_equivalent(vcf1, vcf2):
+    # Only compare INFO, FORMAT, FILTER, CONTIG fields, ignoring order
+    # Other fields are ignored
+
+    info1 = _get_headers(vcf1, "INFO")
+    info2 = _get_headers(vcf2, "INFO")
+    assert info1 == info2
+
+    format1 = _get_headers(vcf1, "FORMAT")
+    format2 = _get_headers(vcf2, "FORMAT")
+    assert format1 == format2
+
+    filter1 = _get_headers(vcf1, "FILTER")
+    filter2 = _get_headers(vcf2, "FILTER")
+    assert filter1 == filter2
+
+    contig1 = _get_headers(vcf1, "CONTIG")
+    contig2 = _get_headers(vcf2, "CONTIG")
+    assert contig1 == contig2
+
+
 def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=False):
     """Like :py:func:`numpy.testing.assert_allclose()`, but for VCF files.
 
@@ -48,7 +87,7 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
         Absolute tolerance.
     """
     with open_vcf(f1) as vcf1, open_vcf(f2) as vcf2:
-        assert vcf1.raw_header == vcf2.raw_header
+        _assert_vcf_headers_equivalent(vcf1, vcf2)
         assert vcf1.samples == vcf2.samples
 
         count = 0

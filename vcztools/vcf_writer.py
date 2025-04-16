@@ -1,6 +1,5 @@
 import io
 import logging
-import re
 import sys
 from datetime import datetime
 from typing import Optional
@@ -145,11 +144,9 @@ def write_vcf(
         )
 
         if not no_header:
-            original_header = root.attrs.get("vcf_header", None)
             force_ac_an_header = not drop_genotypes and samples_selection is not None
             vcf_header = _generate_header(
                 root,
-                original_header,
                 sample_ids,
                 no_version=no_version,
                 force_ac_an=force_ac_an_header,
@@ -300,7 +297,6 @@ def c_chunk_to_vcf(
 
 def _generate_header(
     ds,
-    original_header,
     sample_ids,
     *,
     no_version: bool = False,
@@ -340,45 +336,12 @@ def _generate_header(
             if key in ("genotype", "genotype_phased"):
                 continue
             format_fields.append(key)
-    if original_header is None:  # generate entire header
-        # [1.4.1 File format]
-        print("##fileformat=VCFv4.3", file=output)
 
-        if "source" in ds.attrs:
-            print(f'##source={ds.attrs["source"]}', file=output)
+    # [1.4.1 File format]
+    print("##fileformat=VCFv4.3", file=output)
 
-    else:  # use original header fields where appropriate
-        unstructured_pattern = re.compile("##([^=]+)=([^<].*)")
-        structured_pattern = re.compile("##([^=]+)=(<.*)")
-
-        for line in original_header.split("\n"):
-            if re.fullmatch(unstructured_pattern, line):
-                print(line, file=output)
-            else:
-                match = re.fullmatch(structured_pattern, line)
-                if match:
-                    category = match.group(1)
-                    id_pattern = re.compile("ID=([^,>]+)")
-                    key = id_pattern.findall(line)[0]
-                    if category not in ("contig", "FILTER", "INFO", "FORMAT"):
-                        # output other structured fields
-                        print(line, file=output)
-                    # only output certain categories if in dataset
-                    elif category == "contig" and key in contigs:
-                        contigs.remove(key)
-                        print(line, file=output)
-                    elif category == "FILTER" and key in filters:
-                        filters.remove(key)
-                        print(line, file=output)
-                    elif category == "INFO" and key in info_fields:
-                        info_fields.remove(key)
-                        print(line, file=output)
-                    elif category == "FORMAT" and key in format_fields:
-                        format_fields.remove(key)
-                        print(line, file=output)
-
-    # add all fields that are not in the original header
-    # or all fields if there was no original header
+    if "source" in ds.attrs:
+        print(f'##source={ds.attrs["source"]}', file=output)
 
     # [1.4.2 Information field format]
     for key in info_fields:

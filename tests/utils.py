@@ -29,7 +29,7 @@ def normalise_info_missingness(info_dict, key):
     return value
 
 
-def _get_headers(vcf, header_type):
+def _get_header_field_dicts(vcf, header_type):
     def to_dict(header_field):
         d = header_field.info(extra=True)
         del d[b"IDX"]  # remove IDX since we don't care about ordering
@@ -47,25 +47,44 @@ def _get_headers(vcf, header_type):
     }
 
 
+def _assert_header_field_dicts_equivalent(field_dicts1, field_dicts2):
+    assert len(field_dicts1) == len(field_dicts2)
+
+    for id in field_dicts1.keys():
+        assert id in field_dicts2
+        field_dict1 = field_dicts1[id]
+        field_dict2 = field_dicts2[id]
+
+        assert len(field_dict1) == len(field_dict2)
+        # all fields should be the same, except Number="." which can match any value
+        for k in field_dict1.keys():
+            assert k in field_dict2
+            v1 = field_dict1[k]
+            v2 = field_dict2[k]
+            if k == "Number" and (v1 == "." or v2 == "."):
+                continue
+            assert v1 == v2, f"Failed in field {id} with key {k}"
+
+
 def _assert_vcf_headers_equivalent(vcf1, vcf2):
     # Only compare INFO, FORMAT, FILTER, CONTIG fields, ignoring order
     # Other fields are ignored
 
-    info1 = _get_headers(vcf1, "INFO")
-    info2 = _get_headers(vcf2, "INFO")
-    assert info1 == info2
+    info1 = _get_header_field_dicts(vcf1, "INFO")
+    info2 = _get_header_field_dicts(vcf2, "INFO")
+    _assert_header_field_dicts_equivalent(info1, info2)
 
-    format1 = _get_headers(vcf1, "FORMAT")
-    format2 = _get_headers(vcf2, "FORMAT")
-    assert format1 == format2
+    format1 = _get_header_field_dicts(vcf1, "FORMAT")
+    format2 = _get_header_field_dicts(vcf2, "FORMAT")
+    _assert_header_field_dicts_equivalent(format1, format2)
 
-    filter1 = _get_headers(vcf1, "FILTER")
-    filter2 = _get_headers(vcf2, "FILTER")
-    assert filter1 == filter2
+    filter1 = _get_header_field_dicts(vcf1, "FILTER")
+    filter2 = _get_header_field_dicts(vcf2, "FILTER")
+    _assert_header_field_dicts_equivalent(filter1, filter2)
 
-    contig1 = _get_headers(vcf1, "CONTIG")
-    contig2 = _get_headers(vcf2, "CONTIG")
-    assert contig1 == contig2
+    contig1 = _get_header_field_dicts(vcf1, "CONTIG")
+    contig2 = _get_header_field_dicts(vcf2, "CONTIG")
+    _assert_header_field_dicts_equivalent(contig1, contig2)
 
 
 def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=False):

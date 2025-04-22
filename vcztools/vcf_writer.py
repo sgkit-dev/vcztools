@@ -623,14 +623,13 @@ def _array_to_vcf_number(category, key, a):
 
 
 def _array_to_vcf_type(a):
-    # reverse of _vcf_type_to_numpy
     if a.dtype == bool:
         return "Flag"
     elif np.issubdtype(a.dtype, np.integer):
         return "Integer"
     elif np.issubdtype(a.dtype, np.float32):
         return "Float"
-    elif a.dtype.str == "|S1":
+    elif a.dtype.str[1:] in ("S1", "U1"):
         return "Character"
     elif a.dtype.kind in ("O", "S", "U"):
         return "String"

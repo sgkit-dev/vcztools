@@ -47,11 +47,6 @@ class UnsupportedFileReferenceError(UnsupportedFilteringFeatureError):
     feature = "File references"
 
 
-class UnsupportedSampleFilteringError(UnsupportedFilteringFeatureError):
-    issue = "180"
-    feature = "Per-sample filter expressions"
-
-
 class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
     issue = "190"
     feature = "Function evaluation"
@@ -110,13 +105,11 @@ class Function(EvaluationNode):
 class Identifier(EvaluationNode):
     def __init__(self, mapper, tokens):
         self.field_name = mapper(tokens[0])
-        if self.field_name.startswith("call_"):
-            raise UnsupportedSampleFilteringError()
         logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
 
     def eval(self, data):
         value = np.asarray(data[self.field_name])
-        if len(value.shape) > 1:
+        if not self.field_name.startswith("call_") and len(value.shape) > 1:
             raise Unsupported2DFieldsError()
         return value
 
@@ -160,6 +153,57 @@ class UnaryMinus(EvaluationNode):
         return operand.referenced_fields()
 
 
+def double_and(a, b):
+    # if both operands are 1D, then they are just variant masks
+    if a.ndim == 1 and b.ndim == 1:
+        return np.logical_and(a, b)
+
+    # if either operand is 1D and the other is 2D, then make both 2D
+    if a.ndim == 1 and b.ndim == 2:
+        a = np.expand_dims(a, axis=1)
+    elif a.ndim == 2 and b.ndim == 1:
+        b = np.expand_dims(b, axis=1)
+
+    if a.ndim == 2 and b.ndim == 2:
+        # a variant site is included only if both conditions are met
+        # but not necessarily in the same sample
+        variant_mask = np.logical_and(np.any(a, axis=1), np.any(b, axis=1))
+        variant_mask = np.expand_dims(variant_mask, axis=1)
+        # a sample is included if either condition is met
+        sample_mask = np.logical_or(a, b)
+        # but if a variant site is not included then none of its samples should be
+        return np.logical_and(variant_mask, sample_mask)
+    else:
+        raise NotImplementedError(
+            f"&& not implemented for dimensions {a.ndim} and {b.ndim}"
+        )
+
+
+def double_or(a, b):
+    # if both operands are 1D, then they are just variant masks
+    if a.ndim == 1 and b.ndim == 1:
+        return np.logical_or(a, b)
+
+    # if either operand is 1D and the other is 2D, then make both 2D
+    if a.ndim == 1 and b.ndim == 2:
+        a = np.expand_dims(a, axis=1)
+    elif a.ndim == 2 and b.ndim == 1:
+        b = np.expand_dims(b, axis=1)
+
+    if a.ndim == 2 and b.ndim == 2:
+        # a variant site is included if either condition is met in any sample
+        variant_mask = np.logical_or(np.any(a, axis=1), np.any(b, axis=1))
+        variant_mask = np.expand_dims(variant_mask, axis=1)
+        # a sample is included if either condition is met
+        sample_mask = np.logical_or(a, b)
+        # but if a variant site is included then all of its samples should be
+        return np.logical_or(variant_mask, sample_mask)
+    else:
+        raise NotImplementedError(
+            f"|| not implemented for dimensions {a.ndim} and {b.ndim}"
+        )
+
+
 class BinaryOperator(EvaluationNode):
     op_map = {
         "*": operator.mul,
@@ -170,9 +214,8 @@ class BinaryOperator(EvaluationNode):
         # circuit optimisations
         "&": np.logical_and,
         "|": np.logical_or,
-        # As we're only supporting 1D values for now, these are the same thing
-        "&&": np.logical_and,
-        "||": np.logical_or,
+        "&&": double_and,
+        "||": double_or,
     }
 
     def eval(self, data):

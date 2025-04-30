@@ -71,7 +71,20 @@ class TestFilterExpressionSample:
             ("POS < 1000", [1, 1, 0, 0, 0, 0, 0, 0, 1]),
             ("INFO/DP > 10", [0, 0, 1, 1, 0, 1, 0, 0, 0]),
             # Not supporting format fields for now: #180
-            # ("FMT/GQ > 20", [0, 0, 1, 1, 1, 1, 1, 0, 0]),
+            (
+                "FMT/GQ > 20",
+                [
+                    [0, 0, 0],
+                    [0, 0, 0],
+                    [1, 1, 1],
+                    [1, 0, 1],
+                    [1, 0, 1],
+                    [1, 1, 1],
+                    [0, 0, 1],
+                    [0, 0, 0],
+                    [0, 0, 0],
+                ],
+            ),
             # ("FMT/DP >= 5 && FMT/GQ > 10", [0, 0, 1, 1, 1, 0, 0, 0, 0]),
             # ("GT > 0", [1, 1, 1, 1, 1, 0, 1, 0, 1]),
             # ("GT > 0 & FMT/HQ >= 10", [0, 0, 1, 1, 1, 0, 0, 0, 0]),
@@ -123,18 +136,6 @@ class TestFilterExpression:
         fee = filter_mod.FilterExpression(include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
-
-    @pytest.mark.parametrize(
-        "expression",
-        [
-            "FORMAT/AD > 30",
-            "FMT/AD > 30",
-            "GT > 30",
-        ],
-    )
-    def test_sample_evaluation_unsupported(self, expression):
-        with pytest.raises(filter_mod.UnsupportedSampleFilteringError):
-            filter_mod.FilterExpression(include=expression)
 
     @pytest.mark.parametrize(
         ("expr", "expected"),
@@ -300,13 +301,53 @@ class TestBcftoolsParser:
             ("a == b", {"a": [0, 1], "b": [1, 1]}, [False, True]),
             ("a = b", {"a": [0, 1], "b": [1, 1]}, [False, True]),
             ("a & b", {"a": [0, 1], "b": [1, 1]}, [False, True]),
-            ("a && b", {"a": [0, 1], "b": [1, 1]}, [False, True]),
             ("a | b", {"a": [0, 1], "b": [1, 1]}, [True, True]),
-            ("a || b", {"a": [0, 1], "b": [1, 1]}, [True, True]),
             ("(a < 2) & (b > 1)", {"a": [0, 1], "b": [1, 2]}, [False, True]),
             # AND has precedence over OR
             ("t | f & f", {"t": [1], "f": [0]}, [True or False and False]),
             ("(t | f) & f", {"t": [1], "f": [0]}, [(True or False) and False]),
+            (
+                "call_a && call_b",
+                {
+                    "call_a": [
+                        [0, 0, 0, 0],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                    ],
+                    "call_b": [
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [1, 1, 1, 1],
+                    ],
+                },
+                [
+                    [False, False, False, False],
+                    [False, True, True, True],
+                    # all False since condition a is not met (all 0)
+                    [False, False, False, False],
+                ],
+            ),
+            (
+                "call_a || call_b",
+                {
+                    "call_a": [
+                        [0, 0, 0, 0],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                    ],
+                    "call_b": [
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [1, 1, 1, 1],
+                    ],
+                },
+                [
+                    [False, False, False, False],
+                    # all True since variant site is included
+                    [True, True, True, True],
+                    [True, True, True, True],
+                ],
+            ),
         ],
     )
     def test_boolean_operator_expressions_data(self, expr, data, expected):

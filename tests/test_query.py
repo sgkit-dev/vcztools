@@ -2,6 +2,7 @@ import pathlib
 import re
 from io import StringIO
 
+import numpy as np
 import pyparsing as pp
 import pytest
 import zarr
@@ -13,6 +14,7 @@ from vcztools.query import (
     list_samples,
     write_query,
 )
+from vcztools.retrieval import variant_chunk_iter
 
 
 def test_list_samples(tmp_path):
@@ -129,8 +131,44 @@ class TestQueryFormatEvaluator:
         ],
     )
     def test(self, root, query_format, expected_result):
-        generator = QueryFormatGenerator(query_format)
-        result = "".join(generator(root))
+        generator = QueryFormatGenerator(root, query_format)
+        chunk_data = next(variant_chunk_iter(root))
+        result = "".join(generator(chunk_data))
+        assert result == expected_result
+
+    @pytest.mark.parametrize(
+        ("query_format", "call_mask", "expected_result"),
+        [
+            (
+                r"[%DP ]\n",
+                None,
+                ". . . \n. . . \n1 8 5 \n3 5 3 \n6 0 4 \n. 4 2 \n4 2 3 \n. . . \n. . . \n",
+            ),
+            (
+                r"[%DP ]\n",
+                np.array(
+                    [
+                        [1, 1, 1,],
+                        [1, 1, 1,],
+                        [1, 0, 1,],
+                        [1, 1, 1,],
+                        [1, 1, 1,],
+                        [1, 1, 1,],
+                        [1, 1, 1,],
+                        [1, 1, 1,],
+                        [1, 1, 1,],
+                    ]
+                ),
+                ". . . \n. . . \n1 5 \n3 5 3 \n6 0 4 \n. 4 2 \n4 2 3 \n. . . \n. . . \n",
+            ),
+        ],
+    )
+    def test_call_mask(self, root, query_format, call_mask, expected_result):
+        generator = QueryFormatGenerator(root, query_format)
+        chunk_data = next(variant_chunk_iter(root))
+        if call_mask is not None:
+            chunk_data["call_mask"] = call_mask
+        result = "".join(generator(chunk_data))
         assert result == expected_result
 
     @pytest.mark.parametrize(
@@ -140,8 +178,9 @@ class TestQueryFormatEvaluator:
     def test_with_parse_results(self, root, query_format, expected_result):
         parser = QueryFormatParser()
         parse_results = parser(query_format)
-        generator = QueryFormatGenerator(parse_results)
-        result = "".join(generator(root))
+        generator = QueryFormatGenerator(root, parse_results)
+        chunk_data = next(variant_chunk_iter(root))
+        result = "".join(generator(chunk_data))
         assert result == expected_result
 
 

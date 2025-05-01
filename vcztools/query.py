@@ -59,7 +59,12 @@ class QueryFormatParser:
 
 
 class QueryFormatGenerator:
-    def __init__(self, query_format, filter_expr=None):
+    def __init__(self, root, query_format, filter_expr=None):
+        # TODO: pass in this metadata rather than root
+        self.sample_ids = root["sample_id"][:].tolist()
+        self.sample_count = len(self.sample_ids)
+        self.contig_ids = root["contig_id"][:]
+        self.filter_ids = root["filter_id"][:]
         if isinstance(query_format, str):
             parser = QueryFormatParser()
             parse_results = parser(query_format)
@@ -79,35 +84,27 @@ class QueryFormatGenerator:
         yield from self._generator(args[0])
 
     def _compose_gt_generator(self) -> Callable:
-        def generate(root):
-            gt_zarray = root["call_genotype"]
-            v_chunk_size = gt_zarray.chunks[0]
+        def generate(chunk_data):
+            gt_array = chunk_data["call_genotype"]
 
-            if "call_genotype_phased" in root:
-                phase_zarray = root["call_genotype_phased"]
-                assert gt_zarray.chunks[:2] == phase_zarray.chunks
-                assert gt_zarray.shape[:2] == phase_zarray.shape
+            if "call_genotype_phased" in chunk_data:
+                phase_array = chunk_data["call_genotype_phased"]
+                assert gt_array.shape[:2] == phase_array.shape
 
-                for v_chunk_index in range(gt_zarray.cdata_shape[0]):
-                    start = v_chunk_index * v_chunk_size
-                    end = start + v_chunk_size
+                for gt_row, phase in zip(gt_array, phase_array):
 
-                    for gt_row, phase in zip(
-                        gt_zarray[start:end], phase_zarray[start:end]
-                    ):
+                    def stringify(gt_and_phase: tuple):
+                        gt, phase = gt_and_phase
+                        gt = [
+                            str(allele) if allele != constants.INT_MISSING else "."
+                            for allele in gt
+                            if allele != constants.INT_FILL
+                        ]
+                        separator = "|" if phase else "/"
+                        return separator.join(gt)
 
-                        def stringify(gt_and_phase: tuple):
-                            gt, phase = gt_and_phase
-                            gt = [
-                                str(allele) if allele != constants.INT_MISSING else "."
-                                for allele in gt
-                                if allele != constants.INT_FILL
-                            ]
-                            separator = "|" if phase else "/"
-                            return separator.join(gt)
-
-                        gt_row = gt_row.tolist()
-                        yield map(stringify, zip(gt_row, phase))
+                    gt_row = gt_row.tolist()
+                    yield map(stringify, zip(gt_row, phase))
             else:
                 # TODO: Support datasets without the phasing data
                 raise NotImplementedError
@@ -115,10 +112,9 @@ class QueryFormatGenerator:
         return generate
 
     def _compose_sample_ids_generator(self) -> Callable:
-        def generate(root):
-            variant_count = root["variant_position"].shape[0]
-            sample_ids = root["sample_id"][:].tolist()
-            yield from itertools.repeat(sample_ids, variant_count)
+        def generate(chunk_data):
+            variant_count = chunk_data["variant_position"].shape[0]
+            yield from itertools.repeat(self.sample_ids, variant_count)
 
         return generate
 
@@ -134,66 +130,49 @@ class QueryFormatGenerator:
         if tag == "SAMPLE":
             return self._compose_sample_ids_generator()
 
-        def generate(root):
-            vcz_names = set(root.keys())
+        def generate(chunk_data):
+            vcz_names = set(chunk_data.keys())
             vcz_name = vcf_name_to_vcz_name(vcz_names, tag)
-            zarray = root[vcz_name]
-            contig_ids = root["contig_id"][:] if tag == "CHROM" else None
-            filter_ids = root["filter_id"][:] if tag == "FILTER" else None
-            v_chunk_size = zarray.chunks[0]
+            array = chunk_data[vcz_name]
+            for row in array:
+                is_missing = np.any(row == -1)
 
-            for v_chunk_index in range(zarray.cdata_shape[0]):
-                start = v_chunk_index * v_chunk_size
-                end = start + v_chunk_size
-
-                for row in zarray[start:end]:
-                    is_missing = np.any(row == -1)
-
-                    if tag == "CHROM":
-                        assert contig_ids is not None
-                        row = contig_ids[row]
-                    if tag == "REF":
-                        row = row[0]
-                    if tag == "ALT":
-                        row = [allele for allele in row[1:] if allele] or "."
-                    if tag == "FILTER":
-                        assert filter_ids is not None
-
-                        if np.any(row):
-                            row = filter_ids[row]
-                        else:
-                            row = "."
-                    if tag == "QUAL":
-                        if math.isnan(row):
-                            row = "."
-                        else:
-                            row = f"{row:g}"
-                    if (
-                        not subfield
-                        and not sample_loop
-                        and (isinstance(row, np.ndarray) or isinstance(row, list))
-                    ):
-                        row = ",".join(map(str, row))
-
-                    if sample_loop:
-                        sample_count = root["sample_id"].shape[0]
-
-                        if isinstance(row, np.ndarray):
-                            row = row.tolist()
-                            row = [
-                                (
-                                    str(element)
-                                    if element != constants.INT_MISSING
-                                    else "."
-                                )
-                                for element in row
-                                if element != constants.INT_FILL
-                            ]
-                            yield row
-                        else:
-                            yield itertools.repeat(str(row), sample_count)
+                if tag == "CHROM":
+                    row = self.contig_ids[row]
+                if tag == "REF":
+                    row = row[0]
+                if tag == "ALT":
+                    row = [allele for allele in row[1:] if allele] or "."
+                if tag == "FILTER":
+                    if np.any(row):
+                        row = self.filter_ids[row]
                     else:
-                        yield row if not is_missing else "."
+                        row = "."
+                if tag == "QUAL":
+                    if math.isnan(row):
+                        row = "."
+                    else:
+                        row = f"{row:g}"
+                if (
+                    not subfield
+                    and not sample_loop
+                    and (isinstance(row, np.ndarray) or isinstance(row, list))
+                ):
+                    row = ",".join(map(str, row))
+
+                if sample_loop:
+                    if isinstance(row, np.ndarray):
+                        row = row.tolist()
+                        row = [
+                            (str(element) if element != constants.INT_MISSING else ".")
+                            for element in row
+                            if element != constants.INT_FILL
+                        ]
+                        yield row
+                    else:
+                        yield itertools.repeat(str(row), self.sample_count)
+                else:
+                    yield row if not is_missing else "."
 
         return generate
 
@@ -203,8 +182,8 @@ class QueryFormatGenerator:
         tag, subfield_index = parse_results
         tag_generator = self._compose_tag_generator(tag, subfield=True)
 
-        def generate(root):
-            for tag in tag_generator(root):
+        def generate(chunk_data):
+            for tag in tag_generator(chunk_data):
                 if isinstance(tag, str):
                     assert tag == "."
                     yield "."
@@ -224,18 +203,30 @@ class QueryFormatGenerator:
             parse_results,
         )
 
-        def generate(root):
-            iterables = (generator(root) for generator in generators)
+        def generate(chunk_data):
+            iterables = (generator(chunk_data) for generator in generators)
             zipped = zip(*iterables)
             zipped_zipped = (zip(*element) for element in zipped)
-            flattened_zipped_zipped = (
-                (
-                    subsubelement
-                    for subelement in element  # sample-wise
-                    for subsubelement in subelement
+            if "call_mask" not in chunk_data:
+                flattened_zipped_zipped = (
+                    (
+                        subsubelement
+                        for subelement in element  # sample-wise
+                        for subsubelement in subelement
+                    )
+                    for element in zipped_zipped  # variant-wise
                 )
-                for element in zipped_zipped  # variant-wise
-            )
+            else:
+                call_mask = chunk_data["call_mask"]
+                flattened_zipped_zipped = (
+                    (
+                        subsubelement
+                        for j, subelement in enumerate(element)  # sample-wise
+                        if call_mask[i, j]
+                        for subsubelement in subelement
+                    )
+                    for i, element in enumerate(zipped_zipped)  # variant-wise
+                )
             yield from map("".join, flattened_zipped_zipped)
 
         return generate
@@ -255,29 +246,21 @@ class QueryFormatGenerator:
             return self._compose_tag_generator(element, sample_loop=sample_loop)
         else:
 
-            def generate(root):
+            def generate(chunk_data):
                 nonlocal element
-                variant_count = root["variant_position"].shape[0]
+                variant_count = chunk_data["variant_position"].shape[0]
                 if sample_loop:
-                    sample_count = root["sample_id"].shape[0]
                     for _ in range(variant_count):
-                        yield itertools.repeat(element, sample_count)
+                        yield itertools.repeat(element, self.sample_count)
                 else:
                     yield from itertools.repeat(element, variant_count)
 
             return generate
 
     def _compose_filter_generator(self, filter_expr):
-        def generate(root):
-            # NOTE: this should be done at the top-level when we've
-            # figured out what fields need to be retrieved from both
-            # the parsed query and filter expressions.
-            reader = retrieval.VariantChunkReader(root)
-            for v_chunk in range(root["variant_position"].cdata_shape[0]):
-                # print("Read v_chunk", v_chunk)
-                chunk_data = reader[v_chunk]
-                v_chunk_select = filter_expr.evaluate(chunk_data)
-                yield from v_chunk_select
+        def generate(chunk_data):
+            v_chunk_select = filter_expr.evaluate(chunk_data)
+            yield from v_chunk_select
 
         return generate
 
@@ -289,15 +272,12 @@ class QueryFormatGenerator:
         generators = (
             self._compose_element_generator(element) for element in parse_results
         )
-        filter_generator = self._compose_filter_generator(filter_expr)
 
-        def generate(root) -> str:
-            iterables = (generator(root) for generator in generators)
-            filter_iterable = filter_generator(root)
-            for results, filter_indicator in zip(zip(*iterables), filter_iterable):
-                if filter_indicator:
-                    results = map(str, results)
-                    yield "".join(results)
+        def generate(chunk_data) -> str:
+            iterables = (generator(chunk_data) for generator in generators)
+            for results in zip(*iterables):
+                results = map(str, results)
+                yield "".join(results)
 
         return generate
 
@@ -314,7 +294,10 @@ def write_query(
     filter_expr = filter_mod.FilterExpression(
         field_names=set(root), include=include, exclude=exclude
     )
-    generator = QueryFormatGenerator(query_format, filter_expr)
+    generator = QueryFormatGenerator(root, query_format, filter_expr)
 
-    for result in generator(root):
-        print(result, sep="", end="", file=output)
+    for chunk_data in retrieval.variant_chunk_iter(
+        root, include=include, exclude=exclude
+    ):
+        for result in generator(chunk_data):
+            print(result, sep="", end="", file=output)

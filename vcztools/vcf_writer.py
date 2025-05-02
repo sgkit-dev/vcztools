@@ -14,9 +14,9 @@ from vcztools.regions import (
     regions_to_chunk_indexes,
     regions_to_selection,
 )
+from vcztools.samples import parse_samples
 from vcztools.utils import (
     open_file_like,
-    search,
 )
 
 from . import _vcztools, constants, retrieval
@@ -134,48 +134,16 @@ def write_vcf(
     root = zarr.open(vcz, mode="r")
 
     with open_file_like(output) as output:
-        force_ac_an_header = False
         if samples and drop_genotypes:
             raise ValueError("Cannot select samples and drop genotypes.")
         elif drop_genotypes:
             sample_ids = []
             samples_selection = np.array([])
-        elif samples is None:
-            sample_ids = root["sample_id"][:]
-            samples_selection = None
         else:
-            force_ac_an_header = True
             all_samples = root["sample_id"][:]
-            exclude_samples = samples.startswith("^")
-            samples = samples.lstrip("^")
-            sample_ids = np.array(samples.split(","))
-            if np.all(sample_ids == np.array("")):
-                sample_ids = np.empty((0,))
-
-            unknown_samples = np.setdiff1d(sample_ids, all_samples)
-            if len(unknown_samples) > 0:
-                if force_samples:
-                    # remove unknown samples from sample_ids
-                    logger.warning(
-                        "subset called for sample(s) not in header: "
-                        f'{",".join(unknown_samples)}.'
-                    )
-                    sample_ids = np.delete(
-                        sample_ids, search(sample_ids, unknown_samples)
-                    )
-                else:
-                    raise ValueError(
-                        "subset called for sample(s) not in header: "
-                        f'{",".join(unknown_samples)}. '
-                        'Use "--force-samples" to ignore this error.'
-                    )
-
-            samples_selection = search(all_samples, sample_ids)
-            if exclude_samples:
-                samples_selection = np.setdiff1d(
-                    np.arange(all_samples.size), samples_selection
-                )
-            sample_ids = all_samples[samples_selection]
+            sample_ids, samples_selection = parse_samples(
+                samples, all_samples, force_samples=force_samples
+            )
 
         filter_expr = filter_mod.FilterExpression(
             field_names=set(root), include=include, exclude=exclude
@@ -184,6 +152,7 @@ def write_vcf(
 
         if not no_header:
             original_header = root.attrs.get("vcf_header", None)
+            force_ac_an_header = not drop_genotypes and samples_selection is not None
             vcf_header = _generate_header(
                 root,
                 original_header,
@@ -336,7 +305,7 @@ def c_chunk_to_vcf(
         if (
             "call_genotype_phased" in root
             and not drop_genotypes
-            and (samples_selection is None or num_samples > 0)
+            and (samples_selection is None or num_samples != 0)
         ):
             gt_phased = get_vchunk_array(
                 root["call_genotype_phased"],

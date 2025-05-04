@@ -8,12 +8,6 @@ from typing import Optional
 import numpy as np
 import zarr
 
-from vcztools.regions import (
-    parse_regions,
-    parse_targets,
-    regions_to_chunk_indexes,
-    regions_to_selection,
-)
 from vcztools.samples import parse_samples
 from vcztools.utils import (
     open_file_like,
@@ -145,10 +139,10 @@ def write_vcf(
                 samples, all_samples, force_samples=force_samples
             )
 
-        filter_expr = filter_mod.FilterExpression(
+        # Need to try parsing filter expressions before writing header
+        filter_mod.FilterExpression(
             field_names=set(root), include=include, exclude=exclude
         )
-        reader = retrieval.VariantChunkReader(root)
 
         if not no_header:
             original_header = root.attrs.get("vcf_header", None)
@@ -165,109 +159,30 @@ def write_vcf(
         if header_only:
             return
 
-        pos = root["variant_position"]
         contigs = root["contig_id"][:].astype("S")
         filters = root["filter_id"][:].astype("S")
 
-        if variant_regions is None and variant_targets is None:
-            # no regions or targets selected
-            for v_chunk in range(pos.cdata_shape[0]):
-                chunk_data = reader[v_chunk]
-                v_mask_chunk = filter_expr.evaluate(chunk_data)
-                # NOTE: we need to update c_chunk_to_vcf to accept the chunk_data array
-                c_chunk_to_vcf(
-                    root,
-                    v_chunk,
-                    v_mask_chunk,
-                    samples_selection,
-                    contigs,
-                    filters,
-                    output,
-                    drop_genotypes=drop_genotypes,
-                    no_update=no_update,
-                )
-        else:
-            contigs_u = root["contig_id"][:].astype("U").tolist()
-            regions = parse_regions(variant_regions, contigs_u)
-            targets, complement = parse_targets(variant_targets, contigs_u)
-
-            # Use the region index to find the chunks that overlap specfied regions or
-            # targets
-            region_index = root["region_index"][:]
-            chunk_indexes = regions_to_chunk_indexes(
-                regions,
-                targets,
-                complement,
-                region_index,
+        for chunk_data in retrieval.variant_chunk_iter(
+            root,
+            variant_regions=variant_regions,
+            variant_targets=variant_targets,
+            include=include,
+            exclude=exclude,
+            samples_selection=samples_selection,
+        ):
+            c_chunk_to_vcf(
+                chunk_data,
+                samples_selection,
+                contigs,
+                filters,
+                output,
+                drop_genotypes=drop_genotypes,
+                no_update=no_update,
             )
-
-            # Then use only load required variant_contig/position chunks
-            if len(chunk_indexes) == 0:
-                # no chunks - no variants to write
-                return
-            elif len(chunk_indexes) == 1:
-                # single chunk
-                block_sel = chunk_indexes[0]
-            else:
-                # zarr.blocks doesn't support int array indexing - use that when it does
-                block_sel = slice(chunk_indexes[0], chunk_indexes[-1] + 1)
-
-            region_variant_contig = root["variant_contig"].blocks[block_sel][:]
-            region_variant_position = root["variant_position"].blocks[block_sel][:]
-            region_variant_length = root["variant_length"].blocks[block_sel][:]
-
-            # Find the final variant selection
-            variant_selection = regions_to_selection(
-                regions,
-                targets,
-                complement,
-                region_variant_contig,
-                region_variant_position,
-                region_variant_length,
-            )
-            variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
-            variant_mask[variant_selection] = 1
-            # Use zarr arrays to get mask chunks aligned with the main data
-            # for convenience.
-            z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
-            for i, v_chunk in enumerate(chunk_indexes):
-                chunk_data = reader[v_chunk]
-                v_mask_chunk = z_variant_mask.blocks[i]
-                # NOTE: Skipping optimisations while refactor is ongoing
-                v_mask_chunk = np.logical_and(
-                    v_mask_chunk, filter_expr.evaluate(chunk_data)
-                )
-                if np.any(v_mask_chunk):
-                    c_chunk_to_vcf(
-                        root,
-                        v_chunk,
-                        v_mask_chunk,
-                        samples_selection,
-                        contigs,
-                        filters,
-                        output,
-                        drop_genotypes=drop_genotypes,
-                        no_update=no_update,
-                    )
-
-
-def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
-    v_chunksize = zarray.chunks[0]
-    start = v_chunksize * v_chunk
-    end = v_chunksize * (v_chunk + 1)
-    if samples_selection is None:
-        result = zarray[start:end]
-    else:
-        result = zarray.oindex[start:end, samples_selection]
-    if mask is not None:
-        result = result[mask]
-    return result
 
 
 def c_chunk_to_vcf(
-    root,
-    v_chunk,
-    v_mask_chunk,
+    chunk_data,
     samples_selection,
     contigs,
     filters,
@@ -277,60 +192,46 @@ def c_chunk_to_vcf(
     no_update,
 ):
     # TODO check we don't truncate silently by doing this
-    pos = get_vchunk_array(root["variant_position"], v_chunk, v_mask_chunk).astype(
-        np.int32
-    )
+    pos = chunk_data["variant_position"].astype(np.int32)
     num_variants = len(pos)
     if num_variants == 0:
         return ""
-    chrom = contigs[get_vchunk_array(root["variant_contig"], v_chunk, v_mask_chunk)]
-    id = get_vchunk_array(root["variant_id"], v_chunk, v_mask_chunk).astype("S")
-    alleles = get_vchunk_array(root["variant_allele"], v_chunk, v_mask_chunk)
-    qual = get_vchunk_array(root["variant_quality"], v_chunk, v_mask_chunk)
-    filter_ = get_vchunk_array(root["variant_filter"], v_chunk, v_mask_chunk)
+    chrom = contigs[chunk_data["variant_contig"]]
+    id = chunk_data["variant_id"].astype("S")
+    alleles = chunk_data["variant_allele"]
+    qual = chunk_data["variant_quality"]
+    filter_ = chunk_data["variant_filter"]
     format_fields = {}
     info_fields = {}
     num_samples = len(samples_selection) if samples_selection is not None else None
     gt = None
     gt_phased = None
 
-    if "call_genotype" in root and not drop_genotypes:
-        if samples_selection is not None and num_samples != 0:
-            gt = get_vchunk_array(
-                root["call_genotype"], v_chunk, v_mask_chunk, samples_selection
-            )
-        else:
-            gt = get_vchunk_array(root["call_genotype"], v_chunk, v_mask_chunk)
+    if "call_genotype" in chunk_data and not drop_genotypes:
+        gt = chunk_data["call_genotype"]
 
         if (
-            "call_genotype_phased" in root
+            "call_genotype_phased" in chunk_data
             and not drop_genotypes
             and (samples_selection is None or num_samples != 0)
         ):
-            gt_phased = get_vchunk_array(
-                root["call_genotype_phased"],
-                v_chunk,
-                v_mask_chunk,
-                samples_selection,
-            )
+            gt_phased = chunk_data["call_genotype_phased"]
         else:
             gt_phased = np.zeros_like(gt, dtype=bool)
 
-    for name, zarray in root.arrays():
+    for name, array in chunk_data.items():
         if (
             name.startswith("call_")
             and not name.startswith("call_genotype")
             and num_samples != 0
         ):
             vcf_name = name[len("call_") :]
-            format_fields[vcf_name] = get_vchunk_array(
-                zarray, v_chunk, v_mask_chunk, samples_selection
-            )
+            format_fields[vcf_name] = array
             if num_samples is None:
-                num_samples = zarray.shape[1]
+                num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
-            info_fields[vcf_name] = get_vchunk_array(zarray, v_chunk, v_mask_chunk)
+            info_fields[vcf_name] = array
 
     ref = alleles[:, 0].astype("S")
     alt = alleles[:, 1:].astype("S")
@@ -340,7 +241,7 @@ def c_chunk_to_vcf(
     if (
         not no_update
         and samples_selection is not None
-        and "call_genotype" in root
+        and "call_genotype" in chunk_data
         and not drop_genotypes
     ):
         # Recompute INFO/AC and INFO/AN

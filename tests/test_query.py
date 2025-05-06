@@ -136,13 +136,14 @@ class TestQueryFormatEvaluator:
         result = "".join(generator(chunk_data))
         assert result == expected_result
 
+    # fmt: off
     @pytest.mark.parametrize(
         ("query_format", "call_mask", "expected_result"),
         [
             (
                 r"[%DP ]\n",
                 None,
-                ". . . \n. . . \n1 8 5 \n3 5 3 \n6 0 4 \n. 4 2 \n4 2 3 \n. . . \n. . . \n",
+                ". . . \n. . . \n1 8 5 \n3 5 3 \n6 0 4 \n. 4 2 \n4 2 3 \n. . . \n. . . \n",  # noqa: E501
             ),
             (
                 r"[%DP ]\n",
@@ -159,10 +160,11 @@ class TestQueryFormatEvaluator:
                         [1, 1, 1,],
                     ]
                 ),
-                ". . . \n. . . \n1 5 \n3 5 3 \n6 0 4 \n. 4 2 \n4 2 3 \n. . . \n. . . \n",
+                ". . . \n. . . \n1 5 \n3 5 3 \n6 0 4 \n. 4 2 \n4 2 3 \n. . . \n. . . \n",  # noqa: E501
             ),
         ],
     )
+    # fmt: on
     def test_call_mask(self, root, query_format, call_mask, expected_result):
         generator = QueryFormatGenerator(root, query_format)
         chunk_data = next(variant_chunk_iter(root))

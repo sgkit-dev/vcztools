@@ -5,7 +5,7 @@ from itertools import zip_longest
 
 import cyvcf2
 import numpy as np
-from bio2zarr import vcf2zarr
+from bio2zarr import icf
 
 
 @contextmanager
@@ -29,6 +29,64 @@ def normalise_info_missingness(info_dict, key):
     return value
 
 
+def _get_header_field_dicts(vcf, header_type):
+    def to_dict(header_field):
+        d = header_field.info(extra=True)
+        del d[b"IDX"]  # remove IDX since we don't care about ordering
+
+        # cyvcf2 duplicates some keys as strings and bytes, so remove the bytes one
+        for k in list(d.keys()):
+            if isinstance(k, bytes) and k.decode("utf-8") in d:
+                del d[k]
+        return d
+
+    return {
+        field["ID"]: to_dict(field)
+        for field in vcf.header_iter()
+        if field["HeaderType"] == header_type
+    }
+
+
+def _assert_header_field_dicts_equivalent(field_dicts1, field_dicts2):
+    assert len(field_dicts1) == len(field_dicts2)
+
+    for id in field_dicts1.keys():
+        assert id in field_dicts2
+        field_dict1 = field_dicts1[id]
+        field_dict2 = field_dicts2[id]
+
+        assert len(field_dict1) == len(field_dict2)
+        # all fields should be the same, except Number="." which can match any value
+        for k in field_dict1.keys():
+            assert k in field_dict2
+            v1 = field_dict1[k]
+            v2 = field_dict2[k]
+            if k == "Number" and (v1 == "." or v2 == "."):
+                continue
+            assert v1 == v2, f"Failed in field {id} with key {k}"
+
+
+def _assert_vcf_headers_equivalent(vcf1, vcf2):
+    # Only compare INFO, FORMAT, FILTER, CONTIG fields, ignoring order
+    # Other fields are ignored
+
+    info1 = _get_header_field_dicts(vcf1, "INFO")
+    info2 = _get_header_field_dicts(vcf2, "INFO")
+    _assert_header_field_dicts_equivalent(info1, info2)
+
+    format1 = _get_header_field_dicts(vcf1, "FORMAT")
+    format2 = _get_header_field_dicts(vcf2, "FORMAT")
+    _assert_header_field_dicts_equivalent(format1, format2)
+
+    filter1 = _get_header_field_dicts(vcf1, "FILTER")
+    filter2 = _get_header_field_dicts(vcf2, "FILTER")
+    _assert_header_field_dicts_equivalent(filter1, filter2)
+
+    contig1 = _get_header_field_dicts(vcf1, "CONTIG")
+    contig2 = _get_header_field_dicts(vcf2, "CONTIG")
+    _assert_header_field_dicts_equivalent(contig1, contig2)
+
+
 def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=False):
     """Like :py:func:`numpy.testing.assert_allclose()`, but for VCF files.
 
@@ -48,7 +106,7 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
         Absolute tolerance.
     """
     with open_vcf(f1) as vcf1, open_vcf(f2) as vcf2:
-        assert vcf1.raw_header == vcf2.raw_header
+        _assert_vcf_headers_equivalent(vcf1, vcf2)
         assert vcf1.samples == vcf2.samples
 
         count = 0
@@ -145,7 +203,7 @@ def vcz_path_cache(vcf_path):
     cached_vcz_path = (cache_path / vcf_path.name).with_suffix(".vcz")
     if not cached_vcz_path.exists():
         if vcf_path.name.startswith("chr22"):
-            vcf2zarr.convert(
+            icf.convert(
                 [vcf_path],
                 cached_vcz_path,
                 worker_processes=0,
@@ -153,7 +211,7 @@ def vcz_path_cache(vcf_path):
                 samples_chunk_size=10,
             )
         else:
-            vcf2zarr.convert(
+            icf.convert(
                 [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
             )
     return cached_vcz_path

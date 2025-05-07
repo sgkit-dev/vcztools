@@ -86,6 +86,10 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
         ("view --no-version -s ^NA00003,NA00002,NA00003", "sample.vcf.gz"),
         ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
+        (
+            "view --no-version -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
+            "sample.vcf.gz"
+        )
     ],
     # This is necessary when trying to run individual tests, as the arguments above
     # make for unworkable command lines

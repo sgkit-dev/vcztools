@@ -222,13 +222,11 @@ def test_write_vcf__no_samples(tmp_path):
     assert v.samples == []
 
 
-# @pytest.mark.skip("Sample filtering not implemented: #180")
 @pytest.mark.parametrize(
     ("regions", "targets", "samples", "include", "expected_chrom_pos"),
     [
         # Test that sample filtering takes place after include filtering.
-        # Not supporting format fields in filtering for now: #180
-        # ("20", None, "NA00001", "FMT/GQ > 60", [("20", 1230237)]),
+        ("20", None, "NA00001", "FMT/GQ > 60", [("20", 1230237)]),
         # Test that region filtering and include expression are combined.
         ("19", None, "NA00001", "POS > 200", []),
         # Test that target filtering and include expression are combined.

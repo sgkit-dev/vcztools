@@ -222,6 +222,7 @@ def c_chunk_to_vcf(
     for name, array in chunk_data.items():
         if (
             name.startswith("call_")
+            and not name == "call_mask"
             and not name.startswith("call_genotype")
             and num_samples != 0
         ):

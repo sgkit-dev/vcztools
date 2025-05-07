@@ -29,7 +29,7 @@ def normalise_info_missingness(info_dict, key):
     return value
 
 
-def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
+def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=False):
     """Like :py:func:`numpy.testing.assert_allclose()`, but for VCF files.
 
     Raises an `AssertionError` if two VCF files are not equal to one another.
@@ -51,11 +51,14 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
         assert vcf1.raw_header == vcf2.raw_header
         assert vcf1.samples == vcf2.samples
 
+        count = 0
         for v1, v2 in zip_longest(vcf1, vcf2):
             if v1 is None and v2 is not None:
                 raise AssertionError(f"Right contains extra variant: {v2}")
             if v1 is not None and v2 is None:
                 raise AssertionError(f"Left contains extra variant: {v1}")
+
+            count += 1
 
             assert v1.CHROM == v2.CHROM, f"CHROM not equal for variants\n{v1}{v2}"
             assert v1.POS == v2.POS, f"POS not equal for variants\n{v1}{v2}"
@@ -126,6 +129,9 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03):
                                 err_msg=f"FORMAT {field} not equal for "
                                 f"variants\n{v1}{v2}",
                             )
+
+        if not allow_zero_variants:
+            assert count > 0, "No variants in file"
 
 
 def vcz_path_cache(vcf_path):

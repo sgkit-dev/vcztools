@@ -8,7 +8,6 @@ import pyparsing as pp
 import zarr
 
 from vcztools import constants, retrieval
-from vcztools import filter as filter_mod
 from vcztools.utils import vcf_name_to_vcz_name
 
 
@@ -59,7 +58,7 @@ class QueryFormatParser:
 
 
 class QueryFormatGenerator:
-    def __init__(self, root, query_format, filter_expr=None):
+    def __init__(self, root, query_format):
         # TODO: pass in this metadata rather than root
         self.sample_ids = root["sample_id"][:].tolist()
         self.sample_count = len(self.sample_ids)
@@ -72,10 +71,7 @@ class QueryFormatGenerator:
             assert isinstance(query_format, pp.ParseResults)
             parse_results = query_format
 
-        if filter_expr is None:
-            filter_expr = filter_mod.FilterExpression()
-
-        self._generator = self._compose_generator(parse_results, filter_expr)
+        self._generator = self._compose_generator(parse_results)
 
     def __call__(self, *args, **kwargs):
         assert len(args) == 1
@@ -257,17 +253,9 @@ class QueryFormatGenerator:
 
             return generate
 
-    def _compose_filter_generator(self, filter_expr):
-        def generate(chunk_data):
-            v_chunk_select = filter_expr.evaluate(chunk_data)
-            yield from v_chunk_select
-
-        return generate
-
     def _compose_generator(
         self,
         parse_results,
-        filter_expr,
     ) -> Callable:
         generators = (
             self._compose_element_generator(element) for element in parse_results
@@ -291,10 +279,7 @@ def write_query(
     exclude: str | None = None,
 ):
     root = zarr.open(vcz, mode="r")
-    filter_expr = filter_mod.FilterExpression(
-        field_names=set(root), include=include, exclude=exclude
-    )
-    generator = QueryFormatGenerator(root, query_format, filter_expr)
+    generator = QueryFormatGenerator(root, query_format)
 
     for chunk_data in retrieval.variant_chunk_iter(
         root, include=include, exclude=exclude

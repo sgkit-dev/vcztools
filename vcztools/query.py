@@ -8,6 +8,7 @@ import pyparsing as pp
 import zarr
 
 from vcztools import constants, retrieval
+from vcztools.samples import parse_samples
 from vcztools.utils import vcf_name_to_vcz_name
 
 
@@ -58,12 +59,11 @@ class QueryFormatParser:
 
 
 class QueryFormatGenerator:
-    def __init__(self, root, query_format):
-        # TODO: pass in this metadata rather than root
-        self.sample_ids = root["sample_id"][:].tolist()
+    def __init__(self, query_format, sample_ids, contigs, filters):
+        self.sample_ids = sample_ids
         self.sample_count = len(self.sample_ids)
-        self.contig_ids = root["contig_id"][:]
-        self.filter_ids = root["filter_id"][:]
+        self.contig_ids = contigs
+        self.filter_ids = filters
         if isinstance(query_format, str):
             parser = QueryFormatParser()
             parse_results = parser(query_format)
@@ -275,14 +275,31 @@ def write_query(
     output,
     *,
     query_format: str,
+    regions=None,
+    targets=None,
+    samples=None,
+    force_samples: bool = False,
     include: str | None = None,
     exclude: str | None = None,
 ):
     root = zarr.open(vcz, mode="r")
-    generator = QueryFormatGenerator(root, query_format)
+
+    all_samples = root["sample_id"][:]
+    sample_ids, samples_selection = parse_samples(
+        samples, all_samples, force_samples=force_samples
+    )
+    contigs = root["contig_id"][:]
+    filters = root["filter_id"][:]
+
+    generator = QueryFormatGenerator(query_format, sample_ids, contigs, filters)
 
     for chunk_data in retrieval.variant_chunk_iter(
-        root, include=include, exclude=exclude
+        root,
+        variant_regions=regions,
+        variant_targets=targets,
+        include=include,
+        exclude=exclude,
+        samples_selection=samples_selection,
     ):
         for result in generator(chunk_data):
             print(result, sep="", end="", file=output)

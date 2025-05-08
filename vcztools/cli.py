@@ -53,12 +53,36 @@ include = click.option(
 exclude = click.option(
     "-e", "--exclude", type=str, help="Filter expression to exclude variant sites."
 )
+force_samples = click.option(
+    "--force-samples", is_flag=True, help="Only warn about unknown sample subsets."
+)
 output = click.option(
     "-o",
     "--output",
     type=click.File("w"),
     default="-",
     help="File path to write output to (defaults to stdout '-').",
+)
+regions = click.option(
+    "-r",
+    "--regions",
+    type=str,
+    default=None,
+    help="Regions to include.",
+)
+samples = click.option(
+    "-s",
+    "--samples",
+    type=str,
+    default=None,
+    help="Samples to include.",
+)
+targets = click.option(
+    "-t",
+    "--targets",
+    type=str,
+    default=None,
+    help="Target regions to include.",
 )
 version = click.version_option(version=f"{provenance.__version__}")
 
@@ -114,10 +138,25 @@ def index(path, nrecords, stats):
     help="The format of the output.",
     default=None,
 )
+@regions
+@force_samples
+@samples
+@targets
 @include
 @exclude
 @handle_exception
-def query(path, output, list_samples, format, include, exclude):
+def query(
+    path,
+    output,
+    list_samples,
+    format,
+    regions,
+    targets,
+    force_samples,
+    samples,
+    include,
+    exclude,
+):
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
@@ -129,7 +168,15 @@ def query(path, output, list_samples, format, include, exclude):
         raise click.UsageError("Missing option -f / --format")
     with handle_broken_pipe(output):
         query_module.write_query(
-            path, output, query_format=format, include=include, exclude=exclude
+            path,
+            output,
+            query_format=format,
+            regions=regions,
+            targets=targets,
+            samples=samples,
+            force_samples=force_samples,
+            include=include,
+            exclude=exclude,
         )
 
 
@@ -153,29 +200,15 @@ def query(path, output, list_samples, format, include, exclude):
     is_flag=True,
     help="Do not append version and command line information to the output VCF header.",
 )
-@click.option(
-    "-r",
-    "--regions",
-    type=str,
-    default=None,
-    help="Regions to include.",
-)
-@click.option(
-    "--force-samples", is_flag=True, help="Only warn about unknown sample subsets."
-)
+@regions
+@force_samples
 @click.option(
     "-I",
     "--no-update",
     is_flag=True,
     help="Do not recalculate INFO fields for the sample subset.",
 )
-@click.option(
-    "-s",
-    "--samples",
-    type=str,
-    default=None,
-    help="Samples to include.",
-)
+@samples
 @click.option(
     "-S",
     "--samples-file",
@@ -189,13 +222,7 @@ def query(path, output, list_samples, format, include, exclude):
     is_flag=True,
     help="Drop genotypes.",
 )
-@click.option(
-    "-t",
-    "--targets",
-    type=str,
-    default=None,
-    help="Target regions to include.",
-)
+@targets
 @include
 @exclude
 @handle_exception

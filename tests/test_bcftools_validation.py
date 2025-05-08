@@ -197,6 +197,10 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/DP>3 && FMT/GQ>30'",  # noqa: E501
             "sample.vcf.gz"
         ),
+        (
+            r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
+            "sample.vcf.gz"
+        ),
     ],
 )
 def test_output(tmp_path, args, vcf_name):

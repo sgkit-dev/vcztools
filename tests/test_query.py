@@ -131,7 +131,12 @@ class TestQueryFormatEvaluator:
         ],
     )
     def test(self, root, query_format, expected_result):
-        generator = QueryFormatGenerator(root, query_format)
+        generator = QueryFormatGenerator(
+            query_format,
+            root["sample_id"][:],
+            root["contig_id"][:],
+            root["filter_id"][:],
+        )
         chunk_data = next(variant_chunk_iter(root))
         result = "".join(generator(chunk_data))
         assert result == expected_result
@@ -166,7 +171,12 @@ class TestQueryFormatEvaluator:
     )
     # fmt: on
     def test_call_mask(self, root, query_format, call_mask, expected_result):
-        generator = QueryFormatGenerator(root, query_format)
+        generator = QueryFormatGenerator(
+            query_format,
+            root["sample_id"][:],
+            root["contig_id"][:],
+            root["filter_id"][:],
+        )
         chunk_data = next(variant_chunk_iter(root))
         if call_mask is not None:
             chunk_data["call_mask"] = call_mask
@@ -180,7 +190,12 @@ class TestQueryFormatEvaluator:
     def test_with_parse_results(self, root, query_format, expected_result):
         parser = QueryFormatParser()
         parse_results = parser(query_format)
-        generator = QueryFormatGenerator(root, parse_results)
+        generator = QueryFormatGenerator(
+            parse_results,
+            root["sample_id"][:],
+            root["contig_id"][:],
+            root["filter_id"][:],
+        )
         chunk_data = next(variant_chunk_iter(root))
         result = "".join(generator(chunk_data))
         assert result == expected_result

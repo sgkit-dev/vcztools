@@ -1,7 +1,7 @@
 import functools
 import itertools
 import math
-from typing import Callable, Optional, Union
+from collections.abc import Callable
 
 import numpy as np
 import pyparsing as pp
@@ -232,7 +232,7 @@ class QueryFormatGenerator:
         return generate
 
     def _compose_element_generator(
-        self, element: Union[str, pp.ParseResults], *, sample_loop=False
+        self, element: str | pp.ParseResults, *, sample_loop=False
     ) -> Callable:
         if isinstance(element, pp.ParseResults):
             if element.get_name() == "subfield":
@@ -287,8 +287,8 @@ def write_query(
     output,
     *,
     query_format: str,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    include: str | None = None,
+    exclude: str | None = None,
 ):
     root = zarr.open(vcz, mode="r")
     filter_expr = filter_mod.FilterExpression(

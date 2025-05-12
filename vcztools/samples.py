@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -9,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 
 def parse_samples(
-    samples: Optional[str], all_samples: np.ndarray, *, force_samples: bool = True
-) -> tuple[np.ndarray, Optional[np.ndarray]]:
+    samples: str | None, all_samples: np.ndarray, *, force_samples: bool = True
+) -> tuple[np.ndarray, np.ndarray | None]:
     """Parse a bcftools-style samples string.
 
     Returns an array of the sample IDs, and an array indicating the selection

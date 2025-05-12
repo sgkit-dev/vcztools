@@ -26,7 +26,7 @@ def run_bcftools(args: str, expect_error=False) -> tuple[str, str]:
 
 def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
     """Run run_vcztools and return stdout and stderr as a pair of strings."""
-    runner = ct.CliRunner(mix_stderr=False)
+    runner = ct.CliRunner()
     result = runner.invoke(
         cli.vcztools_main,
         args,

@@ -49,6 +49,8 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         # Filters based on strings disabled:
         # https://github.com/sgkit-dev/vcztools/issues/189
         # ("view --no-version -i 'ID == \"rs6054257\"'", "sample.vcf.gz"),
+        ("view --no-version -i 'DB=0'", "sample.vcf.gz"),
+        ("view --no-version -i 'DB=1'", "sample.vcf.gz"),
         ("view --no-version -i 'INFO/DP > 10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5 && FMT/GQ > 10'", "sample.vcf.gz"),

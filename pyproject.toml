@@ -18,7 +18,7 @@ authors = [
 dependencies = [
   "numpy>=1.23.5",
   "zarr>=2.17,<3",
-  "click",
+  "click>=8.2.0",
   "pyranges!=0.1.3",
   "pyparsing>=3"
 ]

@@ -46,7 +46,7 @@ def test_conversion_identical(tmp_path, args, vcf_file):
     assert result.returncode == 0
 
     cmd = f"view-plink1 {vcz.absolute()} {args}"
-    runner = ct.CliRunner(mix_stderr=False)
+    runner = ct.CliRunner()
     with runner.isolated_filesystem(tmp_path) as working_dir:
         vcz_workdir = pathlib.Path(working_dir)
         result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)

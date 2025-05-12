@@ -45,7 +45,7 @@ class TestOutput:
 
     def test_view_good_path(self, tmp_path, vcz_path):
         output_path = tmp_path / "tmp.vcf"
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             f"view --no-version {vcz_path} -o {output_path}",
@@ -56,7 +56,7 @@ class TestOutput:
         assert output_path.exists()
 
     def test_view_write_directory(self, tmp_path, vcz_path):
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             f"view --no-version {vcz_path} -o {tmp_path}",
@@ -67,7 +67,7 @@ class TestOutput:
         assert "Is a directory" in result.stderr
 
     def test_view_write_pipe(self, tmp_path, vcz_path):
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             f"view --no-version {vcz_path} -o {tmp_path}",
@@ -104,7 +104,7 @@ def test_broken_pipe(mocked_dup2, mocked_exit, tmp_path):
 
 class TestQuery:
     def test_format_required(self, vcz_path):
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             f"query {vcz_path} ",
@@ -115,7 +115,7 @@ class TestQuery:
         assert len(result.stderr) > 0
 
     def test_path_required(self):
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             "query --format=POS ",
@@ -152,7 +152,7 @@ class TestIndex:
         assert list(result.splitlines()) == ["9"]
 
     def test_stats_and_nrecords(self, vcz_path):
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             f"index -ns {vcz_path}",
@@ -164,7 +164,7 @@ class TestIndex:
         assert "Expected only one of --stats or --nrecords options" in result.stderr
 
     def test_no_stats_or_nrecords(self, vcz_path):
-        runner = ct.CliRunner(mix_stderr=False)
+        runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
             f"index {vcz_path}",
@@ -177,18 +177,18 @@ class TestIndex:
 
 
 def test_top_level():
-    runner = ct.CliRunner(mix_stderr=False)
+    runner = ct.CliRunner()
     result = runner.invoke(
         cli.vcztools_main,
         catch_exceptions=False,
     )
-    assert result.exit_code == 0
-    assert len(result.stdout) > 0
-    assert len(result.stderr) == 0
+    assert result.exit_code != 0
+    assert len(result.stdout) == 0
+    assert len(result.stderr) > 0
 
 
 def test_version():
-    runner = ct.CliRunner(mix_stderr=False)
+    runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, ["--version"], catch_exceptions=False)
     s = f"version {provenance.__version__}\n"
     assert result.stdout.endswith(s)

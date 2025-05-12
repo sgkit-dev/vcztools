@@ -1,5 +1,4 @@
 import collections.abc
-from typing import Optional
 
 import numpy as np
 import zarr
@@ -140,8 +139,8 @@ def variant_chunk_index_iter_with_filtering(
     *,
     variant_regions=None,
     variant_targets=None,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    include: str | None = None,
+    exclude: str | None = None,
 ):
     """Iterate over variant chunk indexes that overlap the given regions or targets
     and which match the include/exclude filter expression.
@@ -179,11 +178,11 @@ def variant_chunk_index_iter_with_filtering(
 def variant_chunk_iter(
     root,
     *,
-    fields: Optional[list[str]] = None,
+    fields: list[str] | None = None,
     variant_regions=None,
     variant_targets=None,
-    include: Optional[str] = None,
-    exclude: Optional[str] = None,
+    include: str | None = None,
+    exclude: str | None = None,
     samples_selection=None,
 ):
     query_fields_reader = VariantChunkReader(root, fields=fields)

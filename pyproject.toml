@@ -75,7 +75,8 @@ indent-width = 4
 [tool.ruff.lint]
 select = ["E", "F", "B", "W", "I", "N", "UP", "A", "PT"]
 #Allow uppercase names for e.g. call_AD
-ignore = ["N806", "N802", "N803", "A001", "A002"]
+#Don't add strict=False to zips (B905)
+ignore = ["N806", "N802", "N803", "A001", "A002", "B905", "RUF", "UP038"]
 
 fixable = ["ALL"]
 unfixable = []

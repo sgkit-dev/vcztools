@@ -327,6 +327,11 @@ def test_write_vcf__generate_header():
 ##contig=<ID=19>
 ##contig=<ID=20>
 ##contig=<ID=X>
+##fileDate=20090805
+##reference=1000GenomesPilot-NCBI36
+##phasing=partial
+##ALT=<ID=DEL:ME:ALU,Description="Deletion of ALU element">
+##ALT=<ID=CNV,Description="Copy number variable region">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	NA00001	NA00002	NA00003
 """  # noqa: E501
 

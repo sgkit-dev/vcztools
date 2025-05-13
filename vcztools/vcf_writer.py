@@ -414,6 +414,12 @@ def _generate_header(
             file=output,
         )
 
+    # Other meta information lines not covered above
+    if "vcf_meta_information" in ds.attrs:
+        for key, value in ds.attrs["vcf_meta_information"]:
+            if key not in ("fileformat", "source"):
+                print(f"##{key}={value}", file=output)
+
     # [1.5 Header line syntax]
     print(
         "#CHROM",

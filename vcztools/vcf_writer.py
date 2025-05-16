@@ -216,7 +216,7 @@ def c_chunk_to_vcf(
         ):
             gt_phased = chunk_data["call_genotype_phased"]
         else:
-            gt_phased = np.zeros_like(gt, dtype=bool)
+            gt_phased = np.zeros(gt.shape[:2], dtype=bool)
 
     for name, array in chunk_data.items():
         if (

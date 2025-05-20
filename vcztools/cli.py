@@ -1,6 +1,5 @@
 import contextlib
 import os
-import pathlib
 import sys
 from functools import wraps
 
@@ -293,16 +292,7 @@ def view_plink1(path, include, exclude, out):
     -o intermediate.vcf && plink 1.9 --vcf intermediate.vcf [plink options]``
     without generating the intermediate VCF.
     """
-    out_prefix = pathlib.Path(out)
-    writer = plink.Writer(
-        path,
-        bed_path=out_prefix.with_suffix(".bed"),
-        fam_path=out_prefix.with_suffix(".fam"),
-        bim_path=out_prefix.with_suffix(".bim"),
-        include=include,
-        exclude=exclude,
-    )
-    writer.run()
+    plink.write_plink(path, out, include=include, exclude=exclude)
 
 
 @version

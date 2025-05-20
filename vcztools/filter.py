@@ -57,11 +57,6 @@ class UnsupportedChromFieldError(UnsupportedFilteringFeatureError):
     feature = "CHROM field"
 
 
-class UnsupportedStringsError(UnsupportedFilteringFeatureError):
-    issue = "189"
-    feature = "String values temporarily removed"
-
-
 class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
     issue = "190"
     feature = "Function evaluation"
@@ -107,8 +102,6 @@ class String(Constant):
         super().__init__(tokens)
         if self.tokens == ".":
             raise UnsupportedMissingDataError()
-        else:
-            raise UnsupportedStringsError()
 
 
 class FileReference(Constant):

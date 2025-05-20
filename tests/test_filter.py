@@ -252,9 +252,7 @@ class TestFilterExpression:
             ("a + 1 + 2", "(variant_a)+(1)+(2)"),
             ("a + (1 + 2)", "(variant_a)+((1)+(2))"),
             ("POS<10", "(variant_position)<(10)"),
-            # Filters based on strings disabled:
-            # https://github.com/sgkit-dev/vcztools/issues/189
-            # ('CHROM=="chr1"', "(variant_contig)==('chr1')"),
+            ('ID=="rs6054257"', "(variant_id)==('rs6054257')"),
         ],
     )
     def test_repr(self, expr, expected):
@@ -285,11 +283,9 @@ class TestBcftoolsParser:
             "(1 + 2) == (1 + 2 + 3)",
             "(1 == 1) != (2 == 2)",
             "-1 == 1 + 2 - 4",
-            # Filters based on strings disabled:
-            # https://github.com/sgkit-dev/vcztools/issues/189
-            # '("x" == "x")',
-            # '"x"',
-            # '"INFO/STRING"',
+            '("x" == "x")',
+            '"x"',
+            '"INFO/STRING"',
         ],
     )
     def test_python_arithmetic_expressions(self, expr):
@@ -308,13 +304,10 @@ class TestBcftoolsParser:
         ],
     )
     def test_python_string_expressions_data(self, expr, data):
-        # Filters based on strings disabled:
-        # https://github.com/sgkit-dev/vcztools/issues/189
-        parser = filter_mod.make_bcftools_filter_parser()
-        with pytest.raises(filter_mod.UnsupportedStringsError):
-            parser.parse_string(expr, parse_all=True)
-            # result = parsed[0].eval({})
-            # assert result == eval(expr)
+        parser = filter_mod.make_bcftools_filter_parser(map_vcf_identifiers=False)
+        parsed = parser.parse_string(expr, parse_all=True)
+        result = parsed[0].eval(data)
+        assert result == eval(expr, data)
 
     @pytest.mark.parametrize(
         ("expr", "data"),

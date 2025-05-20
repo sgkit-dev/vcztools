@@ -13,7 +13,7 @@ from vcztools.utils import (
 
 from . import _vcztools, constants, retrieval
 from . import filter as filter_mod
-from .constants import RESERVED_VARIABLE_NAMES
+from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ def write_vcf(
             return
 
         contigs = root["contig_id"][:].astype("S")
-        filters = root["filter_id"][:].astype("S")
+        filters = get_filter_ids(root)
 
         for chunk_data in retrieval.variant_chunk_iter(
             root,
@@ -187,19 +187,35 @@ def c_chunk_to_vcf(
     drop_genotypes,
     no_update,
 ):
+    format_fields = {}
+    info_fields = {}
+    num_samples = len(samples_selection) if samples_selection is not None else None
+
     # TODO check we don't truncate silently by doing this
     pos = chunk_data["variant_position"].astype(np.int32)
     num_variants = len(pos)
     if num_variants == 0:
         return ""
+    # Required fields
     chrom = contigs[chunk_data["variant_contig"]]
-    id = chunk_data["variant_id"].astype("S")
     alleles = chunk_data["variant_allele"]
-    qual = chunk_data["variant_quality"]
-    filter_ = chunk_data["variant_filter"]
-    format_fields = {}
-    info_fields = {}
-    num_samples = len(samples_selection) if samples_selection is not None else None
+
+    # Optional fields which we fill in with "all missing" defaults
+    if "variant_id" in chunk_data:
+        id = chunk_data["variant_id"].astype("S")
+    else:
+        id = np.array(["."] * num_variants, dtype="S")
+    if "variant_quality" in chunk_data:
+        qual = chunk_data["variant_quality"]
+    else:
+        qual = np.full(num_variants, FLOAT32_MISSING, dtype=np.float32)
+
+    # Filter defaults to "PASS" if not present
+    if "variant_filter" in chunk_data:
+        filter_ = chunk_data["variant_filter"]
+    else:
+        filter_ = np.ones((num_variants, 1), dtype=bool)
+
     gt = None
     gt_phased = None
 
@@ -213,6 +229,7 @@ def c_chunk_to_vcf(
         ):
             gt_phased = chunk_data["call_genotype_phased"]
         else:
+            # Default to unphased if call_genotype_phased not present
             gt_phased = np.zeros_like(gt, dtype=bool)
 
     for name, array in chunk_data.items():
@@ -294,6 +311,18 @@ def c_chunk_to_vcf(
         print(line, file=output)
 
 
+def get_filter_ids(root):
+    """
+    Returns the filter IDs from the specified Zarr store. If the array
+    does not exist, return a single filter "PASS" by default.
+    """
+    if "filter_id" in root:
+        filters = root["filter_id"][:].astype("S")
+    else:
+        filters = np.array(["PASS"], dtype="S")
+    return filters
+
+
 def _generate_header(
     ds,
     sample_ids,
@@ -304,7 +333,7 @@ def _generate_header(
     output = io.StringIO()
 
     contigs = list(ds["contig_id"][:])
-    filters = list(ds["filter_id"][:])
+    filters = list(get_filter_ids(ds).astype("U"))
     info_fields = []
     format_fields = []
 

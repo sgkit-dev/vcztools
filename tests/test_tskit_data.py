@@ -3,6 +3,7 @@ Tests for data originating from tskit format for compatibility
 with various outputs.
 """
 
+import bio2zarr.plink as p2z
 import bio2zarr.tskit as ts2z
 import bio2zarr.vcf as v2z
 import msprime
@@ -12,6 +13,7 @@ import pytest
 import sgkit as sg
 import xarray.testing as xt
 
+from vcztools.plink import write_plink
 from vcztools.vcf_writer import write_vcf
 
 
@@ -50,13 +52,49 @@ class TestVcfRoundTrip:
             "variant_filter",
             "variant_quality",
         ]
-        xt.assert_equal(ds1, ds2.drop(drop_fields))
+        xt.assert_equal(ds1, ds2.drop_vars(drop_fields))
         num_variants = ds2.dims["variants"]
         assert np.all(np.isnan(ds2["variant_quality"].values))
         nt.assert_array_equal(
             ds2["variant_filter"], np.ones((num_variants, 1), dtype=bool)
         )
         assert list(ds2["filter_id"].values) == ["PASS"]
+
+    def test_msprime_sim(self, tmp_path, fx_msprime_sim):
+        self.assert_bio2zarr_rt(tmp_path, fx_msprime_sim)
+
+
+class TestPlinkRoundTrip:
+    def assert_bio2zarr_rt(self, tmp_path, tskit_vcz):
+        # import pathlib
+
+        # tmp_path = pathlib.Path("tmp/plink")
+        plink_path = tmp_path / "plink"
+        print("plink_path", plink_path)
+        write_plink(tskit_vcz, plink_path)
+        print("Write plink done")
+        rt_vcz_path = tmp_path / "rt.vcz"
+        p2z.convert(plink_path.with_suffix(".bed"), rt_vcz_path)
+        ds1 = sg.load_dataset(tskit_vcz)
+        ds2 = sg.load_dataset(rt_vcz_path)
+        print(ds1)
+        print(ds2)
+
+        drop_fields = [
+            # "variant_id",
+            # "variant_id_mask",
+            # "filter_id",
+            # "filter_description",
+            # "variant_filter",
+            # "variant_quality",
+        ]
+        xt.assert_equal(ds1, ds2.drop_vars(drop_fields))
+        # num_variants = ds2.dims["variants"]
+        # assert np.all(np.isnan(ds2["variant_quality"].values))
+        # nt.assert_array_equal(
+        #     ds2["variant_filter"], np.ones((num_variants, 1), dtype=bool)
+        # )
+        # assert list(ds2["filter_id"].values) == ["PASS"]
 
     def test_msprime_sim(self, tmp_path, fx_msprime_sim):
         self.assert_bio2zarr_rt(tmp_path, fx_msprime_sim)

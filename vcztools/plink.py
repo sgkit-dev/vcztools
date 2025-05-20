@@ -2,6 +2,8 @@
 Convert VCZ to plink 1 binary format.
 """
 
+import pathlib
+
 import numpy as np
 import pandas as pd
 import zarr
@@ -46,10 +48,17 @@ def generate_bim(root, a12_allele):
     allele_1 = alleles[np.arange(num_variants), a12_allele[:, 0]]
     single_allele_sites = np.where(a12_allele[:, 0] == -1)
     allele_1[single_allele_sites] = "0"
+
+    num_variants = np.sum(select)
+    if "variant_id" in root:
+        variant_id = root["variant_id"][:][select]
+    else:
+        variant_id = np.array(["."] * num_variants, dtype="S")
+
     df = pd.DataFrame(
         {
             "Chrom": contig_id[root["variant_contig"][:][select]],
-            "VariantId": root["variant_id"][:][select],
+            "VariantId": variant_id,
             "GeneticPosition": np.zeros(np.sum(select), dtype=int),
             "Position": root["variant_position"][:][select],
             "Allele1": allele_1,
@@ -138,3 +147,17 @@ class Writer:
 
         with open(self.fam_path, "w") as f:
             f.write(generate_fam(self.root))
+
+
+def write_plink(vcz_path, out, include=None, exclude=None):
+    out_prefix = pathlib.Path(out)
+    # out_prefix.mkdir(exist_ok=True)
+    writer = Writer(
+        vcz_path,
+        bed_path=out_prefix.with_suffix(".bed"),
+        fam_path=out_prefix.with_suffix(".fam"),
+        bim_path=out_prefix.with_suffix(".bim"),
+        include=include,
+        exclude=exclude,
+    )
+    writer.run()

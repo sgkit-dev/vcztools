@@ -27,9 +27,19 @@ class UnsupportedFilteringFeatureError(ValueError):
         )
 
 
-class UnsupportedRegexError(UnsupportedFilteringFeatureError):
-    issue = "174"
-    feature = "Regular expressions"
+class UnsupportedMissingDataError(UnsupportedFilteringFeatureError):
+    issue = "163"
+    feature = "Missing data"
+
+
+class UnsupportedFilterFieldError(UnsupportedFilteringFeatureError):
+    issue = "164"
+    feature = "FILTER field"
+
+
+class UnsupportedGenotypeValuesError(UnsupportedFilteringFeatureError):
+    issue = "165"
+    feature = "Genotype values"
 
 
 class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
@@ -37,14 +47,24 @@ class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
     feature = "Array subscripts"
 
 
-class UnsupportedStringsError(UnsupportedFilteringFeatureError):
-    issue = "189"
-    feature = "String values temporarily removed"
+class UnsupportedRegexError(UnsupportedFilteringFeatureError):
+    issue = "174"
+    feature = "Regular expressions"
 
 
 class UnsupportedFileReferenceError(UnsupportedFilteringFeatureError):
     issue = "175"
     feature = "File references"
+
+
+class UnsupportedChromFieldError(UnsupportedFilteringFeatureError):
+    issue = "178"
+    feature = "CHROM field"
+
+
+class UnsupportedStringsError(UnsupportedFilteringFeatureError):
+    issue = "189"
+    feature = "String values temporarily removed"
 
 
 class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
@@ -89,7 +109,11 @@ class Number(Constant):
 
 class String(Constant):
     def __init__(self, tokens):
-        raise UnsupportedStringsError()
+        super().__init__(tokens)
+        if self.tokens == ".":
+            raise UnsupportedMissingDataError()
+        else:
+            raise UnsupportedStringsError()
 
 
 class FileReference(Constant):
@@ -104,8 +128,15 @@ class Function(EvaluationNode):
 
 class Identifier(EvaluationNode):
     def __init__(self, mapper, tokens):
-        self.field_name = mapper(tokens[0])
-        logger.debug(f"Mapped {tokens[0]} to {self.field_name}")
+        token = tokens[0]
+        if token == "CHROM":
+            raise UnsupportedChromFieldError()
+        elif token == "FILTER":
+            raise UnsupportedFilterFieldError()
+        elif token == "GT":
+            raise UnsupportedGenotypeValuesError()
+        self.field_name = mapper(token)
+        logger.debug(f"Mapped {token} to {self.field_name}")
 
     def eval(self, data):
         value = np.asarray(data[self.field_name])

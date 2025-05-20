@@ -35,8 +35,9 @@ class TestFilterExpressionParser:
             # generic string issue. Can fix this later when we've gotten
             # some partial string handling implemented
             ("INFO/HAYSTACK ~ 0", filter_mod.UnsupportedRegexError),
-            ('CHROM="1"', filter_mod.UnsupportedStringsError),
-            ('FILTER="PASS"', filter_mod.UnsupportedStringsError),
+            ('CHROM="1"', filter_mod.UnsupportedChromFieldError),
+            ('DP="."', filter_mod.UnsupportedMissingDataError),
+            ('FILTER="PASS"', filter_mod.UnsupportedFilterFieldError),
             ("ID!=@~/file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/TAG=@file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/X[0] == 1", filter_mod.UnsupportedArraySubscriptError),

@@ -52,6 +52,8 @@ dev = [
   "cyvcf2",
   "pytest",
   "pytest-cov",
+  "msprime",
+  "sgkit",
 ]
 
 [tool.setuptools]

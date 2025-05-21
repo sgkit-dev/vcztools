@@ -748,10 +748,13 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
         source_offset = 0;
         for (j = 0; j < filter_id.num_columns; j++) {
             if (data[j]) {
+                source_offset = j * filter_id.item_size;
                 if (!first) {
                     offset = append_char(buf, ';', offset, buflen);
+                    if (offset < 0) {
+                        goto out;
+                    }
                 }
-                    source_offset = j * filter_id.item_size;
                 for (k = 0; k < filter_id.item_size; k++) {
                     if (filter_id_data[source_offset] == VCZ_STRING_FILL) {
                         break;

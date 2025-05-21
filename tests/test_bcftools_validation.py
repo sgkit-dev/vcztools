@@ -93,10 +93,22 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
             "view --no-version -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
             "sample.vcf.gz"
         ),
+        (
+            "view --no-version -i 'FILTER=\"VQSRTrancheSNP99.80to100.00\"'",
+            "1kg_2020_chrM.vcf.gz"
+        ),
+        (
+            "view --no-version -i 'FILTER!=\"VQSRTrancheSNP99.80to100.00\"'",
+            "1kg_2020_chrM.vcf.gz"
+        ),
+        (
+            "view --no-version -i 'FILTER~\"VQSRTrancheINDEL99.00to100.00\"'",
+            "1kg_2020_chrM.vcf.gz"
+        ),
     ],
     # This is necessary when trying to run individual tests, as the arguments above
     # make for unworkable command lines
-    # ids=range(28),
+    # ids=range(36),
 )
 # fmt: on
 def test_vcf_output(tmp_path, args, vcf_file):
@@ -187,23 +199,23 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         # Per-sample query tests
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/DP>3'",
-            "sample.vcf.gz"
+            "sample.vcf.gz",
         ),
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/GQ>30'",
-            "sample.vcf.gz"
+            "sample.vcf.gz",
         ),
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/DP>3 & FMT/GQ>30'",
-            "sample.vcf.gz"
+            "sample.vcf.gz",
         ),
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/DP>3 && FMT/GQ>30'",  # noqa: E501
-            "sample.vcf.gz"
+            "sample.vcf.gz",
         ),
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
-            "sample.vcf.gz"
+            "sample.vcf.gz",
         ),
     ],
 )

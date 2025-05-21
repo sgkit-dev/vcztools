@@ -37,7 +37,6 @@ class TestFilterExpressionParser:
             ("INFO/HAYSTACK ~ 0", filter_mod.UnsupportedRegexError),
             ('CHROM="1"', filter_mod.UnsupportedChromFieldError),
             ('DP="."', filter_mod.UnsupportedMissingDataError),
-            ('FILTER="PASS"', filter_mod.UnsupportedFilterFieldError),
             ("ID!=@~/file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/TAG=@file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/X[0] == 1", filter_mod.UnsupportedArraySubscriptError),
@@ -195,6 +194,38 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate(self, expression, data, expected):
+        fee = filter_mod.FilterExpression(include=expression)
+        result = fee.evaluate(numpify_values(data))
+        nt.assert_array_equal(result, expected)
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ('FILTER="PASS"', [False, True, False, False, False, False]),
+            ('FILTER="."', [True, False, False, False, False, False]),
+            ('FILTER="A"', [False, False, True, False, False, False]),
+            ('FILTER!="A"', [True, True, False, True, True, True]),
+            ('FILTER~"A"', [False, False, True, False, True, True]),
+            ('FILTER="A;B"', [False, False, False, False, True, False]),
+            ('FILTER="B;A"', [False, False, False, False, True, False]),
+            ('FILTER!="A;B"', [True, True, True, True, False, True]),
+            ('FILTER~"A;B"', [False, False, False, False, True, True]),
+            ('FILTER~"B;A"', [False, False, False, False, True, True]),
+            ('FILTER!~"A;B"', [True, True, True, True, False, False]),
+        ],
+    )
+    def test_evaluate_filter_comparison(self, expression, expected):
+        data = {
+            "variant_filter": [
+                [False, False, False, False],
+                [True, False, False, False],
+                [False, True, False, False],
+                [False, False, True, False],
+                [False, True, True, False],
+                [False, True, True, True],
+            ],
+            "filter_id": ["PASS", "A", "B", "C"],
+        }
         fee = filter_mod.FilterExpression(include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)

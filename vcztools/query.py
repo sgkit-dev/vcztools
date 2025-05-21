@@ -132,6 +132,7 @@ class QueryFormatGenerator:
             array = chunk_data[vcz_name]
             for row in array:
                 is_missing = np.any(row == -1)
+                sep = ","
 
                 if tag == "CHROM":
                     row = self.contig_ids[row]
@@ -144,6 +145,7 @@ class QueryFormatGenerator:
                         row = self.filter_ids[row]
                     else:
                         row = "."
+                    sep = ";"
                 if tag == "QUAL":
                     if math.isnan(row):
                         row = "."
@@ -154,7 +156,7 @@ class QueryFormatGenerator:
                     and not sample_loop
                     and (isinstance(row, np.ndarray) or isinstance(row, list))
                 ):
-                    row = ",".join(map(str, row))
+                    row = sep.join(map(str, row))
 
                 if sample_loop:
                     if isinstance(row, np.ndarray):

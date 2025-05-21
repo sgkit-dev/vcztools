@@ -51,6 +51,7 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         # ("view --no-version -i 'ID == \"rs6054257\"'", "sample.vcf.gz"),
         ("view --no-version -i 'DB=0'", "sample.vcf.gz"),
         ("view --no-version -i 'DB=1'", "sample.vcf.gz"),
+        ("view --no-version -i 'FILTER=\"PASS\"'", "sample.vcf.gz"),
         ("view --no-version -i 'INFO/DP > 10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP >= 5 && FMT/GQ > 10'", "sample.vcf.gz"),
@@ -91,7 +92,7 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         (
             "view --no-version -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
             "sample.vcf.gz"
-        )
+        ),
     ],
     # This is necessary when trying to run individual tests, as the arguments above
     # make for unworkable command lines
@@ -182,6 +183,7 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         # (r"query  -f '%AC{1}\n' -i 'AC[1]>10' ", "sample.vcf.gz"),
         # TODO fill-out more of these when supported for more stuff is available
         # in filtering
+        ("query -f '%CHROM %POS %FILTER\n' -i 'FILTER=\"PASS\"'", "sample.vcf.gz"),
         # Per-sample query tests
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/DP>3'",

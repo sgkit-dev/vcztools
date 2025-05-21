@@ -729,6 +729,7 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
 {
     const vcz_field_t filter_id = self->filter_id;
     bool all_missing = true;
+    bool first = true;
     const int8_t *restrict data = self->filter_data + (variant * filter_id.num_columns);
     const char *filter_id_data = (const char *) self->filter_id.data;
     size_t j, k, source_offset;
@@ -747,7 +748,10 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
         source_offset = 0;
         for (j = 0; j < filter_id.num_columns; j++) {
             if (data[j]) {
-                source_offset = j * filter_id.item_size;
+                if (!first) {
+                    offset = append_char(buf, ';', offset, buflen);
+                }
+                    source_offset = j * filter_id.item_size;
                 for (k = 0; k < filter_id.item_size; k++) {
                     if (filter_id_data[source_offset] == VCZ_STRING_FILL) {
                         break;
@@ -758,6 +762,7 @@ vcz_variant_encoder_write_filter(const vcz_variant_encoder_t *self, size_t varia
                         goto out;
                     }
                     source_offset++;
+                    first = false;
                 }
             }
         }

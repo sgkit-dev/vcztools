@@ -32,11 +32,6 @@ class UnsupportedMissingDataError(UnsupportedFilteringFeatureError):
     feature = "Missing data"
 
 
-class UnsupportedFilterFieldError(UnsupportedFilteringFeatureError):
-    issue = "164"
-    feature = "FILTER field"
-
-
 class UnsupportedGenotypeValuesError(UnsupportedFilteringFeatureError):
     issue = "165"
     feature = "Genotype values"
@@ -131,8 +126,6 @@ class Identifier(EvaluationNode):
         token = tokens[0]
         if token == "CHROM":
             raise UnsupportedChromFieldError()
-        elif token == "FILTER":
-            raise UnsupportedFilterFieldError()
         elif token == "GT":
             raise UnsupportedGenotypeValuesError()
         self.field_name = mapper(token)
@@ -140,7 +133,11 @@ class Identifier(EvaluationNode):
 
     def eval(self, data):
         value = np.asarray(data[self.field_name])
-        if not self.field_name.startswith("call_") and len(value.shape) > 1:
+        if (
+            not self.field_name.startswith("call_")
+            and self.field_name != "variant_filter"
+            and len(value.shape) > 1
+        ):
             raise Unsupported2DFieldsError()
         return value
 
@@ -301,6 +298,69 @@ class ComparisonOperator(EvaluationNode):
         return op1.referenced_fields() | op2.referenced_fields()
 
 
+# FILTER field expressions have special set-like semantics
+# so they are handled by dedicated operators.
+
+
+class FilterString(Constant):
+    def __init__(self, tokens):
+        super().__init__(tokens)
+
+    def eval(self, data):
+        # convert string to a 1D boolean array (one element per filter)
+        if self.tokens == ".":
+            return np.zeros_like(data["filter_id"], dtype=bool)
+        filters = self.tokens.split(";")
+        return np.isin(data["filter_id"], filters)
+
+    def referenced_fields(self):
+        return frozenset(["filter_id"])
+
+
+# 'a' is a 2D boolean array with shape (variants, filters)
+# 'b' is a 1D boolean array with shape (filters)
+
+
+def filter_eq(a, b):
+    return np.all(a == b, axis=1)
+
+
+def filter_ne(a, b):
+    return ~filter_eq(a, b)
+
+
+def filter_subset_match(a, b):
+    return np.all(a[:, b], axis=1)
+
+
+def filter_complement_match(a, b):
+    return ~filter_subset_match(a, b)
+
+
+class FilterFieldOperator(EvaluationNode):
+    op_map = {
+        "=": filter_eq,
+        "==": filter_eq,
+        "!=": filter_ne,
+        "~": filter_subset_match,
+        "!~": filter_complement_match,
+    }
+
+    def __init__(self, tokens):
+        super().__init__(tokens)
+        self.op1, self.op, self.op2 = tokens  # not self.tokens
+        self.comparison_fn = self.op_map[self.op]
+
+    def eval(self, data):
+        return self.comparison_fn(self.op1.eval(data), self.op2.eval(data))
+
+    def __repr__(self):
+        return f"({repr(self.op1)}){self.op}({repr(self.op2)})"
+
+    def referenced_fields(self):
+        return self.op1.referenced_fields() | self.op2.referenced_fields()
+
+
 def _identity(x):
     return x
 
@@ -321,6 +381,18 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
     vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
 
+    name_mapper = _identity
+    if map_vcf_identifiers:
+        name_mapper = functools.partial(vcf_name_to_vcz_name, all_fields)
+
+    filter_field_identifier = pp.Literal("FILTER")
+    filter_field_identifier = filter_field_identifier.set_parse_action(
+        functools.partial(Identifier, name_mapper)
+    )
+    filter_string = pp.QuotedString('"').set_parse_action(FilterString)
+    filter_field_expr = filter_field_identifier + pp.one_of("= != ~ !~") + filter_string
+    filter_field_expr = filter_field_expr.set_parse_action(FilterFieldOperator)
+
     lbracket, rbracket = map(pp.Suppress, "[]")
     # TODO we need to define the indexing grammar more carefully, but
     # this at least let's us match correct strings and raise an informative
@@ -334,9 +406,6 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     )
     indexed_identifier = pp.Group(vcf_identifier + (lbracket + index_expr + rbracket))
 
-    name_mapper = _identity
-    if map_vcf_identifiers:
-        name_mapper = functools.partial(vcf_name_to_vcz_name, all_fields)
     identifier = vcf_identifier.set_parse_action(
         functools.partial(Identifier, name_mapper)
     )
@@ -350,7 +419,12 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
 
     comp_op = pp.oneOf("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
-        function | constant | indexed_identifier | identifier | file_expr,
+        filter_field_expr
+        | function
+        | constant
+        | indexed_identifier
+        | identifier
+        | file_expr,
         [
             ("-", 1, pp.OpAssoc.RIGHT, UnaryMinus),
             (pp.one_of("* /"), 2, pp.OpAssoc.LEFT, BinaryOperator),

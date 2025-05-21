@@ -50,10 +50,10 @@ validate_encoder(
     /* vcz_variant_encoder_print_state(encoder, stdout); */
 
     for (j = 0; j < num_rows; j++) {
-        /* We need space for the NULL byte as well */
-        min_len = (int64_t) strlen(expected[j]) + 1;
         /* printf("expected: %s\n", expected[j]); */
 
+        /* We need space for the NULL byte as well */
+        min_len = (int64_t) strlen(expected[j]) + 1;
         for (buflen = 0; buflen < min_len; buflen++) {
             buf = malloc((size_t) buflen);
             CU_ASSERT_FATAL(buf != NULL);
@@ -61,23 +61,25 @@ validate_encoder(
             free(buf);
             CU_ASSERT_FATAL(ret == VCZ_ERR_BUFFER_OVERFLOW);
         }
+
         buflen = min_len;
         buf = malloc((size_t) buflen);
         CU_ASSERT_FATAL(buf != NULL);
         ret = vcz_variant_encoder_encode(encoder, j, buf, (size_t) buflen);
-        /* printf("ret = %d\n", (int) ret); */
-        /* printf("GOT:'%s'\n", buf); */
-        /* printf("EXP:'%s'\n", expected[j]); */
-        /* printf("GOT:%d\n", (int) strlen(buf)); */
-        /* printf("EXP:%d\n", (int) strlen(expected[j])); */
-        /* int64_t c; */
-        /* for (c = 0; c < ret; c++) { */
-        /*     if (buf[c] != expected[j][c]) { */
-        /*         printf("Mismatch at %d: %c != %c\n", (int) c, buf[c], expected[j][c]);
-         */
+        /*
+        printf("ret = %d\n", (int) ret);
+        printf("GOT:'%s'\n", buf);
+        printf("EXP:'%s'\n", expected[j]);
+        printf("GOT:%d\n", (int) strlen(buf));
+        printf("EXP:%d\n", (int) strlen(expected[j]));
+        int64_t c;
+        for (c = 0; c < ret; c++) {
+            if (buf[c] != expected[j][c]) {
+                printf("Mismatch at %d: %c != %c\n", (int) c, buf[c], expected[j][c]);
 
-        /*     } */
-        /* } */
+            }
+        }
+        */
         CU_ASSERT_EQUAL_FATAL(ret, strlen(expected[j]));
         CU_ASSERT_NSTRING_EQUAL_FATAL(buf, expected[j], ret);
         free(buf);
@@ -370,7 +372,7 @@ test_variant_encoder_minimal(void)
     const char alt_data[] = "T";
     const float qual_data[] = { 9, 12.1f };
     const char filter_id_data[] = "PASS\0FILT1";
-    const int8_t filter_data[] = { 1, 0, 0, 1 };
+    const int8_t filter_data[] = { 1, 1, 0, 1 };
     const int32_t an_data[] = { -1, 9 };
     const char *aa_data = "G.";
     const int8_t flag_data[] = { 0, 1 };
@@ -381,7 +383,7 @@ test_variant_encoder_minimal(void)
     int64_t ret;
     vcz_variant_encoder_t writer;
     const char *expected[] = {
-        "X\t123\tRS1\tA\tT\t9\tPASS\tAA=G\tGT:HQ:GL\t0/0:10,15:1,2\t0|1:7,12:3,4",
+        "X\t123\tRS1\tA\tT\t9\tPASS;FILT1\tAA=G\tGT:HQ:GL\t0/0:10,15:1,2\t0|1:7,12:3,4",
         "YY\t45678\tRS2\tG\t.\t12.1\tFILT1\tAN=9;FLAG\tGT:GL\t1|1:1.1,1.2\t1/0:1.3,1.4",
     };
 

@@ -285,20 +285,25 @@ def test_query_logic_precendence(tmp_path, expr, expected):
     assert num_lines == int(expected)
 
 
+# fmt: off
 @pytest.mark.parametrize(
-    ("args", "vcf_name"),
+    ("args", "vcf_name", "bcftools_error_string"),
     [
-        ("index -ns", "sample.vcf.gz"),
-        ("query -f '%POS\n' -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz"),
-        ("view -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz"),
+        ("index -ns", "sample.vcf.gz", True),
+        ("query -f '%POS\n' -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz", True),  # noqa: E501
+        ("view -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz", True),
+        # bcftools output does not start with "Error"
+        ("view -i 'FILTER=\"F\"'", "sample.vcf.gz", False),
     ],
 )
-def test_error(tmp_path, args, vcf_name):
+# fmt: on
+def test_error(tmp_path, args, vcf_name, bcftools_error_string):
     vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
     vcz_path = vcz_path_cache(vcf_path)
 
     _, bcftools_error = run_bcftools(f"{args} {vcf_path}", expect_error=True)
-    assert bcftools_error.startswith("Error:") or bcftools_error.startswith("[E::")
+    if bcftools_error_string:
+        assert bcftools_error.startswith("Error:") or bcftools_error.startswith("[E::")
 
     _, vcztools_error = run_vcztools(f"{args} {vcz_path}", expect_error=True)
     assert "Error:" in vcztools_error

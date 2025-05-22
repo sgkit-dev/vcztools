@@ -311,6 +311,9 @@ class FilterString(Constant):
         if self.tokens == ".":
             return np.zeros_like(data["filter_id"], dtype=bool)
         filters = self.tokens.split(";")
+        for filter in filters:
+            if filter not in data["filter_id"]:
+                raise ValueError(f'The filter "{filter}" is not present in header')
         return np.isin(data["filter_id"], filters)
 
     def referenced_fields(self):

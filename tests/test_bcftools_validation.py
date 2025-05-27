@@ -70,6 +70,8 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
                 "view --no-version -e '(FMT/DP >= 8 | FMT/GQ>40) && POS > 100000'",
                 "sample.vcf.gz"
         ),
+        ("view --no-version -i 'TYPE=\"ref\"'", "sample.vcf.gz"),
+        ("view --no-version -i 'TYPE=\"snp\"'", "sample.vcf.gz"),
         ("view --no-version -G", "sample.vcf.gz"),
         (
                 "view --no-update --no-version --samples-file "

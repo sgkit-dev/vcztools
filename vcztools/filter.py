@@ -57,9 +57,9 @@ class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
     feature = "Function evaluation"
 
 
-class Unsupported2DFieldsError(UnsupportedFilteringFeatureError):
-    issue = "193"
-    feature = "2D INFO fields"
+class UnsupportedHigherDimensionalFormatFieldsError(UnsupportedFilteringFeatureError):
+    issue = "193"  # TODO create new issue
+    feature = "Higher dimensional FORMAT fields"
 
 
 # The parser and evaluation model here are based on the eval_arith example
@@ -119,12 +119,8 @@ class Identifier(EvaluationNode):
 
     def eval(self, data):
         value = np.asarray(data[self.field_name])
-        if (
-            not self.field_name.startswith("call_")
-            and self.field_name != "variant_filter"
-            and len(value.shape) > 1
-        ):
-            raise Unsupported2DFieldsError()
+        if self.field_name.startswith("call_") and len(value.shape) > 2:
+            raise UnsupportedHigherDimensionalFormatFieldsError()
         return value
 
     def __repr__(self):

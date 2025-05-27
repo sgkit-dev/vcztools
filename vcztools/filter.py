@@ -155,23 +155,23 @@ class RegexOperator(EvaluationNode):
 
 # NOTE we should perhaps add a Operator superclass of UnaryMinus,
 # BinaryOperator and ComparisonOperator to reduce duplication
-# when doing things like referenced_fields. We should probably
-# be extracting the operators and operands once.
+# when doing things like referenced_fields.
 
 
 class UnaryMinus(EvaluationNode):
+    def __init__(self, tokens):
+        super().__init__(tokens)
+        self.op, self.operand = self.tokens
+        assert self.op == "-"
+
     def eval(self, data):
-        op, operand = self.tokens
-        assert op == "-"
-        return -1 * operand.eval(data)
+        return -1 * self.operand.eval(data)
 
     def __repr__(self):
-        _, operand = self.tokens
-        return f"-({repr(operand)})"
+        return f"-({repr(self.operand)})"
 
     def referenced_fields(self):
-        _, operand = self.tokens
-        return operand.referenced_fields()
+        return self.operand.referenced_fields()
 
 
 def double_and(a, b):
@@ -239,29 +239,29 @@ class BinaryOperator(EvaluationNode):
         "||": double_or,
     }
 
-    def eval(self, data):
+    def __init__(self, tokens):
+        super().__init__(tokens)
         # get the  operators and operands in pairs
-        operands = self.tokens[0::2]
-        ops = self.tokens[1::2]
+        self.operands = self.tokens[0::2]
+        self.ops = self.tokens[1::2]
+
+    def eval(self, data):
         # start by eval()'ing the first operand
-        ret = operands[0].eval(data)
-        for op, operand in zip(ops, operands[1:]):
+        ret = self.operands[0].eval(data)
+        for op, operand in zip(self.ops, self.operands[1:]):
             arith_fn = self.op_map[op]
             ret = arith_fn(ret, operand.eval(data))
         return ret
 
     def __repr__(self):
-        ops = self.tokens[1::2]
-        operands = self.tokens[0::2]
-        ret = f"({repr(operands[0])})"
-        for op, operand in zip(ops, operands[1:]):
+        ret = f"({repr(self.operands[0])})"
+        for op, operand in zip(self.ops, self.operands[1:]):
             ret += f"{op}({repr(operand)})"
         return ret
 
     def referenced_fields(self):
-        operands = self.tokens[0::2]
-        ret = operands[0].referenced_fields()
-        for operand in operands[1:]:
+        ret = self.operands[0].referenced_fields()
+        for operand in self.operands[1:]:
             ret |= operand.referenced_fields()
         return ret
 
@@ -277,18 +277,19 @@ class ComparisonOperator(EvaluationNode):
         "<=": operator.le,
     }
 
+    def __init__(self, tokens):
+        super().__init__(tokens)
+        self.op1, self.op, self.op2 = self.tokens
+        self.comparison_fn = self.op_map[self.op]
+
     def eval(self, data):
-        op1, op, op2 = self.tokens
-        comparison_fn = self.op_map[op]
-        return comparison_fn(op1.eval(data), op2.eval(data))
+        return self.comparison_fn(self.op1.eval(data), self.op2.eval(data))
 
     def __repr__(self):
-        op1, op, op2 = self.tokens
-        return f"({repr(op1)}){op}({repr(op2)})"
+        return f"({repr(self.op1)}){self.op}({repr(self.op2)})"
 
     def referenced_fields(self):
-        op1, _, op2 = self.tokens
-        return op1.referenced_fields() | op2.referenced_fields()
+        return self.op1.referenced_fields() | self.op2.referenced_fields()
 
 
 # FILTER field expressions have special set-like semantics

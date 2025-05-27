@@ -52,11 +52,6 @@ class UnsupportedFileReferenceError(UnsupportedFilteringFeatureError):
     feature = "File references"
 
 
-class UnsupportedChromFieldError(UnsupportedFilteringFeatureError):
-    issue = "178"
-    feature = "CHROM field"
-
-
 class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
     issue = "190"
     feature = "Function evaluation"
@@ -117,9 +112,7 @@ class Function(EvaluationNode):
 class Identifier(EvaluationNode):
     def __init__(self, mapper, tokens):
         token = tokens[0]
-        if token == "CHROM":
-            raise UnsupportedChromFieldError()
-        elif token == "GT":
+        if token == "GT":
             raise UnsupportedGenotypeValuesError()
         self.field_name = mapper(token)
         logger.debug(f"Mapped {token} to {self.field_name}")
@@ -292,6 +285,47 @@ class ComparisonOperator(EvaluationNode):
         return self.op1.referenced_fields() | self.op2.referenced_fields()
 
 
+# CHROM field expressions are translated to contig IDs to avoid string
+# comparisons for every variant site
+
+
+class ChromString(Constant):
+    def __init__(self, tokens):
+        super().__init__(tokens)
+
+    def eval(self, data):
+        contig_ids = list(data["contig_id"])
+        try:
+            return contig_ids.index(self.tokens)
+        except ValueError:
+            return -1  # won't match anything
+
+    def referenced_fields(self):
+        return frozenset(["contig_id"])
+
+
+class ChromFieldOperator(EvaluationNode):
+    op_map = {
+        "=": operator.eq,
+        "==": operator.eq,
+        "!=": operator.ne,
+    }
+
+    def __init__(self, tokens):
+        super().__init__(tokens)
+        self.op1, self.op, self.op2 = tokens  # not self.tokens
+        self.comparison_fn = self.op_map[self.op]
+
+    def eval(self, data):
+        return self.comparison_fn(self.op1.eval(data), self.op2.eval(data))
+
+    def __repr__(self):
+        return f"({repr(self.op1)}){self.op}({repr(self.op2)})"
+
+    def referenced_fields(self):
+        return self.op1.referenced_fields() | self.op2.referenced_fields()
+
+
 # FILTER field expressions have special set-like semantics
 # so they are handled by dedicated operators.
 
@@ -382,6 +416,14 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     if map_vcf_identifiers:
         name_mapper = functools.partial(vcf_name_to_vcz_name, all_fields)
 
+    chrom_field_identifier = pp.Literal("CHROM")
+    chrom_field_identifier = chrom_field_identifier.set_parse_action(
+        functools.partial(Identifier, name_mapper)
+    )
+    chrom_string = pp.QuotedString('"').set_parse_action(ChromString)
+    chrom_field_expr = chrom_field_identifier + pp.one_of("= == !=") + chrom_string
+    chrom_field_expr = chrom_field_expr.set_parse_action(ChromFieldOperator)
+
     filter_field_identifier = pp.Literal("FILTER")
     filter_field_identifier = filter_field_identifier.set_parse_action(
         functools.partial(Identifier, name_mapper)
@@ -416,7 +458,8 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
 
     comp_op = pp.oneOf("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
-        filter_field_expr
+        chrom_field_expr
+        | filter_field_expr
         | function
         | constant
         | indexed_identifier

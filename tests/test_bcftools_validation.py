@@ -46,6 +46,8 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version", "sample.vcf.gz"),
         ("view --no-version", "chr22.vcf.gz"),
         ("view --no-version", "msprime_diploid.vcf.gz"),
+        ("view --no-version -i 'CHROM == \"20\"'", "sample.vcf.gz"),
+        ("view --no-version -i 'CHROM != \"Z\"'", "sample.vcf.gz"),
         ("view --no-version -i 'ID == \"rs6054257\"'", "sample.vcf.gz"),
         ("view --no-version -i 'DB=0'", "sample.vcf.gz"),
         ("view --no-version -i 'DB=1'", "sample.vcf.gz"),

@@ -35,7 +35,6 @@ class TestFilterExpressionParser:
             # generic string issue. Can fix this later when we've gotten
             # some partial string handling implemented
             ("INFO/HAYSTACK ~ 0", filter_mod.UnsupportedRegexError),
-            ('CHROM="1"', filter_mod.UnsupportedChromFieldError),
             ('DP="."', filter_mod.UnsupportedMissingDataError),
             ("ID!=@~/file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/TAG=@file", filter_mod.UnsupportedFileReferenceError),
@@ -68,6 +67,7 @@ class TestFilterExpressionSample:
     @pytest.mark.parametrize(
         ("expression", "expected_result"),
         [
+            ('CHROM = "20"', [0, 0, 1, 1, 1, 1, 1, 1, 0]),
             ("POS < 1000", [1, 1, 0, 0, 0, 0, 0, 0, 1]),
             ("INFO/DP > 10", [0, 0, 1, 1, 0, 1, 0, 0, 0]),
             (

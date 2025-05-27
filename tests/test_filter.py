@@ -56,6 +56,7 @@ class TestFilterExpressionParser:
             ("fisher(INFO/DP4)", filter_mod.UnsupportedFunctionsError),
             ("fisher(FMT/ADF,FMT/ADR)", filter_mod.UnsupportedFunctionsError),
             ("N_PASS(GQ>90)", filter_mod.UnsupportedFunctionsError),
+            ('TYPE="bnd"', filter_mod.UnsupportedTypeFieldError),
         ],
     )
     def test_unsupported_syntax(self, parser, expression, exception_class):
@@ -225,6 +226,36 @@ class TestFilterExpression:
                 [False, True, True, True],
             ],
             "filter_id": ["PASS", "A", "B", "C"],
+        }
+        fee = filter_mod.FilterExpression(include=expression)
+        result = fee.evaluate(numpify_values(data))
+        nt.assert_array_equal(result, expected)
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ('TYPE="ref"', [True, False, False, False, False, False]),
+            ('TYPE=="ref"', [True, False, False, False, False, False]),
+            ('TYPE!="ref"', [False, True, True, True, True, True]),
+            ('TYPE~"ref"', [True, False, False, False, False, False]),
+            ('TYPE!~"ref"', [False, True, True, True, True, True]),
+            ('TYPE="snp"', [False, True, False, False, False, True]),
+            ('TYPE=="snp"', [False, True, False, False, False, True]),
+            ('TYPE!="snp"', [True, False, True, True, True, False]),
+            ('TYPE~"snp"', [False, True, False, False, True, True]),
+            ('TYPE!~"snp"', [True, False, True, True, False, False]),
+        ],
+    )
+    def test_evaluate_type_operation(self, expression, expected):
+        data = {
+            "variant_allele": [
+                ["A", "", "", ""],
+                ["A", "T", "", ""],
+                ["A", "AT", "", ""],
+                ["A", "CT", "", ""],
+                ["A", "T", "CT", ""],
+                ["A", "T", "G", "C"],
+            ],
         }
         fee = filter_mod.FilterExpression(include=expression)
         result = fee.evaluate(numpify_values(data))

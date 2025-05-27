@@ -5,6 +5,8 @@ import operator
 import numpy as np
 import pyparsing as pp
 
+from vcztools.calculate import SNP, calculate_variant_type
+
 from .utils import vcf_name_to_vcz_names
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,11 @@ class UnsupportedMissingDataError(UnsupportedFilteringFeatureError):
 class UnsupportedGenotypeValuesError(UnsupportedFilteringFeatureError):
     issue = "165"
     feature = "Genotype values"
+
+
+class UnsupportedTypeFieldError(UnsupportedFilteringFeatureError):
+    issue = "166"
+    feature = "TYPE field (except 'ref' and 'snp')"
 
 
 class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
@@ -397,6 +404,75 @@ class FilterFieldOperator(EvaluationNode):
         return self.op1.referenced_fields() | self.op2.referenced_fields()
 
 
+def type_eq(a, b):
+    if b == "ref":
+        return np.all(a < 0, axis=1)
+    elif b == "snp":
+        all_a = np.bitwise_and.reduce(a, axis=1)
+        all_a = np.where(all_a < 0, 0, all_a)  # remove missing
+        return np.bitwise_and(all_a, SNP) == SNP
+    else:
+        raise NotImplementedError(f"TYPE comparison not implemented for '{b}'")
+
+
+def type_ne(a, b):
+    return ~type_eq(a, b)
+
+
+def type_subset_match(a, b):
+    if b == "ref":
+        return np.all(a < 0, axis=1)
+    elif b == "snp":
+        any_a = np.where(a < 0, 0, a)  # remove missing
+        any_a = np.bitwise_or.reduce(any_a, axis=1)
+        return np.bitwise_and(any_a, SNP) == SNP
+    else:
+        raise NotImplementedError(f"TYPE comparison not implemented for '{b}'")
+
+
+def type_complement_match(a, b):
+    return ~type_subset_match(a, b)
+
+
+class TypeIdentifier(EvaluationNode):
+    def eval(self, data):
+        variant_allele = np.asarray(data["variant_allele"])
+        variant_type = calculate_variant_type(variant_allele)
+        return variant_type
+
+    def __repr__(self):
+        return "variant_allele"
+
+    def referenced_fields(self):
+        return frozenset(["variant_allele"])
+
+
+class TypeOperator(EvaluationNode):
+    op_map = {
+        "=": type_eq,
+        "==": type_eq,
+        "!=": type_ne,
+        "~": type_subset_match,
+        "!~": type_complement_match,
+    }
+
+    def __init__(self, tokens):
+        super().__init__(tokens)
+        self.op1, self.op, self.op2 = tokens
+        if self.op2 not in ("ref", "snp"):
+            raise UnsupportedTypeFieldError()
+        self.comparison_fn = self.op_map[self.op]
+
+    def eval(self, data):
+        return self.comparison_fn(self.op1.eval(data), self.op2)
+
+    def __repr__(self):
+        return f"({repr(self.op1)}){self.op}({repr(self.op2)})"
+
+    def referenced_fields(self):
+        return self.op1.referenced_fields()
+
+
 def _identity_list(x):
     return [x]
 
@@ -437,6 +513,12 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     filter_field_expr = filter_field_identifier + pp.one_of("= != ~ !~") + filter_string
     filter_field_expr = filter_field_expr.set_parse_action(FilterFieldOperator)
 
+    type_identifier = pp.Literal("TYPE")
+    type_identifier = type_identifier.set_parse_action(TypeIdentifier)
+    type_string = pp.QuotedString('"')
+    type_expr = type_identifier + pp.one_of("= == != ~ !~") + type_string
+    type_expr = type_expr.set_parse_action(TypeOperator)
+
     lbracket, rbracket = map(pp.Suppress, "[]")
     # TODO we need to define the indexing grammar more carefully, but
     # this at least let's us match correct strings and raise an informative
@@ -465,6 +547,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     filter_expression = pp.infix_notation(
         chrom_field_expr
         | filter_field_expr
+        | type_expr
         | function
         | constant
         | indexed_identifier

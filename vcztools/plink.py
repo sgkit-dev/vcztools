@@ -2,8 +2,6 @@
 Convert VCZ to plink 1 binary format.
 """
 
-import pathlib
-
 import numpy as np
 import pandas as pd
 import zarr
@@ -83,12 +81,12 @@ class Writer:
         Returns the a12 alleles for the specified chunk of data.
         """
         max_alleles = alleles.shape[1]
-        if max_alleles != 2:
-            raise ValueError(
-                "Only biallelic VCFs supported currently: "
-                "please comment on https://github.com/sgkit-dev/vcztools/issues/224 "
-                "if this limitation affects you"
-            )
+        # if max_alleles != 2:
+        #     raise ValueError(
+        #         "Only biallelic VCFs supported currently: "
+        #         "please comment on https://github.com/sgkit-dev/vcztools/issues/224 "
+        #         "if this limitation affects you"
+        #     )
         num_variants = G.shape[0]
         num_samples = G.shape[1]
         a12_allele = np.zeros((num_variants, 2), dtype=int) - 1
@@ -155,14 +153,13 @@ class Writer:
             f.write(generate_fam(self.root))
 
 
-def write_plink(vcz_path, out, include=None, exclude=None):
-    out_prefix = pathlib.Path(out)
-    # out_prefix.mkdir(exist_ok=True)
+def write_plink(vcz_path, out_prefix, include=None, exclude=None):
+    out_prefix = str(out_prefix)
     writer = Writer(
         vcz_path,
-        bed_path=out_prefix.with_suffix(".bed"),
-        fam_path=out_prefix.with_suffix(".fam"),
-        bim_path=out_prefix.with_suffix(".bim"),
+        bed_path=out_prefix + ".bed",
+        fam_path=out_prefix + ".fam",
+        bim_path=out_prefix + ".bim",
         include=include,
         exclude=exclude,
     )

@@ -9,13 +9,14 @@ from vcztools.plink import write_plink
 from . import utils
 
 
-def assert_files_identical(path1, path2):
+def assert_files_identical(path1, path2, binary=False):
     """
     Asserts the files are byte-for-byte identical.
     """
-    with open(path1, "rb") as f:
+    mode = "rb" if binary else "r"
+    with open(path1, mode) as f:
         b1 = f.read()
-    with open(path2, "rb") as f:
+    with open(path2, mode) as f:
         b2 = f.read()
     assert b1 == b2
 
@@ -47,7 +48,9 @@ def test_conversion_identical(tmp_path, args, vcf_file):
     vcztools_prefix = str(tmp_path / "vcztools")
     write_plink(vcz, vcztools_prefix)
 
-    for suffix in [".bed", ".fam", ".bim"]:
+    assert_files_identical(plink_prefix + ".bed", vcztools_prefix + ".bed", binary=True)
+
+    for suffix in [".fam", ".bim"]:
         plink_file = plink_prefix + suffix
         vcztools_file = vcztools_prefix + suffix
         assert_files_identical(plink_file, vcztools_file)

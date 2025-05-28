@@ -99,7 +99,7 @@ def fx_diploid_missing_data(tmp_path):
     tables.sites.add_row(2, ancestral_state="A")
     tables.sites.add_row(9, ancestral_state="T")
     tables.mutations.add_row(site=0, node=0, derived_state="G")
-    tables.mutations.add_row(site=1, node=5, derived_state="C")
+    tables.mutations.add_row(site=1, node=3, derived_state="C")
     zarr_path = tmp_path / "sim.vcz"
     ts = tables.tree_sequence()
     model_map = ts.map_to_vcf_model(ploidy=2)
@@ -113,7 +113,7 @@ def test_diploid_missing_data(fx_diploid_missing_data):
         ds.call_genotype.values,
         [
             [[1, 0], [0, 0], [-1, -1]],
-            [[0, 0], [1, 1], [-1, -1]],
+            [[0, 0], [0, 1], [-1, -1]],
         ],
     )
 
@@ -126,18 +126,24 @@ def fx_diploid_multi_allelic(tmp_path):
     #     ┊ ┏┻┓ ┏┻┓ ┊
     # 0.00┊ 0 1 2 3 ┊
     #     0         10
-    #      |       |
-    #  pos 2       9
-    #  anc A       T
+    #      |  |    |
+    #  pos 2  4    9
+    #  anc A  G    T
     ts = tskit.Tree.generate_balanced(4, span=10).tree_sequence
     tables = ts.dump_tables()
     tables.sites.add_row(2, ancestral_state="A")
+    tables.sites.add_row(4, ancestral_state="G")
     tables.sites.add_row(9, ancestral_state="T")
     tables.mutations.add_row(site=0, node=0, derived_state="G")
-    tables.mutations.add_row(site=1, node=1, derived_state="G")
-    tables.mutations.add_row(site=1, node=5, derived_state="C")
+    # Two mutations making the ancestral state the minor allele.
+    tables.mutations.add_row(site=1, node=4, derived_state="T")
+    tables.mutations.add_row(site=1, node=2, derived_state="T")
+    tables.mutations.add_row(site=2, node=1, derived_state="G")
+    tables.mutations.add_row(site=2, node=5, derived_state="C")
     zarr_path = tmp_path / "sim.vcz"
     ts = tables.tree_sequence()
+    with open("diploid_multi_allelic.vcf", "w") as f:
+        ts.write_vcf(f, ploidy=2, individual_names=["s0", "s1"])
     model_map = ts.map_to_vcf_model(ploidy=2)
     ts2z.convert(ts, zarr_path, model_mapping=model_map)
     return zarr_path
@@ -146,12 +152,15 @@ def fx_diploid_multi_allelic(tmp_path):
 def test_diploid_multi_allelic(fx_diploid_multi_allelic):
     ds = sg.load_dataset(fx_diploid_multi_allelic)
     # NOTE this example is constructed so that the rarest allele is in the middle
-    # of the alleles array
-    nt.assert_array_equal(ds.variant_allele.values, [["A", "G", ""], ["T", "G", "C"]])
+    # of the alleles array, and it's the first in the third.
+    nt.assert_array_equal(
+        ds.variant_allele.values, [["A", "G", ""], ["G", "T", ""], ["T", "G", "C"]]
+    )
     nt.assert_array_equal(
         ds.call_genotype.values,
         [
             [[1, 0], [0, 0]],
+            [[1, 1], [1, 0]],
             [[0, 1], [2, 2]],
         ],
     )
@@ -263,15 +272,17 @@ def recode_plink_hets(G):
 
 
 class TestPlinkRoundTrip:
-    def assert_bio2zarr_rt(self, tmp_path, tskit_vcz):
-        # import pathlib
-        # tmp_path = pathlib.Path("tmp/plink")
+    def run_bio2zarr_rt(self, tmp_path, tskit_vcz):
         plink_path = tmp_path / "plink"
         write_plink(tskit_vcz, plink_path)
         rt_vcz_path = tmp_path / "rt.vcz"
         p2z.convert(plink_path, rt_vcz_path)
         ds1 = sg.load_dataset(tskit_vcz)
         ds2 = sg.load_dataset(rt_vcz_path)
+        return ds1, ds2
+
+    def assert_bio2zarr_rt(self, tmp_path, tskit_vcz):
+        ds1, ds2 = self.run_bio2zarr_rt(tmp_path, tskit_vcz)
 
         assert np.all(ds1["call_genotype_phased"])
         assert np.all(~ds2["call_genotype_phased"])
@@ -279,7 +290,6 @@ class TestPlinkRoundTrip:
         nt.assert_array_equal(
             recode_plink_hets(ds1["call_genotype"].values), ds2["call_genotype"]
         )
-
         drop_fields = [
             "variant_id",
             "variant_id_mask",
@@ -297,6 +307,20 @@ class TestPlinkRoundTrip:
     def test_diploid_missing_data(self, tmp_path, fx_diploid_missing_data):
         self.assert_bio2zarr_rt(tmp_path, fx_diploid_missing_data)
 
+    @pytest.mark.skip("Need a different example")
     def test_diploid_multi_allelic(self, tmp_path, fx_diploid_multi_allelic):
-        with pytest.raises(ValueError, match="Only biallelic VCFs supported"):
-            self.assert_bio2zarr_rt(tmp_path, fx_diploid_multi_allelic)
+        _, ds = self.run_bio2zarr_rt(tmp_path, fx_diploid_multi_allelic)
+
+        print(ds.call_genotype.values)
+
+        nt.assert_array_equal(
+            ds.variant_allele.values, [["A", "G"], ["G", "T"], ["T", "C"]]
+        )
+        nt.assert_array_equal(
+            ds.call_genotype.values,
+            [
+                [[0, 1], [0, 0]],
+                [[1, 1], [0, 1]],
+                [[-1, -1], [1, 1]],
+            ],
+        )

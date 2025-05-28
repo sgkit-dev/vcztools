@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.0] - 2025-05-29
+
+Improvements:
+
+- Support filtering by FILTER (#217), CHROM (#223) and general string values (#220)
+- Support regions (-r/-t), filter expressions (-i/-e) and samples (-s) in query command  (#205)
+- Various improvements to support VCZ datasets produced from tskit and plink files by bio2zarr.
+- Use a fully dynamically generated header via ``vcf_meta_information`` attributes
+(#208). Requires vcf-zarr version >= 0.4 (bio2zarr >= 0.1.6) to fully recover the original
+header.
+- Add --version (#197)
+
+Breaking:
+
+- Update minimum Click version to 8.2.0 (#206)
+
 ## [0.0.2] - 2025-04-04
 
 Important bugfixes for filtering language and sample subsetting.

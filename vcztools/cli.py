@@ -111,6 +111,11 @@ class NaturalOrderGroup(click.Group):
 )
 @handle_exception
 def index(path, nrecords, stats):
+    """
+    Query the number of records in a VCZ dataset. This subcommand only
+    implements the --nrecords and --stats options and does not build any
+    indexes.
+    """
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
     if nrecords:
@@ -156,6 +161,15 @@ def query(
     include,
     exclude,
 ):
+    """
+    Transform VCZ into user-defined formats with efficient subsetting and
+    filtering. Intended as a drop-in replacement for bcftools query, where we
+    replace the VCF file path with a VCZ dataset URL.
+
+    This is an early version an not feature complete: if you are missing a
+    particular piece of functionality please open and issue at
+    https://github.com/sgkit-dev/vcztools/issues
+    """
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
@@ -241,6 +255,15 @@ def view(
     include,
     exclude,
 ):
+    """
+    Convert VCZ dataset to VCF with efficient subsetting and filtering.
+    Intended as a drop-in replacement for bcftools view, where
+    we replace the VCF file path with a VCZ dataset URL.
+
+    This is an early version an not feature complete: if you are missing a
+    particular piece of functionality please open and issue at
+    https://github.com/sgkit-dev/vcztools/issues
+    """
     suffix = output.name.split(".")[-1]
     # Exclude suffixes which require bgzipped or BCF output:
     # https://github.com/samtools/htslib/blob/329e7943b7ba3f0af15b0eaa00a367a1ac15bd83/vcf.c#L3815

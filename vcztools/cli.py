@@ -166,8 +166,8 @@ def query(
     filtering. Intended as a drop-in replacement for bcftools query, where we
     replace the VCF file path with a VCZ dataset URL.
 
-    This is an early version an not feature complete: if you are missing a
-    particular piece of functionality please open and issue at
+    This is an early version and not feature complete: if you are missing a
+    particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
     if list_samples:
@@ -260,8 +260,8 @@ def view(
     Intended as a drop-in replacement for bcftools view, where
     we replace the VCF file path with a VCZ dataset URL.
 
-    This is an early version an not feature complete: if you are missing a
-    particular piece of functionality please open and issue at
+    This is an early version and not feature complete: if you are missing a
+    particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
     suffix = output.name.split(".")[-1]

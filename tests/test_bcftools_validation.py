@@ -162,6 +162,7 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         (r"query -f '%CHROM:%POS\n'", "sample.vcf.gz"),
         (r"query -f '[%CHROM %POS %GT\n]'", "sample.vcf.gz"),
         (r"query -f '%INFO/DP\n'", "sample.vcf.gz"),
+        (r"query -f '%DP\n'", "sample.vcf.gz"),
         (r"query -f '%AC{0}\n'", "sample.vcf.gz"),
         (r"query -f '%REF\t%ALT\n'", "sample.vcf.gz"),
         (r"query -f '%ALT{1}\n'", "sample.vcf.gz"),
@@ -291,7 +292,11 @@ def test_query_logic_precendence(tmp_path, expr, expected):
     [
         ("index -ns", "sample.vcf.gz", True),
         ("query -f '%POS\n' -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz", True),  # noqa: E501
+        ("query -f '%GT'", "sample.vcf.gz", True),
+        ("query -f '%HQ'", "sample.vcf.gz", True),
+        ("query -f '%SAMPLE'", "sample.vcf.gz", True),
         ("view -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz", True),
+        ("view -i 'DP > 10'", "sample.vcf.gz", True),
         # bcftools output does not start with "Error"
         ("view -i 'FILTER=\"F\"'", "sample.vcf.gz", False),
     ],

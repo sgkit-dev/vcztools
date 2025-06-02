@@ -194,7 +194,7 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate(self, expression, data, expected):
-        fee = filter_mod.FilterExpression(include=expression)
+        fee = filter_mod.FilterExpression(field_names=data.keys(), include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -240,7 +240,9 @@ class TestFilterExpression:
         ],
     )
     def test_referenced_fields(self, expr, expected):
-        fe = filter_mod.FilterExpression(include=expr)
+        fe = filter_mod.FilterExpression(
+            field_names={f"variant_{x}" for x in "abcd"}, include=expr
+        )
         assert fe.referenced_fields == expected
 
     @pytest.mark.parametrize(
@@ -256,7 +258,9 @@ class TestFilterExpression:
         ],
     )
     def test_repr(self, expr, expected):
-        fe = filter_mod.FilterExpression(include=expr)
+        fe = filter_mod.FilterExpression(
+            field_names={"variant_a", "variant_b"}, include=expr
+        )
         assert repr(fe.parse_result[0]) == expected
 
 

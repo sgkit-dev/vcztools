@@ -9,7 +9,7 @@ import zarr
 
 from vcztools import constants, retrieval
 from vcztools.samples import parse_samples
-from vcztools.utils import vcf_name_to_vcz_name
+from vcztools.utils import vcf_name_to_vcz_names
 
 
 def list_samples(vcz_path, output):
@@ -121,14 +121,35 @@ class QueryFormatGenerator:
         tag = tag[1:]
 
         if tag == "GT":
+            if not sample_loop:
+                raise ValueError(
+                    "no such tag defined: INFO/GT. "
+                    'FORMAT fields must be enclosed in square brackets, e.g. "[ %GT]"'
+                )
             return self._compose_gt_generator()
 
         if tag == "SAMPLE":
+            if not sample_loop:
+                raise ValueError("no such tag defined: INFO/SAMPLE")
             return self._compose_sample_ids_generator()
 
         def generate(chunk_data):
             vcz_names = set(chunk_data.keys())
-            vcz_name = vcf_name_to_vcz_name(vcz_names, tag)
+            vcz_name_matches = vcf_name_to_vcz_names(vcz_names, tag)
+            if len(vcz_name_matches) == 0:
+                raise ValueError(f"No mapping found for '{tag}'")
+            if sample_loop:
+                # FORMAT fields have precedence over INFO fields
+                vcz_name = vcz_name_matches[0]
+            else:
+                # FORMAT fields are not allowed
+                vcz_name = vcz_name_matches[-1]
+                if vcz_name.startswith("call_"):
+                    raise ValueError(
+                        f"no such tag defined: INFO/{tag}. "
+                        "FORMAT fields must be enclosed in square brackets, "
+                        f'e.g. "[ %{tag}]"'
+                    )
             array = chunk_data[vcz_name]
             for row in array:
                 is_missing = np.any(row == -1)

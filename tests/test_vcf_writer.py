@@ -9,7 +9,6 @@ import zarr
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
-from vcztools import filter as filter_mod
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
@@ -401,7 +400,7 @@ class TestApiErrors:
 
     def test_no_output_filter_parse_error(self, vcz):
         output = StringIO()
-        with pytest.raises(filter_mod.ParseError):
+        with pytest.raises(ValueError, match='the tag "Not" is not defined'):
             write_vcf(vcz, output, include="Not a valid expression")
         assert output.getvalue() == ""
 

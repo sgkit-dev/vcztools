@@ -5,7 +5,7 @@ import operator
 import numpy as np
 import pyparsing as pp
 
-from .utils import vcf_name_to_vcz_name
+from .utils import vcf_name_to_vcz_names
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +114,17 @@ class Identifier(EvaluationNode):
         token = tokens[0]
         if token == "GT":
             raise UnsupportedGenotypeValuesError()
-        self.field_name = mapper(token)
-        logger.debug(f"Mapped {token} to {self.field_name}")
+        field_names = mapper(token)
+        if len(field_names) == 0:
+            raise ValueError(f'the tag "{token}" is not defined')
+        elif len(field_names) == 1:
+            self.field_name = field_names[0]
+            logger.debug(f"Mapped {token} to {self.field_name}")
+        else:
+            raise ValueError(
+                f'ambiguous filtering expression: "{token}", '
+                f"both INFO/{token} and FORMAT/{token} are defined"
+            )
 
     def eval(self, data):
         value = np.asarray(data[self.field_name])
@@ -392,8 +401,8 @@ class FilterFieldOperator(EvaluationNode):
         return self.op1.referenced_fields() | self.op2.referenced_fields()
 
 
-def _identity(x):
-    return x
+def _identity_list(x):
+    return [x]
 
 
 def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
@@ -412,9 +421,9 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     vcf_prefixes = pp.Literal("INFO/") | pp.Literal("FORMAT/") | pp.Literal("FMT/")
     vcf_identifier = pp.Combine(vcf_prefixes + identifier) | identifier
 
-    name_mapper = _identity
+    name_mapper = _identity_list
     if map_vcf_identifiers:
-        name_mapper = functools.partial(vcf_name_to_vcz_name, all_fields)
+        name_mapper = functools.partial(vcf_name_to_vcz_names, all_fields)
 
     chrom_field_identifier = pp.Literal("CHROM")
     chrom_field_identifier = chrom_field_identifier.set_parse_action(

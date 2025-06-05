@@ -71,7 +71,17 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
                 "sample.vcf.gz"
         ),
         ("view --no-version -i 'TYPE=\"ref\"'", "sample.vcf.gz"),
+        ("view --no-version -i 'TYPE!=\"ref\"'", "sample.vcf.gz"),
         ("view --no-version -i 'TYPE=\"snp\"'", "sample.vcf.gz"),
+        ("view --no-version -i 'TYPE!=\"snp\"'", "sample.vcf.gz"),
+        # All alleles are SNPs, 14 rows
+        ("view --no-version -i 'TYPE=\"snp\"'", "1kg_2020_chrM.vcf.gz"),
+        # Any allele is a SNP, 22 rows
+        ("view --no-version -i 'TYPE~\"snp\"'", "1kg_2020_chrM.vcf.gz"),
+        # No allele is a SNP, 1 row
+        ("view --no-version -i 'TYPE!~\"snp\"'", "1kg_2020_chrM.vcf.gz"),
+        # Any allele is not a SNP, 9 rows
+        ("view --no-version -i 'TYPE!=\"snp\"'", "1kg_2020_chrM.vcf.gz"),
         ("view --no-version -G", "sample.vcf.gz"),
         (
                 "view --no-update --no-version --samples-file "

@@ -87,42 +87,6 @@ def write_vcf(
     include: str | None = None,
     exclude: str | None = None,
 ) -> None:
-    """Convert a dataset to a VCF file.
-
-    If a VCF header is required and ``vcf_header`` attribute is present in the dataset,
-    it will be used to generate the new VCF header. In this case, any variables in the
-    dataset that are not specified in this header will have corresponding header lines
-    added, and any lines in the header without a corresponding variable in the dataset
-    will be omitted.
-
-    In the case of no ``vcf_header`` attribute, a VCF header will
-    be generated, and will include all variables in the dataset.
-
-    Float fields are written with up to 3 decimal places of precision.
-    Exponent/scientific notation is *not* supported, so values less than
-    ``5e-4`` will be rounded to zero.
-
-    Data is written sequentially to VCF, using C to optimize the write
-    throughput speed.
-
-    Data is loaded into memory in chunks sized according to the chunking along
-    the variants dimension. Chunking in other dimensions (such as samples) is
-    ignored for the purposes of writing VCF. If the dataset is not chunked
-    (because it does not originate from Zarr or Dask, for example), then it
-    will all be loaded into memory at once.
-
-    The output is *not* compressed or indexed. It is therefore recommended to
-    post-process the output using external tools such as ``bgzip(1)``,
-    ``bcftools(1)``, or ``tabix(1)``.
-
-    Parameters
-    ----------
-    input
-        Dataset to convert to VCF.
-    output
-        A path or text file object that the output VCF should be written to.
-    """
-
     root = zarr.open(vcz, mode="r")
 
     with open_file_like(output) as output:

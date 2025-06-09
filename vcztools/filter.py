@@ -58,7 +58,7 @@ class UnsupportedFunctionsError(UnsupportedFilteringFeatureError):
 
 
 class UnsupportedHigherDimensionalFormatFieldsError(UnsupportedFilteringFeatureError):
-    issue = "193"  # TODO create new issue
+    issue = "232"
     feature = "Higher dimensional FORMAT fields"
 
 

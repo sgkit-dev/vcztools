@@ -5,7 +5,13 @@ import operator
 import numpy as np
 import pyparsing as pp
 
-from vcztools.calculate import SNP, calculate_variant_type
+from vcztools.calculate import (
+    SNP,
+    SUPPORTED_CALCULATED_VARIABLES,
+    UNSUPPORTED_CALCULATED_VARIABLES,
+    calculate_if_absent,
+    calculate_variant_type,
+)
 
 from .utils import vcf_name_to_vcz_names
 
@@ -47,6 +53,11 @@ class UnsupportedTypeFieldError(UnsupportedFilteringFeatureError):
 class UnsupportedArraySubscriptError(UnsupportedFilteringFeatureError):
     issue = "167"
     feature = "Array subscripts"
+
+
+class UnsupportedCalculatedVariableError(UnsupportedFilteringFeatureError):
+    issue = "171"
+    feature = "Calculated variables"
 
 
 class UnsupportedRegexError(UnsupportedFilteringFeatureError):
@@ -121,12 +132,19 @@ class Identifier(EvaluationNode):
         token = tokens[0]
         if token == "GT":
             raise UnsupportedGenotypeValuesError()
+        elif token in UNSUPPORTED_CALCULATED_VARIABLES:
+            raise UnsupportedCalculatedVariableError()
         field_names = mapper(token)
         if len(field_names) == 0:
-            raise ValueError(f'the tag "{token}" is not defined')
+            if token in SUPPORTED_CALCULATED_VARIABLES:
+                self.field_name = f"variant_{token}"
+                self.refs = ["variant_position", "call_genotype"]
+            else:
+                raise ValueError(f'the tag "{token}" is not defined')
         elif len(field_names) == 1:
             self.field_name = field_names[0]
             logger.debug(f"Mapped {token} to {self.field_name}")
+            self.refs = [self.field_name]
         else:
             raise ValueError(
                 f'ambiguous filtering expression: "{token}", '
@@ -134,6 +152,7 @@ class Identifier(EvaluationNode):
             )
 
     def eval(self, data):
+        calculate_if_absent(data, self.field_name)
         value = np.asarray(data[self.field_name])
         if self.field_name.startswith("call_") and len(value.shape) > 2:
             raise UnsupportedHigherDimensionalFormatFieldsError()
@@ -143,7 +162,7 @@ class Identifier(EvaluationNode):
         return self.field_name
 
     def referenced_fields(self):
-        return frozenset([self.field_name])
+        return frozenset(self.refs)
 
 
 class IndexedIdentifier(EvaluationNode):

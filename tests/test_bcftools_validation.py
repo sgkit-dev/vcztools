@@ -117,7 +117,10 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
             "view --no-version -i 'FILTER~\"VQSRTrancheINDEL99.00to100.00\"'",
             "1kg_2020_chrM.vcf.gz"
         ),
-        ("view --no-version -i 'INFO/AC>2'", "chr22.vcf.gz")
+        ("view --no-version -i 'INFO/AC>2'", "chr22.vcf.gz"),
+        ("view --no-version -i 'F_MISSING<0.05'", "sample.vcf.gz"),
+        # GT is not in annotations file
+        ("view --no-version -i 'N_MISSING=0'", "1kg_2020_chr20_annotations.bcf"),
     ],
     # This is necessary when trying to run individual tests, as the arguments above
     # make for unworkable command lines

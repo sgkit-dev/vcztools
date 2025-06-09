@@ -17,6 +17,12 @@ def get_variant_type(ref: str, alt: str) -> int:
             return SNP
     elif alt == "<*>" or alt == "<NON_REF>":
         return REF
+    elif (
+        len(ref) > 1
+        and len(ref) == len(alt)
+        and sum([r != a for r, a in zip(ref, alt)]) == 1  # one base differs
+    ):
+        return SNP
     else:
         return UNCLASSIFIED
 

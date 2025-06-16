@@ -10,6 +10,7 @@ from vcztools.regions import (
     regions_to_chunk_indexes,
     regions_to_selection,
 )
+from vcztools.samples import parse_samples
 
 
 # NOTE:  this class is just a skeleton for now. The idea is that this
@@ -209,3 +210,42 @@ def variant_chunk_iter(
         if call_mask is not None:
             chunk_data["call_mask"] = call_mask
         yield chunk_data
+
+
+def variant_iter(
+    vcz,
+    *,
+    fields: list[str] | None = None,
+    regions: str | None = None,
+    targets: str | None = None,
+    include: str | None = None,
+    exclude: str | None = None,
+    samples: str | None = None,
+):
+    """Iterate over variants that overlap the given regions or targets
+    and which match the include/exclude filter expression.
+
+    Only values for the samples specified are returned.
+
+    Returns dicts containing the specified fields keyed by VCF Zarr name.
+
+    By default all fields for all variants and samples are returned.
+    """
+    root = zarr.open(vcz, mode="r")
+    all_samples = root["sample_id"][:]
+    _, samples_selection = parse_samples(samples, all_samples)
+
+    for chunk_data in variant_chunk_iter(
+        root,
+        fields=fields,
+        regions=regions,
+        targets=targets,
+        include=include,
+        exclude=exclude,
+        samples_selection=samples_selection,
+    ):
+        # get first field in chunk_data to find number of variants
+        field = next(iter(chunk_data.values()))
+        num_variants = len(field)
+        for i in range(num_variants):
+            yield {name: chunk_data[name][i] for name in chunk_data.keys()}

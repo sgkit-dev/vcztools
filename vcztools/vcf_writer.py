@@ -78,8 +78,8 @@ def write_vcf(
     header_only: bool = False,
     no_header: bool = False,
     no_version: bool = False,
-    variant_regions=None,
-    variant_targets=None,
+    regions=None,
+    targets=None,
     no_update=None,
     samples=None,
     force_samples: bool = False,
@@ -124,8 +124,8 @@ def write_vcf(
 
         for chunk_data in retrieval.variant_chunk_iter(
             root,
-            variant_regions=variant_regions,
-            variant_targets=variant_targets,
+            regions=regions,
+            targets=targets,
             include=include,
             exclude=exclude,
             samples_selection=samples_selection,

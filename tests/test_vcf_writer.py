@@ -131,7 +131,7 @@ def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos):
     vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    write_vcf(vcz, output, variant_regions=regions, variant_targets=targets)
+    write_vcf(vcz, output, regions=regions, targets=targets)
 
     v = VCF(output)
     variants = list(v)
@@ -245,8 +245,8 @@ def test_write_vcf__regions_samples_filtering(
     write_vcf(
         vcz,
         output,
-        variant_regions=regions,
-        variant_targets=targets,
+        regions=regions,
+        targets=targets,
         samples=samples,
         include=include,
     )

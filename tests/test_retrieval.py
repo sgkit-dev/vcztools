@@ -19,7 +19,7 @@ def test_variant_chunk_iter():
         variant_chunk_iter(
             root,
             fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
-            variant_regions="20:1230236-",
+            regions="20:1230236-",
             include="FMT/DP>3",
             samples_selection=samples_selection,
         )

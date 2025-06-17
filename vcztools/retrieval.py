@@ -67,7 +67,7 @@ def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
     return result
 
 
-def variant_chunk_index_iter(root, variant_regions=None, variant_targets=None):
+def variant_chunk_index_iter(root, regions=None, targets=None):
     """Iterate over variant chunk indexes that overlap the given regions or targets.
 
     Returns tuples of variant chunk indexes and (optional) variant masks.
@@ -77,7 +77,7 @@ def variant_chunk_index_iter(root, variant_regions=None, variant_targets=None):
 
     pos = root["variant_position"]
 
-    if variant_regions is None and variant_targets is None:
+    if regions is None and targets is None:
         num_chunks = pos.cdata_shape[0]
         # no regions or targets selected
         for v_chunk in range(num_chunks):
@@ -86,15 +86,15 @@ def variant_chunk_index_iter(root, variant_regions=None, variant_targets=None):
 
     else:
         contigs_u = root["contig_id"][:].astype("U").tolist()
-        regions = parse_regions(variant_regions, contigs_u)
-        targets, complement = parse_targets(variant_targets, contigs_u)
+        regions_pyranges = parse_regions(regions, contigs_u)
+        targets_pyranges, complement = parse_targets(targets, contigs_u)
 
         # Use the region index to find the chunks that overlap specfied regions or
         # targets
         region_index = root["region_index"][:]
         chunk_indexes = regions_to_chunk_indexes(
-            regions,
-            targets,
+            regions_pyranges,
+            targets_pyranges,
             complement,
             region_index,
         )
@@ -116,8 +116,8 @@ def variant_chunk_index_iter(root, variant_regions=None, variant_targets=None):
 
         # Find the final variant selection
         variant_selection = regions_to_selection(
-            regions,
-            targets,
+            regions_pyranges,
+            targets_pyranges,
             complement,
             region_variant_contig,
             region_variant_position,
@@ -137,8 +137,8 @@ def variant_chunk_index_iter(root, variant_regions=None, variant_targets=None):
 def variant_chunk_index_iter_with_filtering(
     root,
     *,
-    variant_regions=None,
-    variant_targets=None,
+    regions=None,
+    targets=None,
     include: str | None = None,
     exclude: str | None = None,
 ):
@@ -159,9 +159,7 @@ def variant_chunk_index_iter_with_filtering(
         filter_fields = list(filter_expr.referenced_fields)
         filter_fields_reader = VariantChunkReader(root, fields=filter_fields)
 
-    for v_chunk, v_mask_chunk in variant_chunk_index_iter(
-        root, variant_regions, variant_targets
-    ):
+    for v_chunk, v_mask_chunk in variant_chunk_index_iter(root, regions, targets):
         if filter_expr is not None:
             chunk_data = filter_fields_reader[v_chunk]
             v_mask_chunk_filter = filter_expr.evaluate(chunk_data)
@@ -179,8 +177,8 @@ def variant_chunk_iter(
     root,
     *,
     fields: list[str] | None = None,
-    variant_regions=None,
-    variant_targets=None,
+    regions=None,
+    targets=None,
     include: str | None = None,
     exclude: str | None = None,
     samples_selection=None,
@@ -188,8 +186,8 @@ def variant_chunk_iter(
     query_fields_reader = VariantChunkReader(root, fields=fields)
     for v_chunk, v_mask_chunk in variant_chunk_index_iter_with_filtering(
         root,
-        variant_regions=variant_regions,
-        variant_targets=variant_targets,
+        regions=regions,
+        targets=targets,
         include=include,
         exclude=exclude,
     ):

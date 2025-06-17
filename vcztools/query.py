@@ -318,8 +318,8 @@ def write_query(
 
     for chunk_data in retrieval.variant_chunk_iter(
         root,
-        variant_regions=regions,
-        variant_targets=targets,
+        regions=regions,
+        targets=targets,
         include=include,
         exclude=exclude,
         samples_selection=samples_selection,

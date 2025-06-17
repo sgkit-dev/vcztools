@@ -184,6 +184,8 @@ def variant_chunk_iter(
     exclude: str | None = None,
     samples_selection=None,
 ):
+    if fields is not None and len(fields) == 0:
+        return  # empty iterator
     query_fields_reader = VariantChunkReader(root, fields=fields)
     for v_chunk, v_mask_chunk in variant_chunk_index_iter_with_filtering(
         root,

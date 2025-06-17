@@ -35,6 +35,15 @@ def test_variant_chunk_iter():
     nt.assert_array_equal(chunk_data["call_mask"], [[True, False], [False, False]])
 
 
+def test_variant_chunk_iter_empty_fields():
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    root = zarr.open(vcz, mode="r")
+
+    with pytest.raises(StopIteration):
+        print(next(variant_chunk_iter(root, fields=[])))
+
+
 def test_variant_iter():
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
@@ -63,3 +72,11 @@ def test_variant_iter():
 
     with pytest.raises(StopIteration):
         next(iter)
+
+
+def test_variant_iter_empty_fields():
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+
+    with pytest.raises(StopIteration):
+        next(variant_iter(vcz, fields=[]))

@@ -44,25 +44,38 @@ def regions_to_pyranges(
     return PyRanges(chromosomes=chromosomes, starts=starts, ends=ends)
 
 
-def parse_regions(regions: str | None, all_contigs: list[str]) -> PyRanges | None:
-    """Return a PyRanges object from a comma-separated set of region strings."""
+def parse_regions(
+    regions: list[str] | str | None, all_contigs: list[str]
+) -> PyRanges | None:
+    """Return a PyRanges object from a comma-separated set of region strings,
+    or a list of region strings."""
     if regions is None:
         return None
+    elif isinstance(regions, list):
+        regions_list = regions
+    else:
+        regions_list = regions.split(",")
     return regions_to_pyranges(
-        [parse_region_string(region) for region in regions.split(",")], all_contigs
+        [parse_region_string(region) for region in regions_list], all_contigs
     )
 
 
 def parse_targets(
-    targets: str | None, all_contigs: list[str]
+    targets: list[str] | str | None, all_contigs: list[str]
 ) -> tuple[PyRanges | None, bool]:
     """Return a PyRanges object from a comma-separated set of region strings,
-    optionally preceeded by a ^ character to indicate complement."""
+    optionally preceeded by a ^ character to indicate complement,
+    or a list of region strings."""
     if targets is None:
         return None, False
-    complement = targets.startswith("^")
+    elif isinstance(targets, list):
+        targets_list = targets
+        complement = False
+    else:
+        complement = targets.startswith("^")
+        targets_list = (targets[1:] if complement else targets).split(",")
     return (
-        parse_regions(targets[1:] if complement else targets, all_contigs),
+        parse_regions(targets_list, all_contigs),
         complement,
     )
 

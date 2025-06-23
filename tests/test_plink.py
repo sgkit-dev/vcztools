@@ -1,4 +1,5 @@
 import numpy as np
+import numpy.testing as nt
 import pytest
 
 from vcztools import plink
@@ -162,3 +163,22 @@ class TestEncodeGenotypes:
         b1 = encode_genotypes(g, a12)
         b2 = plink.encode_genotypes(g, a12)
         assert b1 == b2
+
+
+class TestReorderAlleles:
+    @pytest.mark.parametrize(
+        ["genotypes", "minor", "major", "reordered"],
+        [
+            ([[0, 0], [0, 1]], 1, 0, [[0, 0], [0, 1]]),
+            ([[1, 1], [1, 0]], 0, 1, [[0, 0], [0, 1]]),
+            ([[2, 2], [2, 1]], 1, 2, [[0, 0], [0, 1]]),
+            ([[2, 2], [2, 0]], 0, 2, [[0, 0], [0, 1]]),
+            ([[0, 0], [-1, 1]], 1, 0, [[0, 0], [-1, 1]]),
+            ([[0, 0], [-2, 1]], 1, 0, [[0, 0], [-2, 1]]),
+        ],
+    )
+    def test_examples(self, genotypes, minor, major, reordered):
+        result = plink.reorder_alleles(np.array(genotypes))
+        assert result[0] == minor
+        assert result[1] == major
+        nt.assert_array_equal(reordered, result[2])

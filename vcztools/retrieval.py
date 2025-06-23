@@ -222,7 +222,7 @@ def variant_iter(
     targets: str | None = None,
     include: str | None = None,
     exclude: str | None = None,
-    samples: str | None = None,
+    samples: list[str] | str | None = None,
 ):
     """Iterate over variants that overlap the given regions or targets
     and which match the include/exclude filter expression.

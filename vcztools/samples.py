@@ -8,9 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 def parse_samples(
-    samples: str | None, all_samples: np.ndarray, *, force_samples: bool = True
+    samples: list[str] | str | None,
+    all_samples: np.ndarray,
+    *,
+    force_samples: bool = True,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Parse a bcftools-style samples string.
+    """Parse a bcftools-style samples string, or a list of sample IDs.
 
     Returns an array of the sample IDs, and an array indicating the selection
     from all samples.
@@ -18,10 +21,14 @@ def parse_samples(
 
     if samples is None:
         return all_samples, None
+    elif isinstance(samples, list):
+        exclude_samples = False
+        sample_ids = np.array(samples)
+    else:
+        exclude_samples = samples.startswith("^")
+        samples = samples.lstrip("^")
+        sample_ids = np.array(samples.split(","))
 
-    exclude_samples = samples.startswith("^")
-    samples = samples.lstrip("^")
-    sample_ids = np.array(samples.split(","))
     if np.all(sample_ids == np.array("")):
         sample_ids = np.empty((0,))
 

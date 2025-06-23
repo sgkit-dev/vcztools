@@ -44,16 +44,20 @@ def test_variant_chunk_iter_empty_fields():
         print(next(variant_chunk_iter(root, fields=[])))
 
 
-def test_variant_iter():
+@pytest.mark.parametrize(
+    ("regions", "samples"),
+    [("20:1230236-", "NA00002,NA00003"), (["20:1230236-"], ["NA00002", "NA00003"])],
+)
+def test_variant_iter(regions, samples):
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
 
     iter = variant_iter(
         vcz,
         fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
-        regions="20:1230236-",
+        regions=regions,
         include="FMT/DP>3",
-        samples="NA00002,NA00003",
+        samples=samples,
     )
 
     variant1 = next(iter)

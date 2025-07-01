@@ -2,8 +2,74 @@ import re
 from typing import Any
 
 import numpy as np
-import pandas as pd
-from pyranges import PyRanges
+
+try:
+    # Use ruranges if installed
+    from ruranges_py import overlaps, subtract
+
+    class GenomicRanges:
+        def __init__(self, contigs, starts, ends):
+            # note that ruranges groups must be unsigned
+            self.contigs = np.ascontiguousarray(contigs, dtype=np.uint64)
+            self.starts = np.ascontiguousarray(starts)
+            self.ends = np.ascontiguousarray(ends)
+
+        def overlaps(self, other: "GenomicRanges"):
+            overlap = overlaps(
+                groups=self.contigs,
+                starts=self.starts,
+                ends=self.ends,
+                groups2=other.contigs,
+                starts2=other.starts,
+                ends2=other.ends,
+            )
+            return overlap[0]  # indices of overlapping regions with self
+
+        def subtract(self, other: "GenomicRanges"):
+            overlap = subtract(
+                groups=self.contigs,
+                starts=self.starts,
+                ends=self.ends,
+                groups2=other.contigs,
+                starts2=other.starts,
+                ends2=other.ends,
+            )
+            return overlap[0]  # indices of overlapping regions with self
+
+        def __str__(self) -> str:
+            return (
+                f"GenomicRanges(contigs={self.contigs}, "
+                f"starts={self.starts}, ends={self.ends})"
+            )
+
+except ImportError:
+    # Otherwise fallback to older pyranges
+    import pandas as pd
+    from pyranges import PyRanges
+
+    class GenomicRanges:
+        def __init__(self, contigs, starts, ends):
+            df = pd.DataFrame(
+                {
+                    "Chromosome": contigs,
+                    "Start": starts,
+                    "End": ends,
+                }
+            )
+            df["index"] = df.index
+            self.pyranges = PyRanges(df)
+
+        def overlaps(self, other: "GenomicRanges"):
+            overlap = self.pyranges.overlap(other.pyranges)
+            if overlap.empty:
+                return np.empty((0,), dtype=np.int64)
+            return overlap.df["index"].to_numpy()
+
+        def subtract(self, other: "GenomicRanges"):
+            overlap = self.pyranges.subtract(other.pyranges)
+            if overlap.empty:
+                return np.empty((0,), dtype=np.int64)
+            return overlap.df["index"].to_numpy()
 
 
 def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
@@ -18,31 +84,6 @@ def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
     else:
         contig = region
         return contig, None, None
-
-
-class GenomicRanges:
-    def __init__(self, contigs, starts, ends):
-        df = pd.DataFrame(
-            {
-                "Chromosome": contigs,
-                "Start": starts,
-                "End": ends,
-            }
-        )
-        df["index"] = df.index
-        self.pyranges = PyRanges(df)
-
-    def overlaps(self, other: "GenomicRanges"):
-        overlap = self.pyranges.overlap(other.pyranges)
-        if overlap.empty:
-            return np.empty((0,), dtype=np.int64)
-        return overlap.df["index"].to_numpy()
-
-    def subtract(self, other: "GenomicRanges"):
-        overlap = self.pyranges.subtract(other.pyranges)
-        if overlap.empty:
-            return np.empty((0,), dtype=np.int64)
-        return overlap.df["index"].to_numpy()
 
 
 def regions_to_ranges(

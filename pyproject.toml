@@ -19,8 +19,9 @@ dependencies = [
   "numpy>=2",
   "zarr>=3.1",
   "click>=8.2.0",
-  "pyranges!=0.1.3",
-  "pyparsing>=3"
+  "pandas",
+  "pyparsing>=3",
+  "ruranges_py"
 ]
 requires-python = ">=3.11"
 classifiers = [

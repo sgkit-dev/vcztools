@@ -86,6 +86,7 @@ def write_vcf(
     drop_genotypes: bool = False,
     include: str | None = None,
     exclude: str | None = None,
+    precision
 ) -> None:
     root = zarr.open(vcz, mode="r")
 
@@ -138,6 +139,7 @@ def write_vcf(
                 output,
                 drop_genotypes=drop_genotypes,
                 no_update=no_update,
+                precision=precision,
             )
 
 
@@ -150,6 +152,7 @@ def c_chunk_to_vcf(
     *,
     drop_genotypes,
     no_update,
+    precision,
 ):
     format_fields = {}
     info_fields = {}
@@ -240,6 +243,7 @@ def c_chunk_to_vcf(
         qual=qual,
         filter_ids=filters,
         filter=filter_,
+        precision = precision,
     )
     # print(encoder.arrays)
     if gt is not None:

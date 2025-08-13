@@ -63,13 +63,15 @@ vcz_itoa(char *restrict buf, int64_t value)
 }
 
 int
-vcz_ftoa(char *restrict buf, float value)
+vcz_ftoa(char *restrict buf, float value, int8_t precision)
 {
     int p = 0;
-    int64_t i, d1, d2, d3;
+    int64_t i;
+
+    precision = 9;
 
     if (!isfinite(value) || fabs(value) > INT32_MAX + 1LL) {
-        return sprintf(buf, "%.3f", value);
+        return sprintf(buf, "%.*f", precision, value);
     }
 
     if (value < 0) {
@@ -79,27 +81,37 @@ vcz_ftoa(char *restrict buf, float value)
     }
 
     /* integer part */
-    i = (int64_t) round(((double) value) * 1000);
-    p += vcz_itoa(buf + p, i / 1000);
+    int magnitudes[] = {1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000};
 
-    /* fractional part */
-    d3 = i % 10;
-    d2 = (i / 10) % 10;
-    d1 = (i / 100) % 10;
-    if (d1 + d2 + d3 > 0) {
-        buf[p] = '.';
-        p++;
-        buf[p] = (char) d1 + '0';
-        p++;
-        if (d2 + d3 > 0) {
-            buf[p] = (char) d2 + '0';
-            p++;
-            if (d3 > 0) {
-                buf[p] = (char) d3 + '0';
-                p++;
-            }
-        }
+    i = (int64_t) round(((double) value) * magnitudes[precision]);
+    p += vcz_itoa(buf + p, i / magnitudes[precision]);
+
+    int d[precision];
+    for (int j = 0; j < precision; j++) {
+        d[precision - 1- j ] = (i / magnitudes[j]) % 10;
     }
+
+    buf[p] = '.';
+    p++;
+
+    int r = 0;
+    for (int j = 0; j < precision; j++) {
+        int sum_ = 0;
+        for (int h = r; h < precision; h++) {
+            sum_ += d[h];
+        };
+        if (sum_ > 0) {
+            buf[p] = (char) d[r] + '0';
+            p++;
+        };
+        r++;
+    }
+
+    if (buf[p-1] == '.') {
+        buf[p] = '0';
+        p++;
+    }
+
     buf[p] = '\0';
     return p;
 }
@@ -146,7 +158,7 @@ append_int(char *restrict buf, int32_t value, int64_t offset, int64_t buflen)
 
 static inline int64_t
 append_float(
-    char *restrict buf, int32_t int32_value, float value, int64_t offset, int64_t buflen)
+    char *restrict buf, int32_t int32_value, float value, int8_t precision, int64_t offset, int64_t buflen)
 {
     char tmp[VCZ_FLOAT32_BUF_SIZE];
     int64_t len;
@@ -154,7 +166,7 @@ append_float(
     if (int32_value == VCZ_FLOAT32_MISSING_AS_INT32) {
         return append_char(buf, '.', offset, buflen);
     }
-    len = vcz_ftoa(tmp, value);
+    len = vcz_ftoa(tmp, value, precision);
     /* printf("%f: %d\n", value, (int) len); */
     return append_string(buf, tmp, len, offset, buflen);
 }
@@ -342,7 +354,7 @@ out:
 }
 
 static int64_t
-float32_write_entry(size_t num_columns, const void *restrict data, char *restrict buf,
+float32_write_entry(size_t num_columns, const void *restrict data, int8_t precision, char *restrict buf,
     int64_t buflen, int64_t offset)
 {
     const float *restrict source = (const float *restrict) data;
@@ -361,7 +373,7 @@ float32_write_entry(size_t num_columns, const void *restrict data, char *restric
                 goto out;
             }
         }
-        offset = append_float(buf, int32_value, source[column], offset, buflen);
+        offset = append_float(buf, int32_value, source[column], precision, offset, buflen);
         if (offset < 0) {
             goto out;
         }
@@ -371,7 +383,7 @@ out:
 }
 
 static int64_t
-write_entry(int type, size_t item_size, size_t num_columns, const void *data, char *buf,
+write_entry(int type, size_t item_size, size_t num_columns, const void *data, int8_t precision, char *buf,
     int64_t buflen, int64_t offset)
 {
     if (type == VCZ_TYPE_INT) {
@@ -386,7 +398,7 @@ write_entry(int type, size_t item_size, size_t num_columns, const void *data, ch
         }
     } else if (type == VCZ_TYPE_FLOAT) {
         assert(item_size == 4);
-        return float32_write_entry(num_columns, data, buf, buflen, offset);
+        return float32_write_entry(num_columns, data, precision, buf, buflen, offset);
     } else if (type == VCZ_TYPE_BOOL) {
         assert(item_size == 1);
         assert(num_columns == 1);
@@ -423,13 +435,13 @@ all_missing(int type, size_t item_size, size_t n, const char *restrict data)
 
 int64_t
 vcz_field_write_1d(
-    const vcz_field_t *self, size_t variant, char *buf, int64_t buflen, int64_t offset)
+    const vcz_field_t *self, size_t variant, int8_t precision, char *buf, int64_t buflen, int64_t offset)
 {
     size_t row_size = self->num_columns * self->item_size;
     const void *data = self->data + variant * row_size;
 
     return write_entry(
-        self->type, self->item_size, self->num_columns, data, buf, buflen, offset);
+        self->type, self->item_size, self->num_columns, data, precision, buf, buflen, offset);
 }
 
 static bool
@@ -443,13 +455,13 @@ vcz_field_is_missing_1d(const vcz_field_t *self, size_t variant)
 
 static int64_t
 vcz_field_write_2d(const vcz_field_t *self, size_t variant, size_t num_samples,
-    size_t sample, char *buf, int64_t buflen, int64_t offset)
+    size_t sample, int8_t precision, char *buf, int64_t buflen, int64_t offset)
 {
     size_t row_size = self->num_columns * self->item_size * num_samples;
     const void *data
         = self->data + variant * row_size + sample * self->num_columns * self->item_size;
     return write_entry(
-        self->type, self->item_size, self->num_columns, data, buf, buflen, offset);
+        self->type, self->item_size, self->num_columns, data, precision, buf, buflen, offset);
 }
 
 static bool
@@ -605,7 +617,7 @@ vcz_variant_encoder_write_info_fields(const vcz_variant_encoder_t *self, size_t 
                 if (offset < 0) {
                     goto out;
                 }
-                offset = vcz_field_write_1d(&field, variant, buf, buflen, offset);
+                offset = vcz_field_write_1d(&field, variant, self->precision, buf, buflen, offset);
                 if (offset < 0) {
                     goto out;
                 }
@@ -703,7 +715,7 @@ vcz_variant_encoder_write_format_fields(const vcz_variant_encoder_t *self,
                 if (!missing[j]) {
                     field = self->format_fields[j];
                     offset = vcz_field_write_2d(&self->format_fields[j], variant,
-                        num_samples, sample, buf, buflen, offset);
+                        num_samples, sample, self->precision, buf, buflen, offset);
                     if (offset < 0) {
                         goto out;
                     }
@@ -798,7 +810,7 @@ vcz_variant_encoder_encode(
             }
         } else {
             offset = vcz_field_write_1d(
-                &self->fixed_fields[j], variant, buf, (int64_t) buflen, offset);
+                &self->fixed_fields[j], variant, self->precision, buf, (int64_t) buflen, offset);
             if (offset < 0) {
                 goto out;
             }

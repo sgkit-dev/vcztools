@@ -214,7 +214,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
 {
     int ret = -1;
     static char *kwlist[] = { "num_variants", "num_samples", "chrom", "pos", "id", "ref",
-        "alt", "qual", "filter_ids", "filter", NULL };
+        "alt", "qual", "filter_ids", "filter", "precision", NULL };
     int num_variants, num_samples;
     PyArrayObject *chrom = NULL;
     PyArrayObject *pos = NULL;
@@ -224,6 +224,7 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
     PyArrayObject *qual = NULL;
     PyArrayObject *filter_ids = NULL;
     PyArrayObject *filter = NULL;
+    int precision = NULL;
     npy_intp num_filters;
     int err;
 
@@ -236,10 +237,10 @@ VcfEncoder_init(VcfEncoder *self, PyObject *args, PyObject *kwds)
         goto out;         // GCOVR_EXCL_LINE
     }
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!O!O!O!", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "iiO!O!O!O!O!O!O!O!i", kwlist,
             &num_variants, &num_samples, &PyArray_Type, &chrom, &PyArray_Type, &pos,
             &PyArray_Type, &id, &PyArray_Type, &ref, &PyArray_Type, &alt, &PyArray_Type,
-            &qual, &PyArray_Type, &filter_ids, &PyArray_Type, &filter)) {
+            &qual, &PyArray_Type, &filter_ids, &PyArray_Type, &filter, &precision)) {
         goto out;
     }
 

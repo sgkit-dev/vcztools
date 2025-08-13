@@ -59,7 +59,7 @@ typedef struct {
 int vcz_field_init(vcz_field_t *self, const char *name, int type, size_t item_size,
     size_t num_columns, const void *data);
 int64_t vcz_field_write_1d(
-    const vcz_field_t *self, size_t row, char *buf, int64_t buflen, int64_t offset);
+    const vcz_field_t *self, size_t row, int8_t precision, char *buf, int64_t buflen, int64_t offset);
 void vcz_field_print_state(const vcz_field_t *self, FILE *out);
 
 typedef struct {
@@ -77,6 +77,7 @@ typedef struct {
     size_t max_format_fields;
     size_t field_array_size_increment;
     vcz_field_t *format_fields;
+    int8_t precision;
 } vcz_variant_encoder_t;
 
 int vcz_variant_encoder_init(
@@ -108,7 +109,7 @@ int64_t vcz_variant_encoder_encode(
     const vcz_variant_encoder_t *self, size_t row, char *buf, size_t buflen);
 
 int vcz_itoa(char *buf, int64_t v);
-int vcz_ftoa(char *buf, float v);
+int vcz_ftoa(char *buf, float v, int8_t precision);
 
 
 #define VCZ_PLINK_HOM_A1 0x0  /* 00 */

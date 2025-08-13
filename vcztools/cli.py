@@ -83,6 +83,13 @@ targets = click.option(
     default=None,
     help="Target regions to include.",
 )
+precision = click.option(
+    "-p",
+    "--precision",
+    type=int,
+    default=3,
+    help="precision level for writing floats",
+)
 version = click.version_option(version=f"{provenance.__version__}")
 
 
@@ -148,6 +155,7 @@ def index(path, nrecords, stats):
 @targets
 @include
 @exclude
+@precision
 @handle_exception
 def query(
     path,
@@ -160,6 +168,7 @@ def query(
     samples,
     include,
     exclude,
+    precision,
 ):
     """
     Transform VCZ into user-defined formats with efficient subsetting and
@@ -190,6 +199,7 @@ def query(
             force_samples=force_samples,
             include=include,
             exclude=exclude,
+            precision=precision,
         )
 
 
@@ -238,6 +248,7 @@ def query(
 @targets
 @include
 @exclude
+@precision
 @handle_exception
 def view(
     path,
@@ -254,6 +265,7 @@ def view(
     drop_genotypes,
     include,
     exclude,
+    precision,
 ):
     """
     Convert VCZ dataset to VCF with efficient subsetting and filtering.
@@ -300,6 +312,7 @@ def view(
             drop_genotypes=drop_genotypes,
             include=include,
             exclude=exclude,
+            precision=precision,
         )
 
 

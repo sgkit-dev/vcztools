@@ -2,7 +2,7 @@ import logging
 
 import numpy as np
 
-from vcztools.utils import search
+from vcztools.utils import _as_fixed_length_unicode, search
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def parse_samples(
         sample_ids = np.array(samples.split(","))
 
     if np.all(sample_ids == np.array("")):
-        sample_ids = np.empty((0,))
+        sample_ids = np.empty((0,), dtype=np.dtypes.StringDType())
 
     unknown_samples = np.setdiff1d(sample_ids, all_samples)
     if len(unknown_samples) > 0:
@@ -47,6 +47,9 @@ def parse_samples(
                 f'{",".join(unknown_samples)}. '
                 'Use "--force-samples" to ignore this error.'
             )
+
+    all_samples = _as_fixed_length_unicode(all_samples)
+    sample_ids = _as_fixed_length_unicode(sample_ids)
 
     samples_selection = search(all_samples, sample_ids)
     if exclude_samples:

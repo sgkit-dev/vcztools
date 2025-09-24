@@ -8,6 +8,8 @@ import zarr
 
 from vcztools.samples import parse_samples
 from vcztools.utils import (
+    _as_fixed_length_string,
+    _as_fixed_length_unicode,
     open_file_like,
 )
 
@@ -68,7 +70,8 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
 
 
 def dims(arr):
-    return arr.attrs["_ARRAY_DIMENSIONS"]
+    # Zarr format v2 has _ARRAY_DIMENSIONS, v3 has dedicated metadata
+    return arr.attrs.get("_ARRAY_DIMENSIONS", None) or arr.metadata.dimension_names
 
 
 def write_vcf(
@@ -119,7 +122,7 @@ def write_vcf(
         if header_only:
             return
 
-        contigs = root["contig_id"][:].astype("S")
+        contigs = _as_fixed_length_string(root["contig_id"][:])
         filters = get_filter_ids(root)
 
         for chunk_data in retrieval.variant_chunk_iter(
@@ -166,7 +169,7 @@ def c_chunk_to_vcf(
 
     # Optional fields which we fill in with "all missing" defaults
     if "variant_id" in chunk_data:
-        id = chunk_data["variant_id"].astype("S")
+        id = _as_fixed_length_string(chunk_data["variant_id"])
     else:
         id = np.array(["."] * num_variants, dtype="S")
     if "variant_quality" in chunk_data:
@@ -211,8 +214,8 @@ def c_chunk_to_vcf(
             vcf_name = name[len("variant_") :]
             info_fields[vcf_name] = array
 
-    ref = alleles[:, 0].astype("S")
-    alt = alleles[:, 1:].astype("S")
+    ref = _as_fixed_length_string(alleles[:, 0])
+    alt = _as_fixed_length_string(alleles[:, 1:])
 
     if len(id.shape) == 1:
         id = id.reshape((-1, 1))
@@ -246,16 +249,16 @@ def c_chunk_to_vcf(
         encoder.add_gt_field(gt, gt_phased)
     for name, zarray in info_fields.items():
         # print(array.dtype.kind)
-        if zarray.dtype.kind in ("O", "U"):
-            zarray = zarray.astype("S")
+        if zarray.dtype.kind in ("O", "U", "T"):
+            zarray = _as_fixed_length_string(zarray)
         if len(zarray.shape) == 1:
             zarray = zarray.reshape((num_variants, 1))
         encoder.add_info_field(name, zarray)
 
     if num_samples != 0:
         for name, zarray in format_fields.items():
-            if zarray.dtype.kind in ("O", "U"):
-                zarray = zarray.astype("S")
+            if zarray.dtype.kind in ("O", "U", "T"):
+                zarray = _as_fixed_length_string(zarray)
             if len(zarray.shape) == 2:
                 zarray = zarray.reshape((num_variants, num_samples, 1))
             encoder.add_format_field(name, zarray)
@@ -281,7 +284,7 @@ def get_filter_ids(root):
     does not exist, return a single filter "PASS" by default.
     """
     if "filter_id" in root:
-        filters = root["filter_id"][:].astype("S")
+        filters = _as_fixed_length_string(root["filter_id"][:])
     else:
         filters = np.array(["PASS"], dtype="S")
     return filters
@@ -297,7 +300,7 @@ def _generate_header(
     output = io.StringIO()
 
     contigs = list(ds["contig_id"][:])
-    filters = list(get_filter_ids(ds).astype("U"))
+    filters = list(_as_fixed_length_unicode(get_filter_ids(ds)))
     info_fields = []
     format_fields = []
 
@@ -470,7 +473,7 @@ def _array_to_vcf_type(a):
         return "Float"
     elif a.dtype.str[1:] in ("S1", "U1"):
         return "Character"
-    elif a.dtype.kind in ("O", "S", "U"):
+    elif a.dtype.kind in ("O", "S", "U", "T"):
         return "String"
     else:
         raise ValueError(f"Unsupported dtype: {a.dtype}")

@@ -1,7 +1,7 @@
 import numpy as np
 import zarr
 
-from vcztools.utils import open_file_like
+from vcztools.utils import _as_fixed_length_unicode, open_file_like
 
 
 def nrecords(vcz, output):
@@ -22,7 +22,7 @@ def stats(vcz, output):
         )
 
     with open_file_like(output) as output:
-        contigs = root["contig_id"][:].astype("U").tolist()
+        contigs = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
         if "contig_length" in root:
             contig_lengths = root["contig_length"][:]
         else:

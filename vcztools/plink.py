@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import zarr
 
+from vcztools.utils import _as_fixed_length_unicode
+
 from . import _vcztools, retrieval
 
 
@@ -24,7 +26,7 @@ def encode_genotypes(genotypes, a12_allele=None):
 
 def generate_fam(root):
     # TODO generate an error if sample_id contains a space
-    sample_id = root["sample_id"][:].astype(str)
+    sample_id = _as_fixed_length_unicode(root["sample_id"][:])
     zeros = np.zeros(sample_id.shape, dtype=int)
     df = pd.DataFrame(
         {
@@ -41,8 +43,8 @@ def generate_fam(root):
 
 def generate_bim(root, a12_allele):
     select = a12_allele[:, 1] != -1
-    contig_id = root["contig_id"][:].astype(str)
-    alleles = root["variant_allele"][:].astype(str)[select]
+    contig_id = _as_fixed_length_unicode(root["contig_id"][:])
+    alleles = _as_fixed_length_unicode(root["variant_allele"][:])[select]
     a12_allele = a12_allele[select]
     num_variants = np.sum(select)
     allele_1 = alleles[np.arange(num_variants), a12_allele[:, 0]]

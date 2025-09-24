@@ -59,3 +59,23 @@ def vcf_name_to_vcz_names(vcz_names: set[str], vcf_name: str) -> list[str]:
         matches.append(RESERVED_VCF_FIELDS[vcf_name])
 
     return matches
+
+
+# See https://numpy.org/devdocs/user/basics.strings.html#casting-to-and-from-fixed-width-strings
+
+
+def _max_len(arr: np.ndarray) -> int:
+    lengths = np.strings.str_len(arr)  # numpy 2
+    max_len = int(np.max(lengths)) if lengths.size > 0 else 1
+    return max(max_len, 1)
+
+
+def _as_fixed_length_string(arr: np.ndarray) -> np.ndarray:
+    # convert from StringDType to a fixed-length null-terminated byte sequence
+    # (character code S)
+    return arr.astype(f"S{_max_len(arr)}")
+
+
+def _as_fixed_length_unicode(arr: np.ndarray) -> np.ndarray:
+    # convert from StringDType to a fixed-length unicode string (character code U)
+    return arr.astype(f"U{_max_len(arr)}")

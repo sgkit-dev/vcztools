@@ -11,6 +11,7 @@ from vcztools.regions import (
     regions_to_selection,
 )
 from vcztools.samples import parse_samples
+from vcztools.utils import _as_fixed_length_unicode
 
 
 # NOTE:  this class is just a skeleton for now. The idea is that this
@@ -86,7 +87,7 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
             yield v_chunk, v_mask_chunk
 
     else:
-        contigs_u = root["contig_id"][:].astype("U").tolist()
+        contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
         regions_pyranges = parse_regions(regions, contigs_u)
         targets_pyranges, complement = parse_targets(targets, contigs_u)
 

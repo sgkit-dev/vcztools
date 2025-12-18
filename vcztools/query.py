@@ -15,7 +15,8 @@ def list_samples(vcz_path, output, zarr_backend_storage=None):
     root = open_zarr(vcz_path, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     sample_ids = root["sample_id"][:]
-    print("\n".join(sample_ids), file=output)
+    # don't show missing samples
+    print("\n".join(sample_ids[sample_ids != ""]), file=output)
 
 
 class QueryFormatParser:

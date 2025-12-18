@@ -19,8 +19,17 @@ def parse_samples(
     from all samples.
     """
 
+    # set a mask if any sample is missing
+    mask = all_samples == ""
+    all_samples_mask = mask if np.any(mask) else None
+
     if samples is None:
-        return all_samples, None
+        if all_samples_mask is None:
+            return all_samples, None
+        else:
+            sample_ids = all_samples[~all_samples_mask]
+            selection = np.arange(all_samples.size)[~all_samples_mask]
+        return sample_ids, selection
     elif isinstance(samples, list):
         exclude_samples = False
         sample_ids = np.array(samples)
@@ -54,5 +63,8 @@ def parse_samples(
     samples_selection = search(all_samples, sample_ids)
     if exclude_samples:
         samples_selection = np.setdiff1d(np.arange(all_samples.size), samples_selection)
+    if all_samples_mask is not None:
+        masked_sample_ids = all_samples[all_samples_mask]
+        samples_selection = np.setdiff1d(samples_selection, masked_sample_ids)
     sample_ids = all_samples[samples_selection]
     return sample_ids, samples_selection

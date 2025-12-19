@@ -4,13 +4,13 @@ import sys
 from datetime import datetime
 
 import numpy as np
-import zarr
 
 from vcztools.samples import parse_samples
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     open_file_like,
+    open_zarr,
 )
 
 from . import _vcztools, constants, retrieval
@@ -89,8 +89,9 @@ def write_vcf(
     drop_genotypes: bool = False,
     include: str | None = None,
     exclude: str | None = None,
+    zarr_backend_storage: str | None = None,
 ) -> None:
-    root = zarr.open(vcz, mode="r")
+    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     with open_file_like(output) as output:
         if samples and drop_genotypes:

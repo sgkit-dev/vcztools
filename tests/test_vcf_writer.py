@@ -16,16 +16,23 @@ from .utils import assert_vcfs_close, vcz_path_cache
 
 
 @pytest.mark.parametrize("output_is_path", [True, False])
-def test_write_vcf(tmp_path, output_is_path):
+@pytest.mark.parametrize("zarr_backend_storage", [None, "fsspec", "obstore"])
+def test_write_vcf(tmp_path, output_is_path, zarr_backend_storage):
+    if zarr_backend_storage == "obstore":
+        pytest.importorskip(zarr_backend_storage)
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
     if output_is_path:
-        write_vcf(vcz, output, no_version=True)
+        write_vcf(
+            vcz, output, no_version=True, zarr_backend_storage=zarr_backend_storage
+        )
     else:
         output_str = StringIO()
-        write_vcf(vcz, output_str, no_version=True)
+        write_vcf(
+            vcz, output_str, no_version=True, zarr_backend_storage=zarr_backend_storage
+        )
         with open(output, "w") as f:
             f.write(output_str.getvalue())
 

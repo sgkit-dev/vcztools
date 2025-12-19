@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import zarr
 
-from vcztools.utils import _as_fixed_length_unicode
+from vcztools.utils import _as_fixed_length_unicode, open_zarr
 
 from . import _vcztools, retrieval
 
@@ -72,9 +72,18 @@ def generate_bim(root, a12_allele):
 
 class Writer:
     def __init__(
-        self, vcz_path, bed_path, fam_path, bim_path, include=None, exclude=None
+        self,
+        vcz_path,
+        bed_path,
+        fam_path,
+        bim_path,
+        include=None,
+        exclude=None,
+        zarr_backend_storage=None,
     ):
-        self.root = zarr.open(vcz_path, mode="r")
+        self.root = open_zarr(
+            vcz_path, mode="r", zarr_backend_storage=zarr_backend_storage
+        )
 
         self.bim_path = bim_path
         self.fam_path = fam_path
@@ -157,7 +166,7 @@ class Writer:
             f.write(generate_fam(self.root))
 
 
-def write_plink(vcz_path, out, include=None, exclude=None):
+def write_plink(vcz_path, out, include=None, exclude=None, zarr_backend_storage=None):
     out_prefix = pathlib.Path(out)
     # out_prefix.mkdir(exist_ok=True)
     writer = Writer(
@@ -167,5 +176,6 @@ def write_plink(vcz_path, out, include=None, exclude=None):
         bim_path=out_prefix.with_suffix(".bim"),
         include=include,
         exclude=exclude,
+        zarr_backend_storage=zarr_backend_storage,
     )
     writer.run()

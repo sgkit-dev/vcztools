@@ -11,7 +11,7 @@ from vcztools.regions import (
     regions_to_selection,
 )
 from vcztools.samples import parse_samples
-from vcztools.utils import _as_fixed_length_unicode
+from vcztools.utils import _as_fixed_length_unicode, open_zarr
 
 
 # NOTE:  this class is just a skeleton for now. The idea is that this
@@ -224,6 +224,7 @@ def variant_iter(
     include: str | None = None,
     exclude: str | None = None,
     samples: list[str] | str | None = None,
+    zarr_backend_storage: str | None = None,
 ):
     """Iterate over variants that overlap the given regions or targets
     and which match the include/exclude filter expression.
@@ -234,7 +235,7 @@ def variant_iter(
 
     By default all fields for all variants and samples are returned.
     """
-    root = zarr.open(vcz, mode="r")
+    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
     all_samples = root["sample_id"][:]
     _, samples_selection = parse_samples(samples, all_samples)
 

@@ -5,15 +5,14 @@ from collections.abc import Callable
 
 import numpy as np
 import pyparsing as pp
-import zarr
 
 from vcztools import constants, retrieval
 from vcztools.samples import parse_samples
-from vcztools.utils import vcf_name_to_vcz_names
+from vcztools.utils import open_zarr, vcf_name_to_vcz_names
 
 
-def list_samples(vcz_path, output):
-    root = zarr.open(vcz_path, mode="r")
+def list_samples(vcz_path, output, zarr_backend_storage=None):
+    root = open_zarr(vcz_path, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     sample_ids = root["sample_id"][:]
     print("\n".join(sample_ids), file=output)
@@ -304,8 +303,9 @@ def write_query(
     force_samples: bool = False,
     include: str | None = None,
     exclude: str | None = None,
+    zarr_backend_storage: str | None = None,
 ):
-    root = zarr.open(vcz, mode="r")
+    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     all_samples = root["sample_id"][:]
     sample_ids, samples_selection = parse_samples(

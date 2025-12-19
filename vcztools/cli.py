@@ -84,6 +84,12 @@ targets = click.option(
     help="Target regions to include.",
 )
 version = click.version_option(version=f"{provenance.__version__}")
+zarr_backend_storage = click.option(
+    "--zarr-backend-storage",
+    type=str,
+    default=None,
+    help="Zarr backend storage to use; one of 'fsspec' (default) or 'obstore'.",
+)
 
 
 class NaturalOrderGroup(click.Group):
@@ -109,8 +115,9 @@ class NaturalOrderGroup(click.Group):
     is_flag=True,
     help="Print per contig stats.",
 )
+@zarr_backend_storage
 @handle_exception
-def index(path, nrecords, stats):
+def index(path, nrecords, stats, zarr_backend_storage):
     """
     Query the number of records in a VCZ dataset. This subcommand only
     implements the --nrecords and --stats options and does not build any
@@ -119,9 +126,11 @@ def index(path, nrecords, stats):
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
     if nrecords:
-        stats_module.nrecords(path, sys.stdout)
+        stats_module.nrecords(
+            path, sys.stdout, zarr_backend_storage=zarr_backend_storage
+        )
     elif stats:
-        stats_module.stats(path, sys.stdout)
+        stats_module.stats(path, sys.stdout, zarr_backend_storage=zarr_backend_storage)
     else:
         raise click.UsageError("Building region indexes is not supported")
 
@@ -148,6 +157,7 @@ def index(path, nrecords, stats):
 @targets
 @include
 @exclude
+@zarr_backend_storage
 @handle_exception
 def query(
     path,
@@ -160,6 +170,7 @@ def query(
     samples,
     include,
     exclude,
+    zarr_backend_storage,
 ):
     """
     Transform VCZ into user-defined formats with efficient subsetting and
@@ -174,7 +185,9 @@ def query(
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
         with handle_broken_pipe(output):
-            query_module.list_samples(path, output)
+            query_module.list_samples(
+                path, output, zarr_backend_storage=zarr_backend_storage
+            )
         return
 
     if format is None:
@@ -190,6 +203,7 @@ def query(
             force_samples=force_samples,
             include=include,
             exclude=exclude,
+            zarr_backend_storage=zarr_backend_storage,
         )
 
 
@@ -238,6 +252,7 @@ def query(
 @targets
 @include
 @exclude
+@zarr_backend_storage
 @handle_exception
 def view(
     path,
@@ -254,6 +269,7 @@ def view(
     drop_genotypes,
     include,
     exclude,
+    zarr_backend_storage,
 ):
     """
     Convert VCZ dataset to VCF with efficient subsetting and filtering.
@@ -300,6 +316,7 @@ def view(
             drop_genotypes=drop_genotypes,
             include=include,
             exclude=exclude,
+            zarr_backend_storage=zarr_backend_storage,
         )
 
 
@@ -308,14 +325,21 @@ def view(
 @include
 @exclude
 @click.option("--out", default="plink")
-def view_plink1(path, include, exclude, out):
+@zarr_backend_storage
+def view_plink1(path, include, exclude, out, zarr_backend_storage):
     """
     Generate a plink1 binary fileset compatible with plink1.9 --vcf.
     This command is equivalent to running ``vcztools view [filtering options]
     -o intermediate.vcf && plink 1.9 --vcf intermediate.vcf [plink options]``
     without generating the intermediate VCF.
     """
-    plink.write_plink(path, out, include=include, exclude=exclude)
+    plink.write_plink(
+        path,
+        out,
+        include=include,
+        exclude=exclude,
+        zarr_backend_storage=zarr_backend_storage,
+    )
 
 
 @version

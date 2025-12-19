@@ -2,6 +2,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import numpy as np
+import zarr
 
 from vcztools.constants import RESERVED_VCF_FIELDS
 
@@ -24,6 +25,36 @@ def open_file_like(file):
         if isinstance(file, (str, Path)):
             file = stack.enter_context(open(file, mode="w"))
         yield file
+
+
+def open_zarr(
+    file_or_url: str | Path,
+    /,
+    *,
+    mode: str = "r",
+    zarr_backend_storage: str | None = None,
+):
+    if zarr_backend_storage is None or zarr_backend_storage == "fsspec":
+        return zarr.open(file_or_url, mode=mode)
+    elif zarr_backend_storage == "obstore":
+        import obstore as obs
+        from zarr.storage import ObjectStore
+
+        if isinstance(file_or_url, str):
+            if "://" not in file_or_url:  # local path
+                path = Path(file_or_url).resolve()  # make absolute
+                store = ObjectStore(obs.store.from_url(path.as_uri(), mkdir=True))
+            else:  # remote path
+                store = ObjectStore(obs.store.from_url(file_or_url))
+        elif isinstance(file_or_url, Path):
+            path = file_or_url.resolve()  # make absolute
+            store = ObjectStore(obs.store.from_url(path.as_uri(), mkdir=True))
+        return zarr.open(store, mode=mode)
+    else:
+        raise ValueError(
+            f"Unsupported Zarr backend storage: {zarr_backend_storage}. "
+            "Must be one of 'fsspec' or 'obstore'"
+        )
 
 
 def vcf_name_to_vcz_names(vcz_names: set[str], vcf_name: str) -> list[str]:

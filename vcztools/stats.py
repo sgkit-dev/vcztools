@@ -1,19 +1,18 @@
 import numpy as np
-import zarr
 
-from vcztools.utils import _as_fixed_length_unicode, open_file_like
+from vcztools.utils import _as_fixed_length_unicode, open_file_like, open_zarr
 
 
-def nrecords(vcz, output):
-    root = zarr.open(vcz, mode="r")
+def nrecords(vcz, output, zarr_backend_storage=None):
+    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     with open_file_like(output) as output:
         num_variants = root["variant_position"].shape[0]
         print(num_variants, file=output)
 
 
-def stats(vcz, output):
-    root = zarr.open(vcz, mode="r")
+def stats(vcz, output, zarr_backend_storage=None):
+    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     if "region_index" not in root:
         raise ValueError(

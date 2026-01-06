@@ -1,7 +1,13 @@
+import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from vcztools.utils import search, vcf_name_to_vcz_names
+from vcztools.utils import (
+    _as_fixed_length_string,
+    _as_fixed_length_unicode,
+    search,
+    vcf_name_to_vcz_names,
+)
 
 
 @pytest.mark.parametrize(
@@ -41,3 +47,19 @@ def test_search(a, v, expected_ind):
 )
 def test_vcf_name_to_vcz_names(vczs, vcf, expected_vcz_names):
     assert vcf_name_to_vcz_names(vczs, vcf) == expected_vcz_names
+
+
+@pytest.mark.parametrize("dtype", ["O", "T"])
+def test_as_fixed_length_string(dtype):
+    assert_array_equal(
+        _as_fixed_length_string(np.array(["A", "BB"], dtype=dtype)),
+        np.array(["A", "BB"], dtype="S2"),
+    )
+
+
+@pytest.mark.parametrize("dtype", ["O", "T"])
+def test_as_fixed_length_unicode(dtype):
+    assert_array_equal(
+        _as_fixed_length_unicode(np.array(["A", "BB"], dtype=dtype)),
+        np.array(["A", "BB"], dtype="U2"),
+    )

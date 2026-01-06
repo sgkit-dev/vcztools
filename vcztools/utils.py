@@ -71,11 +71,17 @@ def _max_len(arr: np.ndarray) -> int:
 
 
 def _as_fixed_length_string(arr: np.ndarray) -> np.ndarray:
-    # convert from StringDType to a fixed-length null-terminated byte sequence
-    # (character code S)
-    return arr.astype(f"S{_max_len(arr)}")
+    if arr.dtype.kind == "O":
+        return arr.astype("S")
+    else:
+        # convert from StringDType to a fixed-length null-terminated byte sequence
+        # (character code S)
+        return arr.astype(f"S{_max_len(arr)}")
 
 
 def _as_fixed_length_unicode(arr: np.ndarray) -> np.ndarray:
-    # convert from StringDType to a fixed-length unicode string (character code U)
-    return arr.astype(f"U{_max_len(arr)}")
+    if arr.dtype.kind == "O":
+        return arr.astype("U")
+    else:
+        # convert from StringDType to a fixed-length unicode string (character code U)
+        return arr.astype(f"U{_max_len(arr)}")

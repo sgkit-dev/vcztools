@@ -75,7 +75,7 @@ jobs:
       - name: Install python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy pytest pytest_cov
+          python -m pip install "numpy>=2" pytest pytest_cov
       - name: Build module with coverage
         run: |
           # Build the extension module in-place so pytest can find it
@@ -137,37 +137,6 @@ jobs:
           # Make sure we don't have ``vcztools`` in the CWD
           cd tests
           python -m vcztools --help
-
-  test-numpy-version:
-    name: Test numpy versions
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash -el {0}
-    strategy:
-      matrix:
-        numpy: ["==1.26", ">=2"]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          auto-update-conda: true
-          python-version: '3.11'
-          channels: conda-forge,bioconda
-      - name: Install dependencies
-        run: |
-          conda install bcftools plink
-          python -m pip install --upgrade pip
-          python -m pip install '.[dev]'
-          # Build the extension module in-place so pytest can find it
-          python3 setup.py build_ext --inplace
-      - name: Install numpy${{ matrix.numpy }}
-        run: |
-          python -m pip install 'numpy${{ matrix.numpy }}'
-      - name: Run tests
-        run: |
-          pytest
 
   test-zarr-version:
     name: Test Zarr versions

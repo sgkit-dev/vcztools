@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Breaking:
+
+- Require NumPy 2 (#249)
+
 ## [0.1.0] - 2025-05-29
 
 Improvements:

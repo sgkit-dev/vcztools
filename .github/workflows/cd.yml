@@ -36,7 +36,7 @@ jobs:
           docker run --rm -v `pwd`:/project -w /project quay.io/pypa/manylinux2014_x86_64 bash .github/workflows/docker/buildwheel.sh
       - name: Check vcztools CLI
         run: |
-          pip install numpy "zarr>=2.17,<3" "click>=8.2.0" "pyranges!=0.1.3" pyparsing
+          pip install "numpy>=2" "zarr>=2.17,<3" "click>=8.2.0" "pyranges!=0.1.3" pyparsing
           pip install vcztools --no-index --only-binary vcztools -f dist/wheelhouse
           vcztools --help
           # Make sure we don't have ``vcztools`` in the CWD

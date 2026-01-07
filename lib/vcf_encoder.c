@@ -495,12 +495,13 @@ vcz_field_init(vcz_field_t *self, const char *name, int type, size_t item_size,
     }
 
     if (type == VCZ_TYPE_BOOL) {
-        switch (item_size) {
-            case 1:
-                break;
-            default:
-                ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
-                goto out;
+        if (item_size != 1) {
+            ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
+            goto out;
+        }
+        if (num_columns != 1) {
+            ret = VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS;
+            goto out;
         }
     } else if (type == VCZ_TYPE_INT) {
         switch (item_size) {
@@ -513,12 +514,9 @@ vcz_field_init(vcz_field_t *self, const char *name, int type, size_t item_size,
                 goto out;
         }
     } else if (type == VCZ_TYPE_FLOAT) {
-        switch (item_size) {
-            case 4:
-                break;
-            default:
-                ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
-                goto out;
+        if (item_size != 4) {
+            ret = VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE;
+            goto out;
         }
     } else {
         assert(type == VCZ_TYPE_STRING);
@@ -888,6 +886,11 @@ vcz_variant_encoder_add_format_field(vcz_variant_encoder_t *self, const char *na
 {
     int ret = 0;
     vcz_field_t *tmp, *field;
+
+    if (type == VCZ_TYPE_BOOL) {
+        ret = VCZ_ERR_FIELD_UNSUPPORTED_TYPE;
+        goto out;
+    }
 
     if (self->num_format_fields == self->max_format_fields) {
         self->max_format_fields += self->field_array_size_increment;

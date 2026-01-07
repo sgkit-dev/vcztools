@@ -30,17 +30,19 @@ def example_fixed_data(num_variants, num_samples=0):
 def example_info_data(num_variants):
     d = {}
     for num_columns in range(1, 3):
-        for dtype in ["i1", "i2", "i4", "f4", "?", "S1"]:
+        for dtype in ["i1", "i2", "i4", "f4", "S1"]:
             name = f"I{dtype}_{num_columns}"
             data = np.arange(num_variants * num_columns).astype(dtype)
             d[name] = data.reshape((num_variants, num_columns))
+    a = np.arange(num_variants, dtype=np.int8).reshape((num_variants, 1)) % 2
+    d["FLAG"] = a.astype(bool)
     return d
 
 
 def example_format_data(num_variants, num_samples):
     d = {}
     for num_columns in range(1, 3):
-        for dtype in ["i1", "i2", "i4", "f4", "?", "S1"]:
+        for dtype in ["i1", "i2", "i4", "f4", "S1"]:
             name = f"F{dtype}_{num_columns}"
             data = np.arange(num_variants * num_samples * num_columns).astype(dtype)
             d[name] = data.reshape((num_variants, num_samples, num_columns))

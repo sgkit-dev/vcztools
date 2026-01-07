@@ -706,6 +706,14 @@ test_variant_encoder_bad_fields(void)
     CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE);
     ret = vcz_variant_encoder_add_info_field(&writer, "FIELD", VCZ_TYPE_INT, 4, 0, NULL);
     CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS);
+    /* Flag fields must have itemsize 1, and 1 column. */
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "FIELD", VCZ_TYPE_BOOL, 1, 2, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS);
+    ret = vcz_variant_encoder_add_info_field(
+        &writer, "FIELD", VCZ_TYPE_BOOL, 2, 1, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE);
+
     CU_ASSERT_EQUAL_FATAL(writer.num_info_fields, 0);
 
     ret = vcz_variant_encoder_add_format_field(&writer, "FIELD", 0, 1, 1, NULL);
@@ -716,6 +724,11 @@ test_variant_encoder_bad_fields(void)
     ret = vcz_variant_encoder_add_format_field(
         &writer, "FIELD", VCZ_TYPE_INT, 4, 0, NULL);
     CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS);
+    /* Cannot have flags format fields */
+    ret = vcz_variant_encoder_add_format_field(
+        &writer, "FIELD", VCZ_TYPE_BOOL, 1, 1, NULL);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_FIELD_UNSUPPORTED_TYPE);
+
     CU_ASSERT_EQUAL_FATAL(writer.num_format_fields, 0);
 
     vcz_variant_encoder_free(&writer);

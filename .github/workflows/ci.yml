@@ -77,13 +77,12 @@ jobs:
         run: |
           # Build the extension module in-place so pytest can find it
           CFLAGS="--coverage" python3 setup.py build_ext --inplace
-      # TODO: fix these tests, tracked in https://github.com/sgkit-dev/vcztools/issues/250
-      # - name: Run tests
-      #   run: |
-      #     pytest -vs tests/test_cpython_interface.py
-      # - name: Show coverage
-      #   run: |
-      #     gcovr --filter vcztools
+      - name: Run tests
+        run: |
+          pytest -vs tests/test_cpython_interface.py
+      - name: Show coverage
+        run: |
+          gcovr --filter vcztools
 
   c_test:
     name: C tests

@@ -141,6 +141,9 @@ jobs:
     defaults:
       run:
         shell: bash -el {0}
+    strategy:
+      matrix:
+        zarr-format: [2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Miniconda
@@ -162,3 +165,5 @@ jobs:
       - name: Run tests
         run: |
           pytest
+        env:
+          BIO2ZARR_ZARR_FORMAT: ${{ matrix.zarr-format }}

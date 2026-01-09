@@ -5,6 +5,7 @@ from itertools import zip_longest
 
 import cyvcf2
 import numpy as np
+import zarr
 from bio2zarr import vcf
 
 
@@ -215,3 +216,36 @@ def vcz_path_cache(vcf_path):
                 [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
             )
     return cached_vcz_path
+
+
+def to_vcz_icechunk(vcz, tmp_path):
+    from icechunk import Repository, Storage
+
+    source = zarr.storage.LocalStore(vcz)
+
+    ic_tmp_path = tmp_path / "icechunk"
+    ic_tmp_path.mkdir()
+    output = pathlib.Path(ic_tmp_path) / vcz.name
+    storage = Storage.new_local_filesystem(str(output))
+    repo = Repository.create(storage=storage)
+    session = repo.writable_session("main")
+    dest = session.store
+
+    copy_store(source, dest)
+
+    session.commit("create vcz")
+
+    return output
+
+
+# inspired by commit f3c123d3a2a94b7f14bc995e3897ee6acc9acbd1 in zarr-python
+def copy_store(source, dest):
+    from zarr.core.buffer.core import default_buffer_prototype
+    from zarr.testing.stateful import SyncStoreWrapper
+
+    s = SyncStoreWrapper(source)
+    d = SyncStoreWrapper(dest)
+    # need reverse=True to create zarr.json before chunks (otherwise icechunk complains)
+    for source_key in sorted(s.list(), reverse=True):
+        buffer = s.get(source_key, default_buffer_prototype())
+        d.set(source_key, buffer)

@@ -12,7 +12,7 @@ from numpy.testing import assert_array_equal
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
-from .utils import assert_vcfs_close, vcz_path_cache
+from .utils import assert_vcfs_close, to_vcz_icechunk, vcz_path_cache
 
 
 @pytest.mark.parametrize("output_is_path", [True, False])
@@ -35,6 +35,41 @@ def test_write_vcf(tmp_path, output_is_path, zarr_backend_storage):
         )
         with open(output, "w") as f:
             f.write(output_str.getvalue())
+
+    v = VCF(output)
+
+    assert v.samples == ["NA00001", "NA00002", "NA00003"]
+
+    variant = next(v)
+
+    assert variant.CHROM == "19"
+    assert variant.POS == 111
+    assert variant.ID is None
+    assert variant.REF == "A"
+    assert variant.ALT == ["C"]
+    assert variant.QUAL == pytest.approx(9.6)
+    assert variant.FILTER is None
+
+    assert variant.genotypes == [[0, 0, True], [0, 0, True], [0, 1, False]]
+
+    assert_array_equal(
+        variant.format("HQ"),
+        [[10, 15], [10, 10], [3, 3]],
+    )
+
+    # check headers are the same
+    assert_vcfs_close(original, output)
+
+
+def test_write_vcf__icechunk(tmp_path):
+    pytest.importorskip("icechunk")
+
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    vcz_icechunk = to_vcz_icechunk(vcz, tmp_path)
+    output = tmp_path.joinpath("output.vcf")
+
+    write_vcf(vcz_icechunk, output, no_version=True, zarr_backend_storage="icechunk")
 
     v = VCF(output)
 

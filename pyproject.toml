@@ -55,7 +55,7 @@ dev = [
   "pytest-cov",
   "msprime",
   "sgkit",
-  "tskit>=0.6.4,<1",
+  "tskit>=1",
 ]
 
 [tool.setuptools]

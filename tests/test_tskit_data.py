@@ -65,7 +65,7 @@ def fx_haploid_missing_data(tmp_path):
     tables.mutations.add_row(site=0, node=0, derived_state="G")
     tables.mutations.add_row(site=1, node=3, derived_state="C")
     zarr_path = tmp_path / "sim.vcz"
-    ts2z.convert(tables.tree_sequence(), zarr_path, isolated_as_missing=True)
+    ts2z.convert(tables.tree_sequence(), zarr_path)
     return zarr_path
 
 
@@ -103,7 +103,7 @@ def fx_diploid_missing_data(tmp_path):
     zarr_path = tmp_path / "sim.vcz"
     ts = tables.tree_sequence()
     model_map = ts.map_to_vcf_model(ploidy=2)
-    ts2z.convert(ts, zarr_path, model_mapping=model_map, isolated_as_missing=True)
+    ts2z.convert(ts, zarr_path, model_mapping=model_map)
     return zarr_path
 
 
@@ -287,7 +287,7 @@ class TestPlinkRoundTrip:
             "call_genotype_phased",
         ]
         xt.assert_equal(
-            ds1.drop_vars(["call_genotype", "call_genotype_phased"]),
+            ds1.drop_vars(["contig_length", "call_genotype", "call_genotype_phased"]),
             ds2.drop_vars(drop_fields),
         )
 

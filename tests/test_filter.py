@@ -56,6 +56,7 @@ class TestFilterExpressionParser:
             ("fisher(INFO/DP4)", filter_mod.UnsupportedFunctionsError),
             ("fisher(FMT/ADF,FMT/ADR)", filter_mod.UnsupportedFunctionsError),
             ("N_PASS(GQ>90)", filter_mod.UnsupportedFunctionsError),
+            ("ILEN > 0", filter_mod.UnsupportedCalculatedVariableError),
             ('TYPE="bnd"', filter_mod.UnsupportedTypeFieldError),
         ],
     )

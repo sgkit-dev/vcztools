@@ -158,7 +158,10 @@ def variant_chunk_index_iter_with_filtering(
     if filter_expr.parse_result is None:
         filter_expr = None
     else:
-        filter_fields = list(filter_expr.referenced_fields)
+        # only return referenced fields that are actually present
+        filter_fields = list(
+            set.intersection(set(filter_expr.referenced_fields), set(root))
+        )
         filter_fields_reader = VariantChunkReader(root, fields=filter_fields)
 
     for v_chunk, v_mask_chunk in variant_chunk_index_iter(root, regions, targets):

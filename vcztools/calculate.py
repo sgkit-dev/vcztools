@@ -38,3 +38,45 @@ def calculate_variant_type(variant_allele: np.ndarray) -> np.ndarray:
         for j in range(alt.shape[1]):
             variant_type[i, j] = get_variant_type(ref[i], alt[i, j])
     return variant_type
+
+
+SUPPORTED_CALCULATED_VARIABLES = ["N_MISSING", "F_MISSING"]
+UNSUPPORTED_CALCULATED_VARIABLES = [
+    "N_ALT",
+    "N_SAMPLES",
+    "AC",
+    "MAC",
+    "AF",
+    "MAF",
+    "AN",
+    "ILEN",
+]
+
+
+def _n_missing(data: dict[str, np.ndarray]) -> np.ndarray:
+    gt = data.get("call_genotype", None)
+    if gt is None:
+        return np.zeros_like(data["variant_position"])
+    else:
+        return np.sum(np.all(gt < 0, axis=-1), axis=1)
+
+
+def _f_missing(data: dict[str, np.ndarray]) -> np.ndarray:
+    calculate_if_absent(data, "variant_N_MISSING")
+    gt = data["call_genotype"]
+    n_samples = gt.shape[1]
+    n_missing = data["variant_N_MISSING"]
+    return n_missing / n_samples
+
+
+field_to_function = {
+    "variant_N_MISSING": _n_missing,
+    "variant_F_MISSING": _f_missing,
+}
+
+
+def calculate_if_absent(data: dict[str, np.ndarray], vcz_name: str) -> None:
+    """Populates the array for 'vcz_name' in 'data' if not already present."""
+    if vcz_name not in data:
+        func = field_to_function[vcz_name]
+        data[vcz_name] = func(data)

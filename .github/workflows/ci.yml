@@ -161,7 +161,11 @@ jobs:
           python3 setup.py build_ext --inplace
       - name: Install zarr 3
         run: |
-          python -m pip install 'zarr>=3,!=3.0.5' obstore icechunk hypothesis
+          python -m pip install 'zarr>=3,!=3.0.5' obstore
+      - name: Install icechunk
+        if: matrix.zarr-format == 3
+        run: |
+          python -m pip install icechunk hypothesis
       - name: Run tests
         run: |
           pytest

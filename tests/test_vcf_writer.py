@@ -6,6 +6,7 @@ from io import StringIO
 import numpy as np
 import pytest
 import zarr
+from bio2zarr import vcf
 from cyvcf2 import VCF
 from numpy.testing import assert_array_equal
 
@@ -260,6 +261,25 @@ def test_write_vcf__no_samples(tmp_path):
     v = VCF(output)
 
     assert v.samples == []
+
+
+def test_write_vcf__missing_samples(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    # don't use cache here since we want to modify the vcz
+    vcz = tmp_path.joinpath("intermediate.vcz")
+    output = tmp_path.joinpath("output.vcf")
+    vcf.convert([original], vcz, worker_processes=0)
+
+    # delete samples NA00001 and NA00002 at index 0 and 1
+    root = zarr.open(vcz, mode="a")
+    root["sample_id"][:2] = ""
+
+    write_vcf(vcz, output)
+
+    v = VCF(output)
+
+    assert v.samples == ["NA00003"]
+
 
 
 @pytest.mark.parametrize(

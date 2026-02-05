@@ -6,6 +6,7 @@ import numpy as np
 import pyparsing as pp
 import pytest
 import zarr
+from bio2zarr import vcf
 
 from tests.utils import vcz_path_cache
 from vcztools.query import (
@@ -21,6 +22,23 @@ def test_list_samples(tmp_path):
     vcf_path = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz_path = vcz_path_cache(vcf_path)
     expected_output = "NA00001\nNA00002\nNA00003\n"
+
+    with StringIO() as output:
+        list_samples(vcz_path, output)
+        assert output.getvalue() == expected_output
+
+
+def test_list_samples__missing(tmp_path):
+    vcf_path = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    # don't use cache here since we want to modify the vcz
+    vcz_path = tmp_path.joinpath("intermediate.vcz")
+    vcf.convert([vcf_path], vcz_path, worker_processes=0)
+
+    # delete sample NA00002 at index 1
+    root = zarr.open(vcz_path, mode="a")
+    root["sample_id"][1] = ""
+
+    expected_output = "NA00001\nNA00003\n"
 
     with StringIO() as output:
         list_samples(vcz_path, output)

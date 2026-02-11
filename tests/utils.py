@@ -1,12 +1,32 @@
 import pathlib
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
 from contextlib import contextmanager
 from itertools import zip_longest
+from pathlib import Path
+from typing import Any
 
 import cyvcf2
 import numpy as np
+import xarray as xr
 import zarr
 from bio2zarr import vcf
+
+
+def load_dataset(
+    store: str | Path | MutableMapping[str, bytes],
+    storage_options: dict[str, str] | None = None,
+    **kwargs: Any,
+) -> xr.Dataset:
+    """Load an Xarray dataset from Zarr storage."""
+
+    ds: xr.Dataset = xr.open_zarr(
+        store, storage_options=storage_options, concat_characters=False, **kwargs
+    )  # type: ignore[no-untyped-call]
+    for v in ds:
+        # Workaround for https://github.com/pydata/xarray/issues/4386
+        if v.endswith("_mask"):  # type: ignore
+            ds[v] = ds[v].astype(bool)
+    return ds
 
 
 @contextmanager

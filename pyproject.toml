@@ -54,6 +54,7 @@ dev = [
   "pytest",
   "pytest-cov",
   "msprime",
+  "setuptools",
   "tskit>=1",
   "xarray<2025.03.1",
 ]

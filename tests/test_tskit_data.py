@@ -10,10 +10,10 @@ import msprime
 import numpy as np
 import numpy.testing as nt
 import pytest
-import sgkit as sg
 import tskit
 import xarray.testing as xt
 
+from tests.utils import load_dataset
 from vcztools.plink import write_plink
 from vcztools.vcf_writer import write_vcf
 
@@ -70,7 +70,7 @@ def fx_haploid_missing_data(tmp_path):
 
 
 def test_haploid_missing_data(fx_haploid_missing_data):
-    ds = sg.load_dataset(fx_haploid_missing_data)
+    ds = load_dataset(fx_haploid_missing_data)
     nt.assert_array_equal(
         ds.call_genotype.values,
         [
@@ -108,7 +108,7 @@ def fx_diploid_missing_data(tmp_path):
 
 
 def test_diploid_missing_data(fx_diploid_missing_data):
-    ds = sg.load_dataset(fx_diploid_missing_data)
+    ds = load_dataset(fx_diploid_missing_data)
     nt.assert_array_equal(
         ds.call_genotype.values,
         [
@@ -144,7 +144,7 @@ def fx_diploid_multi_allelic(tmp_path):
 
 
 def test_diploid_multi_allelic(fx_diploid_multi_allelic):
-    ds = sg.load_dataset(fx_diploid_multi_allelic)
+    ds = load_dataset(fx_diploid_multi_allelic)
     # NOTE this example is constructed so that the rarest allele is in the middle
     # of the alleles array
     nt.assert_array_equal(ds.variant_allele.values, [["A", "G", ""], ["T", "G", "C"]])
@@ -211,8 +211,8 @@ class TestVcfRoundTrip:
         write_vcf(tskit_vcz, vcf_path)
         rt_vcz_path = tmp_path / "rt.vcz"
         v2z.convert([vcf_path], rt_vcz_path)
-        ds1 = sg.load_dataset(tskit_vcz)
-        ds2 = sg.load_dataset(rt_vcz_path)
+        ds1 = load_dataset(tskit_vcz)
+        ds2 = load_dataset(rt_vcz_path)
         drop_fields = [
             "variant_id",
             "variant_id_mask",
@@ -270,8 +270,8 @@ class TestPlinkRoundTrip:
         write_plink(tskit_vcz, plink_path)
         rt_vcz_path = tmp_path / "rt.vcz"
         p2z.convert(plink_path, rt_vcz_path)
-        ds1 = sg.load_dataset(tskit_vcz)
-        ds2 = sg.load_dataset(rt_vcz_path)
+        ds1 = load_dataset(tskit_vcz)
+        ds2 = load_dataset(rt_vcz_path)
 
         assert np.all(ds1["call_genotype_phased"])
         assert np.all(~ds2["call_genotype_phased"])

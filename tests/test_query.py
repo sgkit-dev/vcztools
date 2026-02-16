@@ -143,9 +143,16 @@ class TestQueryFormatEvaluator:
                 r"%CHROM:%POS\n",
                 "19:111\n19:112\n20:14370\n20:17330\n20:1110696\n20:1230237\n20:1234567\n20:1235237\nX:10\n",
             ),
+            (
+                r"%REF\t%ALT\n",
+                "A\tC\nA\tG\nG\tA\nT\tA\nA\tG,T\nT\t.\nG\tGA,GAC\nT\t.\nAC\tA,ATG,C\n",
+            ),
+            (r"%ID\n", ".\n.\nrs6054257\n.\nrs6040355\n.\nmicrosat1\n.\nrsTest\n"),
+            (r"%FILTER\n", ".\n.\nPASS\nq10\nPASS\nPASS\nPASS\n.\nPASS\n"),
             (r"%INFO/DP\n", ".\n.\n14\n11\n10\n13\n9\n.\n.\n"),
             (r"%AC\n", ".\n.\n.\n.\n.\n.\n1,1\n.\n.\n"),
             (r"%AC{0}\n", ".\n.\n.\n.\n.\n.\n1\n.\n.\n"),
+            (r"%AF{0}\n", ".\n.\n0.5\n0.017\n0.333\n.\n.\n.\n.\n"),
         ],
     )
     def test(self, root, query_format, expected_result):

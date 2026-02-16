@@ -180,6 +180,7 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         ("query -f '%INFO/DP'", "sample.vcf.gz"),
         ("query -f '%DP'", "sample.vcf.gz"),
         ("query -f '%AC{0}'", "sample.vcf.gz"),
+        ("query -f '%AF{0}'", "sample.vcf.gz"),
         (r"query -f '%REF\t%ALT'", "sample.vcf.gz"),
         ("query -f '%ALT{1}'", "sample.vcf.gz"),
         ("query -f '%ID'", "sample.vcf.gz"),

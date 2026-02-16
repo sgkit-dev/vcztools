@@ -1,6 +1,8 @@
 import numpy as np
 
 INT_MISSING, INT_FILL = -1, -2
+STR_MISSING = "."
+STR_FILL = ""
 
 FLOAT32_MISSING, FLOAT32_FILL = np.array([0x7F800001, 0x7F800002], dtype=np.int32).view(
     np.float32

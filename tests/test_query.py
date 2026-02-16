@@ -224,7 +224,7 @@ def test_write_query__include_exclude(tmp_path):
     vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
 
-    query_format = r"%POS\n"
+    query_format = r"%POS"
     variant_site_filter = "POS > 1"
 
     with pytest.raises(

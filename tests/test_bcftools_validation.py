@@ -171,46 +171,45 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         ("index --stats", "1kg_2020_chrM.vcf.gz"),
         ("query -l", "sample.vcf.gz"),
         ("query --list-samples", "1kg_2020_chrM.vcf.gz"),
+        ("query -f 'A'", "sample.vcf.gz"),
         (r"query -f 'A\n'", "sample.vcf.gz"),
-        (r"query -f 'A'", "sample.vcf.gz"),
-        (r"query -N -f 'A'", "sample.vcf.gz"),
+        ("query -N -f 'A'", "sample.vcf.gz"),
         (r"query -N -f 'A\n'", "sample.vcf.gz"),
-        (r"query -f '%CHROM:%POS\n'", "sample.vcf.gz"),
-        (r"query -f '[%CHROM %POS %GT\n]'", "sample.vcf.gz"),
-        (r"query -f '%INFO/DP\n'", "sample.vcf.gz"),
-        (r"query -f '%DP\n'", "sample.vcf.gz"),
-        (r"query -f '%AC{0}'", "sample.vcf.gz"),  # no newline
-        (r"query -f '%AC{0}\n'", "sample.vcf.gz"),
-        (r"query -f '%REF\t%ALT\n'", "sample.vcf.gz"),
-        (r"query -f '%ALT{1}\n'", "sample.vcf.gz"),
-        (r"query -f '%ID\n'", "sample.vcf.gz"),
-        (r"query -f '%QUAL\n'", "sample.vcf.gz"),
-        (r"query -f '%FILTER\n'", "sample.vcf.gz"),
-        (r"query --format '%FILTER\n'", "1kg_2020_chrM.vcf.gz"),
-        (r"query -f '%POS\n' -i 'POS=112'", "sample.vcf.gz"),
-        (r"query -f '%POS\n' -e 'POS=112'", "sample.vcf.gz"),
-        (r"query -f '[%CHROM\t]\n'", "sample.vcf.gz"),
-        (r"query -f '[%CHROM\t]\n' -i 'POS=112'", "sample.vcf.gz"),
-        (r"query -f '[%CHROM:%POS %SAMPLE %GT\n]'", "sample.vcf.gz"),
-        (r"query -f '[%SAMPLE %GT %DP\n]'", "sample.vcf.gz"),
+        ("query -f '%CHROM:%POS'", "sample.vcf.gz"),
+        ("query -f '[%CHROM %POS %GT]'", "sample.vcf.gz"),
+        ("query -f '%INFO/DP'", "sample.vcf.gz"),
+        ("query -f '%DP'", "sample.vcf.gz"),
+        ("query -f '%AC{0}'", "sample.vcf.gz"),
+        (r"query -f '%REF\t%ALT'", "sample.vcf.gz"),
+        ("query -f '%ALT{1}'", "sample.vcf.gz"),
+        ("query -f '%ID'", "sample.vcf.gz"),
+        ("query -f '%QUAL'", "sample.vcf.gz"),
+        ("query -f '%FILTER'", "sample.vcf.gz"),
+        ("query --format '%FILTER'", "1kg_2020_chrM.vcf.gz"),
+        ("query -f '%POS' -i 'POS=112'", "sample.vcf.gz"),
+        ("query -f '%POS' -e 'POS=112'", "sample.vcf.gz"),
+        (r"query -f '[%CHROM\t]'", "sample.vcf.gz"),
+        (r"query -f '[%CHROM\t]' -i 'POS=112'", "sample.vcf.gz"),
+        ("query -f '[%CHROM:%POS %SAMPLE %GT]'", "sample.vcf.gz"),
+        ("query -f '[%SAMPLE %GT %DP]'", "sample.vcf.gz"),
         (
-            r"query -f '[%POS %SAMPLE %GT %DP %GQ\n]' -i 'INFO/DP >= 5'",
+            "query -f '[%POS %SAMPLE %GT %DP %GQ]' -i 'INFO/DP >= 5'",
             "sample.vcf.gz",
         ),
         (
-            r"query -f '[%POS %QUAL\n]' -i'(QUAL > 10 && POS > 100000)'",
+            "query -f '[%POS %QUAL]' -i'(QUAL > 10 && POS > 100000)'",
             "sample.vcf.gz",
         ),
         # Examples from bcftools query documentation
-        (r"query -f '%CHROM  %POS  %REF  %ALT{0}\n'", "sample.vcf.gz"),
-        (r"query -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT]\n'", "sample.vcf.gz"),
-        (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]\n'", "sample.vcf.gz"),
+        ("query -f '%CHROM  %POS  %REF  %ALT{0}'", "sample.vcf.gz"),
+        (r"query -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT]'", "sample.vcf.gz"),
+        (r"query -f 'GQ:[ %GQ] \t GT:[ %GT]'", "sample.vcf.gz"),
         # POS0 not supported
-        # (r"query -f '%CHROM\t%POS0\t%END\t%ID\n'", "sample.vcf.gz"),
+        # (r"query -f '%CHROM\t%POS0\t%END\t%ID'", "sample.vcf.gz"),
         # Filtering on GT not supported
-        # (r"query -f [%CHROM:%POS %SAMPLE %GT\n]' -i'GT=\"alt\"'", "sample.vcf.gz"),
+        # ("query -f [%CHROM:%POS %SAMPLE %GT]' -i'GT=\"alt\"'", "sample.vcf.gz"),
         # Indexing not supported in filtering
-        # (r"query  -f '%AC{1}\n' -i 'AC[1]>10' ", "sample.vcf.gz"),
+        # ("query  -f '%AC{1}' -i 'AC[1]>10' ", "sample.vcf.gz"),
         # TODO fill-out more of these when supported for more stuff is available
         # in filtering
         ("query -f '%CHROM %POS %FILTER' -i 'FILTER=\"PASS\"'", "sample.vcf.gz"),
@@ -265,7 +264,7 @@ def test_output(tmp_path, args, vcf_name):
 )
 def test_query_arithmethic(tmp_path, expr):
 
-    args = r"query -f '%POS\n'" + f" -i '{expr}'"
+    args = f"query -f '%POS' -i '{expr}'"
     vcf_name = "sample.vcf.gz"
     vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
     vcz_path = vcz_path_cache(vcf_path)
@@ -290,7 +289,7 @@ def test_query_arithmethic(tmp_path, expr):
 )
 def test_query_logic_precendence(tmp_path, expr, expected):
 
-    args = r"query -f '%POS\n'" + f" -i 'POS=112 && ({expr})'"
+    args = f"query -f '%POS' -i 'POS=112 && ({expr})'"
     vcf_name = "sample.vcf.gz"
     vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
     vcz_path = vcz_path_cache(vcf_path)
@@ -308,7 +307,7 @@ def test_query_logic_precendence(tmp_path, expr, expected):
     ("args", "vcf_name", "bcftools_error_string"),
     [
         ("index -ns", "sample.vcf.gz", True),
-        ("query -f '%POS\n' -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz", True),  # noqa: E501
+        ("query -f '%POS' -i 'INFO/DP > 10' -e 'INFO/DP < 50'", "sample.vcf.gz", True),  # noqa: E501
         ("query -f '%GT'", "sample.vcf.gz", True),
         ("query -f '%HQ'", "sample.vcf.gz", True),
         ("query -f '%SAMPLE'", "sample.vcf.gz", True),

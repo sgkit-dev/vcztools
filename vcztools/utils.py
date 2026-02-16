@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import numpy as np
 import zarr
 
+from vcztools import constants
 from vcztools.constants import RESERVED_VCF_FIELDS
 
 
@@ -140,3 +141,17 @@ def _as_fixed_length_unicode(arr: np.ndarray) -> np.ndarray:
     else:
         # convert from StringDType to a fixed-length unicode string (character code U)
         return arr.astype(f"U{_max_len(arr)}")
+
+
+def missing(arr: np.ndarray) -> np.ndarray:
+    """Return a boolean array indicating which values are missing sentinels."""
+    if arr.dtype.kind == "i":
+        return arr == constants.INT_MISSING
+    elif arr.dtype.kind == "f":
+        return arr.view(np.int32) == constants.FLOAT32_MISSING_AS_INT32
+    elif arr.dtype.kind in ("O", "U", "T"):
+        return arr == constants.STR_MISSING
+    elif arr.dtype.kind == "b":
+        return ~arr
+    else:
+        raise ValueError(f"unrecognised dtype: {arr.dtype}")

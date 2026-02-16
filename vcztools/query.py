@@ -304,6 +304,7 @@ def write_query(
     force_samples: bool = False,
     include: str | None = None,
     exclude: str | None = None,
+    disable_automatic_newline: bool = False,
     zarr_backend_storage: str | None = None,
 ):
     root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
@@ -314,6 +315,9 @@ def write_query(
     )
     contigs = root["contig_id"][:]
     filters = root["filter_id"][:]
+
+    if "\\n" not in query_format and not disable_automatic_newline:
+        query_format = query_format + "\\n"
 
     generator = QueryFormatGenerator(query_format, sample_ids, contigs, filters)
 

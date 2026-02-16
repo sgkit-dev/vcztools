@@ -172,10 +172,14 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         ("query -l", "sample.vcf.gz"),
         ("query --list-samples", "1kg_2020_chrM.vcf.gz"),
         (r"query -f 'A\n'", "sample.vcf.gz"),
+        (r"query -f 'A'", "sample.vcf.gz"),
+        (r"query -N -f 'A'", "sample.vcf.gz"),
+        (r"query -N -f 'A\n'", "sample.vcf.gz"),
         (r"query -f '%CHROM:%POS\n'", "sample.vcf.gz"),
         (r"query -f '[%CHROM %POS %GT\n]'", "sample.vcf.gz"),
         (r"query -f '%INFO/DP\n'", "sample.vcf.gz"),
         (r"query -f '%DP\n'", "sample.vcf.gz"),
+        (r"query -f '%AC{0}'", "sample.vcf.gz"),  # no newline
         (r"query -f '%AC{0}\n'", "sample.vcf.gz"),
         (r"query -f '%REF\t%ALT\n'", "sample.vcf.gz"),
         (r"query -f '%ALT{1}\n'", "sample.vcf.gz"),
@@ -209,7 +213,7 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         # (r"query  -f '%AC{1}\n' -i 'AC[1]>10' ", "sample.vcf.gz"),
         # TODO fill-out more of these when supported for more stuff is available
         # in filtering
-        ("query -f '%CHROM %POS %FILTER\n' -i 'FILTER=\"PASS\"'", "sample.vcf.gz"),
+        ("query -f '%CHROM %POS %FILTER' -i 'FILTER=\"PASS\"'", "sample.vcf.gz"),
         # Per-sample query tests
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -i 'FMT/DP>3'",

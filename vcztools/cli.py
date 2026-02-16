@@ -157,6 +157,13 @@ def index(path, nrecords, stats, zarr_backend_storage):
 @targets
 @include
 @exclude
+@click.option(
+    "-N",
+    "--disable-automatic-newline",
+    is_flag=True,
+    help="Disable automatic addition of a missing newline character at the end "
+    "of the formatting expression.",
+)
 @zarr_backend_storage
 @handle_exception
 def query(
@@ -170,6 +177,7 @@ def query(
     samples,
     include,
     exclude,
+    disable_automatic_newline,
     zarr_backend_storage,
 ):
     """
@@ -203,6 +211,7 @@ def query(
             force_samples=force_samples,
             include=include,
             exclude=exclude,
+            disable_automatic_newline=disable_automatic_newline,
             zarr_backend_storage=zarr_backend_storage,
         )
 

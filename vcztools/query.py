@@ -150,9 +150,26 @@ class QueryFormatGenerator:
                         "FORMAT fields must be enclosed in square brackets, "
                         f'e.g. "[ %{tag}]"'
                     )
+
+            def any_missing(row):
+                if isinstance(row, str):
+                    return False
+                elif row.dtype.kind == "i":
+                    return np.any(row == constants.INT_MISSING)
+                elif row.dtype.kind == "f":
+                    return np.any(
+                        row.view(np.int32) == constants.FLOAT32_MISSING_AS_INT32
+                    )
+                elif row.dtype.kind in ("O", "U", "T"):
+                    return np.any(row == constants.STR_MISSING)
+                elif row.dtype.kind == "b":
+                    return ~np.any(row)
+                else:
+                    raise ValueError(f"unrecognised dtype: {row.dtype}")
+
             array = chunk_data[vcz_name]
             for row in array:
-                is_missing = np.any(row == -1)
+                is_missing = any_missing(row)
                 sep = ","
 
                 if tag == "CHROM":

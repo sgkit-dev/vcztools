@@ -191,6 +191,31 @@ def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos,
         assert variant.POS == pos
 
 
+def test_write_vcf__regions_split_alleles(tmp_path):
+    original = pathlib.Path("tests/data/vcf") / "sample-split-alleles.vcf.gz"
+    # chunk size is chosen so that 20:1234567 (two alt alleles) spans two chunks
+    vcz = vcz_path_cache(original, variants_chunk_size=4)
+    output = tmp_path.joinpath("output.vcf")
+
+    write_vcf(vcz, output, regions="20:1234567")
+
+    v = VCF(output)
+    variants = list(v)
+    assert len(variants) == 2
+
+    variant = variants[0]
+    assert variant.CHROM == "20"
+    assert variant.POS == 1234567
+    assert variant.REF == "G"
+    assert variant.ALT == ["GA"]
+
+    variant = variants[1]
+    assert variant.CHROM == "20"
+    assert variant.POS == 1234567
+    assert variant.REF == "G"
+    assert variant.ALT == ["GAC"]
+
+
 @pytest.mark.parametrize(
     ("samples", "force_samples", "expected_samples", "expected_genotypes"),
     [

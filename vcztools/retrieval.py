@@ -1,7 +1,6 @@
 import collections.abc
 
 import numpy as np
-import zarr
 
 from vcztools import filter as filter_mod
 from vcztools.regions import (
@@ -101,42 +100,29 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
             region_index,
         )
 
-        # Then use only load required variant_contig/position chunks
         if len(chunk_indexes) == 0:
             # no chunks - no variants to write
             return
-        elif len(chunk_indexes) == 1:
-            # single chunk
-            block_sel = chunk_indexes[0]
-        else:
-            # TODO: zarr.blocks doesn't support int array indexing
-            # use that when it does
-            block_sel = slice(chunk_indexes[0], chunk_indexes[-1] + 1)
 
-        region_variant_contig = root["variant_contig"].blocks[block_sel][:]
-        region_variant_position = root["variant_position"].blocks[block_sel][:]
-        region_variant_length = root["variant_length"].blocks[block_sel][:]
+        # Then only load required variant_contig/position chunks
+        for chunk_index in chunk_indexes:
+            region_variant_contig = root["variant_contig"].blocks[chunk_index][:]
+            region_variant_position = root["variant_position"].blocks[chunk_index][:]
+            region_variant_length = root["variant_length"].blocks[chunk_index][:]
 
-        # Find the final variant selection
-        variant_selection = regions_to_selection(
-            regions_pyranges,
-            targets_pyranges,
-            complement,
-            region_variant_contig,
-            region_variant_position,
-            region_variant_length,
-        )
-        variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
-        variant_mask[variant_selection] = 1
-        # Use zarr arrays to get mask chunks aligned with the main data
-        # for convenience.
-        z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
+            # Find the variant selection for the chunk
+            variant_selection = regions_to_selection(
+                regions_pyranges,
+                targets_pyranges,
+                complement,
+                region_variant_contig,
+                region_variant_position,
+                region_variant_length,
+            )
+            variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
+            variant_mask[variant_selection] = 1
 
-        # TODO: this should be the actual chunk indexes (not a range)
-        # when zarr.blocks supports int array indexing (above)
-        for i, v_chunk in enumerate(range(chunk_indexes[0], chunk_indexes[-1] + 1)):
-            v_mask_chunk = z_variant_mask.blocks[i]
-            yield v_chunk, v_mask_chunk
+            yield chunk_index, variant_mask
 
 
 def variant_chunk_index_iter_with_filtering(

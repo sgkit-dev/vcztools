@@ -152,6 +152,7 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
 
         # targets only
         (None, "19", [("19", 111), ("19", 112)]),
+        (None, "19:111", [("19", 111)]),
         (None, "19:112", [("19", 112)]),
         (None, "20:1230236-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
         (None, "20:1230237-", [("20", 1230237), ("20", 1234567), ("20", 1235237)]),
@@ -168,10 +169,12 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
     ]
 )
 # fmt: on
-def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos):
+@pytest.mark.parametrize("variants_chunk_size", [None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos,
+                            variants_chunk_size):
 
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+    vcz = vcz_path_cache(original, variants_chunk_size=variants_chunk_size)
     output = tmp_path.joinpath("output.vcf")
 
     write_vcf(vcz, output, regions=regions, targets=targets)

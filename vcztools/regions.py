@@ -102,11 +102,13 @@ def regions_to_chunk_indexes(
     start_position = regions_index[:, 2]
     end_position = regions_index[:, 3]
     max_end_position = regions_index[:, 4]
+    # subtract 1 from start coordinate to convert intervals
+    # from VCF (1-based, fully-closed) to Python (0-based, half-open)
     df = pd.DataFrame(
         {
             "chunk_index": chunk_index,
             "Chromosome": contig_id,
-            "Start": start_position,
+            "Start": start_position - 1,
             "End": max_end_position if regions is not None else end_position,
         }
     )

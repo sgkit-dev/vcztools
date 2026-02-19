@@ -213,7 +213,7 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
             assert count > 0, "No variants in file"
 
 
-def vcz_path_cache(vcf_path):
+def vcz_path_cache(vcf_path, variants_chunk_size=None, samples_chunk_size=None):
     """
     Store converted files in a cache to speed up tests. We're not testing
     vcf2zarr here, so no point in running over and over again.
@@ -221,20 +221,34 @@ def vcz_path_cache(vcf_path):
     cache_path = pathlib.Path("vcz_test_cache")
     if not cache_path.exists():
         cache_path.mkdir()
-    cached_vcz_path = (cache_path / vcf_path.name).with_suffix(".vcz")
+
+    # special case chunk size for chr22 vcf
+    if variants_chunk_size is None and vcf_path.name.startswith("chr22"):
+        variants_chunk_size = 10
+    if samples_chunk_size is None and vcf_path.name.startswith("chr22"):
+        samples_chunk_size = 10
+
+    # remove suffixes
+    cached_vcz_path = vcf_path
+    while cached_vcz_path.suffix:
+        cached_vcz_path = cached_vcz_path.with_suffix("")
+    cached_vcz_filename = cached_vcz_path.name
+
+    # incorporate chunk sizes in filename
+    if variants_chunk_size is not None:
+        cached_vcz_filename = f"{cached_vcz_filename}_vcs={variants_chunk_size}"
+    if samples_chunk_size is not None:
+        cached_vcz_filename = f"{cached_vcz_filename}_scs={samples_chunk_size}"
+
+    cached_vcz_path = (cache_path / cached_vcz_filename).with_suffix(".vcz")
     if not cached_vcz_path.exists():
-        if vcf_path.name.startswith("chr22"):
-            vcf.convert(
-                [vcf_path],
-                cached_vcz_path,
-                worker_processes=0,
-                variants_chunk_size=10,
-                samples_chunk_size=10,
-            )
-        else:
-            vcf.convert(
-                [vcf_path], cached_vcz_path, worker_processes=0, local_alleles=False
-            )
+        vcf.convert(
+            [vcf_path],
+            cached_vcz_path,
+            worker_processes=0,
+            variants_chunk_size=variants_chunk_size,
+            samples_chunk_size=samples_chunk_size,
+        )
     return cached_vcz_path
 
 

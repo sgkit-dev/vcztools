@@ -109,7 +109,8 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
             # single chunk
             block_sel = chunk_indexes[0]
         else:
-            # zarr.blocks doesn't support int array indexing - use that when it does
+            # TODO: zarr.blocks doesn't support int array indexing
+            # use that when it does
             block_sel = slice(chunk_indexes[0], chunk_indexes[-1] + 1)
 
         region_variant_contig = root["variant_contig"].blocks[block_sel][:]
@@ -131,7 +132,9 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
         # for convenience.
         z_variant_mask = zarr.array(variant_mask, chunks=pos.chunks[0])
 
-        for i, v_chunk in enumerate(chunk_indexes):
+        # TODO: this should be the actual chunk indexes (not a range)
+        # when zarr.blocks supports int array indexing (above)
+        for i, v_chunk in enumerate(range(chunk_indexes[0], chunk_indexes[-1] + 1)):
             v_mask_chunk = z_variant_mask.blocks[i]
             yield v_chunk, v_mask_chunk
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Bug fixes:
+
+- Fix region edge cases and improve test coverage (#262). Region queries or views were in
+some cases omitting variants that should have been returned.
+
 Breaking:
 
 - Require NumPy 2 (#249)

@@ -5,6 +5,7 @@ from datetime import datetime
 
 import numpy as np
 
+from vcztools.regions import parse_regions, parse_targets
 from vcztools.samples import parse_samples
 from vcztools.utils import (
     _as_fixed_length_string,
@@ -82,7 +83,9 @@ def write_vcf(
     no_header: bool = False,
     no_version: bool = False,
     regions=None,
+    regions_file=None,
     targets=None,
+    targets_file=None,
     no_update=None,
     samples=None,
     samples_file=None,
@@ -129,6 +132,10 @@ def write_vcf(
 
         contigs = _as_fixed_length_string(root["contig_id"][:])
         filters = get_filter_ids(root)
+
+        contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
+        regions = parse_regions(regions, contigs_u, regions_file=regions_file)
+        targets = parse_targets(targets, contigs_u, targets_file=targets_file)
 
         for chunk_data in retrieval.variant_chunk_iter(
             root,

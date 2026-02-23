@@ -106,6 +106,26 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
             "sample.vcf.gz"
         ),
         (
+            "view --no-version -R tests/data/txt/regions-3col.tsv -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
+            "sample.vcf.gz"
+        ),
+        (
+            "view --no-version -t '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
+            "sample.vcf.gz"
+        ),
+        (
+            "view --no-version -t '^20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
+            "sample.vcf.gz"
+        ),
+        (
+            "view --no-version -T tests/data/txt/regions-3col.tsv -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
+            "sample.vcf.gz"
+        ),
+        (
+            "view --no-version -T ^tests/data/txt/regions-3col.tsv -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
+            "sample.vcf.gz"
+        ),
+        (
             "view --no-version -i 'FILTER=\"VQSRTrancheSNP99.80to100.00\"'",
             "1kg_2020_chrM.vcf.gz"
         ),
@@ -237,6 +257,14 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         ),
         (
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -r '20:1230236-' -i 'FMT/DP>3' -S tests/data/txt/samples.txt",  # noqa: E501
+            "sample.vcf.gz",
+        ),
+        (
+            r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -R tests/data/txt/regions-3col.tsv -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
+            "sample.vcf.gz",
+        ),
+        (
+            r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -T ^tests/data/txt/regions-3col.tsv -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
             "sample.vcf.gz",
         ),
     ],

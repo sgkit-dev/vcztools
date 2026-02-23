@@ -2,7 +2,7 @@ import numpy as np
 import numpy.testing as nt
 import pytest
 
-from vcztools.samples import parse_samples
+from vcztools.samples import parse_samples, parse_samples_file
 
 
 @pytest.mark.parametrize(
@@ -41,3 +41,12 @@ def test_parse_samples(
 
     nt.assert_array_equal(sample_ids, expected_sample_ids)
     nt.assert_array_equal(samples_selection, expected_samples_selection)
+
+
+def test_parse_samples_file():
+    nt.assert_array_equal(
+        parse_samples_file("tests/data/txt/samples.txt"), "NA00001,NA00003"
+    )
+    nt.assert_array_equal(
+        parse_samples_file("^tests/data/txt/samples.txt"), "^NA00001,NA00003"
+    )

@@ -5,6 +5,8 @@ from functools import wraps
 
 import click
 
+from vcztools.samples import parse_samples_file
+
 from . import plink, provenance, vcf_writer
 from . import query as query_module
 from . import stats as stats_module
@@ -75,6 +77,13 @@ samples = click.option(
     type=str,
     default=None,
     help="Samples to include.",
+)
+samples_file = click.option(
+    "-S",
+    "--samples-file",
+    type=str,
+    default=None,
+    help="File of sample names to include.",
 )
 targets = click.option(
     "-t",
@@ -154,6 +163,7 @@ def index(path, nrecords, stats, zarr_backend_storage):
 @regions
 @force_samples
 @samples
+@samples_file
 @targets
 @include
 @exclude
@@ -175,6 +185,7 @@ def query(
     targets,
     force_samples,
     samples,
+    samples_file,
     include,
     exclude,
     disable_automatic_newline,
@@ -200,6 +211,12 @@ def query(
 
     if format is None:
         raise click.UsageError("Missing option -f / --format")
+
+    if samples_file:
+        if samples is not None:
+            raise ValueError("vcztools does not support combining -s and -S")
+        samples = parse_samples_file(samples_file)
+
     with handle_broken_pipe(output):
         query_module.write_query(
             path,
@@ -245,13 +262,7 @@ def query(
     help="Do not recalculate INFO fields for the sample subset.",
 )
 @samples
-@click.option(
-    "-S",
-    "--samples-file",
-    type=str,
-    default=None,
-    help="File of sample names to include.",
-)
+@samples_file
 @click.option(
     "-G",
     "--drop-genotypes",
@@ -300,15 +311,7 @@ def view(
     if samples_file:
         if samples is not None:
             raise ValueError("vcztools does not support combining -s and -S")
-
-        samples = ""
-        exclude_samples_file = samples_file.startswith("^")
-        samples_file = samples_file.lstrip("^")
-
-        with open(samples_file) as file:
-            if exclude_samples_file:
-                samples = "^" + samples
-            samples += ",".join(line.strip() for line in file.readlines())
+        samples = parse_samples_file(samples_file)
 
     with handle_broken_pipe(output):
         vcf_writer.write_vcf(

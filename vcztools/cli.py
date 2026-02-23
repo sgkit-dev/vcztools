@@ -69,6 +69,13 @@ regions = click.option(
     default=None,
     help="Regions to include.",
 )
+regions_file = click.option(
+    "-R",
+    "--regions-file",
+    type=str,
+    default=None,
+    help="File of regions to include.",
+)
 samples = click.option(
     "-s",
     "--samples",
@@ -89,6 +96,13 @@ targets = click.option(
     type=str,
     default=None,
     help="Target regions to include.",
+)
+targets_file = click.option(
+    "-T",
+    "--targets-file",
+    type=str,
+    default=None,
+    help="File of target regions to include.",
 )
 version = click.version_option(version=f"{provenance.__version__}")
 zarr_backend_storage = click.option(
@@ -159,10 +173,12 @@ def index(path, nrecords, stats, zarr_backend_storage):
     default=None,
 )
 @regions
+@regions_file
 @force_samples
 @samples
 @samples_file
 @targets
+@targets_file
 @include
 @exclude
 @click.option(
@@ -180,7 +196,9 @@ def query(
     list_samples,
     format,
     regions,
+    regions_file,
     targets,
+    targets_file,
     force_samples,
     samples,
     samples_file,
@@ -216,7 +234,9 @@ def query(
             output,
             query_format=format,
             regions=regions,
+            regions_file=regions_file,
             targets=targets,
+            targets_file=targets_file,
             samples=samples,
             samples_file=samples_file,
             force_samples=force_samples,
@@ -248,6 +268,7 @@ def query(
     help="Do not append version and command line information to the output VCF header.",
 )
 @regions
+@regions_file
 @force_samples
 @click.option(
     "-I",
@@ -264,6 +285,7 @@ def query(
     help="Drop genotypes.",
 )
 @targets
+@targets_file
 @include
 @exclude
 @zarr_backend_storage
@@ -275,7 +297,9 @@ def view(
     no_header,
     no_version,
     regions,
+    regions_file,
     targets,
+    targets_file,
     force_samples,
     no_update,
     samples,
@@ -310,7 +334,9 @@ def view(
             no_header=no_header,
             no_version=no_version,
             regions=regions,
+            regions_file=regions_file,
             targets=targets,
+            targets_file=targets_file,
             no_update=no_update,
             samples=samples,
             samples_file=samples_file,

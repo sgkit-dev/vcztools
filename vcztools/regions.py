@@ -2,44 +2,46 @@ import re
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 try:
     # Use ruranges if installed
     from ruranges_py import overlaps, subtract
 
     class GenomicRanges:
-        def __init__(self, contigs, starts, ends):
+        def __init__(self, contigs, starts, ends, complement=False):
             # note that ruranges groups must be unsigned
             self.contigs = np.ascontiguousarray(contigs, dtype=np.uint64)
             self.starts = np.ascontiguousarray(starts)
             self.ends = np.ascontiguousarray(ends)
+            self.complement = complement
 
         def overlaps(self, other: "GenomicRanges"):
-            overlap = overlaps(
-                groups=self.contigs,
-                starts=self.starts,
-                ends=self.ends,
-                groups2=other.contigs,
-                starts2=other.starts,
-                ends2=other.ends,
-            )
-            return overlap[0]  # indices of overlapping regions with self
-
-        def subtract(self, other: "GenomicRanges"):
-            overlap = subtract(
-                groups=self.contigs,
-                starts=self.starts,
-                ends=self.ends,
-                groups2=other.contigs,
-                starts2=other.starts,
-                ends2=other.ends,
-            )
+            if self.complement:
+                overlap = subtract(
+                    groups=self.contigs,
+                    starts=self.starts,
+                    ends=self.ends,
+                    groups2=other.contigs,
+                    starts2=other.starts,
+                    ends2=other.ends,
+                )
+            else:
+                overlap = overlaps(
+                    groups=self.contigs,
+                    starts=self.starts,
+                    ends=self.ends,
+                    groups2=other.contigs,
+                    starts2=other.starts,
+                    ends2=other.ends,
+                )
             return overlap[0]  # indices of overlapping regions with self
 
         def __str__(self) -> str:
             return (
                 f"GenomicRanges(contigs={self.contigs}, "
-                f"starts={self.starts}, ends={self.ends})"
+                f"starts={self.starts}, ends={self.ends}, "
+                f"complement={self.complement})"
             )
 
 except ImportError:
@@ -48,7 +50,7 @@ except ImportError:
     from pyranges import PyRanges
 
     class GenomicRanges:
-        def __init__(self, contigs, starts, ends):
+        def __init__(self, contigs, starts, ends, complement=False):
             df = pd.DataFrame(
                 {
                     "Chromosome": contigs,
@@ -58,15 +60,16 @@ except ImportError:
             )
             df["index"] = df.index
             self.pyranges = PyRanges(df)
+            self.contigs = df["Chromosome"].to_numpy()
+            self.starts = df["Start"].to_numpy()
+            self.ends = df["End"].to_numpy()
+            self.complement = complement
 
         def overlaps(self, other: "GenomicRanges"):
-            overlap = self.pyranges.overlap(other.pyranges)
-            if overlap.empty:
-                return np.empty((0,), dtype=np.int64)
-            return overlap.df["index"].to_numpy()
-
-        def subtract(self, other: "GenomicRanges"):
-            overlap = self.pyranges.subtract(other.pyranges)
+            if self.complement:
+                overlap = self.pyranges.subtract(other.pyranges)
+            else:
+                overlap = self.pyranges.overlap(other.pyranges)
             if overlap.empty:
                 return np.empty((0,), dtype=np.int64)
             return overlap.df["index"].to_numpy()
@@ -87,7 +90,9 @@ def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
 
 
 def regions_to_ranges(
-    regions: list[tuple[str, int | None, int | None]], all_contigs: list[str]
+    regions: list[tuple[str, int | None, int | None]],
+    all_contigs: list[str],
+    complement: bool = False,
 ) -> GenomicRanges:
     """Convert region tuples to a GenomicRanges object."""
 
@@ -107,81 +112,116 @@ def regions_to_ranges(
         starts.append(start)
         ends.append(end)
 
-    return GenomicRanges(contigs=contigs, starts=starts, ends=ends)
+    return GenomicRanges(
+        contigs=contigs, starts=starts, ends=ends, complement=complement
+    )
+
+
+def _parse_regions_or_targets(
+    regions: GenomicRanges | list[str] | str | None,
+    all_contigs: list[str],
+    regions_file: str | None = None,
+    allow_complement: bool = False,
+) -> GenomicRanges | None:
+    if regions is None and regions_file is not None:
+        return _parse_regions_or_targets_file(
+            regions_file, all_contigs, allow_complement=allow_complement
+        )
+    elif regions is None or isinstance(regions, GenomicRanges):
+        return regions
+    elif isinstance(regions, list):
+        regions_list = regions
+        complement = False
+    else:
+        assert isinstance(regions, str)
+        if allow_complement:
+            complement = regions.startswith("^")
+            if complement:
+                regions = regions[1:]
+        else:
+            complement = False
+        regions_list = regions.split(",")
+    return regions_to_ranges(
+        [parse_region_string(region) for region in regions_list],
+        all_contigs,
+        complement=complement,
+    )
+
+
+def _parse_regions_or_targets_file(
+    regions_file: str, all_contigs: list[str], allow_complement: bool = False
+) -> GenomicRanges:
+    if allow_complement:
+        complement = regions_file.startswith("^")
+        if complement:
+            regions_file = regions_file[1:]
+    else:
+        complement = False
+    df = pd.read_csv(
+        regions_file,
+        sep="\t",
+        names=["Chromosome", "Start", "End"],
+        dtype={"Chromosome": str, "Start": np.int64, "End": np.int64},
+    )
+    # transform contig names to indexes, and convert intervals
+    # from VCF (1-based, fully-closed) to Python (0-based, half-open)
+    df["Chromosome"] = df["Chromosome"].apply(lambda c: all_contigs.index(c))
+    df = df.astype({"Chromosome": np.int32})
+    df["Start"] = df["Start"] - 1
+    return GenomicRanges(
+        df["Chromosome"].to_numpy(),
+        df["Start"].to_numpy(),
+        df["End"].to_numpy(),
+        complement=complement,
+    )
 
 
 def parse_regions(
-    regions: list[str] | str | None, all_contigs: list[str]
+    regions: GenomicRanges | list[str] | str | None,
+    all_contigs: list[str],
+    regions_file: str | None = None,
 ) -> GenomicRanges | None:
     """Return a GenomicRanges object from a comma-separated set of region strings,
     or a list of region strings."""
-    if regions is None:
-        return None
-    elif isinstance(regions, list):
-        regions_list = regions
-    else:
-        regions_list = regions.split(",")
-    return regions_to_ranges(
-        [parse_region_string(region) for region in regions_list], all_contigs
-    )
+    if regions is not None and regions_file is not None:
+        raise ValueError(
+            "Cannot specify both a regions string (-r) and a regions file (-R)"
+        )
+    return _parse_regions_or_targets(regions, all_contigs, regions_file=regions_file)
 
 
 def parse_targets(
-    targets: list[str] | str | None, all_contigs: list[str]
-) -> tuple[GenomicRanges | None, bool]:
+    targets: list[str] | str | None,
+    all_contigs: list[str],
+    targets_file: str | None = None,
+) -> GenomicRanges | None:
     """Return a GenomicRanges object from a comma-separated set of region strings,
     optionally preceeded by a ^ character to indicate complement,
     or a list of region strings."""
-    if targets is None:
-        return None, False
-    elif isinstance(targets, list):
-        targets_list = targets
-        complement = False
-    else:
-        complement = targets.startswith("^")
-        targets_list = (targets[1:] if complement else targets).split(",")
-    return (
-        parse_regions(targets_list, all_contigs),
-        complement,
+    if targets is not None and targets_file is not None:
+        raise ValueError(
+            "Cannot specify both a target string (-t) and a targets file (-T)"
+        )
+    return _parse_regions_or_targets(
+        targets, all_contigs, regions_file=targets_file, allow_complement=True
     )
 
 
-def regions_to_chunk_indexes(
-    regions: GenomicRanges | None,
-    targets: GenomicRanges | None,
-    complement: bool,
-    regions_index: Any,
-):
-    """Return chunks indexes that overlap the given regions or targets.
-
-    If both regions and targets are specified then only regions are used
-    to find overlapping chunks (since targets are used later to refine).
-
-    If only targets are specified then they are used to find overlapping chunks,
-    taking into account the complement flag.
-    """
+def regions_to_chunk_indexes(regions: GenomicRanges, regions_index: Any):
+    """Return chunks indexes that overlap the given regions."""
 
     # Create GenomicRanges for chunks using the region index.
     # For regions use max end position, for targets just end position
     chunk_index = regions_index[:, 0]
     contig_id = regions_index[:, 1]
     start_position = regions_index[:, 2]
-    end_position = regions_index[:, 3]
+    # end_position = regions_index[:, 3]
     max_end_position = regions_index[:, 4]
     # subtract 1 from start coordinate to convert intervals
     # from VCF (1-based, fully-closed) to Python (0-based, half-open)
-    chunk_regions = GenomicRanges(
-        contig_id,
-        start_position - 1,
-        max_end_position if regions is not None else end_position,
-    )
+    chunk_regions = GenomicRanges(contig_id, start_position - 1, max_end_position)
 
-    if regions is not None:
-        overlap = chunk_regions.overlaps(regions)
-    elif complement:
-        overlap = chunk_regions.subtract(targets)
-    else:
-        overlap = chunk_regions.overlaps(targets)
+    overlap = chunk_regions.overlaps(regions)
     chunk_indexes = chunk_index[overlap]
     chunk_indexes = np.unique(chunk_indexes)
     return chunk_indexes
@@ -190,7 +230,6 @@ def regions_to_chunk_indexes(
 def regions_to_selection(
     regions: GenomicRanges | None,
     targets: GenomicRanges | None,
-    complement: bool,
     variant_contig: Any,
     variant_position: Any,
     variant_length: Any,
@@ -214,7 +253,10 @@ def regions_to_selection(
     if targets is not None:
         targets_variant_end = variant_position  # length 1
         variant_targets = GenomicRanges(
-            variant_contig, variant_start, targets_variant_end
+            variant_contig,
+            variant_start,
+            targets_variant_end,
+            complement=targets.complement,
         )
     else:
         variant_targets = None
@@ -225,10 +267,7 @@ def regions_to_selection(
         regions_overlap = None
 
     if variant_targets is not None:
-        if complement:
-            targets_overlap = variant_targets.subtract(targets)
-        else:
-            targets_overlap = variant_targets.overlaps(targets)
+        targets_overlap = variant_targets.overlaps(targets)
     else:
         targets_overlap = None
 

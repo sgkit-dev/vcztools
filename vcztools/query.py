@@ -7,8 +7,14 @@ import numpy as np
 import pyparsing as pp
 
 from vcztools import constants, retrieval
+from vcztools.regions import parse_regions, parse_targets
 from vcztools.samples import parse_samples
-from vcztools.utils import missing, open_zarr, vcf_name_to_vcz_names
+from vcztools.utils import (
+    _as_fixed_length_unicode,
+    missing,
+    open_zarr,
+    vcf_name_to_vcz_names,
+)
 
 
 def list_samples(vcz_path, output, zarr_backend_storage=None):
@@ -299,7 +305,9 @@ def write_query(
     *,
     query_format: str,
     regions=None,
+    regions_file=None,
     targets=None,
+    targets_file=None,
     samples=None,
     samples_file=None,
     force_samples: bool = False,
@@ -319,6 +327,10 @@ def write_query(
     )
     contigs = root["contig_id"][:]
     filters = root["filter_id"][:]
+
+    contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
+    regions = parse_regions(regions, contigs_u, regions_file=regions_file)
+    targets = parse_targets(targets, contigs_u, targets_file=targets_file)
 
     if "\\n" not in query_format and not disable_automatic_newline:
         query_format = query_format + "\\n"

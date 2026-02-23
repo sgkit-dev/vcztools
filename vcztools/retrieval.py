@@ -88,17 +88,15 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
     else:
         contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
         regions_ranges = parse_regions(regions, contigs_u)
-        targets_ranges, complement = parse_targets(targets, contigs_u)
+        targets_ranges = parse_targets(targets, contigs_u)
 
-        # Use the region index to find the chunks that overlap specfied regions or
-        # targets
-        region_index = root["region_index"][:]
-        chunk_indexes = regions_to_chunk_indexes(
-            regions_ranges,
-            targets_ranges,
-            complement,
-            region_index,
-        )
+        if regions is None:
+            num_chunks = pos.cdata_shape[0]
+            chunk_indexes = range(num_chunks)
+        else:
+            # Use the region index to find the chunks that overlap specified regions
+            region_index = root["region_index"][:]
+            chunk_indexes = regions_to_chunk_indexes(regions_ranges, region_index)
 
         if len(chunk_indexes) == 0:
             # no chunks - no variants to write
@@ -114,7 +112,6 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
             variant_selection = regions_to_selection(
                 regions_ranges,
                 targets_ranges,
-                complement,
                 region_variant_contig,
                 region_variant_position,
                 region_variant_length,

@@ -68,3 +68,21 @@ def parse_samples(
         samples_selection = np.setdiff1d(samples_selection, masked_sample_ids)
     sample_ids = all_samples[samples_selection]
     return sample_ids, samples_selection
+
+
+def parse_samples_file(samples_file: str) -> str:
+    """Parse a file of sample IDs.
+
+    Returns a comma-delimited string of sample IDs,
+    optionally preceeded by a ^ character to indicate complement.
+    """
+    samples = ""
+    exclude_samples_file = samples_file.startswith("^")
+    samples_file = samples_file.lstrip("^")
+
+    with open(samples_file) as file:
+        if exclude_samples_file:
+            samples = "^" + samples
+        samples += ",".join(line.strip() for line in file.readlines())
+
+        return samples

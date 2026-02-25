@@ -15,7 +15,9 @@ def test_variant_chunk_iter():
     vcz = vcz_path_cache(original)
     root = zarr.open(vcz, mode="r")
 
-    _, samples_selection = parse_samples("NA00002,NA00003", root["sample_id"][:])
+    _, samples_selection = parse_samples(
+        "NA00002,NA00003", samples_file=None, all_samples=root["sample_id"][:]
+    )
     chunk_data = next(
         variant_chunk_iter(
             root,

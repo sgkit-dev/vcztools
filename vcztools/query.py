@@ -301,6 +301,7 @@ def write_query(
     regions=None,
     targets=None,
     samples=None,
+    samples_file=None,
     force_samples: bool = False,
     include: str | None = None,
     exclude: str | None = None,
@@ -311,7 +312,7 @@ def write_query(
 
     all_samples = root["sample_id"][:]
     sample_ids, samples_selection = parse_samples(
-        samples, all_samples, force_samples=force_samples
+        samples, samples_file, all_samples=all_samples, force_samples=force_samples
     )
     contigs = root["contig_id"][:]
     filters = root["filter_id"][:]

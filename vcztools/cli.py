@@ -5,8 +5,6 @@ from functools import wraps
 
 import click
 
-from vcztools.samples import parse_samples_file
-
 from . import plink, provenance, vcf_writer
 from . import query as query_module
 from . import stats as stats_module
@@ -212,10 +210,8 @@ def query(
     if format is None:
         raise click.UsageError("Missing option -f / --format")
 
-    if samples_file:
-        if samples is not None:
-            raise ValueError("vcztools does not support combining -s and -S")
-        samples = parse_samples_file(samples_file)
+    if samples and samples_file:
+        raise ValueError("vcztools does not support combining -s and -S")
 
     with handle_broken_pipe(output):
         query_module.write_query(
@@ -225,6 +221,7 @@ def query(
             regions=regions,
             targets=targets,
             samples=samples,
+            samples_file=samples_file,
             force_samples=force_samples,
             include=include,
             exclude=exclude,
@@ -308,10 +305,8 @@ def view(
             f"Only uncompressed VCF output supported, suffix .{suffix} not allowed"
         )
 
-    if samples_file:
-        if samples is not None:
-            raise ValueError("vcztools does not support combining -s and -S")
-        samples = parse_samples_file(samples_file)
+    if samples and samples_file:
+        raise ValueError("vcztools does not support combining -s and -S")
 
     with handle_broken_pipe(output):
         vcf_writer.write_vcf(
@@ -324,6 +319,7 @@ def view(
             targets=targets,
             no_update=no_update,
             samples=samples,
+            samples_file=samples_file,
             force_samples=force_samples,
             drop_genotypes=drop_genotypes,
             include=include,

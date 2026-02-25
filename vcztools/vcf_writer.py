@@ -85,6 +85,7 @@ def write_vcf(
     targets=None,
     no_update=None,
     samples=None,
+    samples_file=None,
     force_samples: bool = False,
     drop_genotypes: bool = False,
     include: str | None = None,
@@ -94,7 +95,7 @@ def write_vcf(
     root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
     with open_file_like(output) as output:
-        if samples and drop_genotypes:
+        if (samples or samples_file) and drop_genotypes:
             raise ValueError("Cannot select samples and drop genotypes.")
         elif drop_genotypes:
             sample_ids = []
@@ -102,7 +103,10 @@ def write_vcf(
         else:
             all_samples = root["sample_id"][:]
             sample_ids, samples_selection = parse_samples(
-                samples, all_samples, force_samples=force_samples
+                samples,
+                samples_file,
+                all_samples=all_samples,
+                force_samples=force_samples,
             )
 
         # Need to try parsing filter expressions before writing header

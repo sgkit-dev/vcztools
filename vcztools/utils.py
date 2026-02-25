@@ -117,6 +117,33 @@ def vcf_name_to_vcz_names(vcz_names: set[str], vcf_name: str) -> list[str]:
     return matches
 
 
+async def async_get_zarr_array(group, key):
+    arr = await group.getitem(key)
+    return await arr.getitem(slice(None))
+
+
+# TODO: contribute upstream
+async def get_block_selection(
+    async_array,
+    selection,
+    *,
+    out=None,
+    fields=None,
+    prototype=None,
+):
+    from zarr.core.buffer import default_buffer_prototype
+    from zarr.core.indexing import BlockIndexer
+
+    if prototype is None:
+        prototype = default_buffer_prototype()
+    indexer = BlockIndexer(
+        selection, async_array.shape, async_array.metadata.chunk_grid
+    )
+    return await async_array._get_selection(
+        indexer=indexer, out=out, fields=fields, prototype=prototype
+    )
+
+
 # See https://numpy.org/devdocs/user/basics.strings.html#casting-to-and-from-fixed-width-strings
 
 

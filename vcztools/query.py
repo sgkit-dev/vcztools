@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import itertools
 import math
@@ -5,10 +6,16 @@ from collections.abc import Callable
 
 import numpy as np
 import pyparsing as pp
+from zarr.api.asynchronous import open_group
 
-from vcztools import constants, retrieval
+from vcztools import constants, retrieval_async
 from vcztools.samples import parse_samples
-from vcztools.utils import missing, open_zarr, vcf_name_to_vcz_names
+from vcztools.utils import (
+    async_get_zarr_array,
+    missing,
+    open_zarr,
+    vcf_name_to_vcz_names,
+)
 
 
 def list_samples(vcz_path, output, zarr_backend_storage=None):
@@ -307,21 +314,52 @@ def write_query(
     disable_automatic_newline: bool = False,
     zarr_backend_storage: str | None = None,
 ):
-    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
+    asyncio.run(
+        async_write_query(
+            vcz,
+            output,
+            query_format=query_format,
+            regions=regions,
+            targets=targets,
+            samples=samples,
+            force_samples=force_samples,
+            include=include,
+            exclude=exclude,
+            disable_automatic_newline=disable_automatic_newline,
+            zarr_backend_storage=zarr_backend_storage,
+        )
+    )
 
-    all_samples = root["sample_id"][:]
+
+async def async_write_query(
+    vcz,
+    output,
+    *,
+    query_format: str,
+    regions=None,
+    targets=None,
+    samples=None,
+    force_samples: bool = False,
+    include: str | None = None,
+    exclude: str | None = None,
+    disable_automatic_newline: bool = False,
+    zarr_backend_storage: str | None = None,
+):
+    root = await open_group(vcz, mode="r")
+
+    all_samples = await async_get_zarr_array(root, "sample_id")
     sample_ids, samples_selection = parse_samples(
         samples, all_samples, force_samples=force_samples
     )
-    contigs = root["contig_id"][:]
-    filters = root["filter_id"][:]
+    contigs = await async_get_zarr_array(root, "contig_id")
+    filters = await async_get_zarr_array(root, "filter_id")
 
     if "\\n" not in query_format and not disable_automatic_newline:
         query_format = query_format + "\\n"
 
     generator = QueryFormatGenerator(query_format, sample_ids, contigs, filters)
 
-    for chunk_data in retrieval.variant_chunk_iter(
+    async for chunk_data in retrieval_async.async_variant_chunk_iter(
         root,
         regions=regions,
         targets=targets,

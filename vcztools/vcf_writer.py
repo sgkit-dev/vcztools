@@ -1,19 +1,21 @@
+import asyncio
 import io
 import logging
 import sys
 from datetime import datetime
 
 import numpy as np
+from zarr.api.asynchronous import open_group
 
 from vcztools.samples import parse_samples
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
+    async_get_zarr_array,
     open_file_like,
-    open_zarr,
 )
 
-from . import _vcztools, constants, retrieval
+from . import _vcztools, constants, retrieval_async
 from . import filter as filter_mod
 from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 
@@ -91,7 +93,44 @@ def write_vcf(
     exclude: str | None = None,
     zarr_backend_storage: str | None = None,
 ) -> None:
-    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
+    asyncio.run(
+        async_write_vcf(
+            vcz,
+            output,
+            header_only=header_only,
+            no_header=no_header,
+            no_version=no_version,
+            regions=regions,
+            targets=targets,
+            no_update=no_update,
+            samples=samples,
+            force_samples=force_samples,
+            drop_genotypes=drop_genotypes,
+            include=include,
+            exclude=exclude,
+            zarr_backend_storage=zarr_backend_storage,
+        )
+    )
+
+
+async def async_write_vcf(
+    vcz,
+    output,
+    *,
+    header_only: bool = False,
+    no_header: bool = False,
+    no_version: bool = False,
+    regions=None,
+    targets=None,
+    no_update=None,
+    samples=None,
+    force_samples: bool = False,
+    drop_genotypes: bool = False,
+    include: str | None = None,
+    exclude: str | None = None,
+    zarr_backend_storage: str | None = None,
+) -> None:
+    root = await open_group(vcz, mode="r")
 
     with open_file_like(output) as output:
         if samples and drop_genotypes:
@@ -100,14 +139,15 @@ def write_vcf(
             sample_ids = []
             samples_selection = np.array([])
         else:
-            all_samples = root["sample_id"][:]
+            all_samples = await async_get_zarr_array(root, "sample_id")
             sample_ids, samples_selection = parse_samples(
                 samples, all_samples, force_samples=force_samples
             )
 
         # Need to try parsing filter expressions before writing header
+        field_names = set([key async for key in root.keys()])
         filter_mod.FilterExpression(
-            field_names=set(root), include=include, exclude=exclude
+            field_names=field_names, include=include, exclude=exclude
         )
 
         if not no_header:
@@ -123,10 +163,10 @@ def write_vcf(
         if header_only:
             return
 
-        contigs = _as_fixed_length_string(root["contig_id"][:])
-        filters = get_filter_ids(root)
+        contigs = _as_fixed_length_string(await async_get_zarr_array(root, "contig_id"))
+        filters = _as_fixed_length_string(await async_get_zarr_array(root, "filter_id"))
 
-        for chunk_data in retrieval.variant_chunk_iter(
+        async for chunk_data in retrieval_async.async_variant_chunk_iter(
             root,
             regions=regions,
             targets=targets,

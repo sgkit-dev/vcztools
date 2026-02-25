@@ -52,6 +52,7 @@ dev = [
   "cyvcf2",
   "obstore",
   "pytest",
+  "pytest-asyncio",
   "pytest-cov",
   "msprime",
   "setuptools",

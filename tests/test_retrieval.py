@@ -4,7 +4,12 @@ import numpy.testing as nt
 import pytest
 import zarr
 
-from vcztools.retrieval import variant_chunk_iter, variant_iter
+from vcztools.retrieval import (
+    AsyncVariantChunkReader,
+    async_variant_chunk_iter,
+    variant_chunk_iter,
+    variant_iter,
+)
 from vcztools.samples import parse_samples
 
 from .utils import vcz_path_cache
@@ -33,6 +38,31 @@ def test_variant_chunk_iter():
     # are False (NA00002 and NA00003), since sample NA00001 matched filter criteria,
     # but was then removed by samples_selection
     nt.assert_array_equal(chunk_data["call_mask"], [[True, False], [False, False]])
+
+
+@pytest.mark.asyncio()
+async def test_variant_chunk_iter_async():
+    from zarr.api.asynchronous import open_group
+
+    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
+    vcz = vcz_path_cache(original)
+    root = await open_group(vcz, mode="r")
+
+    sample_id_arr = await root.getitem("sample_id")
+    sample_id = await sample_id_arr.getitem(slice(None))
+    _, samples_selection = parse_samples("NA00002,NA00003", sample_id)
+
+    chunk_reader = await AsyncVariantChunkReader.create(root)
+
+    chunk_data = await chunk_reader.get_chunk_data(
+        0, samples_selection=samples_selection
+    )
+    print(chunk_data["call_DP"])
+
+    async for chunk_data in async_variant_chunk_iter(
+        root, samples_selection=samples_selection
+    ):
+        print(chunk_data["call_DP"])
 
 
 def test_variant_chunk_iter_empty_fields():

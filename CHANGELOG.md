@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## [0.1.1] - 2026-03-02
+
+Minor maintenance and bugfix release.
+
+Features:
+
+- Add -N/--disable-automatic-newline option (#261)
+- Support -S/--samples-file in query (#264)
+- Ignore missing samples (#258)
 
 Bug fixes:
 
@@ -10,6 +18,7 @@ some cases omitting variants that should have been returned.
 Breaking:
 
 - Require NumPy 2 (#249)
+- Require Zarr Python version 3.1 or greater (#259)
 
 ## [0.1.0] - 2025-05-29
 

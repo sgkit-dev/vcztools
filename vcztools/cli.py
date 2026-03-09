@@ -5,6 +5,7 @@ from functools import wraps
 
 import click
 
+from . import compare as compare_module
 from . import plink, provenance, vcf_writer
 from . import query as query_module
 from . import stats as stats_module
@@ -120,6 +121,17 @@ class NaturalOrderGroup(click.Group):
 
     def list_commands(self, ctx):
         return self.commands.keys()
+
+
+@click.command
+@click.argument("vcf1", type=click.Path())
+@click.argument("vcf2", type=click.Path())
+@handle_exception
+def compare(vcf1, vcf2):
+    """
+    Compare two VCF files for equivalence.
+    """
+    compare_module.compare(vcf1, vcf2)
 
 
 @click.command
@@ -376,6 +388,7 @@ def vcztools_main():
     pass
 
 
+vcztools_main.add_command(compare)
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)

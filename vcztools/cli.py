@@ -41,6 +41,8 @@ def handle_exception(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
+        except AssertionError as e:
+            raise click.ClickException(e) from e
         except ValueError as e:
             raise click.ClickException(e) from e
 

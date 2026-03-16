@@ -80,7 +80,7 @@ class TestOutput:
 
 def test_excluding_and_including_samples(vcz_path):
     samples_file_path = pathlib.Path("tests/data/txt/samples.txt")
-    error_message = "vcztools does not support combining -s and -S"
+    error_message = "Cannot specify both a samples string (-s) and a samples file (-S)"
 
     _, vcztools_error = run_vcztools(
         f"view {vcz_path} -s NA00001 -S ^{samples_file_path}", expect_error=True

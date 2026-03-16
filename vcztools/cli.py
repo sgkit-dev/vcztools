@@ -210,9 +210,6 @@ def query(
     if format is None:
         raise click.UsageError("Missing option -f / --format")
 
-    if samples and samples_file:
-        raise ValueError("vcztools does not support combining -s and -S")
-
     with handle_broken_pipe(output):
         query_module.write_query(
             path,
@@ -304,9 +301,6 @@ def view(
         raise ValueError(
             f"Only uncompressed VCF output supported, suffix .{suffix} not allowed"
         )
-
-    if samples and samples_file:
-        raise ValueError("vcztools does not support combining -s and -S")
 
     with handle_broken_pipe(output):
         vcf_writer.write_vcf(

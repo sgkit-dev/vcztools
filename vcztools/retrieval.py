@@ -226,9 +226,7 @@ def variant_iter(
     """
     root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
     all_samples = root["sample_id"][:]
-    _, samples_selection = parse_samples(
-        samples, samples_file=None, all_samples=all_samples
-    )
+    _, samples_selection = parse_samples(samples, all_samples)
 
     for chunk_data in variant_chunk_iter(
         root,

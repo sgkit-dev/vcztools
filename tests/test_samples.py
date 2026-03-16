@@ -37,9 +37,7 @@ from vcztools.samples import parse_samples, parse_samples_file
 def test_parse_samples(
     samples, all_samples, expected_sample_ids, expected_samples_selection
 ):
-    sample_ids, samples_selection = parse_samples(
-        samples, samples_file=None, all_samples=all_samples
-    )
+    sample_ids, samples_selection = parse_samples(samples, all_samples)
 
     nt.assert_array_equal(sample_ids, expected_sample_ids)
     nt.assert_array_equal(samples_selection, expected_samples_selection)

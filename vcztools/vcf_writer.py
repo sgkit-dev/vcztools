@@ -104,8 +104,8 @@ def write_vcf(
             all_samples = root["sample_id"][:]
             sample_ids, samples_selection = parse_samples(
                 samples,
-                samples_file,
                 all_samples=all_samples,
+                samples_file=samples_file,
                 force_samples=force_samples,
             )
 

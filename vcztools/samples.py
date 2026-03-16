@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 
 def parse_samples(
     samples: list[str] | str | None,
-    samples_file: str | None,
     all_samples: np.ndarray,
     *,
+    samples_file: str | None = None,
     force_samples: bool = True,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Parse a bcftools-style samples string, a list of sample IDs,
@@ -20,6 +20,11 @@ def parse_samples(
     Returns an array of the sample IDs, and an array indicating the selection
     from all samples.
     """
+
+    if samples is not None and samples_file is not None:
+        raise ValueError(
+            "Cannot specify both a samples string (-s) and a samples file (-S)"
+        )
 
     if samples is None and samples_file is not None:
         samples = parse_samples_file(samples_file)

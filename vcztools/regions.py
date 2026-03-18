@@ -123,6 +123,7 @@ def _parse_regions_or_targets(
     regions_file: str | None = None,
     allow_complement: bool = False,
 ) -> GenomicRanges | None:
+    assert regions is None or regions_file is None  # only one is set
     if regions is None and regions_file is not None:
         return _parse_regions_or_targets_file(
             regions_file, all_contigs, allow_complement=allow_complement

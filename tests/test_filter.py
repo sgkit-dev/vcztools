@@ -38,20 +38,13 @@ class TestFilterExpressionParser:
             ('DP="."', filter_mod.UnsupportedMissingDataError),
             ("ID!=@~/file", filter_mod.UnsupportedFileReferenceError),
             ("INFO/TAG=@file", filter_mod.UnsupportedFileReferenceError),
-            ("INFO/X[0] == 1", filter_mod.UnsupportedArraySubscriptError),
-            ("INFO/AF[0] > 0.3", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/AD[0:0] > 30", filter_mod.UnsupportedArraySubscriptError),
-            ("DP4[*] == 0", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/DP[1-3] > 10", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/DP[1-] < 7", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/DP[0,2-4] > 20", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/AD[0:*]", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/AD[0:]", filter_mod.UnsupportedArraySubscriptError),
             ("FORMAT/AD[*:1]", filter_mod.UnsupportedArraySubscriptError),
-            (
-                "(DP4[0]+DP4[1])/(DP4[2]+DP4[3]) > 0.3",
-                filter_mod.UnsupportedArraySubscriptError,
-            ),
             ("binom(FMT/AD)", filter_mod.UnsupportedFunctionsError),
             ("fisher(INFO/DP4)", filter_mod.UnsupportedFunctionsError),
             ("fisher(FMT/ADF,FMT/ADR)", filter_mod.UnsupportedFunctionsError),
@@ -258,6 +251,25 @@ class TestFilterExpression:
             ],
         }
         fee = filter_mod.FilterExpression(include=expression)
+        result = fee.evaluate(numpify_values(data))
+        nt.assert_array_equal(result, expected)
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("INFO/AC>=2", [[0, 0], [1, 1], [0, 1], [1, 0]]),
+            ("INFO/AC[*]>=2", [[0, 0], [1, 1], [0, 1], [1, 0]]),
+            ("INFO/AC[0]>=2", [0, 1, 0, 1]),
+            ("INFO/AC[1]>=2", [0, 1, 1, 0]),
+        ],
+    )
+    def test_evaluate_array_subscripts(self, expression, expected):
+        data = {
+            "variant_AC": [[1, -1], [5, 4], [1, 4], [2, -1]],
+        }
+        fee = filter_mod.FilterExpression(
+            field_names={"variant_AC"}, include=expression
+        )
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 

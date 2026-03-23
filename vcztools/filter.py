@@ -99,6 +99,11 @@ class Number(Constant):
     pass
 
 
+class Integer(Constant):
+    def eval(self, data):
+        return int(self.tokens)
+
+
 class String(Constant):
     def __init__(self, tokens):
         super().__init__(tokens)
@@ -146,11 +151,29 @@ class Identifier(EvaluationNode):
         return frozenset([self.field_name])
 
 
+class IndexAny(Constant):
+    def eval(self, data):
+        return Ellipsis
+
+
 class IndexedIdentifier(EvaluationNode):
     def __init__(self, tokens):
-        # The tokens here are the already resolved idenfitier
-        # and the index
-        raise UnsupportedArraySubscriptError()
+        token = tokens[0]
+        # The tokens here are the already resolved identifier
+        # and the index - but only in the case of a single element
+        # index (an int), or any (*)
+        if len(token) > 2:
+            raise UnsupportedArraySubscriptError()
+        self.identifier = token[0]
+        self.index = token[1]
+
+    def eval(self, data):
+        val = self.identifier.eval(data)
+        ind = self.index.eval(data)
+        return val[:, ind]  # index samples dim
+
+    def referenced_fields(self):
+        return self.identifier.referenced_fields()
 
 
 class RegexOperator(EvaluationNode):
@@ -523,9 +546,11 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     # TODO we need to define the indexing grammar more carefully, but
     # this at least let's us match correct strings and raise an informative
     # error
+    index_single_element_expr = pp.Word(pp.nums).set_parse_action(Integer)
+    index_any_element_expr = pp.Literal("*").set_parse_action(IndexAny)
     index_expr = pp.OneOrMore(
-        pp.common.number
-        | pp.Literal("*")
+        index_single_element_expr
+        | index_any_element_expr
         | pp.Literal(":")
         | pp.Literal("-")
         | pp.Literal(",")

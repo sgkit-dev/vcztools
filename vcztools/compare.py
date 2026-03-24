@@ -158,7 +158,7 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
                 if field == "GT":
                     if "GT" not in v2.FORMAT:
                         assert all(
-                            all(gt[:2]) for gt in v1.genotypes
+                            (gt[0] < 0 and gt[1] < 0) for gt in v1.genotypes
                         ), f"GT not equal for variants\n{v1}{v2}"
                     else:
                         assert (

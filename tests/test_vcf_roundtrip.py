@@ -15,6 +15,7 @@ from .utils import assert_vcfs_close
         "1kg_2020_chr20_annotations.bcf",
         "1kg_2020_chrM.vcf.gz",
         "field_type_combos.vcf.gz",
+        "missing-gt.vcf.gz",
     ],
 )
 def test_vcf_to_zarr_to_vcf__real_files(tmp_path, vcf_file):

@@ -207,7 +207,7 @@ def fx_simple_ts(tmp_path):
 # handled)
 
 
-@pytest.mark.skipIf(sys.platform == "win32", reason="Not supported on Windows")
+@pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows")
 class TestVcfRoundTrip:
     def assert_bio2zarr_rt(self, tmp_path, tskit_vcz):
         vcf_path = tmp_path / "out.vcf"

@@ -1,8 +1,13 @@
 import pathlib
 import subprocess
+import sys
 
 import click.testing as ct
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 import vcztools.cli as cli
 

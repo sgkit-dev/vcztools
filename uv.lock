@@ -444,9 +444,9 @@ name = "cyvcf2"
 version = "0.32.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "coloredlogs" },
-    { name = "numpy" },
+    { name = "click", marker = "sys_platform != 'win32'" },
+    { name = "coloredlogs", marker = "sys_platform != 'win32'" },
+    { name = "numpy", marker = "sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8e/2e/381ce60871b9f842222cc704f422b9205497f491372b070ac893c7c97277/cyvcf2-0.32.1.tar.gz", hash = "sha256:34f3f4464f27794a4956413481e9c08a00dbf87d998b8cc72d33560de874f263", size = 1354911, upload-time = "2026-02-23T18:15:32.553Z" }
 wheels = [
@@ -1800,7 +1800,7 @@ dependencies = [
 dev = [
     { name = "bio2zarr" },
     { name = "clang-format" },
-    { name = "cyvcf2" },
+    { name = "cyvcf2", marker = "sys_platform != 'win32'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "prek" },
@@ -1824,7 +1824,7 @@ packaging = [
 ]
 test = [
     { name = "bio2zarr" },
-    { name = "cyvcf2" },
+    { name = "cyvcf2", marker = "sys_platform != 'win32'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pytest" },
@@ -1852,7 +1852,7 @@ requires-dist = [
 dev = [
     { name = "bio2zarr" },
     { name = "clang-format", specifier = "==19.1.7" },
-    { name = "cyvcf2" },
+    { name = "cyvcf2", marker = "sys_platform != 'win32'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "prek", specifier = "==0.3.3" },
@@ -1876,7 +1876,7 @@ packaging = [
 ]
 test = [
     { name = "bio2zarr" },
-    { name = "cyvcf2" },
+    { name = "cyvcf2", marker = "sys_platform != 'win32'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pytest" },

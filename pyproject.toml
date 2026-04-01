@@ -31,6 +31,7 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",
   "Operating System :: MacOS :: MacOS X",
+  "Operating System :: Microsoft :: Windows",
   "Intended Audience :: Science/Research",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -50,7 +51,7 @@ vcztools = "vcztools.cli:vcztools_main"
 [dependency-groups]
 test = [
   "bio2zarr",
-  "cyvcf2",
+  "cyvcf2 ; sys_platform != 'win32'",
   "obstore",
   "pytest",
   "pytest-cov",

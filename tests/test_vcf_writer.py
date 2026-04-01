@@ -6,6 +6,7 @@ from io import StringIO
 import numpy as np
 import pytest
 import zarr
+from bio2zarr import vcf
 from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING
@@ -13,12 +14,8 @@ from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
 from .utils import assert_vcfs_close, to_vcz_icechunk, vcz_path_cache
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
-
-from bio2zarr import vcf  # noqa: E402
-from cyvcf2 import VCF  # noqa: E402
+cyvcf2 = pytest.importorskip("cyvcf2")
+VCF = cyvcf2.VCF
 
 
 @pytest.mark.parametrize("output_is_path", [True, False])

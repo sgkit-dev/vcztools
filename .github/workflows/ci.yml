@@ -66,7 +66,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          uv sync --locked --group test
+          uv sync --locked --group test --no-default-groups
           # Build the extension module in-place so pytest can find it
           uv run python setup.py build_ext --inplace
 
@@ -205,7 +205,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          uv sync --locked --group test
+          uv sync --locked --group test --no-default-groups
           # Build the extension module in-place so pytest can find it
           uv run python setup.py build_ext --inplace
 

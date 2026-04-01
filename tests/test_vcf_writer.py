@@ -8,6 +8,10 @@ import pytest
 import zarr
 from bio2zarr import vcf
 from cyvcf2 import VCF
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING

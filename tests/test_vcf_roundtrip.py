@@ -1,6 +1,11 @@
 import pathlib
+import sys
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 from tests.utils import vcz_path_cache
 from vcztools.vcf_writer import write_vcf

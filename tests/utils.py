@@ -5,7 +5,6 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
-import cyvcf2
 import numpy as np
 import xarray as xr
 import zarr
@@ -30,8 +29,10 @@ def load_dataset(
 
 
 @contextmanager
-def open_vcf(path) -> Iterator[cyvcf2.VCF]:
+def open_vcf(path) -> Iterator:
     """A context manager for opening a VCF file."""
+    import cyvcf2  # noqa: PLC0415
+
     vcf = cyvcf2.VCF(path)
     try:
         yield vcf

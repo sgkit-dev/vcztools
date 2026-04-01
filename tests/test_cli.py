@@ -10,7 +10,7 @@ from tests.utils import vcz_path_cache
 from vcztools import provenance
 
 
-@pytest.fixture()
+@pytest.fixture
 def vcz_path():
     vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
     return vcz_path_cache(vcf_path)

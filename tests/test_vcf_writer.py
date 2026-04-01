@@ -477,7 +477,7 @@ def test_compute_info_fields():
 
 class TestApiErrors:
 
-    @pytest.fixture()
+    @pytest.fixture
     def vcz(self):
         original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
         return vcz_path_cache(original)

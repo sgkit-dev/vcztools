@@ -57,13 +57,13 @@ def parse_samples(
             # remove unknown samples from sample_ids
             logger.warning(
                 "subset called for sample(s) not in header: "
-                f'{",".join(unknown_samples)}.'
+                f"{','.join(unknown_samples)}."
             )
             sample_ids = np.delete(sample_ids, search(sample_ids, unknown_samples))
         else:
             raise ValueError(
                 "subset called for sample(s) not in header: "
-                f'{",".join(unknown_samples)}. '
+                f"{','.join(unknown_samples)}. "
                 'Use "--force-samples" to ignore this error.'
             )
 

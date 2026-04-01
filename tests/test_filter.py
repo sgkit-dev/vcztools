@@ -11,7 +11,7 @@ from vcztools import filter as filter_mod
 
 
 class TestFilterExpressionParser:
-    @pytest.fixture()
+    @pytest.fixture
     def parser(self):
         return filter_mod.make_bcftools_filter_parser(map_vcf_identifiers=False)
 

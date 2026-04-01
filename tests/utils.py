@@ -151,9 +151,9 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
                 atol=atol,
                 err_msg=f"QUAL not equal for variants\n{v1}{v2}",
             )
-            assert set(v1.FILTERS) == set(
-                v2.FILTERS
-            ), f"FILTER not equal for variants\n{v1}{v2}"
+            assert set(v1.FILTERS) == set(v2.FILTERS), (
+                f"FILTER not equal for variants\n{v1}{v2}"
+            )
 
             v1_info = dict(v1.INFO)
             v2_info = dict(v2.INFO)
@@ -179,9 +179,9 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
             # assert v1.FORMAT == v2.FORMAT, f"FORMAT not equal for variants\n{v1}{v2}"
             for field in v1.FORMAT:
                 if field == "GT":
-                    assert (
-                        v1.genotypes == v2.genotypes
-                    ), f"GT not equal for variants\n{v1}{v2}"
+                    assert v1.genotypes == v2.genotypes, (
+                        f"GT not equal for variants\n{v1}{v2}"
+                    )
                 else:
                     val1 = v1.format(field)
                     val2 = v2.format(field)

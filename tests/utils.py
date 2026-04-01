@@ -253,7 +253,7 @@ def vcz_path_cache(vcf_path, variants_chunk_size=None, samples_chunk_size=None):
 
 
 def to_vcz_icechunk(vcz, tmp_path):
-    from icechunk import Repository, Storage
+    from icechunk import Repository, Storage  # noqa PLC0415
 
     source = zarr.storage.LocalStore(vcz)
 
@@ -274,8 +274,8 @@ def to_vcz_icechunk(vcz, tmp_path):
 
 # inspired by commit f3c123d3a2a94b7f14bc995e3897ee6acc9acbd1 in zarr-python
 def copy_store(source, dest):
-    from zarr.core.buffer.core import default_buffer_prototype
-    from zarr.testing.stateful import SyncStoreWrapper
+    from zarr.core.buffer.core import default_buffer_prototype  # noqa PLC0415
+    from zarr.testing.stateful import SyncStoreWrapper  # noqa PLC0415
 
     s = SyncStoreWrapper(source)
     d = SyncStoreWrapper(dest)

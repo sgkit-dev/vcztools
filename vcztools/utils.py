@@ -39,8 +39,8 @@ def open_zarr(
     if zarr_backend_storage is None or zarr_backend_storage == "fsspec":
         return zarr.open(file_or_url, mode=mode)
     elif zarr_backend_storage == "obstore":
-        import obstore as obs
-        from zarr.storage import ObjectStore
+        import obstore as obs  # noqa PLC0415
+        from zarr.storage import ObjectStore  # noqa PLC0415
 
         if isinstance(file_or_url, str):
             if "://" not in file_or_url:  # local path
@@ -53,7 +53,7 @@ def open_zarr(
             store = ObjectStore(obs.store.from_url(path.as_uri(), mkdir=True))
         return zarr.open(store, mode=mode)
     elif zarr_backend_storage == "icechunk":
-        import icechunk as ic
+        import icechunk as ic  # noqa PLC0415
 
         if isinstance(file_or_url, str):
             if "://" not in file_or_url:  # local path

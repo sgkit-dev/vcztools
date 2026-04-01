@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 name = "vcztools"
 description = "Implementation of bcftools for VCF Zarr"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
 authors = [
   {name = "sgkit Developers", email = "project@sgkit.dev"},
 ]
@@ -27,7 +27,6 @@ dependencies = [
 requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 4 - Beta",
-  "License :: OSI Approved :: Apache Software License",
   "Operating System :: POSIX",
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS",

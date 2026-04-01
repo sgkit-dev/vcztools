@@ -91,6 +91,7 @@ addopts = "--cov=vcztools --cov-report=term-missing"
 
 [tool.setuptools_scm]
 write_to = "vcztools/_version.py"
+local_scheme = "no-local-version"
 
 [tool.ruff]
 # Assume Python 3.11

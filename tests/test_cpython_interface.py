@@ -443,7 +443,18 @@ class TestArrays:
 class TestUninitialised:
     @pytest.mark.parametrize(
         "name",
-        ["add_info_field", "add_gt_field", "add_format_field", "print_state", "encode"],
+        [
+            "add_info_field",
+            "add_gt_field",
+            "add_format_field",
+            pytest.param(
+                "print_state",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="Not implemented on Windows"
+                ),
+            ),
+            "encode",
+        ],
     )
     def test_methods(self, name):
         cls = _vcztools.VcfEncoder

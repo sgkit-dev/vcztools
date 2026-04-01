@@ -5,13 +5,13 @@ import sys
 import click.testing as ct
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
-
 import vcztools.cli as cli
 
 from .utils import assert_vcfs_close, vcz_path_cache
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 def run_bcftools(args: str, expect_error=False) -> tuple[str, str]:

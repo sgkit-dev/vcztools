@@ -34,7 +34,7 @@ def add_mutations(ts):
     return tables.tree_sequence()
 
 
-@pytest.fixture()
+@pytest.fixture
 def fx_diploid_msprime_sim(tmp_path):
     seed = 1234
     ts = msprime.sim_ancestry(5, sequence_length=10_000, random_seed=seed)
@@ -46,7 +46,7 @@ def fx_diploid_msprime_sim(tmp_path):
     return zarr_path
 
 
-@pytest.fixture()
+@pytest.fixture
 def fx_haploid_missing_data(tmp_path):
     # 2.00┊   4     ┊
     #     ┊ ┏━┻┓    ┊
@@ -80,7 +80,7 @@ def test_haploid_missing_data(fx_haploid_missing_data):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def fx_diploid_missing_data(tmp_path):
     # 2.00┊    6       ┊
     #     ┊  ┏━┻━┓     ┊
@@ -118,7 +118,7 @@ def test_diploid_missing_data(fx_diploid_missing_data):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def fx_diploid_multi_allelic(tmp_path):
     # 2.00┊    6    ┊
     #     ┊  ┏━┻━┓  ┊
@@ -157,7 +157,7 @@ def test_diploid_multi_allelic(fx_diploid_multi_allelic):
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def fx_haploid_msprime_sim(tmp_path):
     seed = 12345
     ts = msprime.sim_ancestry(5, ploidy=1, sequence_length=100, random_seed=seed)
@@ -191,7 +191,7 @@ def simple_ts_tables():
     return tables
 
 
-@pytest.fixture()
+@pytest.fixture
 def fx_simple_ts(tmp_path):
     ts = simple_ts_tables().tree_sequence()
     zarr_path = tmp_path / "sim.vcz"

@@ -46,7 +46,7 @@ def test_list_samples__missing(tmp_path):
 
 
 class TestQueryFormatParser:
-    @pytest.fixture()
+    @pytest.fixture
     def parser(self):
         return QueryFormatParser()
 
@@ -128,7 +128,7 @@ class TestQueryFormatParser:
 
 
 class TestQueryFormatEvaluator:
-    @pytest.fixture()
+    @pytest.fixture
     def root(self):
         vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
         vcz_path = vcz_path_cache(vcf_path)

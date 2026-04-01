@@ -16,8 +16,7 @@ def stats(vcz, output, zarr_backend_storage=None):
 
     if "region_index" not in root:
         raise ValueError(
-            "Could not load 'region_index' variable. "
-            "Use 'vcz2zarr' to create an index."
+            "Could not load 'region_index' variable. Use 'vcz2zarr' to create an index."
         )
 
     with open_file_like(output) as output:

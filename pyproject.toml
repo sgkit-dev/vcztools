@@ -48,8 +48,8 @@ repository = "https://github.com/sgkit-dev/vcztools"
 [project.scripts]
 vcztools = "vcztools.cli:vcztools_main"
 
-[project.optional-dependencies]
-dev = [
+[dependency-groups]
+test = [
   "bio2zarr",
   "cyvcf2",
   "obstore",
@@ -59,6 +59,27 @@ dev = [
   "setuptools",
   "tskit>=1",
   "xarray",
+]
+
+lint = [
+  "ruff==0.15.1",
+  "prek==0.3.3",
+  "clang-format==19.1.7",
+]
+
+packaging = [
+  "twine",
+  "validate-pyproject[all]",
+]
+
+wheels = [
+  "cibuildwheel",
+]
+
+dev = [
+  {include-group = "test"},
+  {include-group = "lint"},
+  {include-group = "packaging"},
 ]
 
 [tool.setuptools]
@@ -83,7 +104,7 @@ indent-width = 4
 select = ["E", "F", "B", "W", "I", "N", "UP", "A", "PT"]
 #Allow uppercase names for e.g. call_AD
 #Don't add strict=False to zips (B905)
-ignore = ["N806", "N802", "N803", "A001", "A002", "B905", "RUF", "UP038"]
+ignore = ["N806", "N802", "N803", "A001", "A002", "B905", "RUF"]
 
 fixable = ["ALL"]
 unfixable = []
@@ -101,3 +122,19 @@ known-third-party = [
   "setuptools",
   "zarr"
 ]
+
+[tool.cibuildwheel]
+build = ["cp311-*", "cp312-*", "cp313-*"]
+build-frontend = "build"
+build-verbosity = 3
+test-command = [
+  "python -c \"import vcztools._vcztools\"",
+  "vcztools --help",
+]
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+skip = ["*musllinux*"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]

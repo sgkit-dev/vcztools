@@ -348,7 +348,7 @@ def _generate_header(
     print("##fileformat=VCFv4.3", file=output)
 
     if "source" in ds.attrs:
-        print(f'##source={ds.attrs["source"]}', file=output)
+        print(f"##source={ds.attrs['source']}", file=output)
 
     # [1.4.2 Information field format]
     for key in info_fields:

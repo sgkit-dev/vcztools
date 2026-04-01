@@ -621,9 +621,9 @@ vcztools_encode_plink(PyObject *self, PyObject *args)
     vcz_encode_plink((size_t) num_variants, (size_t) num_samples,
         PyArray_DATA(genotypes), PyArray_DATA(a12_allele), PyArray_DATA(encoded));
     Py_END_ALLOW_THREADS
-    // clang-format on
 
     ret = (PyObject *) encoded;
+    // clang-format on
     encoded = NULL;
 out:
     Py_XDECREF(encoded);

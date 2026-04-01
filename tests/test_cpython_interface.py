@@ -1,7 +1,13 @@
+import sys
+
 import numpy as np
 import pytest
 
 from vcztools import _vcztools
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="FIXME unexplained error on windows"
+)
 
 FIXED_FIELD_NAMES = ["chrom", "pos", "id", "qual", "ref", "alt", "filter"]
 

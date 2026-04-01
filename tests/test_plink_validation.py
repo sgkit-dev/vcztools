@@ -1,6 +1,7 @@
 import os
 import pathlib
 import subprocess
+import sys
 
 import click.testing as ct
 import pytest
@@ -8,6 +9,10 @@ import pytest
 import vcztools.cli as cli
 
 from . import utils
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 def assert_files_identical(path1, path2):

@@ -3,6 +3,8 @@ Tests for data originating from tskit format for compatibility
 with various outputs.
 """
 
+import sys
+
 import bio2zarr.plink as p2z
 import bio2zarr.tskit as ts2z
 import bio2zarr.vcf as v2z
@@ -16,6 +18,10 @@ import xarray.testing as xt
 from tests.utils import load_dataset
 from vcztools.plink import write_plink
 from vcztools.vcf_writer import write_vcf
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 def add_mutations(ts):

@@ -1,4 +1,5 @@
 import pathlib
+import sys
 
 import numpy.testing as nt
 import pytest
@@ -8,6 +9,10 @@ from vcztools.retrieval import variant_chunk_iter, variant_iter
 from vcztools.samples import parse_samples
 
 from .utils import vcz_path_cache
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 def test_variant_chunk_iter():

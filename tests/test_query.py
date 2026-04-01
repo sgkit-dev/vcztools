@@ -1,5 +1,6 @@
 import pathlib
 import re
+import sys
 from io import StringIO
 
 import numpy as np
@@ -16,6 +17,10 @@ from vcztools.query import (
     write_query,
 )
 from vcztools.retrieval import variant_chunk_iter
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 def test_list_samples(tmp_path):

@@ -1,4 +1,5 @@
 import pathlib
+import sys
 from io import StringIO
 
 import pytest
@@ -8,6 +9,10 @@ from bio2zarr import vcf
 from vcztools.stats import nrecords, stats
 
 from .utils import vcz_path_cache
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 def test_nrecords():

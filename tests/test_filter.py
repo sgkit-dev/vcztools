@@ -1,4 +1,5 @@
 import pathlib
+import sys
 
 import numpy as np
 import numpy.testing as nt
@@ -8,6 +9,10 @@ import zarr
 
 from tests.utils import vcz_path_cache
 from vcztools import filter as filter_mod
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="Not supported on Windows"
+)
 
 
 class TestFilterExpressionParser:

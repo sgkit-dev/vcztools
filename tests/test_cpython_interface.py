@@ -80,7 +80,7 @@ def example_encoder(num_variants=1, num_samples=0, add_info=True):
     return encoder
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Broken on Windows")
+@pytest.mark.skipif(sys.platform == "win32", reason="Not implemented on Windows")
 class TestPrintState:
     def test_nomimal_case(self, tmp_path):
         encoder = example_encoder()

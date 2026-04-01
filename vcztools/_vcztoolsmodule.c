@@ -33,6 +33,13 @@ handle_library_error(int err)
     }
 }
 
+/* The dup/fdopen/fclose pattern used by make_file does not work on Windows
+ * because _dup shares the underlying OS handle rather than duplicating it.
+ * When fclose closes the duped FILE*, it invalidates the original handle,
+ * causing an access violation when Python later closes its file object.
+ * Since print_state is only a debugging tool, we simply exclude it on Windows. */
+#ifndef _WIN32
+
 static FILE *
 make_file(PyObject *fileobj, const char *mode)
 {
@@ -59,6 +66,8 @@ make_file(PyObject *fileobj, const char *mode)
 out:
     return ret;
 }
+
+#endif /* !_WIN32 */
 
 /*===================================================================
  * VcfEncoder
@@ -474,6 +483,7 @@ out:
     return ret;
 }
 
+#ifndef _WIN32
 static PyObject *
 VcfEncoder_print_state(VcfEncoder *self, PyObject *args)
 {
@@ -500,6 +510,8 @@ out:
     return ret;
 }
 
+#endif /* !_WIN32 */
+
 /* Return a copy of the dictionary of arrays providing the memory backing.
  * Note that we return copy of the Dictionary here so that the arrays themselves
  * can't be removed from it.
@@ -524,10 +536,12 @@ static PyGetSetDef VcfEncoder_getsetters[] = {
 };
 
 static PyMethodDef VcfEncoder_methods[] = {
+#ifndef _WIN32
     { .ml_name = "print_state",
         .ml_meth = (PyCFunction) VcfEncoder_print_state,
         .ml_flags = METH_VARARGS,
         .ml_doc = "Debug method to print out the low-level state" },
+#endif
     { .ml_name = "add_info_field",
         .ml_meth = (PyCFunction) VcfEncoder_add_info_field,
         .ml_flags = METH_VARARGS,

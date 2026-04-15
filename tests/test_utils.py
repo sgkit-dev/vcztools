@@ -1,5 +1,8 @@
+import pathlib
+
 import numpy as np
 import pytest
+import zarr
 from numpy.testing import assert_array_equal
 
 from vcztools.constants import (
@@ -14,9 +17,12 @@ from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     missing,
+    open_zarr,
     search,
     vcf_name_to_vcz_names,
 )
+
+FIXTURE_VCZ_ZIP = pathlib.Path("tests/data/vcf/sample.vcz.zip")
 
 
 @pytest.mark.parametrize(
@@ -105,3 +111,34 @@ def test_missing(arr, expected_missing):
 def test_missing__failure():
     with pytest.raises(ValueError, match="unrecognised dtype"):
         missing(np.array([1, 2], dtype=np.complex64))
+
+
+class TestOpenZarr:
+    def _write_minimal_group(self, path):
+        root = zarr.open(path, mode="w")
+        root.create_array("variant_position", shape=(4,), dtype="int32")
+        root["variant_position"][:] = [10, 20, 30, 40]
+
+    def test_zip_path(self):
+        root = open_zarr(FIXTURE_VCZ_ZIP)
+        assert isinstance(root.store, zarr.storage.ZipStore)
+        assert root["sample_id"][:].tolist() == ["NA00001", "NA00002", "NA00003"]
+
+    def test_zip_str(self):
+        root = open_zarr(str(FIXTURE_VCZ_ZIP))
+        assert isinstance(root.store, zarr.storage.ZipStore)
+
+    def test_zip_with_fsspec_backend(self):
+        root = open_zarr(FIXTURE_VCZ_ZIP, zarr_backend_storage="fsspec")
+        assert isinstance(root.store, zarr.storage.ZipStore)
+
+    def test_directory_path(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        root = open_zarr(vcz)
+        assert not isinstance(root.store, zarr.storage.ZipStore)
+        assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
+
+    def test_nonexistent_zip_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            open_zarr(tmp_path / "does-not-exist.vcz.zip")

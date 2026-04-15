@@ -1,13 +1,8 @@
-import pathlib
-
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from tests.utils import open_vcz, vcz_path_cache
 from tests.vcz_builder import copy_vcz, make_vcz
-
-SAMPLE_VCF = pathlib.Path("tests/data/vcf/sample.vcf.gz")
 
 
 def _values_equal(a_arr, b_arr):
@@ -22,31 +17,31 @@ def _values_equal(a_arr, b_arr):
 
 class TestCopyVcz:
     @pytest.fixture
-    def source(self):
-        return open_vcz(vcz_path_cache(SAMPLE_VCF))
+    def fx_source(self, fx_sample_vcz):
+        return fx_sample_vcz.group
 
-    def test_full_copy_matches_source(self, source):
-        copy = copy_vcz(source)
-        src_keys = sorted(source.array_keys())
+    def test_full_copy_matches_source(self, fx_source):
+        copy = copy_vcz(fx_source)
+        src_keys = sorted(fx_source.array_keys())
         dst_keys = sorted(copy.array_keys())
         assert src_keys == dst_keys
         for name in src_keys:
-            _values_equal(source[name][...], copy[name][...])
+            _values_equal(fx_source[name][...], copy[name][...])
 
-    def test_variants_chunk_size_override(self, source):
-        copy = copy_vcz(source, variants_chunk_size=3)
+    def test_variants_chunk_size_override(self, fx_source):
+        copy = copy_vcz(fx_source, variants_chunk_size=3)
         assert copy["variant_position"].chunks[0] == 3
         assert copy["variant_allele"].chunks[0] == 3
         assert copy["call_genotype"].chunks[0] == 3
         # values are still correct under the new chunking
-        _values_equal(source["variant_position"][...], copy["variant_position"][...])
-        _values_equal(source["call_genotype"][...], copy["call_genotype"][...])
+        _values_equal(fx_source["variant_position"][...], copy["variant_position"][...])
+        _values_equal(fx_source["call_genotype"][...], copy["call_genotype"][...])
 
-    def test_samples_chunk_size_override(self, source):
-        copy = copy_vcz(source, samples_chunk_size=2)
+    def test_samples_chunk_size_override(self, fx_source):
+        copy = copy_vcz(fx_source, samples_chunk_size=2)
         assert copy["call_genotype"].chunks[1] == 2
         assert copy["call_DP"].chunks[1] == 2
-        _values_equal(source["call_DP"][...], copy["call_DP"][...])
+        _values_equal(fx_source["call_DP"][...], copy["call_DP"][...])
 
     def test_unknown_array_raises(self):
         # Build a minimal in-memory group with an extra top-level array

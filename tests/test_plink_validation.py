@@ -8,8 +8,6 @@ import pytest
 
 import vcztools.cli as cli
 
-from . import utils
-
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="Not supported on Windows"
 )
@@ -39,18 +37,17 @@ def assert_files_identical(path1, path2):
     ],
 )
 # fmt: on
-def test_conversion_identical(tmp_path, args, vcf_file):
-    original = pathlib.Path("tests/data/vcf") / vcf_file
-    vcz = utils.vcz_path_cache(original)
+def test_conversion_identical(tmp_path, fx_all_vcz, args, vcf_file):
+    fx = fx_all_vcz[vcf_file]
 
     plink_workdir = tmp_path / "plink1.9"
     plink_workdir.mkdir()
     plink_bin = os.environ.get("PLINK_BIN", "plink")
-    cmd = f"{plink_bin} --vcf {original.absolute()} {args}"
+    cmd = f"{plink_bin} --vcf {fx.vcf_path.absolute()} {args}"
     result = subprocess.run(cmd, shell=True, cwd=plink_workdir, capture_output=True)
     assert result.returncode == 0
 
-    cmd = f"view-plink1 {vcz.absolute()} {args}"
+    cmd = f"view-plink1 {fx.zip_path.absolute()} {args}"
     runner = ct.CliRunner()
     with runner.isolated_filesystem(tmp_path) as working_dir:
         vcz_workdir = pathlib.Path(working_dir)

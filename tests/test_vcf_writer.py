@@ -12,7 +12,7 @@ from numpy.testing import assert_array_equal
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
-from .utils import assert_vcfs_close, to_vcz_icechunk, vcz_path_cache
+from .utils import assert_vcfs_close, open_vcz, to_vcz_icechunk, vcz_path_cache
 
 cyvcf2 = pytest.importorskip("cyvcf2")
 VCF = cyvcf2.VCF
@@ -24,7 +24,8 @@ def test_write_vcf(tmp_path, output_is_path, zarr_backend_storage):
     if zarr_backend_storage == "obstore":
         pytest.importorskip(zarr_backend_storage)
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+    # obstore cannot read a ZipStore, so we need a directory VCZ.
+    vcz = vcz_path_cache(original, as_directory=zarr_backend_storage == "obstore")
     output = tmp_path.joinpath("output.vcf")
 
     if output_is_path:
@@ -427,7 +428,7 @@ def test_write_vcf__generate_header():
 """  # noqa: E501
 
     # substitute value of source
-    root = zarr.open(vcz, mode="r+")
+    root = open_vcz(vcz)
     expected_vcf_header = expected_vcf_header.format(root.attrs["source"])
 
     assert output_header.getvalue() == expected_vcf_header

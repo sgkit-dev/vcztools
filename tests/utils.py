@@ -8,7 +8,20 @@ from typing import Any
 import numpy as np
 import xarray as xr
 import zarr
-from bio2zarr import vcf
+
+_FIXTURE_DIR = pathlib.Path(__file__).parent / "data" / "vcf"
+
+# VCF stems for which a committed .vcz.zip fixture exists with default
+# chunk sizes.
+_FIXTURE_NAMES = frozenset({"sample"})
+
+
+def open_vcz(path, mode="r"):
+    """Open a .vcz directory or .vcz.zip as a zarr group."""
+    path = pathlib.Path(path)
+    if path.suffix == ".zip":
+        return zarr.open(zarr.storage.ZipStore(path, mode="r"), mode=mode)
+    return zarr.open(path, mode=mode)
 
 
 def load_dataset(
@@ -218,15 +231,24 @@ def assert_vcfs_close(f1, f2, *, rtol=1e-05, atol=1e-03, allow_zero_variants=Fal
             assert count > 0, "No variants in file"
 
 
-def vcz_path_cache(vcf_path, variants_chunk_size=None, samples_chunk_size=None):
+def vcz_path_cache(
+    vcf_path,
+    variants_chunk_size=None,
+    samples_chunk_size=None,
+    *,
+    as_directory=False,
+):
     """
-    Store converted files in a cache to speed up tests. We're not testing
-    vcf2zarr here, so no point in running over and over again.
-    """
-    cache_path = pathlib.Path("vcz_test_cache")
-    if not cache_path.exists():
-        cache_path.mkdir()
+    Return a path to a VCZ for the given VCF. Prefers a committed
+    .vcz.zip fixture when one exists for the requested chunking;
+    otherwise converts on the fly and caches the result under
+    ``vcz_test_cache/``. We're not testing vcf2zarr here, so no point
+    running over and over again.
 
+    Pass ``as_directory=True`` to force on-the-fly conversion to a
+    directory VCZ. Needed for backends that cannot read a ZipStore
+    (e.g. obstore) or for tests that open the result in write mode.
+    """
     # special case chunk size for chr22 vcf
     if variants_chunk_size is None and vcf_path.name.startswith("chr22"):
         variants_chunk_size = 10
@@ -234,12 +256,24 @@ def vcz_path_cache(vcf_path, variants_chunk_size=None, samples_chunk_size=None):
         samples_chunk_size = 10
 
     # remove suffixes
-    cached_vcz_path = vcf_path
-    while cached_vcz_path.suffix:
-        cached_vcz_path = cached_vcz_path.with_suffix("")
-    cached_vcz_filename = cached_vcz_path.name
+    stem_path = vcf_path
+    while stem_path.suffix:
+        stem_path = stem_path.with_suffix("")
+    stem = stem_path.name
 
-    # incorporate chunk sizes in filename
+    use_fixture = (
+        not as_directory
+        and stem in _FIXTURE_NAMES
+        and variants_chunk_size is None
+        and samples_chunk_size is None
+    )
+    if use_fixture:
+        return _FIXTURE_DIR / f"{stem}.vcz.zip"
+
+    cache_path = pathlib.Path("vcz_test_cache")
+    cache_path.mkdir(exist_ok=True)
+
+    cached_vcz_filename = stem
     if variants_chunk_size is not None:
         cached_vcz_filename = f"{cached_vcz_filename}_vcs={variants_chunk_size}"
     if samples_chunk_size is not None:
@@ -247,6 +281,8 @@ def vcz_path_cache(vcf_path, variants_chunk_size=None, samples_chunk_size=None):
 
     cached_vcz_path = (cache_path / cached_vcz_filename).with_suffix(".vcz")
     if not cached_vcz_path.exists():
+        from bio2zarr import vcf  # noqa: PLC0415
+
         vcf.convert(
             [vcf_path],
             cached_vcz_path,

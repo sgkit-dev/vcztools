@@ -1,18 +1,12 @@
 import pathlib
-import sys
 
 import numpy as np
 import numpy.testing as nt
 import pyparsing as pp
 import pytest
-import zarr
 
-from tests.utils import vcz_path_cache
+from tests.utils import open_vcz, vcz_path_cache
 from vcztools import filter as filter_mod
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
 
 
 class TestFilterExpressionParser:
@@ -165,7 +159,7 @@ class TestFilterExpressionSample:
     def test(self, expression, expected_result):
         original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
         vcz = vcz_path_cache(original)
-        root = zarr.open(vcz, mode="r")
+        root = open_vcz(vcz)
         data = {field: root[field][:] for field in root.keys()}
         filter_expr = filter_mod.FilterExpression(
             field_names=set(root), include=expression

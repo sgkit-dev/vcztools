@@ -7,9 +7,8 @@ import numpy as np
 import pyparsing as pp
 import pytest
 import zarr
-from bio2zarr import vcf
 
-from tests.utils import vcz_path_cache
+from tests.utils import open_vcz, vcz_path_cache
 from vcztools.query import (
     QueryFormatGenerator,
     QueryFormatParser,
@@ -17,10 +16,6 @@ from vcztools.query import (
     write_query,
 )
 from vcztools.retrieval import variant_chunk_iter
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
 
 
 def test_list_samples(tmp_path):
@@ -33,7 +28,10 @@ def test_list_samples(tmp_path):
         assert output.getvalue() == expected_output
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="uses bio2zarr.vcf.convert")
 def test_list_samples__missing(tmp_path):
+    from bio2zarr import vcf  # noqa: PLC0415
+
     vcf_path = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     # don't use cache here since we want to modify the vcz
     vcz_path = tmp_path.joinpath("intermediate.vcz")
@@ -137,7 +135,7 @@ class TestQueryFormatEvaluator:
     def root(self):
         vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
         vcz_path = vcz_path_cache(vcf_path)
-        return zarr.open(vcz_path, mode="r")
+        return open_vcz(vcz_path)
 
     @pytest.mark.parametrize(
         ("query_format", "expected_result"),

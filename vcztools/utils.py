@@ -37,6 +37,9 @@ def open_zarr(
     zarr_backend_storage: str | None = None,
 ):
     if zarr_backend_storage is None or zarr_backend_storage == "fsspec":
+        if isinstance(file_or_url, (str, Path)) and Path(file_or_url).suffix == ".zip":
+            store = zarr.storage.ZipStore(file_or_url, mode="r")
+            return zarr.open(store, mode=mode)
         return zarr.open(file_or_url, mode=mode)
     elif zarr_backend_storage == "obstore":
         import obstore as obs  # noqa PLC0415

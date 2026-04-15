@@ -444,9 +444,9 @@ name = "cyvcf2"
 version = "0.32.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "coloredlogs" },
-    { name = "numpy" },
+    { name = "click", marker = "sys_platform != 'win32'" },
+    { name = "coloredlogs", marker = "sys_platform != 'win32'" },
+    { name = "numpy", marker = "sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8e/2e/381ce60871b9f842222cc704f422b9205497f491372b070ac893c7c97277/cyvcf2-0.32.1.tar.gz", hash = "sha256:34f3f4464f27794a4956413481e9c08a00dbf87d998b8cc72d33560de874f263", size = 1354911, upload-time = "2026-02-23T18:15:32.553Z" }
 wheels = [
@@ -1842,7 +1842,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
     { name = "numpy", specifier = ">=2" },
     { name = "pandas" },
-    { name = "pyparsing", specifier = ">=3" },
+    { name = "pyparsing", specifier = ">=3.1.0" },
     { name = "pyranges", marker = "python_full_version < '3.12'", specifier = "!=0.1.3" },
     { name = "ruranges-py", marker = "python_full_version >= '3.12'" },
     { name = "zarr", specifier = ">=3.1" },

@@ -12,7 +12,7 @@ from .utils import vcf_name_to_vcz_names
 logger = logging.getLogger(__name__)
 
 # Parsing is WAY slower without this!
-pp.ParserElement.enablePackrat()
+pp.ParserElement.enable_packrat()
 
 
 class ParseError(ValueError):
@@ -538,12 +538,12 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     indexed_identifier = indexed_identifier.set_parse_action(IndexedIdentifier)
 
     expr = pp.Forward()
-    expr_list = pp.delimited_list(pp.Group(expr))
+    expr_list = pp.DelimitedList(pp.Group(expr))
     lpar, rpar = map(pp.Suppress, "()")
     function = pp.common.identifier() + lpar - pp.Group(expr_list) + rpar
     function = function.set_parse_action(Function)
 
-    comp_op = pp.oneOf("< = == > >= <= !=")
+    comp_op = pp.one_of("< = == > >= <= !=")
     filter_expression = pp.infix_notation(
         chrom_field_expr
         | filter_field_expr

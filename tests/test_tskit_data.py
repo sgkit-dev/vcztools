@@ -290,7 +290,9 @@ class TestPlinkRoundTrip:
             "call_genotype_phased",
         ]
         xt.assert_equal(
-            ds1.drop_vars(["contig_length", "call_genotype", "call_genotype_phased"]),
+            ds1.drop_vars(
+                ["contig_length", "call_genotype", "call_genotype_phased", "variant_AA"]
+            ),
             ds2.drop_vars(drop_fields),
         )
 

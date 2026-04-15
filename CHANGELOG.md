@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.X] - 2026-XX-XX
+
+Features:
+
+- Add support for .vcz.zip files (#280).
+
 ## [0.1.1] - 2026-03-02
 
 Minor maintenance and bugfix release.

@@ -1,4 +1,5 @@
 import pathlib
+import sys
 from unittest import mock
 
 import click.testing as ct
@@ -9,11 +10,16 @@ from tests.test_bcftools_validation import run_vcztools
 from tests.utils import vcz_path_cache
 from vcztools import provenance
 
+IS_WINDOWS = sys.platform == "win32"
+
 
 @pytest.fixture
 def vcz_path():
+    # Return a posix-form string so f-string interpolation into CLI
+    # arg strings is safe on Windows (CliRunner shlex-splits with
+    # posix=True, which treats backslashes as escape characters).
     vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
-    return vcz_path_cache(vcf_path)
+    return vcz_path_cache(vcf_path).as_posix()
 
 
 def test_version_header(vcz_path):
@@ -27,7 +33,8 @@ class TestOutput:
         bad_output = tmp_path / "output.vcf.gz"
 
         _, vcztools_error = run_vcztools(
-            f"view --no-version {vcz_path} -o {bad_output}", expect_error=True
+            f"view --no-version {vcz_path} -o {bad_output.as_posix()}",
+            expect_error=True,
         )
         assert (
             "Only uncompressed VCF output supported, suffix .gz not allowed"
@@ -39,7 +46,8 @@ class TestOutput:
         bad_output = tmp_path / f"output.vcf.{suffix}"
 
         _, vcztools_error = run_vcztools(
-            f"view --no-version {vcz_path} -o {bad_output}", expect_error=True
+            f"view --no-version {vcz_path} -o {bad_output.as_posix()}",
+            expect_error=True,
         )
         assert f".{suffix} not allowed" in vcztools_error
 
@@ -48,7 +56,7 @@ class TestOutput:
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            f"view --no-version {vcz_path} -o {output_path}",
+            f"view --no-version {vcz_path} -o {output_path.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 0
@@ -59,23 +67,25 @@ class TestOutput:
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            f"view --no-version {vcz_path} -o {tmp_path}",
+            f"view --no-version {vcz_path} -o {tmp_path.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 1
         assert len(result.stdout) == 0
-        assert "Is a directory" in result.stderr
+        expected = "Permission denied" if IS_WINDOWS else "Is a directory"
+        assert expected in result.stderr
 
     def test_view_write_pipe(self, tmp_path, vcz_path):
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            f"view --no-version {vcz_path} -o {tmp_path}",
+            f"view --no-version {vcz_path} -o {tmp_path.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 1
         assert len(result.stdout) == 0
-        assert "Is a directory" in result.stderr
+        expected = "Permission denied" if IS_WINDOWS else "Is a directory"
+        assert expected in result.stderr
 
 
 def test_excluding_and_including_samples(vcz_path):
@@ -83,11 +93,13 @@ def test_excluding_and_including_samples(vcz_path):
     error_message = "Cannot specify both a samples string (-s) and a samples file (-S)"
 
     _, vcztools_error = run_vcztools(
-        f"view {vcz_path} -s NA00001 -S ^{samples_file_path}", expect_error=True
+        f"view {vcz_path} -s NA00001 -S ^{samples_file_path.as_posix()}",
+        expect_error=True,
     )
     assert error_message in vcztools_error
     _, vcztools_error = run_vcztools(
-        f"view {vcz_path} -s ^NA00001 -S {samples_file_path}", expect_error=True
+        f"view {vcz_path} -s ^NA00001 -S {samples_file_path.as_posix()}",
+        expect_error=True,
     )
     assert error_message in vcztools_error
 
@@ -131,13 +143,13 @@ class TestQuery:
 
     def test_list_ignores_output(self, vcz_path, tmp_path):
         output = tmp_path / "tmp.txt"
-        result, _ = run_vcztools(f"query -l {vcz_path} -o {output}")
+        result, _ = run_vcztools(f"query -l {vcz_path} -o {output.as_posix()}")
         assert list(result.splitlines()) == ["NA00001", "NA00002", "NA00003"]
         assert not output.exists()
 
     def test_output(self, vcz_path, tmp_path):
         output = tmp_path / "tmp.txt"
-        result, _ = run_vcztools(f"query -f '%POS\n' {vcz_path} -o {output}")
+        result, _ = run_vcztools(f"query -f '%POS\n' {vcz_path} -o {output.as_posix()}")
         assert list(result.splitlines()) == []
         assert output.exists()
 

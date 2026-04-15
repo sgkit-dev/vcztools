@@ -249,12 +249,6 @@ def vcz_path_cache(
     directory VCZ. Needed for backends that cannot read a ZipStore
     (e.g. obstore) or for tests that open the result in write mode.
     """
-    # special case chunk size for chr22 vcf
-    if variants_chunk_size is None and vcf_path.name.startswith("chr22"):
-        variants_chunk_size = 10
-    if samples_chunk_size is None and vcf_path.name.startswith("chr22"):
-        samples_chunk_size = 10
-
     # remove suffixes
     stem_path = vcf_path
     while stem_path.suffix:

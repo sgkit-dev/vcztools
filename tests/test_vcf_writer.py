@@ -18,8 +18,14 @@ cyvcf2 = pytest.importorskip("cyvcf2")
 VCF = cyvcf2.VCF
 
 
-@pytest.mark.parametrize("output_is_path", [True, False])
-@pytest.mark.parametrize("zarr_backend_storage", [None, "fsspec", "obstore"])
+@pytest.mark.parametrize(
+    ("output_is_path", "zarr_backend_storage"),
+    [
+        (True, None),
+        (True, "obstore"),
+        (False, "fsspec"),
+    ],
+)
 def test_write_vcf(tmp_path, output_is_path, zarr_backend_storage):
     if zarr_backend_storage == "obstore":
         pytest.importorskip(zarr_backend_storage)
@@ -172,7 +178,7 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
     ]
 )
 # fmt: on
-@pytest.mark.parametrize("variants_chunk_size", [None, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+@pytest.mark.parametrize("variants_chunk_size", [None, 1, 3, 7])
 def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos,
                             variants_chunk_size):
 

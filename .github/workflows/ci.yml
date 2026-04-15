@@ -86,7 +86,7 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest
+          uv run pytest -n auto --cov=vcztools --cov-report=term-missing
 
   c_python_test:
     name: CPython interface tests
@@ -235,6 +235,6 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest
+          uv run pytest -n auto --cov=vcztools --cov-report=term-missing
         env:
           BIO2ZARR_ZARR_FORMAT: ${{ matrix.zarr-format }}

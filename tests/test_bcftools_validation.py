@@ -1,3 +1,4 @@
+import functools
 import pathlib
 import subprocess
 import sys
@@ -14,11 +15,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def run_bcftools(args: str, expect_error=False) -> tuple[str, str]:
-    """
-    Run bcftools (which must be on the PATH) and return stdout and stderr
-    as a pair of strings.
-    """
+@functools.cache
+def _run_bcftools_cached(args: str, expect_error: bool) -> tuple[str, str]:
     completed = subprocess.run(
         f"bcftools {args}", capture_output=True, check=False, shell=True
     )
@@ -27,6 +25,15 @@ def run_bcftools(args: str, expect_error=False) -> tuple[str, str]:
     else:
         assert completed.returncode == 0
     return completed.stdout.decode("utf-8"), completed.stderr.decode("utf-8")
+
+
+def run_bcftools(args: str, expect_error=False) -> tuple[str, str]:
+    """
+    Run bcftools (which must be on the PATH) and return stdout and stderr
+    as a pair of strings. Results are cached per (args, expect_error) so
+    repeated invocations with identical command lines don't re-fork.
+    """
+    return _run_bcftools_cached(args, expect_error)
 
 
 def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:

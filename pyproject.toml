@@ -55,6 +55,7 @@ test = [
   "obstore",
   "pytest",
   "pytest-cov",
+  "pytest-xdist",
   "msprime",
   "setuptools",
   "tskit>=1",
@@ -88,7 +89,6 @@ packages = ["vcztools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=vcztools --cov-report=term-missing"
 
 [tool.setuptools_scm]
 write_to = "vcztools/_version.py"

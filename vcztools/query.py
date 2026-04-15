@@ -223,9 +223,9 @@ class QueryFormatGenerator:
     def _compose_sample_loop_generator(
         self, parse_results: pp.ParseResults
     ) -> Callable:
-        generators = map(
-            functools.partial(self._compose_element_generator, sample_loop=True),
-            parse_results,
+        generators = tuple(
+            self._compose_element_generator(element, sample_loop=True)
+            for element in parse_results
         )
 
         def generate(chunk_data):
@@ -286,7 +286,7 @@ class QueryFormatGenerator:
         self,
         parse_results,
     ) -> Callable:
-        generators = (
+        generators = tuple(
             self._compose_element_generator(element) for element in parse_results
         )
 

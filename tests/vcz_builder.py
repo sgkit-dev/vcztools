@@ -385,13 +385,21 @@ def copy_vcz(source, *, variants_chunk_size=None, samples_chunk_size=None):
         call_genotype = _read("call_genotype")
         ploidy = call_genotype.shape[2]
 
-    # Preserve the source region_index when chunk sizes are not being
-    # overridden; recompute (via make_vcz) when they are, since the
-    # chunk_idx column would otherwise be wrong.
+    # When the caller does not override a chunk size, default to the
+    # source's chunk size so the copy is byte-for-byte equivalent. Only
+    # when chunks are overridden do we let make_vcz pick fresh defaults
+    # (and recompute region_index accordingly).
+    if variants_chunk_size is None:
+        variants_chunk_size = int(source["variant_position"].chunks[0])
+    if samples_chunk_size is None and "sample_id" in source:
+        samples_chunk_size = int(source["sample_id"].chunks[0])
+
+    # Preserve the source region_index when chunk sizes match the source
+    # (i.e. no caller override); recompute (via make_vcz) when they are
+    # overridden, since the chunk_idx column would otherwise be wrong.
+    source_v_chunk = int(source["variant_position"].chunks[0])
     keep_region_index = (
-        variants_chunk_size is None
-        and samples_chunk_size is None
-        and "region_index" in source
+        variants_chunk_size == source_v_chunk and "region_index" in source
     )
 
     kwargs = dict(

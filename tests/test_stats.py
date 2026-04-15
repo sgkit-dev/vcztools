@@ -1,30 +1,21 @@
-import pathlib
-import sys
 from io import StringIO
 
 import pytest
-import zarr
 
 from vcztools.stats import nrecords, stats
 
-from .utils import vcz_path_cache
+from . import vcz_builder
 
 
-def test_nrecords():
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-
+def test_nrecords(fx_sample_vcz):
     output_str = StringIO()
-    nrecords(vcz, output_str)
+    nrecords(fx_sample_vcz.group, output_str)
     assert output_str.getvalue() == "9\n"
 
 
-def test_stats():
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-
+def test_stats(fx_sample_vcz):
     output_str = StringIO()
-    stats(vcz, output_str)
+    stats(fx_sample_vcz.group, output_str)
 
     assert (
         output_str.getvalue()
@@ -35,18 +26,9 @@ X	.	1
     )
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="uses bio2zarr.vcf.convert")
-def test_stats__no_index(tmp_path):
-    from bio2zarr import vcf  # noqa: PLC0415
-
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    # don't use cache here since we want to make sure vcz is not indexed
-    vcz = tmp_path.joinpath("intermediate.vcz")
-    vcf.convert([original], vcz, worker_processes=0, local_alleles=False)
-
-    # delete the index created by vcf2zarr
-    root = zarr.open(vcz, mode="a")
-    del root["region_index"]
+def test_stats__no_index(fx_sample_vcz):
+    mutated = vcz_builder.copy_vcz(fx_sample_vcz.group)
+    del mutated["region_index"]
 
     with pytest.raises(ValueError, match="Could not load 'region_index' variable."):
-        stats(vcz, StringIO())
+        stats(mutated, StringIO())

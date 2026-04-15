@@ -1,5 +1,4 @@
 import functools
-import pathlib
 import subprocess
 import sys
 
@@ -8,7 +7,7 @@ import pytest
 
 import vcztools.cli as cli
 
-from .utils import assert_vcfs_close, vcz_path_cache
+from .utils import assert_vcfs_close
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="Not supported on Windows"
@@ -156,17 +155,15 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
     # ids=range(36),
 )
 # fmt: on
-def test_vcf_output(tmp_path, args, vcf_file):
-    # print("args:", args)
-    original = pathlib.Path("tests/data/vcf") / vcf_file
-    vcz = vcz_path_cache(original)
+def test_vcf_output(tmp_path, fx_all_vcz, args, vcf_file):
+    fx = fx_all_vcz[vcf_file]
 
-    bcftools_out, _ = run_bcftools(f"{args} {original}")
+    bcftools_out, _ = run_bcftools(f"{args} {fx.vcf_path}")
     bcftools_out_file = tmp_path.joinpath("bcftools_out.vcf")
     with open(bcftools_out_file, "w") as f:
         f.write(bcftools_out)
 
-    vcztools_out, _ = run_vcztools(f"{args} {vcz}")
+    vcztools_out, _ = run_vcztools(f"{args} {fx.zip_path}")
     vcztools_out_file = tmp_path.joinpath("vcztools_out.vcf")
     with open(vcztools_out_file, "w") as f:
         f.write(vcztools_out)
@@ -178,9 +175,8 @@ def test_vcf_output(tmp_path, args, vcf_file):
     ("args", "vcf_file"),
     [("view --no-version", "sample.vcf.gz")],
 )
-def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
-    vcf_path = pathlib.Path("tests/data/vcf") / vcf_file
-    vcz_path = vcz_path_cache(vcf_path)
+def test_vcf_output_with_output_option(tmp_path, fx_all_vcz, args, vcf_file):
+    fx = fx_all_vcz[vcf_file]
 
     bcftools_out_file = tmp_path.joinpath("bcftools_out.vcf")
     vcztools_out_file = tmp_path.joinpath("vcztools_out.vcf")
@@ -188,8 +184,8 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
     bcftools_args = f"{args} -o {bcftools_out_file}"
     vcztools_args = f"{args} -o {vcztools_out_file}"
 
-    run_bcftools(f"{bcftools_args} {vcf_path}")
-    run_vcztools(f"{vcztools_args} {vcz_path}")
+    run_bcftools(f"{bcftools_args} {fx.vcf_path}")
+    run_vcztools(f"{vcztools_args} {fx.zip_path}")
 
     assert_vcfs_close(bcftools_out_file, vcztools_out_file)
 
@@ -281,12 +277,10 @@ def test_vcf_output_with_output_option(tmp_path, args, vcf_file):
         ),
     ],
 )
-def test_output(tmp_path, args, vcf_name):
-    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
-    vcz_path = vcz_path_cache(vcf_path)
-
-    bcftools_output, _ = run_bcftools(f"{args} {vcf_path}")
-    vcztools_output, _ = run_vcztools(f"{args} {vcz_path}")
+def test_output(tmp_path, fx_all_vcz, args, vcf_name):
+    fx = fx_all_vcz[vcf_name]
+    bcftools_output, _ = run_bcftools(f"{args} {fx.vcf_path}")
+    vcztools_output, _ = run_vcztools(f"{args} {fx.zip_path}")
 
     assert vcztools_output == bcftools_output
 
@@ -307,15 +301,10 @@ def test_output(tmp_path, args, vcf_name):
         "POS=112.25e3 * 1e-3 - 0.25",
     ],
 )
-def test_query_arithmethic(tmp_path, expr):
-
+def test_query_arithmethic(tmp_path, fx_sample_vcz, expr):
     args = f"query -f '%POS' -i '{expr}'"
-    vcf_name = "sample.vcf.gz"
-    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
-    vcz_path = vcz_path_cache(vcf_path)
-
-    bcftools_output, _ = run_bcftools(f"{args} {vcf_path}")
-    vcztools_output, _ = run_vcztools(f"{args} {vcz_path}")
+    bcftools_output, _ = run_bcftools(f"{args} {fx_sample_vcz.vcf_path}")
+    vcztools_output, _ = run_vcztools(f"{args} {fx_sample_vcz.zip_path}")
 
     assert vcztools_output == bcftools_output
     assert vcztools_output == "112\n"
@@ -332,15 +321,10 @@ def test_query_arithmethic(tmp_path, expr):
         ("(POS==112 || POS!=112) && POS!= 112", False),
     ],
 )
-def test_query_logic_precendence(tmp_path, expr, expected):
-
+def test_query_logic_precendence(tmp_path, fx_sample_vcz, expr, expected):
     args = f"query -f '%POS' -i 'POS=112 && ({expr})'"
-    vcf_name = "sample.vcf.gz"
-    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
-    vcz_path = vcz_path_cache(vcf_path)
-
-    bcftools_output, _ = run_bcftools(f"{args} {vcf_path}")
-    vcztools_output, _ = run_vcztools(f"{args} {vcz_path}")
+    bcftools_output, _ = run_bcftools(f"{args} {fx_sample_vcz.vcf_path}")
+    vcztools_output, _ = run_vcztools(f"{args} {fx_sample_vcz.zip_path}")
 
     assert vcztools_output == bcftools_output
     num_lines = len(list(vcztools_output.splitlines()))
@@ -363,13 +347,12 @@ def test_query_logic_precendence(tmp_path, expr, expected):
     ],
 )
 # fmt: on
-def test_error(tmp_path, args, vcf_name, bcftools_error_string):
-    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
-    vcz_path = vcz_path_cache(vcf_path)
+def test_error(tmp_path, fx_all_vcz, args, vcf_name, bcftools_error_string):
+    fx = fx_all_vcz[vcf_name]
 
-    _, bcftools_error = run_bcftools(f"{args} {vcf_path}", expect_error=True)
+    _, bcftools_error = run_bcftools(f"{args} {fx.vcf_path}", expect_error=True)
     if bcftools_error_string:
         assert bcftools_error.startswith("Error:") or bcftools_error.startswith("[E::")
 
-    _, vcztools_error = run_vcztools(f"{args} {vcz_path}", expect_error=True)
+    _, vcztools_error = run_vcztools(f"{args} {fx.zip_path}", expect_error=True)
     assert "Error:" in vcztools_error

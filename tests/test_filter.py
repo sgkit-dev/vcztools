@@ -1,17 +1,14 @@
-import pathlib
-
 import numpy as np
 import numpy.testing as nt
 import pyparsing as pp
 import pytest
 
-from tests.utils import open_vcz, vcz_path_cache
 from vcztools import filter as filter_mod
 
 
 class TestFilterExpressionParser:
     @pytest.fixture
-    def parser(self):
+    def fx_parser(self):
         return filter_mod.make_bcftools_filter_parser(map_vcf_identifiers=False)
 
     @pytest.mark.parametrize(
@@ -23,9 +20,9 @@ class TestFilterExpressionParser:
             '"stri + 2',
         ],
     )
-    def test_invalid_expressions(self, parser, expression):
+    def test_invalid_expressions(self, fx_parser, expression):
         with pytest.raises(pp.ParseException):
-            parser.parse_string(expression, parse_all=True)
+            fx_parser.parse_string(expression, parse_all=True)
 
     @pytest.mark.parametrize(
         ("expression", "exception_class"),
@@ -58,9 +55,9 @@ class TestFilterExpressionParser:
             ('TYPE="bnd"', filter_mod.UnsupportedTypeFieldError),
         ],
     )
-    def test_unsupported_syntax(self, parser, expression, exception_class):
+    def test_unsupported_syntax(self, fx_parser, expression, exception_class):
         with pytest.raises(exception_class):
-            parser.parse_string(expression, parse_all=True)
+            fx_parser.parse_string(expression, parse_all=True)
 
 
 class TestFilterExpressionSample:
@@ -156,10 +153,8 @@ class TestFilterExpressionSample:
             ),
         ],
     )
-    def test(self, expression, expected_result):
-        original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-        vcz = vcz_path_cache(original)
-        root = open_vcz(vcz)
+    def test(self, fx_sample_vcz, expression, expected_result):
+        root = fx_sample_vcz.group
         data = {field: root[field][:] for field in root.keys()}
         filter_expr = filter_mod.FilterExpression(
             field_names=set(root), include=expression

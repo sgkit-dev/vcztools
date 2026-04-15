@@ -1,14 +1,11 @@
-import pathlib
 import re
-import sys
 from io import StringIO
 
 import numpy as np
 import pyparsing as pp
 import pytest
-import zarr
 
-from tests.utils import open_vcz, vcz_path_cache
+from tests import vcz_builder
 from vcztools.query import (
     QueryFormatGenerator,
     QueryFormatParser,
@@ -18,39 +15,27 @@ from vcztools.query import (
 from vcztools.retrieval import variant_chunk_iter
 
 
-def test_list_samples(tmp_path):
-    vcf_path = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz_path = vcz_path_cache(vcf_path)
+def test_list_samples(fx_sample_vcz):
     expected_output = "NA00001\nNA00002\nNA00003\n"
-
     with StringIO() as output:
-        list_samples(vcz_path, output)
+        list_samples(fx_sample_vcz.group, output)
         assert output.getvalue() == expected_output
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="uses bio2zarr.vcf.convert")
-def test_list_samples__missing(tmp_path):
-    from bio2zarr import vcf  # noqa: PLC0415
-
-    vcf_path = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    # don't use cache here since we want to modify the vcz
-    vcz_path = tmp_path.joinpath("intermediate.vcz")
-    vcf.convert([vcf_path], vcz_path, worker_processes=0)
-
+def test_list_samples__missing(fx_sample_vcz):
+    mutated = vcz_builder.copy_vcz(fx_sample_vcz.group)
     # delete sample NA00002 at index 1
-    root = zarr.open(vcz_path, mode="a")
-    root["sample_id"][1] = ""
+    mutated["sample_id"][1] = ""
 
     expected_output = "NA00001\nNA00003\n"
-
     with StringIO() as output:
-        list_samples(vcz_path, output)
+        list_samples(mutated, output)
         assert output.getvalue() == expected_output
 
 
 class TestQueryFormatParser:
     @pytest.fixture
-    def parser(self):
+    def fx_parser(self):
         return QueryFormatParser()
 
     @pytest.mark.parametrize(
@@ -114,8 +99,8 @@ class TestQueryFormatParser:
             ),
         ],
     )
-    def test_valid_expressions(self, parser, expression, expected_result):
-        assert parser(expression).as_list() == expected_result
+    def test_valid_expressions(self, fx_parser, expression, expected_result):
+        assert fx_parser(expression).as_list() == expected_result
 
     @pytest.mark.parametrize(
         "expression",
@@ -125,17 +110,15 @@ class TestQueryFormatParser:
             "% CHROM",
         ],
     )
-    def test_invalid_expressions(self, parser, expression):
+    def test_invalid_expressions(self, fx_parser, expression):
         with pytest.raises(pp.ParseException):
-            parser(expression)
+            fx_parser(expression)
 
 
 class TestQueryFormatEvaluator:
     @pytest.fixture
-    def root(self):
-        vcf_path = pathlib.Path("tests/data/vcf/sample.vcf.gz")
-        vcz_path = vcz_path_cache(vcf_path)
-        return open_vcz(vcz_path)
+    def fx_root(self, fx_sample_vcz):
+        return fx_sample_vcz.group
 
     @pytest.mark.parametrize(
         ("query_format", "expected_result"),
@@ -158,15 +141,16 @@ class TestQueryFormatEvaluator:
             (r"%AF{0}\n", ".\n.\n0.5\n0.017\n0.333\n.\n.\n.\n.\n"),
         ],
     )
-    def test(self, root, query_format, expected_result):
+    def test(self, fx_root, query_format, expected_result):
         generator = QueryFormatGenerator(
             query_format,
-            root["sample_id"][:],
-            root["contig_id"][:],
-            root["filter_id"][:],
+            fx_root["sample_id"][:],
+            fx_root["contig_id"][:],
+            fx_root["filter_id"][:],
         )
-        chunk_data = next(variant_chunk_iter(root))
-        result = "".join(generator(chunk_data))
+        result = ""
+        for chunk_data in variant_chunk_iter(fx_root):
+            result += "".join(generator(chunk_data))
         assert result == expected_result
 
     # fmt: off
@@ -198,7 +182,10 @@ class TestQueryFormatEvaluator:
         ],
     )
     # fmt: on
-    def test_call_mask(self, root, query_format, call_mask, expected_result):
+    def test_call_mask(self, fx_root, query_format, call_mask, expected_result):
+        # Use a single-chunk copy so the manually provided call_mask
+        # (which covers all 9 variants) can be injected into one chunk.
+        root = vcz_builder.copy_vcz(fx_root, variants_chunk_size=10_000)
         generator = QueryFormatGenerator(
             query_format,
             root["sample_id"][:],
@@ -215,23 +202,22 @@ class TestQueryFormatEvaluator:
         ("query_format", "expected_result"),
         [(r"%QUAL\n", "9.6\n10\n29\n3\n67\n47\n50\n.\n10\n")],
     )
-    def test_with_parse_results(self, root, query_format, expected_result):
+    def test_with_parse_results(self, fx_root, query_format, expected_result):
         parser = QueryFormatParser()
         parse_results = parser(query_format)
         generator = QueryFormatGenerator(
             parse_results,
-            root["sample_id"][:],
-            root["contig_id"][:],
-            root["filter_id"][:],
+            fx_root["sample_id"][:],
+            fx_root["contig_id"][:],
+            fx_root["filter_id"][:],
         )
-        chunk_data = next(variant_chunk_iter(root))
-        result = "".join(generator(chunk_data))
+        result = ""
+        for chunk_data in variant_chunk_iter(fx_root):
+            result += "".join(generator(chunk_data))
         assert result == expected_result
 
 
-def test_write_query__include_exclude(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+def test_write_query__include_exclude(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
 
     query_format = r"%POS"
@@ -244,7 +230,7 @@ def test_write_query__include_exclude(tmp_path):
         ),
     ):
         write_query(
-            vcz,
+            fx_sample_vcz.group,
             output,
             query_format=query_format,
             include=variant_site_filter,

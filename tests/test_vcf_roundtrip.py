@@ -1,9 +1,7 @@
-import pathlib
 import sys
 
 import pytest
 
-from tests.utils import vcz_path_cache
 from vcztools.vcf_writer import write_vcf
 
 from .utils import assert_vcfs_close
@@ -22,9 +20,8 @@ pytestmark = pytest.mark.skipif(
         "field_type_combos.vcf.gz",
     ],
 )
-def test_vcf_to_zarr_to_vcf__real_files(tmp_path, vcf_file):
-    original = pathlib.Path("tests/data/vcf") / vcf_file
-    vcz = vcz_path_cache(original)
+def test_vcf_to_zarr_to_vcf__real_files(tmp_path, fx_all_vcz, vcf_file):
+    fx = fx_all_vcz[vcf_file]
     generated = tmp_path.joinpath("output.vcf")
-    write_vcf(vcz, generated, no_version=True)
-    assert_vcfs_close(original, generated)
+    write_vcf(fx.group, generated, no_version=True)
+    assert_vcfs_close(fx.vcf_path, generated)

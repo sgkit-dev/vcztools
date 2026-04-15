@@ -1,18 +1,15 @@
-import pathlib
 import re
 import sys
 from io import StringIO
 
 import numpy as np
 import pytest
-import zarr
-from bio2zarr import vcf
 from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
-from .utils import assert_vcfs_close, open_vcz, to_vcz_icechunk, vcz_path_cache
+from .utils import assert_vcfs_close, to_vcz_icechunk
 from .vcz_builder import copy_vcz, make_vcz
 
 cyvcf2 = pytest.importorskip("cyvcf2")
@@ -27,12 +24,21 @@ VCF = cyvcf2.VCF
         (False, "fsspec"),
     ],
 )
-def test_write_vcf(tmp_path, output_is_path, zarr_backend_storage):
+def test_write_vcf(
+    tmp_path,
+    fx_sample_vcz,
+    fx_sample_vcz_directory,
+    output_is_path,
+    zarr_backend_storage,
+):
     if zarr_backend_storage == "obstore":
         pytest.importorskip(zarr_backend_storage)
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     # obstore cannot read a ZipStore, so we need a directory VCZ.
-    vcz = vcz_path_cache(original, as_directory=zarr_backend_storage == "obstore")
+    vcz = (
+        fx_sample_vcz_directory
+        if zarr_backend_storage == "obstore"
+        else fx_sample_vcz.zip_path
+    )
     output = tmp_path.joinpath("output.vcf")
 
     if output_is_path:
@@ -69,15 +75,13 @@ def test_write_vcf(tmp_path, output_is_path, zarr_backend_storage):
     )
 
     # check headers are the same
-    assert_vcfs_close(original, output)
+    assert_vcfs_close(fx_sample_vcz.vcf_path, output)
 
 
-def test_write_vcf__icechunk(tmp_path):
+def test_write_vcf__icechunk(tmp_path, fx_sample_vcz, fx_sample_vcz_directory):
     pytest.importorskip("icechunk")
 
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-    vcz_icechunk = to_vcz_icechunk(vcz, tmp_path)
+    vcz_icechunk = to_vcz_icechunk(fx_sample_vcz_directory, tmp_path)
     output = tmp_path.joinpath("output.vcf")
 
     write_vcf(vcz_icechunk, output, no_version=True, zarr_backend_storage="icechunk")
@@ -104,7 +108,7 @@ def test_write_vcf__icechunk(tmp_path):
     )
 
     # check headers are the same
-    assert_vcfs_close(original, output)
+    assert_vcfs_close(fx_sample_vcz.vcf_path, output)
 
 
 @pytest.mark.parametrize(
@@ -125,12 +129,11 @@ def test_write_vcf__icechunk(tmp_path):
         ),
     ],
 )
-def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+def test_write_vcf__filtering(
+    tmp_path, fx_sample_vcz, include, exclude, expected_chrom_pos
+):
     output = tmp_path.joinpath("output.vcf")
-
-    write_vcf(vcz, output, include=include, exclude=exclude)
+    write_vcf(fx_sample_vcz.group, output, include=include, exclude=exclude)
 
     v = VCF(str(output))
     variants = list(v)
@@ -181,13 +184,13 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
 # fmt: on
 @pytest.mark.parametrize("variants_chunk_size", [None, 1, 2, 3, 7, 100])
 def test_write_vcf__regions(
-        tmp_path, regions, targets, expected_chrom_pos, variants_chunk_size):
-    # Copy the sample.vcf.gz fixture into an in-memory VCZ so we can
-    # sweep chunk sizes without running bio2zarr. Region/target
-    # chunk-boundary behaviour is what this test covers; VCF-level
-    # parity is covered elsewhere.
-    source = open_vcz(vcz_path_cache(pathlib.Path("tests/data/vcf/sample.vcf.gz")))
-    vcz = copy_vcz(source, variants_chunk_size=variants_chunk_size)
+        tmp_path, fx_sample_vcz, regions, targets, expected_chrom_pos,
+        variants_chunk_size):
+    # Copy the sample fixture into an in-memory VCZ so we can sweep chunk
+    # sizes without re-opening disk fixtures. Region/target chunk-boundary
+    # behaviour is what this test covers; VCF-level parity is covered
+    # elsewhere.
+    vcz = copy_vcz(fx_sample_vcz.group, variants_chunk_size=variants_chunk_size)
     output = tmp_path.joinpath("output.vcf")
     write_vcf(vcz, output, regions=regions, targets=targets)
 
@@ -244,13 +247,12 @@ class TestSmallChunks:
         assert got_positions == list(range(5, 13))
 
 
-def test_write_vcf__regions_split_alleles(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample-split-alleles.vcf.gz"
-    # chunk size is chosen so that 20:1234567 (two alt alleles) spans two chunks
-    vcz = vcz_path_cache(original, variants_chunk_size=4)
+def test_write_vcf__regions_split_alleles(tmp_path, fx_sample_split_alleles_vcz_vcs4):
+    # variants_chunk_size=4 is chosen so that 20:1234567 (two alt alleles)
+    # spans two chunks. The fixture is a copy_vcz-backed rechunk of the
+    # committed sample-split-alleles.vcz.zip.
     output = tmp_path.joinpath("output.vcf")
-
-    write_vcf(vcz, output, regions="20:1234567")
+    write_vcf(fx_sample_split_alleles_vcz_vcs4, output, regions="20:1234567")
 
     v = VCF(output)
     variants = list(v)
@@ -292,13 +294,17 @@ def test_write_vcf__regions_split_alleles(tmp_path):
     ],
 )
 def test_write_vcf__samples(
-    tmp_path, samples, force_samples, expected_samples, expected_genotypes
+    tmp_path,
+    fx_sample_vcz,
+    samples,
+    force_samples,
+    expected_samples,
+    expected_genotypes,
 ):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
-
-    write_vcf(vcz, output, samples=samples, force_samples=force_samples)
+    write_vcf(
+        fx_sample_vcz.group, output, samples=samples, force_samples=force_samples
+    )
 
     v = VCF(output)
 
@@ -317,11 +323,8 @@ def test_write_vcf__samples(
     assert variant.genotypes == expected_genotypes
 
 
-def test_write_vcf__non_existent_sample(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+def test_write_vcf__non_existent_sample(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
-
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -329,36 +332,26 @@ def test_write_vcf__non_existent_sample(tmp_path):
             'Use "--force-samples" to ignore this error.'
         ),
     ):
-        write_vcf(vcz, output, samples="NO_SAMPLE")
+        write_vcf(fx_sample_vcz.group, output, samples="NO_SAMPLE")
 
 
-def test_write_vcf__no_samples(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
-
-    write_vcf(vcz, output, drop_genotypes=True)
+    write_vcf(fx_sample_vcz.group, output, drop_genotypes=True)
 
     v = VCF(output)
-
     assert v.samples == []
 
 
-def test_write_vcf__missing_samples(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    # don't use cache here since we want to modify the vcz
-    vcz = tmp_path.joinpath("intermediate.vcz")
-    output = tmp_path.joinpath("output.vcf")
-    vcf.convert([original], vcz, worker_processes=0)
-
+def test_write_vcf__missing_samples(tmp_path, fx_sample_vcz):
+    mutated = copy_vcz(fx_sample_vcz.group)
     # delete samples NA00001 and NA00002 at index 0 and 1
-    root = zarr.open(vcz, mode="a")
-    root["sample_id"][:2] = ""
+    mutated["sample_id"][:2] = ""
 
-    write_vcf(vcz, output)
+    output = tmp_path.joinpath("output.vcf")
+    write_vcf(mutated, output)
 
     v = VCF(output)
-
     assert v.samples == ["NA00003"]
 
 
@@ -379,14 +372,11 @@ def test_write_vcf__missing_samples(tmp_path):
     ],
 )
 def test_write_vcf__regions_samples_filtering(
-    tmp_path, regions, targets, samples, include, expected_chrom_pos
+    tmp_path, fx_sample_vcz, regions, targets, samples, include, expected_chrom_pos
 ):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
     output = tmp_path.joinpath("output.vcf")
-
     write_vcf(
-        vcz,
+        fx_sample_vcz.group,
         output,
         regions=regions,
         targets=targets,
@@ -407,11 +397,8 @@ def test_write_vcf__regions_samples_filtering(
         assert variant.POS == pos
 
 
-def test_write_vcf__include_exclude(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+def test_write_vcf__include_exclude(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
-
     variant_site_filter = "POS > 1"
 
     with pytest.raises(
@@ -420,34 +407,34 @@ def test_write_vcf__include_exclude(tmp_path):
             "Cannot handle both an include expression and an exclude expression."
         ),
     ):
-        write_vcf(vcz, output, include=variant_site_filter, exclude=variant_site_filter)
+        write_vcf(
+            fx_sample_vcz.group,
+            output,
+            include=variant_site_filter,
+            exclude=variant_site_filter,
+        )
 
 
-def test_write_vcf__header_flags(tmp_path):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
+def test_write_vcf__header_flags(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
 
     output_header = StringIO()
-    write_vcf(vcz, output_header, header_only=True, no_version=True)
+    write_vcf(fx_sample_vcz.group, output_header, header_only=True, no_version=True)
 
     output_no_header = StringIO()
-    write_vcf(vcz, output_no_header, no_header=True, no_version=True)
+    write_vcf(fx_sample_vcz.group, output_no_header, no_header=True, no_version=True)
     assert not output_no_header.getvalue().startswith("#")
 
     # combine outputs and check VCFs match
     output_str = output_header.getvalue() + output_no_header.getvalue()
     with open(output, "w") as f:
         f.write(output_str)
-    assert_vcfs_close(original, output)
+    assert_vcfs_close(fx_sample_vcz.vcf_path, output)
 
 
-def test_write_vcf__generate_header():
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-
+def test_write_vcf__generate_header(fx_sample_vcz):
     output_header = StringIO()
-    write_vcf(vcz, output_header, header_only=True, no_version=True)
+    write_vcf(fx_sample_vcz.group, output_header, header_only=True, no_version=True)
 
     expected_vcf_header = """##fileformat=VCFv4.3
 ##source={}
@@ -478,8 +465,8 @@ def test_write_vcf__generate_header():
 """  # noqa: E501
 
     # substitute value of source
-    root = open_vcz(vcz)
-    expected_vcf_header = expected_vcf_header.format(root.attrs["source"])
+    source_attr = fx_sample_vcz.group.attrs["source"]
+    expected_vcf_header = expected_vcf_header.format(source_attr)
 
     assert output_header.getvalue() == expected_vcf_header
 
@@ -531,20 +518,19 @@ def test_compute_info_fields():
 class TestApiErrors:
 
     @pytest.fixture
-    def vcz(self):
-        original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-        return vcz_path_cache(original)
+    def fx_vcz(self, fx_sample_vcz):
+        return fx_sample_vcz.group
 
-    def test_samples_and_drop_genotypes(self, vcz):
+    def test_samples_and_drop_genotypes(self, fx_vcz):
         with pytest.raises(
             ValueError, match="Cannot select samples and drop genotypes"
         ):
-            write_vcf(vcz, sys.stdout, samples=["NA00001"], drop_genotypes=True)
+            write_vcf(fx_vcz, sys.stdout, samples=["NA00001"], drop_genotypes=True)
 
-    def test_no_output_filter_parse_error(self, vcz):
+    def test_no_output_filter_parse_error(self, fx_vcz):
         output = StringIO()
         with pytest.raises(ValueError, match='the tag "Not" is not defined'):
-            write_vcf(vcz, output, include="Not a valid expression")
+            write_vcf(fx_vcz, output, include="Not a valid expression")
         assert output.getvalue() == ""
 
 

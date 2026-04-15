@@ -1,18 +1,12 @@
-import pathlib
-
 import numpy.testing as nt
 import pytest
 
 from vcztools.retrieval import variant_chunk_iter, variant_iter
 from vcztools.samples import parse_samples
 
-from .utils import open_vcz, vcz_path_cache
 
-
-def test_variant_chunk_iter():
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-    root = open_vcz(vcz)
+def test_variant_chunk_iter(fx_sample_vcz):
+    root = fx_sample_vcz.group
 
     _, samples_selection = parse_samples("NA00002,NA00003", root["sample_id"][:])
     chunk_data = next(
@@ -34,25 +28,18 @@ def test_variant_chunk_iter():
     nt.assert_array_equal(chunk_data["call_mask"], [[True, False], [False, False]])
 
 
-def test_variant_chunk_iter_empty_fields():
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-    root = open_vcz(vcz)
-
+def test_variant_chunk_iter_empty_fields(fx_sample_vcz):
     with pytest.raises(StopIteration):
-        print(next(variant_chunk_iter(root, fields=[])))
+        print(next(variant_chunk_iter(fx_sample_vcz.group, fields=[])))
 
 
 @pytest.mark.parametrize(
     ("regions", "samples"),
     [("20:1230236-", "NA00002,NA00003"), (["20:1230236-"], ["NA00002", "NA00003"])],
 )
-def test_variant_iter(regions, samples):
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-
+def test_variant_iter(fx_sample_vcz, regions, samples):
     iter = variant_iter(
-        vcz,
+        fx_sample_vcz.group,
         fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
         regions=regions,
         include="FMT/DP>3",
@@ -77,9 +64,6 @@ def test_variant_iter(regions, samples):
         next(iter)
 
 
-def test_variant_iter_empty_fields():
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original)
-
+def test_variant_iter_empty_fields(fx_sample_vcz):
     with pytest.raises(StopIteration):
-        next(variant_iter(vcz, fields=[]))
+        next(variant_iter(fx_sample_vcz.group, fields=[]))

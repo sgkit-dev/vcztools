@@ -13,7 +13,7 @@ from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
 from .utils import assert_vcfs_close, open_vcz, to_vcz_icechunk, vcz_path_cache
-from .vcz_builder import make_vcz
+from .vcz_builder import copy_vcz, make_vcz
 
 cyvcf2 = pytest.importorskip("cyvcf2")
 VCF = cyvcf2.VCF
@@ -182,34 +182,12 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
 @pytest.mark.parametrize("variants_chunk_size", [None, 1, 2, 3, 7, 100])
 def test_write_vcf__regions(
         tmp_path, regions, targets, expected_chrom_pos, variants_chunk_size):
-    # Mirrors the (contig, position) layout of tests/data/vcf/sample.vcf.gz
-    # but builds a synthetic VCZ in memory so we can sweep chunk sizes
-    # without running bio2zarr. This test covers region/target chunk
-    # boundary behavior; VCF-level parity is covered elsewhere.
-    contigs = ("19", "20", "X")
-    # (contig, position, ref_length) mirrors the sample.vcf.gz layout.
-    # The X:10 variant has REF="AC" (length 2), which is why region
-    # "X:11" overlaps it while target "X:11" does not.
-    layout = [
-        ("19", 111, 1),
-        ("19", 112, 1),
-        ("20", 14370, 1),
-        ("20", 17330, 1),
-        ("20", 1110696, 1),
-        ("20", 1230237, 1),
-        ("20", 1234567, 1),
-        ("20", 1235237, 1),
-        ("X", 10, 2),
-    ]
-    contig_index = {name: i for i, name in enumerate(contigs)}
-    vcz = make_vcz(
-        variant_contig=[contig_index[c] for c, _, _ in layout],
-        variant_position=[p for _, p, _ in layout],
-        variant_length=[ln for _, _, ln in layout],
-        alleles=[["A", "T"]] * len(layout),
-        contigs=contigs,
-        variants_chunk_size=variants_chunk_size,
-    )
+    # Copy the sample.vcf.gz fixture into an in-memory VCZ so we can
+    # sweep chunk sizes without running bio2zarr. Region/target
+    # chunk-boundary behaviour is what this test covers; VCF-level
+    # parity is covered elsewhere.
+    source = open_vcz(vcz_path_cache(pathlib.Path("tests/data/vcf/sample.vcf.gz")))
+    vcz = copy_vcz(source, variants_chunk_size=variants_chunk_size)
     output = tmp_path.joinpath("output.vcf")
     write_vcf(vcz, output, regions=regions, targets=targets)
 

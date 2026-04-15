@@ -83,16 +83,20 @@ def make_vcz(
     variant_position,
     alleles,
     num_samples=0,
+    sample_id=None,
     contigs=("chr1",),
     filters=("PASS",),
+    filter_descriptions=None,
     variants_chunk_size=None,
     samples_chunk_size=None,
     call_genotype=None,
+    call_fields=None,
     info_fields=None,
     variant_id=None,
     variant_quality=None,
     variant_filter=None,
     variant_length=None,
+    region_index=None,
     ploidy=2,
 ):
     """
@@ -129,9 +133,12 @@ def make_vcz(
         samples_chunk_size if samples_chunk_size is not None else max(num_samples, 1)
     )
 
-    region_index = _compute_region_index(
-        variant_contig, variant_position, variant_length, v_chunk
-    )
+    if region_index is None:
+        region_index = _compute_region_index(
+            variant_contig, variant_position, variant_length, v_chunk
+        )
+    else:
+        region_index = np.asarray(region_index, dtype=np.int32)
 
     store = zarr.storage.MemoryStore()
     # zarr emits warnings about unstable V3 specification for fixed-width
@@ -148,10 +155,18 @@ def make_vcz(
         )
         root = zarr.group(store=store, zarr_format=3)
 
+        if sample_id is None:
+            sample_id_arr = np.array(
+                [f"sample_{i}" for i in range(num_samples)], dtype="<U16"
+            )
+        else:
+            sample_id_arr = np.asarray(sample_id, dtype="<U64")
+            if sample_id_arr.shape != (num_samples,):
+                raise ValueError("sample_id length must match num_samples")
         _create_array(
             root,
             "sample_id",
-            np.array([f"sample_{i}" for i in range(num_samples)], dtype="<U16"),
+            sample_id_arr,
             chunks=(max(num_samples, 1),),
             dimension_names=("samples",),
         )
@@ -169,6 +184,16 @@ def make_vcz(
             chunks=(len(filters),),
             dimension_names=("filters",),
         )
+        if filter_descriptions is not None:
+            if len(filter_descriptions) != len(filters):
+                raise ValueError("filter_descriptions length must match filters length")
+            _create_array(
+                root,
+                "filter_description",
+                np.array(list(filter_descriptions), dtype="<U64"),
+                chunks=(len(filters),),
+                dimension_names=("filters",),
+            )
         _create_array(
             root,
             "variant_contig",
@@ -239,10 +264,36 @@ def make_vcz(
                 dimension_names=("variants", "samples", "ploidy"),
             )
 
+        if call_fields is not None:
+            for name, data in call_fields.items():
+                data = np.asarray(data)
+                if data.ndim == 2:
+                    dims = ("variants", "samples")
+                    chunks = (v_chunk, s_chunk)
+                elif data.ndim == 3:
+                    dims = ("variants", "samples", f"FORMAT_{name}_dim")
+                    chunks = (v_chunk, s_chunk, data.shape[2])
+                else:
+                    raise ValueError(
+                        f"call_fields[{name!r}] must be 2- or 3-dimensional, "
+                        f"got ndim={data.ndim}"
+                    )
+                _create_array(
+                    root,
+                    f"call_{name}",
+                    data,
+                    chunks=chunks,
+                    dimension_names=dims,
+                )
+
         if info_fields is not None:
             for name, data in info_fields.items():
                 data = np.asarray(data)
-                dims = ("variants",) if data.ndim == 1 else ("variants", f"{name}_dim1")
+                dims = (
+                    ("variants",)
+                    if data.ndim == 1
+                    else ("variants", f"INFO_{name}_dim")
+                )
                 chunks = (v_chunk,) if data.ndim == 1 else (v_chunk, data.shape[1])
                 _create_array(
                     root,
@@ -253,3 +304,116 @@ def make_vcz(
                 )
 
     return root
+
+
+# Arrays that copy_vcz handles via dedicated make_vcz parameters.
+_COPY_BUILTIN_ARRAYS = frozenset(
+    {
+        "sample_id",
+        "contig_id",
+        "filter_id",
+        "filter_description",
+        "region_index",
+        "variant_contig",
+        "variant_position",
+        "variant_length",
+        "variant_allele",
+        "variant_id",
+        "variant_quality",
+        "variant_filter",
+        "call_genotype",
+    }
+)
+
+
+def copy_vcz(source, *, variants_chunk_size=None, samples_chunk_size=None):
+    """
+    Copy a zarr root group into a fresh in-memory VCZ group by
+    delegating to :func:`make_vcz`, optionally rewriting chunk sizes.
+
+    Produces a *full* copy: every array in ``source`` is present in
+    the result with the same values. ``variant_*`` arrays not in the
+    builtin set are passed through as ``info_fields``; ``call_*``
+    arrays (other than ``call_genotype``) are passed through as
+    ``call_fields``. ``region_index`` is recomputed from the copied
+    inputs so chunk-size overrides produce a correct index.
+
+    Raises :class:`ValueError` if ``source`` contains an array
+    :func:`make_vcz` does not know how to construct.
+    """
+
+    def _read(name):
+        return source[name][...]
+
+    sample_id = _read("sample_id")
+    contig_ids = tuple(str(c) for c in _read("contig_id").tolist())
+    filter_ids = tuple(str(f) for f in _read("filter_id").tolist())
+
+    filter_descriptions = None
+    if "filter_description" in source:
+        filter_descriptions = tuple(
+            str(d) for d in _read("filter_description").tolist()
+        )
+
+    variant_contig = _read("variant_contig")
+    variant_position = _read("variant_position")
+    variant_length = _read("variant_length") if "variant_length" in source else None
+    variant_id = _read("variant_id") if "variant_id" in source else None
+    variant_quality = _read("variant_quality") if "variant_quality" in source else None
+    variant_filter = _read("variant_filter") if "variant_filter" in source else None
+
+    # variant_allele back to list-of-lists, stripping the trailing ""
+    # padding that make_vcz adds for ragged allele rows.
+    allele_arr = _read("variant_allele")
+    alleles = [[str(a) for a in row if str(a) != ""] for row in allele_arr]
+
+    info_fields = {}
+    call_fields = {}
+    call_genotype = None
+    ploidy = None
+    for name in sorted(source.array_keys()):
+        if name in _COPY_BUILTIN_ARRAYS:
+            continue
+        if name.startswith("variant_"):
+            info_fields[name[len("variant_") :]] = _read(name)
+        elif name.startswith("call_"):
+            call_fields[name[len("call_") :]] = _read(name)
+        else:
+            raise ValueError(f"copy_vcz: source array {name!r} is not supported")
+
+    if "call_genotype" in source:
+        call_genotype = _read("call_genotype")
+        ploidy = call_genotype.shape[2]
+
+    # Preserve the source region_index when chunk sizes are not being
+    # overridden; recompute (via make_vcz) when they are, since the
+    # chunk_idx column would otherwise be wrong.
+    keep_region_index = (
+        variants_chunk_size is None
+        and samples_chunk_size is None
+        and "region_index" in source
+    )
+
+    kwargs = dict(
+        variant_contig=variant_contig,
+        variant_position=variant_position,
+        alleles=alleles,
+        num_samples=int(sample_id.shape[0]),
+        sample_id=sample_id,
+        contigs=contig_ids,
+        filters=filter_ids,
+        filter_descriptions=filter_descriptions,
+        variants_chunk_size=variants_chunk_size,
+        samples_chunk_size=samples_chunk_size,
+        call_genotype=call_genotype,
+        call_fields=call_fields or None,
+        info_fields=info_fields or None,
+        variant_id=variant_id,
+        variant_quality=variant_quality,
+        variant_filter=variant_filter,
+        variant_length=variant_length,
+        region_index=_read("region_index") if keep_region_index else None,
+    )
+    if ploidy is not None:
+        kwargs["ploidy"] = ploidy
+    return make_vcz(**kwargs)

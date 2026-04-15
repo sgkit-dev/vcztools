@@ -1,24 +1,18 @@
 import pathlib
-import sys
 
 import numpy.testing as nt
 import pytest
-import zarr
 
 from vcztools.retrieval import variant_chunk_iter, variant_iter
 from vcztools.samples import parse_samples
 
-from .utils import vcz_path_cache
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
+from .utils import open_vcz, vcz_path_cache
 
 
 def test_variant_chunk_iter():
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
-    root = zarr.open(vcz, mode="r")
+    root = open_vcz(vcz)
 
     _, samples_selection = parse_samples("NA00002,NA00003", root["sample_id"][:])
     chunk_data = next(
@@ -43,7 +37,7 @@ def test_variant_chunk_iter():
 def test_variant_chunk_iter_empty_fields():
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     vcz = vcz_path_cache(original)
-    root = zarr.open(vcz, mode="r")
+    root = open_vcz(vcz)
 
     with pytest.raises(StopIteration):
         print(next(variant_chunk_iter(root, fields=[])))

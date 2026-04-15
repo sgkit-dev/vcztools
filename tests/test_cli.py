@@ -1,5 +1,4 @@
 import pathlib
-import sys
 from unittest import mock
 
 import click.testing as ct
@@ -9,10 +8,6 @@ import vcztools.cli as cli
 from tests.test_bcftools_validation import run_vcztools
 from tests.utils import vcz_path_cache
 from vcztools import provenance
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
 
 
 @pytest.fixture

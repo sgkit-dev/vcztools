@@ -4,15 +4,10 @@ from io import StringIO
 
 import pytest
 import zarr
-from bio2zarr import vcf
 
 from vcztools.stats import nrecords, stats
 
 from .utils import vcz_path_cache
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
-)
 
 
 def test_nrecords():
@@ -40,7 +35,10 @@ X	.	1
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="uses bio2zarr.vcf.convert")
 def test_stats__no_index(tmp_path):
+    from bio2zarr import vcf  # noqa: PLC0415
+
     original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
     # don't use cache here since we want to make sure vcz is not indexed
     vcz = tmp_path.joinpath("intermediate.vcz")

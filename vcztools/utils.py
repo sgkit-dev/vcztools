@@ -36,6 +36,10 @@ def open_zarr(
     mode: str = "r",
     zarr_backend_storage: str | None = None,
 ):
+    # Allow callers to pass an already-open zarr Group straight through.
+    # Used by tests that construct synthetic VCZs in memory.
+    if isinstance(file_or_url, zarr.Group):
+        return file_or_url
     if zarr_backend_storage is None or zarr_backend_storage == "fsspec":
         if isinstance(file_or_url, (str, Path)) and Path(file_or_url).suffix == ".zip":
             store = zarr.storage.ZipStore(file_or_url, mode="r")

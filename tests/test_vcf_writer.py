@@ -13,6 +13,7 @@ from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
 from .utils import assert_vcfs_close, open_vcz, to_vcz_icechunk, vcz_path_cache
+from .vcz_builder import make_vcz
 
 cyvcf2 = pytest.importorskip("cyvcf2")
 VCF = cyvcf2.VCF
@@ -178,26 +179,91 @@ def test_write_vcf__filtering(tmp_path, include, exclude, expected_chrom_pos):
     ]
 )
 # fmt: on
-@pytest.mark.parametrize("variants_chunk_size", [None, 1, 3, 7])
-def test_write_vcf__regions(tmp_path, regions, targets, expected_chrom_pos,
-                            variants_chunk_size):
-
-    original = pathlib.Path("tests/data/vcf") / "sample.vcf.gz"
-    vcz = vcz_path_cache(original, variants_chunk_size=variants_chunk_size)
+@pytest.mark.parametrize("variants_chunk_size", [None, 1, 2, 3, 7, 100])
+def test_write_vcf__regions(
+        tmp_path, regions, targets, expected_chrom_pos, variants_chunk_size):
+    # Mirrors the (contig, position) layout of tests/data/vcf/sample.vcf.gz
+    # but builds a synthetic VCZ in memory so we can sweep chunk sizes
+    # without running bio2zarr. This test covers region/target chunk
+    # boundary behavior; VCF-level parity is covered elsewhere.
+    contigs = ("19", "20", "X")
+    # (contig, position, ref_length) mirrors the sample.vcf.gz layout.
+    # The X:10 variant has REF="AC" (length 2), which is why region
+    # "X:11" overlaps it while target "X:11" does not.
+    layout = [
+        ("19", 111, 1),
+        ("19", 112, 1),
+        ("20", 14370, 1),
+        ("20", 17330, 1),
+        ("20", 1110696, 1),
+        ("20", 1230237, 1),
+        ("20", 1234567, 1),
+        ("20", 1235237, 1),
+        ("X", 10, 2),
+    ]
+    contig_index = {name: i for i, name in enumerate(contigs)}
+    vcz = make_vcz(
+        variant_contig=[contig_index[c] for c, _, _ in layout],
+        variant_position=[p for _, p, _ in layout],
+        variant_length=[ln for _, _, ln in layout],
+        alleles=[["A", "T"]] * len(layout),
+        contigs=contigs,
+        variants_chunk_size=variants_chunk_size,
+    )
     output = tmp_path.joinpath("output.vcf")
-
     write_vcf(vcz, output, regions=regions, targets=targets)
 
-    v = VCF(output)
+    v = VCF(str(output))
     variants = list(v)
     assert len(variants) == len(expected_chrom_pos)
-
-    assert v.samples == ["NA00001", "NA00002", "NA00003"]
-
-    for variant, chrom_pos in zip(variants, expected_chrom_pos):
-        chrom, pos = chrom_pos
+    for variant, (chrom, pos) in zip(variants, expected_chrom_pos):
         assert variant.CHROM == chrom
         assert variant.POS == pos
+
+
+class TestSmallChunks:
+    """
+    Chunk-boundary coverage for filter/region code paths, built on the
+    synthetic in-memory VCZ so we can freely sweep chunk sizes without
+    re-running bio2zarr.
+    """
+
+    AC_VALUES = [0, 1, 2, 3, 4, 5, 1, 2, 3, 6, 0, 4, 2, 3, 1, 5, 7, 2, 3, 0]
+    NUM_VARIANTS = len(AC_VALUES)
+
+    def _build(self, variants_chunk_size):
+        positions = list(range(1, self.NUM_VARIANTS + 1))
+        return make_vcz(
+            variant_contig=[0] * self.NUM_VARIANTS,
+            variant_position=positions,
+            alleles=[["A", "T"]] * self.NUM_VARIANTS,
+            contigs=("chr1",),
+            variants_chunk_size=variants_chunk_size,
+            info_fields={"AC": np.array(self.AC_VALUES, dtype=np.int32)},
+        )
+
+    @pytest.mark.parametrize("variants_chunk_size", [1, 2, 3, 5, 7, 10, None])
+    def test_info_ac_filter(self, tmp_path, variants_chunk_size):
+        vcz = self._build(variants_chunk_size)
+        output = tmp_path / "out.vcf"
+        write_vcf(vcz, output, include="INFO/AC>2", no_version=True)
+
+        expected_positions = [
+            i + 1 for i, ac in enumerate(self.AC_VALUES) if ac > 2
+        ]
+        v = VCF(str(output))
+        got_positions = [variant.POS for variant in v]
+        assert got_positions == expected_positions
+
+    @pytest.mark.parametrize("variants_chunk_size", [1, 2, 3, 5, 7, 10, None])
+    def test_region_filter(self, tmp_path, variants_chunk_size):
+        vcz = self._build(variants_chunk_size)
+        output = tmp_path / "out.vcf"
+        write_vcf(vcz, output, regions="chr1:5-12", no_version=True)
+
+        v = VCF(str(output))
+        got_positions = [variant.POS for variant in v]
+        assert got_positions == list(range(5, 13))
 
 
 def test_write_vcf__regions_split_alleles(tmp_path):

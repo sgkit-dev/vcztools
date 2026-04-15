@@ -1,4 +1,5 @@
 import pathlib
+import sys
 
 from . import utils
 
@@ -10,6 +11,9 @@ _SAMPLE_VARIANTS_CHUNK_SIZES = (1, 3, 4, 7)
 
 
 def _prewarm_vcz_cache():
+    if sys.platform == "win32":
+        # We don't do any conversion on Windows
+        return
     for vcf_path in sorted(_VCF_DIR.glob("*.vcf.gz")):
         utils.vcz_path_cache(vcf_path)
     for vcf_path in sorted(_VCF_DIR.glob("*.bcf")):

@@ -65,6 +65,7 @@ lint = [
   "ruff==0.15.1",
   "prek==0.3.3",
   "clang-format==19.1.7",
+  "zizmor==1.24.1",
 ]
 
 packaging = [

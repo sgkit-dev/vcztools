@@ -245,11 +245,9 @@ class VczReader:
         vcz,
         *,
         regions=None,
-        regions_file=None,
         targets=None,
-        targets_file=None,
+        targets_complement: bool = False,
         samples=None,
-        samples_file=None,
         force_samples: bool = False,
         drop_genotypes: bool = False,
         zarr_backend_storage: str | None = None,
@@ -265,13 +263,12 @@ class VczReader:
             self.sample_ids, self.samples_selection = parse_samples(
                 samples,
                 all_samples=all_samples,
-                samples_file=samples_file,
                 force_samples=force_samples,
             )
 
         contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()
-        self.regions = parse_regions(regions, contigs_u, regions_file=regions_file)
-        self.targets = parse_targets(targets, contigs_u, targets_file=targets_file)
+        self.regions = parse_regions(regions, contigs_u)
+        self.targets = parse_targets(targets, contigs_u, complement=targets_complement)
 
     @functools.cached_property
     def contig_ids(self):

@@ -1,8 +1,17 @@
+import dataclasses
 import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+@dataclasses.dataclass
+class Region:
+    contig: str
+    start: int | None = None
+    end: int | None = None
+
 
 try:
     # Use ruranges if installed
@@ -75,40 +84,50 @@ except ImportError:
             return overlap.df["index"].to_numpy()
 
 
-def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
-    """Return the contig, start position and end position from a region string."""
+def parse_region_string(region: str) -> Region:
+    """Return a Region from a region string."""
     if re.search(r":\d+-\d*$", region):
         contig, start_end = region.rsplit(":", 1)
         start, end = start_end.split("-")
-        return contig, int(start), int(end) if len(end) > 0 else None
+        return Region(contig, int(start), int(end) if len(end) > 0 else None)
     elif re.search(r":\d+$", region):
         contig, start = region.rsplit(":", 1)
-        return contig, int(start), int(start)
+        return Region(contig, int(start), int(start))
     else:
-        contig = region
-        return contig, None, None
+        return Region(region)
+
+
+def parse_regions_file(path: str) -> list[Region]:
+    """Read a bcftools-style regions/targets TSV file into Region objects."""
+    regions = []
+    with open(path) as f:
+        for line in f:
+            parts = line.strip().split("\t")
+            regions.append(
+                Region(contig=parts[0], start=int(parts[1]), end=int(parts[2]))
+            )
+    return regions
 
 
 def regions_to_ranges(
-    regions: list[tuple[str, int | None, int | None]],
+    regions: list[Region],
     all_contigs: list[str],
     complement: bool = False,
 ) -> GenomicRanges:
-    """Convert region tuples to a GenomicRanges object."""
+    """Convert Region objects to a GenomicRanges object."""
 
     contigs = []
     starts = []
     ends = []
-    for contig, start, end in regions:
-        if start is None:
+    for region in regions:
+        if region.start is None:
             start = 0
         else:
-            start -= 1
+            start = region.start - 1
 
-        if end is None:
-            end = np.iinfo(np.int64).max
+        end = np.iinfo(np.int64).max if region.end is None else region.end
 
-        contigs.append(all_contigs.index(contig))
+        contigs.append(all_contigs.index(region.contig))
         starts.append(start)
         ends.append(end)
 
@@ -118,29 +137,29 @@ def regions_to_ranges(
 
 
 def _parse_regions_or_targets(
-    regions: GenomicRanges | list[str] | str | None,
+    regions: GenomicRanges | list[Region] | list[str] | str | None,
     all_contigs: list[str],
-    regions_file: str | None = None,
     allow_complement: bool = False,
+    complement: bool = False,
 ) -> GenomicRanges | None:
-    assert regions is None or regions_file is None  # only one is set
-    if regions is None and regions_file is not None:
-        return _parse_regions_or_targets_file(
-            regions_file, all_contigs, allow_complement=allow_complement
-        )
-    elif regions is None or isinstance(regions, GenomicRanges):
+    if regions is None or isinstance(regions, GenomicRanges):
         return regions
-    elif isinstance(regions, list):
+
+    if (
+        isinstance(regions, list)
+        and len(regions) > 0
+        and isinstance(regions[0], Region)
+    ):
+        return regions_to_ranges(regions, all_contigs, complement=complement)
+
+    if isinstance(regions, list):
         regions_list = regions
-        complement = False
     else:
         assert isinstance(regions, str)
         if allow_complement:
             complement = regions.startswith("^")
             if complement:
                 regions = regions[1:]
-        else:
-            complement = False
         regions_list = regions.split(",")
     return regions_to_ranges(
         [parse_region_string(region) for region in regions_list],
@@ -149,62 +168,25 @@ def _parse_regions_or_targets(
     )
 
 
-def _parse_regions_or_targets_file(
-    regions_file: str, all_contigs: list[str], allow_complement: bool = False
-) -> GenomicRanges:
-    if allow_complement:
-        complement = regions_file.startswith("^")
-        if complement:
-            regions_file = regions_file[1:]
-    else:
-        complement = False
-    df = pd.read_csv(
-        regions_file,
-        sep="\t",
-        names=["Chromosome", "Start", "End"],
-        dtype={"Chromosome": str, "Start": np.int64, "End": np.int64},
-    )
-    # transform contig names to indexes, and convert intervals
-    # from VCF (1-based, fully-closed) to Python (0-based, half-open)
-    df["Chromosome"] = df["Chromosome"].apply(lambda c: all_contigs.index(c))
-    df = df.astype({"Chromosome": np.int32})
-    df["Start"] = df["Start"] - 1
-    return GenomicRanges(
-        df["Chromosome"].to_numpy(),
-        df["Start"].to_numpy(),
-        df["End"].to_numpy(),
-        complement=complement,
-    )
-
-
 def parse_regions(
-    regions: GenomicRanges | list[str] | str | None,
+    regions: GenomicRanges | list[Region] | list[str] | str | None,
     all_contigs: list[str],
-    regions_file: str | None = None,
 ) -> GenomicRanges | None:
     """Return a GenomicRanges object from a comma-separated set of region strings,
-    or a list of region strings."""
-    if regions is not None and regions_file is not None:
-        raise ValueError(
-            "Cannot specify both a regions string (-r) and a regions file (-R)"
-        )
-    return _parse_regions_or_targets(regions, all_contigs, regions_file=regions_file)
+    a list of region strings, or a list of Region objects."""
+    return _parse_regions_or_targets(regions, all_contigs)
 
 
 def parse_targets(
-    targets: list[str] | str | None,
+    targets: GenomicRanges | list[Region] | list[str] | str | None,
     all_contigs: list[str],
-    targets_file: str | None = None,
+    complement: bool = False,
 ) -> GenomicRanges | None:
     """Return a GenomicRanges object from a comma-separated set of region strings,
     optionally preceeded by a ^ character to indicate complement,
-    or a list of region strings."""
-    if targets is not None and targets_file is not None:
-        raise ValueError(
-            "Cannot specify both a target string (-t) and a targets file (-T)"
-        )
+    or a list of region strings, or a list of Region objects."""
     return _parse_regions_or_targets(
-        targets, all_contigs, regions_file=targets_file, allow_complement=True
+        targets, all_contigs, allow_complement=True, complement=complement
     )
 
 

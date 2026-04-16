@@ -1,5 +1,4 @@
 import re
-import sys
 from io import StringIO
 
 import numpy as np
@@ -7,6 +6,7 @@ import pytest
 from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING
+from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
 from .utils import assert_vcfs_close, to_vcz_icechunk
@@ -36,15 +36,12 @@ def test_write_vcf(
     vcz = fx_sample_vcz.directory_path
     output = tmp_path.joinpath("output.vcf")
 
+    reader = VczReader(vcz, zarr_backend_storage=zarr_backend_storage)
     if output_is_path:
-        write_vcf(
-            vcz, output, no_version=True, zarr_backend_storage=zarr_backend_storage
-        )
+        write_vcf(reader, output, no_version=True)
     else:
         output_str = StringIO()
-        write_vcf(
-            vcz, output_str, no_version=True, zarr_backend_storage=zarr_backend_storage
-        )
+        write_vcf(reader, output_str, no_version=True)
         with open(output, "w") as f:
             f.write(output_str.getvalue())
 
@@ -79,7 +76,8 @@ def test_write_vcf__icechunk(tmp_path, fx_sample_vcz):
     vcz_icechunk = to_vcz_icechunk(fx_sample_vcz.directory_path, tmp_path)
     output = tmp_path.joinpath("output.vcf")
 
-    write_vcf(vcz_icechunk, output, no_version=True, zarr_backend_storage="icechunk")
+    reader = VczReader(vcz_icechunk, zarr_backend_storage="icechunk")
+    write_vcf(reader, output, no_version=True)
 
     v = VCF(output)
 
@@ -128,7 +126,8 @@ def test_write_vcf__filtering(
     tmp_path, fx_sample_vcz, include, exclude, expected_chrom_pos
 ):
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(fx_sample_vcz.group, output, include=include, exclude=exclude)
+    reader = VczReader(fx_sample_vcz.group)
+    write_vcf(reader, output, include=include, exclude=exclude)
 
     v = VCF(str(output))
     variants = list(v)
@@ -187,7 +186,8 @@ def test_write_vcf__regions(
     # elsewhere.
     vcz = copy_vcz(fx_sample_vcz.group, variants_chunk_size=variants_chunk_size)
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(vcz, output, regions=regions, targets=targets)
+    reader = VczReader(vcz, regions=regions, targets=targets)
+    write_vcf(reader, output)
 
     v = VCF(str(output))
     variants = list(v)
@@ -222,7 +222,8 @@ class TestSmallChunks:
     def test_info_ac_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        write_vcf(vcz, output, include="INFO/AC>2", no_version=True)
+        reader = VczReader(vcz)
+        write_vcf(reader, output, include="INFO/AC>2", no_version=True)
 
         expected_positions = [
             i + 1 for i, ac in enumerate(self.AC_VALUES) if ac > 2
@@ -235,7 +236,8 @@ class TestSmallChunks:
     def test_region_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        write_vcf(vcz, output, regions="chr1:5-12", no_version=True)
+        reader = VczReader(vcz, regions="chr1:5-12")
+        write_vcf(reader, output, no_version=True)
 
         v = VCF(str(output))
         got_positions = [variant.POS for variant in v]
@@ -250,7 +252,8 @@ def test_write_vcf__regions_split_alleles(
         fx_sample_split_alleles_vcz.group, variants_chunk_size=variants_chunk_size
     )
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(vcz, output, regions="20:1234567")
+    reader = VczReader(vcz, regions="20:1234567")
+    write_vcf(reader, output)
 
     v = VCF(output)
     variants = list(v)
@@ -300,9 +303,10 @@ def test_write_vcf__samples(
     expected_genotypes,
 ):
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(
-        fx_sample_vcz.group, output, samples=samples, force_samples=force_samples
+    reader = VczReader(
+        fx_sample_vcz.group, samples=samples, force_samples=force_samples
     )
+    write_vcf(reader, output)
 
     v = VCF(output)
 
@@ -321,8 +325,7 @@ def test_write_vcf__samples(
     assert variant.genotypes == expected_genotypes
 
 
-def test_write_vcf__non_existent_sample(tmp_path, fx_sample_vcz):
-    output = tmp_path.joinpath("output.vcf")
+def test_write_vcf__non_existent_sample(fx_sample_vcz):
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -330,12 +333,13 @@ def test_write_vcf__non_existent_sample(tmp_path, fx_sample_vcz):
             'Use "--force-samples" to ignore this error.'
         ),
     ):
-        write_vcf(fx_sample_vcz.group, output, samples="NO_SAMPLE")
+        VczReader(fx_sample_vcz.group, samples="NO_SAMPLE")
 
 
 def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(fx_sample_vcz.group, output, drop_genotypes=True)
+    reader = VczReader(fx_sample_vcz.group, drop_genotypes=True)
+    write_vcf(reader, output, drop_genotypes=True)
 
     v = VCF(output)
     assert v.samples == []
@@ -347,7 +351,8 @@ def test_write_vcf__missing_samples(tmp_path, fx_sample_vcz):
     mutated["sample_id"][:2] = ""
 
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(mutated, output)
+    reader = VczReader(mutated)
+    write_vcf(reader, output)
 
     v = VCF(output)
     assert v.samples == ["NA00003"]
@@ -373,14 +378,13 @@ def test_write_vcf__regions_samples_filtering(
     tmp_path, fx_sample_vcz, regions, targets, samples, include, expected_chrom_pos
 ):
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(
+    reader = VczReader(
         fx_sample_vcz.group,
-        output,
         regions=regions,
         targets=targets,
         samples=samples,
-        include=include,
     )
+    write_vcf(reader, output, include=include)
 
     v = VCF(str(output))
     variants = list(v)
@@ -399,6 +403,7 @@ def test_write_vcf__include_exclude(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
     variant_site_filter = "POS > 1"
 
+    reader = VczReader(fx_sample_vcz.group)
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -406,7 +411,7 @@ def test_write_vcf__include_exclude(tmp_path, fx_sample_vcz):
         ),
     ):
         write_vcf(
-            fx_sample_vcz.group,
+            reader,
             output,
             include=variant_site_filter,
             exclude=variant_site_filter,
@@ -416,11 +421,13 @@ def test_write_vcf__include_exclude(tmp_path, fx_sample_vcz):
 def test_write_vcf__header_flags(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
 
+    reader = VczReader(fx_sample_vcz.group)
+
     output_header = StringIO()
-    write_vcf(fx_sample_vcz.group, output_header, header_only=True, no_version=True)
+    write_vcf(reader, output_header, header_only=True, no_version=True)
 
     output_no_header = StringIO()
-    write_vcf(fx_sample_vcz.group, output_no_header, no_header=True, no_version=True)
+    write_vcf(reader, output_no_header, no_header=True, no_version=True)
     assert not output_no_header.getvalue().startswith("#")
 
     # combine outputs and check VCFs match
@@ -432,7 +439,8 @@ def test_write_vcf__header_flags(tmp_path, fx_sample_vcz):
 
 def test_write_vcf__generate_header(fx_sample_vcz):
     output_header = StringIO()
-    write_vcf(fx_sample_vcz.group, output_header, header_only=True, no_version=True)
+    reader = VczReader(fx_sample_vcz.group)
+    write_vcf(reader, output_header, header_only=True, no_version=True)
 
     expected_vcf_header = """##fileformat=VCFv4.3
 ##source={}
@@ -519,16 +527,11 @@ class TestApiErrors:
     def fx_vcz(self, fx_sample_vcz):
         return fx_sample_vcz.group
 
-    def test_samples_and_drop_genotypes(self, fx_vcz):
-        with pytest.raises(
-            ValueError, match="Cannot select samples and drop genotypes"
-        ):
-            write_vcf(fx_vcz, sys.stdout, samples=["NA00001"], drop_genotypes=True)
-
     def test_no_output_filter_parse_error(self, fx_vcz):
         output = StringIO()
+        reader = VczReader(fx_vcz)
         with pytest.raises(ValueError, match='the tag "Not" is not defined'):
-            write_vcf(fx_vcz, output, include="Not a valid expression")
+            write_vcf(reader, output, include="Not a valid expression")
         assert output.getvalue() == ""
 
 

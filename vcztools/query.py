@@ -1,23 +1,18 @@
 import functools
-import itertools
 import math
-from collections.abc import Callable
 
 import numpy as np
 import pyparsing as pp
 
-from vcztools import constants, retrieval
+from vcztools import constants
 from vcztools.utils import (
     missing,
-    open_zarr,
     vcf_name_to_vcz_names,
 )
 
 
-def list_samples(vcz_path, output, zarr_backend_storage=None):
-    root = open_zarr(vcz_path, mode="r", zarr_backend_storage=zarr_backend_storage)
-
-    sample_ids = root["sample_id"][:]
+def list_samples(reader, output):
+    sample_ids = reader.root["sample_id"][:]
     # don't show missing samples
     print("\n".join(sample_ids[sample_ids != ""]), file=output)
 
@@ -61,12 +56,18 @@ class QueryFormatParser:
         return self._parser(args[0])
 
 
-class QueryFormatGenerator:
-    def __init__(self, query_format, sample_ids, contigs, filters):
-        self.sample_ids = sample_ids
+class QueryFormatter:
+    """Format variant data according to a bcftools-style query format string.
+
+    Each variant is formatted independently — pass a single-variant dict
+    (as yielded by VczReader.variants) to format_variant().
+    """
+
+    def __init__(self, query_format, reader):
+        self.sample_ids = reader.sample_ids
         self.sample_count = len(self.sample_ids)
-        self.contig_ids = contigs
-        self.filter_ids = filters
+        self.contig_ids = reader.contig_ids
+        self.filter_ids = reader.filter_ids
         if isinstance(query_format, str):
             parser = QueryFormatParser()
             parse_results = parser(query_format)
@@ -74,70 +75,46 @@ class QueryFormatGenerator:
             assert isinstance(query_format, pp.ParseResults)
             parse_results = query_format
 
-        self._generator = self._compose_generator(parse_results)
+        self._formatters = [self._build_formatter(element) for element in parse_results]
 
-    def __call__(self, *args, **kwargs):
-        assert len(args) == 1
-        assert not kwargs
+    def format_variant(self, variant_data):
+        return "".join(str(formatter(variant_data)) for formatter in self._formatters)
 
-        yield from self._generator(args[0])
+    def _build_formatter(self, element, *, sample_loop=False):
+        if isinstance(element, pp.ParseResults):
+            name = element.get_name()
+            if name == "subfield":
+                return self._build_subfield_formatter(element)
+            elif name == "sample loop":
+                return self._build_sample_loop_formatter(element)
 
-    def _compose_gt_generator(self) -> Callable:
-        def generate(chunk_data):
-            gt_array = chunk_data["call_genotype"]
+        assert isinstance(element, str)
 
-            if "call_genotype_phased" in chunk_data:
-                phase_array = chunk_data["call_genotype_phased"]
-                assert gt_array.shape[:2] == phase_array.shape
+        if element.startswith("%"):
+            return self._build_tag_formatter(element[1:], sample_loop=sample_loop)
 
-                for gt_row, phase in zip(gt_array, phase_array):
+        if sample_loop:
+            count = self.sample_count
+            return lambda variant_data, e=element, n=count: [e] * n
+        return lambda variant_data, e=element: e
 
-                    def stringify(gt_and_phase: tuple):
-                        gt, phase = gt_and_phase
-                        gt = [
-                            str(allele) if allele != constants.INT_MISSING else "."
-                            for allele in gt
-                            if allele != constants.INT_FILL
-                        ]
-                        separator = "|" if phase else "/"
-                        return separator.join(gt)
-
-                    gt_row = gt_row.tolist()
-                    yield map(stringify, zip(gt_row, phase))
-            else:
-                # TODO: Support datasets without the phasing data
-                raise NotImplementedError
-
-        return generate
-
-    def _compose_sample_ids_generator(self) -> Callable:
-        def generate(chunk_data):
-            variant_count = chunk_data["variant_position"].shape[0]
-            yield from itertools.repeat(self.sample_ids, variant_count)
-
-        return generate
-
-    def _compose_tag_generator(
-        self, tag: str, *, subfield=False, sample_loop=False
-    ) -> Callable:
-        assert tag.startswith("%")
-        tag = tag[1:]
-
+    def _build_tag_formatter(self, tag, *, sample_loop=False, subfield=False):
         if tag == "GT":
             if not sample_loop:
                 raise ValueError(
                     "no such tag defined: INFO/GT. "
-                    'FORMAT fields must be enclosed in square brackets, e.g. "[ %GT]"'
+                    "FORMAT fields must be enclosed in square brackets,"
+                    ' e.g. "[ %GT]"'
                 )
-            return self._compose_gt_generator()
+            return self._format_gt
 
         if tag == "SAMPLE":
             if not sample_loop:
                 raise ValueError("no such tag defined: INFO/SAMPLE")
-            return self._compose_sample_ids_generator()
+            return lambda variant_data: self.sample_ids
 
-        def generate(chunk_data):
-            vcz_names = set(chunk_data.keys())
+        def format_tag(variant_data):
+            vcz_names = set(variant_data.keys())
             vcz_name_matches = vcf_name_to_vcz_names(vcz_names, tag)
             if len(vcz_name_matches) == 0:
                 raise ValueError(f"No mapping found for '{tag}'")
@@ -153,186 +130,123 @@ class QueryFormatGenerator:
                         "FORMAT fields must be enclosed in square brackets, "
                         f'e.g. "[ %{tag}]"'
                     )
-            array = chunk_data[vcz_name]
-            for row in array:
-                is_missing = False if isinstance(row, str) else np.all(missing(row))
-                sep = ","
 
-                if tag == "CHROM":
-                    row = self.contig_ids[row]
-                if tag == "REF":
-                    row = row[0]
-                if tag == "ALT":
-                    row = [allele for allele in row[1:] if allele] or "."
-                if tag == "FILTER":
-                    if np.any(row):
-                        row = self.filter_ids[row]
-                    else:
-                        row = "."
-                    sep = ";"
-                if tag == "QUAL":
-                    if math.isnan(row):
-                        row = "."
-                    else:
-                        row = f"{row:g}"
-                if (
-                    not subfield
-                    and not sample_loop
-                    and (isinstance(row, np.ndarray) or isinstance(row, list))
-                ):
-                    row = sep.join(map(str, row))
+            value = variant_data[vcz_name]
+            is_missing = False if isinstance(value, str) else np.all(missing(value))
+            sep = ","
 
-                if sample_loop:
-                    if isinstance(row, np.ndarray):
-                        row = row.tolist()
-                        row = [
-                            (str(element) if element != constants.INT_MISSING else ".")
-                            for element in row
-                            if element != constants.INT_FILL
-                        ]
-                        yield row
-                    else:
-                        yield itertools.repeat(str(row), self.sample_count)
+            if tag == "CHROM":
+                value = self.contig_ids[value]
+            if tag == "REF":
+                value = value[0]
+            if tag == "ALT":
+                value = [allele for allele in value[1:] if allele] or "."
+            if tag == "FILTER":
+                if np.any(value):
+                    value = self.filter_ids[value]
                 else:
-                    yield row if not is_missing else "."
-
-        return generate
-
-    def _compose_subfield_generator(self, parse_results: pp.ParseResults) -> Callable:
-        assert len(parse_results) == 2
-
-        tag, subfield_index = parse_results
-        tag_generator = self._compose_tag_generator(tag, subfield=True)
-
-        def generate(chunk_data):
-            for tag in tag_generator(chunk_data):
-                if isinstance(tag, str):
-                    assert tag == "."
-                    yield "."
+                    value = "."
+                sep = ";"
+            if tag == "QUAL":
+                if math.isnan(value):
+                    value = "."
                 else:
-                    if subfield_index < len(tag):
-                        yield tag[subfield_index]
-                    else:
-                        yield "."
+                    value = f"{value:g}"
 
-        return generate
-
-    def _compose_sample_loop_generator(
-        self, parse_results: pp.ParseResults
-    ) -> Callable:
-        generators = tuple(
-            self._compose_element_generator(element, sample_loop=True)
-            for element in parse_results
-        )
-
-        def generate(chunk_data):
-            iterables = (generator(chunk_data) for generator in generators)
-            zipped = zip(*iterables)
-            zipped_zipped = (zip(*element) for element in zipped)
-            if "call_mask" not in chunk_data:
-                flattened_zipped_zipped = (
-                    (
-                        subsubelement
-                        for subelement in element  # sample-wise
-                        for subsubelement in subelement
-                    )
-                    for element in zipped_zipped  # variant-wise
-                )
+            if sample_loop:
+                if isinstance(value, np.ndarray):
+                    value = value.tolist()
+                    return [
+                        (str(element) if element != constants.INT_MISSING else ".")
+                        for element in value
+                        if element != constants.INT_FILL
+                    ]
+                return [str(value)] * self.sample_count
+            elif subfield:
+                # Return raw value for subfield indexing
+                if is_missing:
+                    return "."
+                return value
             else:
-                call_mask = chunk_data["call_mask"]
-                flattened_zipped_zipped = (
-                    (
-                        subsubelement
-                        for j, subelement in enumerate(element)  # sample-wise
-                        if call_mask[i, j]
-                        for subsubelement in subelement
-                    )
-                    for i, element in enumerate(zipped_zipped)  # variant-wise
+                if is_missing:
+                    return "."
+                if isinstance(value, (np.ndarray, list)):
+                    return sep.join(map(str, value))
+                return value
+
+        return format_tag
+
+    def _format_gt(self, variant_data):
+        gt_row = variant_data["call_genotype"]
+        if "call_genotype_phased" not in variant_data:
+            # TODO: Support datasets without the phasing data
+            raise NotImplementedError
+
+        phase = variant_data["call_genotype_phased"]
+        result = []
+        for g, p in zip(gt_row.tolist(), phase):
+            alleles = [
+                str(a) if a != constants.INT_MISSING else "."
+                for a in g
+                if a != constants.INT_FILL
+            ]
+            separator = "|" if p else "/"
+            result.append(separator.join(alleles))
+        return result
+
+    def _build_subfield_formatter(self, parse_results):
+        assert len(parse_results) == 2
+        tag_str, subfield_index = parse_results
+        tag_formatter = self._build_tag_formatter(tag_str[1:], subfield=True)
+
+        def format_subfield(variant_data):
+            value = tag_formatter(variant_data)
+            if isinstance(value, str):
+                assert value == "."
+                return "."
+            if subfield_index < len(value):
+                return value[subfield_index]
+            return "."
+
+        return format_subfield
+
+    def _build_sample_loop_formatter(self, parse_results):
+        formatters = [
+            self._build_formatter(element, sample_loop=True)
+            for element in parse_results
+        ]
+
+        def format_sample_loop(variant_data):
+            sample_values = [f(variant_data) for f in formatters]
+            zipped = zip(*sample_values)
+            if "call_mask" not in variant_data:
+                parts = (str(part) for sample in zipped for part in sample)
+            else:
+                call_mask = variant_data["call_mask"]
+                parts = (
+                    str(part)
+                    for j, sample in enumerate(zipped)
+                    if call_mask[j]
+                    for part in sample
                 )
-            yield from map("".join, flattened_zipped_zipped)
+            return "".join(parts)
 
-        return generate
-
-    def _compose_element_generator(
-        self, element: str | pp.ParseResults, *, sample_loop=False
-    ) -> Callable:
-        if isinstance(element, pp.ParseResults):
-            if element.get_name() == "subfield":
-                return self._compose_subfield_generator(element)
-            elif element.get_name() == "sample loop":
-                return self._compose_sample_loop_generator(element)
-
-        assert isinstance(element, str)
-
-        if element.startswith("%"):
-            return self._compose_tag_generator(element, sample_loop=sample_loop)
-        else:
-
-            def generate(chunk_data):
-                nonlocal element
-                variant_count = chunk_data["variant_position"].shape[0]
-                if sample_loop:
-                    for _ in range(variant_count):
-                        yield itertools.repeat(element, self.sample_count)
-                else:
-                    yield from itertools.repeat(element, variant_count)
-
-            return generate
-
-    def _compose_generator(
-        self,
-        parse_results,
-    ) -> Callable:
-        generators = tuple(
-            self._compose_element_generator(element) for element in parse_results
-        )
-
-        def generate(chunk_data) -> str:
-            iterables = (generator(chunk_data) for generator in generators)
-            for results in zip(*iterables):
-                results = map(str, results)
-                yield "".join(results)
-
-        return generate
+        return format_sample_loop
 
 
 def write_query(
-    vcz,
+    reader,
     output,
     *,
     query_format: str,
-    regions=None,
-    regions_file=None,
-    targets=None,
-    targets_file=None,
-    samples=None,
-    samples_file=None,
-    force_samples: bool = False,
     include: str | None = None,
     exclude: str | None = None,
     disable_automatic_newline: bool = False,
-    zarr_backend_storage: str | None = None,
 ):
-    reader = retrieval.VczReader(
-        vcz,
-        regions=regions,
-        regions_file=regions_file,
-        targets=targets,
-        targets_file=targets_file,
-        samples=samples,
-        samples_file=samples_file,
-        force_samples=force_samples,
-        zarr_backend_storage=zarr_backend_storage,
-    )
-
-    contigs = reader.root["contig_id"][:]
-    filters = reader.root["filter_id"][:]
-
     if "\\n" not in query_format and not disable_automatic_newline:
         query_format = query_format + "\\n"
 
-    generator = QueryFormatGenerator(query_format, reader.sample_ids, contigs, filters)
+    formatter = QueryFormatter(query_format, reader)
 
-    for chunk_data in reader.variant_chunks(include=include, exclude=exclude):
-        for result in generator(chunk_data):
-            print(result, sep="", end="", file=output)
+    for variant in reader.variants(include=include, exclude=exclude):
+        print(formatter.format_variant(variant), sep="", end="", file=output)

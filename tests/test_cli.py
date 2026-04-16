@@ -86,6 +86,14 @@ class TestOutput:
         assert expected in result.stderr
 
 
+def test_samples_and_drop_genotypes(fx_vcz_path):
+    _, vcztools_error = run_vcztools(
+        f"view -s NA00001 -G {fx_vcz_path}",
+        expect_error=True,
+    )
+    assert "Cannot select samples and drop genotypes" in vcztools_error
+
+
 def test_excluding_and_including_samples(fx_vcz_path):
     samples_file_path = pathlib.Path("tests/data/txt/samples.txt")
     error_message = "Cannot specify both a samples string (-s) and a samples file (-S)"

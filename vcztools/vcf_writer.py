@@ -6,13 +6,10 @@ from datetime import datetime
 import numpy as np
 
 from vcztools import utils
-from vcztools.regions import parse_regions, parse_targets
-from vcztools.samples import parse_samples
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     open_file_like,
-    open_zarr,
 )
 
 from . import _vcztools, constants, retrieval
@@ -91,33 +88,35 @@ def write_vcf(
     exclude: str | None = None,
     zarr_backend_storage: str | None = None,
 ) -> None:
-    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
-
     with open_file_like(output) as output:
         if (samples or samples_file) and drop_genotypes:
             raise ValueError("Cannot select samples and drop genotypes.")
-        elif drop_genotypes:
-            sample_ids = []
-            samples_selection = np.array([])
-        else:
-            all_samples = root["sample_id"][:]
-            sample_ids, samples_selection = parse_samples(
-                samples,
-                all_samples=all_samples,
-                samples_file=samples_file,
-                force_samples=force_samples,
-            )
+
+        reader = retrieval.VczReader(
+            vcz,
+            regions=regions,
+            regions_file=regions_file,
+            targets=targets,
+            targets_file=targets_file,
+            samples=samples,
+            samples_file=samples_file,
+            force_samples=force_samples,
+            drop_genotypes=drop_genotypes,
+            zarr_backend_storage=zarr_backend_storage,
+        )
 
         # Need to try parsing filter expressions before writing header
         filter_mod.FilterExpression(
-            field_names=set(root), include=include, exclude=exclude
+            field_names=set(reader.root), include=include, exclude=exclude
         )
 
         if not no_header:
-            force_ac_an_header = not drop_genotypes and samples_selection is not None
+            force_ac_an_header = (
+                not drop_genotypes and reader.samples_selection is not None
+            )
             vcf_header = _generate_header(
-                root,
-                sample_ids,
+                reader.root,
+                reader.sample_ids,
                 no_version=no_version,
                 force_ac_an=force_ac_an_header,
             )
@@ -126,26 +125,12 @@ def write_vcf(
         if header_only:
             return
 
-        contigs = _as_fixed_length_string(root["contig_id"][:])
-        filters = get_filter_ids(root)
-
-        contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
-        regions = parse_regions(regions, contigs_u, regions_file=regions_file)
-        targets = parse_targets(targets, contigs_u, targets_file=targets_file)
-
-        for chunk_data in retrieval.variant_chunk_iter(
-            root,
-            regions=regions,
-            targets=targets,
-            include=include,
-            exclude=exclude,
-            samples_selection=samples_selection,
-        ):
+        for chunk_data in reader.variant_chunks(include=include, exclude=exclude):
             c_chunk_to_vcf(
                 chunk_data,
-                samples_selection,
-                contigs,
-                filters,
+                reader.samples_selection,
+                reader.contigs,
+                reader.filters,
                 output,
                 drop_genotypes=drop_genotypes,
                 no_update=no_update,
@@ -286,18 +271,6 @@ def c_chunk_to_vcf(
         print(line, file=output)
 
 
-def get_filter_ids(root):
-    """
-    Returns the filter IDs from the specified Zarr store. If the array
-    does not exist, return a single filter "PASS" by default.
-    """
-    if "filter_id" in root:
-        filters = _as_fixed_length_string(root["filter_id"][:])
-    else:
-        filters = np.array(["PASS"], dtype="S")
-    return filters
-
-
 def _generate_header(
     ds,
     sample_ids,
@@ -308,7 +281,7 @@ def _generate_header(
     output = io.StringIO()
 
     contigs = list(ds["contig_id"][:])
-    filters = list(_as_fixed_length_unicode(get_filter_ids(ds)))
+    filters = list(_as_fixed_length_unicode(retrieval.get_filter_ids(ds)))
     info_fields = []
     format_fields = []
 

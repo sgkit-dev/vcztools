@@ -7,10 +7,7 @@ import numpy as np
 import pyparsing as pp
 
 from vcztools import constants, retrieval
-from vcztools.regions import parse_regions, parse_targets
-from vcztools.samples import parse_samples
 from vcztools.utils import (
-    _as_fixed_length_unicode,
     missing,
     open_zarr,
     vcf_name_to_vcz_names,
@@ -316,34 +313,26 @@ def write_query(
     disable_automatic_newline: bool = False,
     zarr_backend_storage: str | None = None,
 ):
-    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
-
-    all_samples = root["sample_id"][:]
-    sample_ids, samples_selection = parse_samples(
-        samples,
-        all_samples=all_samples,
+    reader = retrieval.VczReader(
+        vcz,
+        regions=regions,
+        regions_file=regions_file,
+        targets=targets,
+        targets_file=targets_file,
+        samples=samples,
         samples_file=samples_file,
         force_samples=force_samples,
+        zarr_backend_storage=zarr_backend_storage,
     )
-    contigs = root["contig_id"][:]
-    filters = root["filter_id"][:]
 
-    contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
-    regions = parse_regions(regions, contigs_u, regions_file=regions_file)
-    targets = parse_targets(targets, contigs_u, targets_file=targets_file)
+    contigs = reader.root["contig_id"][:]
+    filters = reader.root["filter_id"][:]
 
     if "\\n" not in query_format and not disable_automatic_newline:
         query_format = query_format + "\\n"
 
-    generator = QueryFormatGenerator(query_format, sample_ids, contigs, filters)
+    generator = QueryFormatGenerator(query_format, reader.sample_ids, contigs, filters)
 
-    for chunk_data in retrieval.variant_chunk_iter(
-        root,
-        regions=regions,
-        targets=targets,
-        include=include,
-        exclude=exclude,
-        samples_selection=samples_selection,
-    ):
+    for chunk_data in reader.variant_chunks(include=include, exclude=exclude):
         for result in generator(chunk_data):
             print(result, sep="", end="", file=output)

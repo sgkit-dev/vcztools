@@ -8,9 +8,8 @@ import numpy as np
 import pandas as pd
 import zarr
 
-from vcztools.utils import _as_fixed_length_unicode, open_zarr
-
-from . import _vcztools, retrieval
+from vcztools import _vcztools, retrieval
+from vcztools.utils import _as_fixed_length_unicode
 
 
 def encode_genotypes(genotypes, a12_allele=None):
@@ -81,9 +80,10 @@ class Writer:
         exclude=None,
         zarr_backend_storage=None,
     ):
-        self.root = open_zarr(
-            vcz_path, mode="r", zarr_backend_storage=zarr_backend_storage
+        self.reader = retrieval.VczReader(
+            vcz_path, zarr_backend_storage=zarr_backend_storage
         )
+        self.root = self.reader.root
 
         self.bim_path = bim_path
         self.fam_path = fam_path
@@ -138,9 +138,7 @@ class Writer:
         return a12_allele
 
     def _write_genotypes(self):
-        ci = retrieval.variant_chunk_iter(
-            self.root, fields=["call_genotype", "variant_allele"]
-        )
+        ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
         call_genotype = self.root["call_genotype"]
         a12_allele = zarr.zeros(
             (call_genotype.shape[0], 2), chunks=call_genotype.chunks[0], dtype=int

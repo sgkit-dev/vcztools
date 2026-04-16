@@ -1,4 +1,5 @@
 import collections.abc
+import functools
 
 import numpy as np
 
@@ -11,7 +12,11 @@ from vcztools.regions import (
     regions_to_selection,
 )
 from vcztools.samples import parse_samples
-from vcztools.utils import _as_fixed_length_unicode, open_zarr
+from vcztools.utils import (
+    _as_fixed_length_string,
+    _as_fixed_length_unicode,
+    open_zarr,
+)
 
 
 # NOTE:  this class is just a skeleton for now. The idea is that this
@@ -216,6 +221,103 @@ def variant_chunk_iter(
         yield chunk_data
 
 
+def get_filter_ids(root):
+    """
+    Returns the filter IDs from the specified Zarr store. If the array
+    does not exist, return a single filter "PASS" by default.
+    """
+    if "filter_id" in root:
+        filters = _as_fixed_length_string(root["filter_id"][:])
+    else:
+        filters = np.array(["PASS"], dtype="S")
+    return filters
+
+
+class VczReader:
+    """Central reader for VCZ (Zarr-based VCF) files.
+
+    Owns the zarr root and provides metadata properties and
+    variant iteration at both chunk and row granularity.
+    """
+
+    def __init__(
+        self,
+        vcz,
+        *,
+        regions=None,
+        regions_file=None,
+        targets=None,
+        targets_file=None,
+        samples=None,
+        samples_file=None,
+        force_samples: bool = False,
+        drop_genotypes: bool = False,
+        zarr_backend_storage: str | None = None,
+    ):
+        self.root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
+
+        all_samples = self.root["sample_id"][:]
+
+        if drop_genotypes:
+            self.sample_ids = []
+            self.samples_selection = np.array([])
+        else:
+            self.sample_ids, self.samples_selection = parse_samples(
+                samples,
+                all_samples=all_samples,
+                samples_file=samples_file,
+                force_samples=force_samples,
+            )
+
+        contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()
+        self.regions = parse_regions(regions, contigs_u, regions_file=regions_file)
+        self.targets = parse_targets(targets, contigs_u, targets_file=targets_file)
+
+    @functools.cached_property
+    def contigs(self):
+        """Contig IDs as fixed-length bytes (for VcfEncoder)."""
+        return _as_fixed_length_string(self.root["contig_id"][:])
+
+    @functools.cached_property
+    def filters(self):
+        """Filter IDs as fixed-length bytes (for VcfEncoder)."""
+        return get_filter_ids(self.root)
+
+    def variant_chunks(
+        self,
+        *,
+        fields: list[str] | None = None,
+        include: str | None = None,
+        exclude: str | None = None,
+    ):
+        """Yield dict[str, np.ndarray] per chunk."""
+        yield from variant_chunk_iter(
+            self.root,
+            fields=fields,
+            regions=self.regions,
+            targets=self.targets,
+            include=include,
+            exclude=exclude,
+            samples_selection=self.samples_selection,
+        )
+
+    def variants(
+        self,
+        *,
+        fields: list[str] | None = None,
+        include: str | None = None,
+        exclude: str | None = None,
+    ):
+        """Yield dict[str, scalar/1d-array] per variant row."""
+        for chunk_data in self.variant_chunks(
+            fields=fields, include=include, exclude=exclude
+        ):
+            first_field = next(iter(chunk_data.values()))
+            num_variants = len(first_field)
+            for i in range(num_variants):
+                yield {name: chunk_data[name][i] for name in chunk_data}
+
+
 def variant_iter(
     vcz,
     *,
@@ -236,21 +338,11 @@ def variant_iter(
 
     By default all fields for all variants and samples are returned.
     """
-    root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
-    all_samples = root["sample_id"][:]
-    _, samples_selection = parse_samples(samples, all_samples)
-
-    for chunk_data in variant_chunk_iter(
-        root,
-        fields=fields,
+    reader = VczReader(
+        vcz,
         regions=regions,
         targets=targets,
-        include=include,
-        exclude=exclude,
-        samples_selection=samples_selection,
-    ):
-        # get first field in chunk_data to find number of variants
-        field = next(iter(chunk_data.values()))
-        num_variants = len(field)
-        for i in range(num_variants):
-            yield {name: chunk_data[name][i] for name in chunk_data.keys()}
+        samples=samples,
+        zarr_backend_storage=zarr_backend_storage,
+    )
+    yield from reader.variants(fields=fields, include=include, exclude=exclude)

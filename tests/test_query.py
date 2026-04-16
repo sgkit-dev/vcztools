@@ -206,6 +206,106 @@ class TestQueryFormatEvaluator:
         assert result == expected_result
 
 
+class TestQueryFormatterErrors:
+    """Test error paths in QueryFormatter."""
+
+    @pytest.fixture
+    def fx_reader(self, fx_sample_vcz):
+        return VczReader(fx_sample_vcz.group)
+
+    def test_gt_outside_sample_loop(self, fx_reader):
+        with pytest.raises(ValueError, match="no such tag defined: INFO/GT"):
+            QueryFormatter(r"%GT\n", fx_reader)
+
+    def test_sample_outside_sample_loop(self, fx_reader):
+        with pytest.raises(ValueError, match="no such tag defined: INFO/SAMPLE"):
+            QueryFormatter(r"%SAMPLE\n", fx_reader)
+
+    def test_unknown_tag(self, fx_reader):
+        formatter = QueryFormatter(r"%NONEXISTENT\n", fx_reader)
+        variant = next(fx_reader.variants())
+        with pytest.raises(ValueError, match="No mapping found for 'NONEXISTENT'"):
+            formatter.format_variant(variant)
+
+    def test_format_field_outside_sample_loop(self, fx_reader):
+        """GQ is FORMAT-only, so %GQ outside [] should error."""
+        formatter = QueryFormatter(r"%GQ\n", fx_reader)
+        variant = next(fx_reader.variants())
+        with pytest.raises(ValueError, match="no such tag defined: INFO/GQ"):
+            formatter.format_variant(variant)
+
+
+class TestQueryFormatterSampleLoop:
+    """Test sample loop formatting paths."""
+
+    @pytest.fixture
+    def fx_reader(self, fx_sample_vcz):
+        return VczReader(fx_sample_vcz.group)
+
+    def test_gt_in_sample_loop(self, fx_reader):
+        formatter = QueryFormatter(r"[\t%GT]\n", fx_reader)
+        # Third variant (20:14370) has GT 0|0, 1|0, 1/1
+        variants = list(fx_reader.variants())
+        result = formatter.format_variant(variants[2])
+        assert result == "\t0|0\t1|0\t1/1\n"
+
+    def test_sample_in_sample_loop(self, fx_reader):
+        formatter = QueryFormatter(r"[%SAMPLE ]\n", fx_reader)
+        variant = next(fx_reader.variants())
+        result = formatter.format_variant(variant)
+        assert result == "NA00001 NA00002 NA00003 \n"
+
+    def test_scalar_in_sample_loop(self, fx_reader):
+        """INFO-level tag inside [] broadcasts to all samples."""
+        formatter = QueryFormatter(r"[%CHROM ]\n", fx_reader)
+        variant = next(fx_reader.variants())
+        result = formatter.format_variant(variant)
+        assert result == "19 19 19 \n"
+
+
+class TestQueryFormatterSubfield:
+    """Test subfield indexing paths."""
+
+    @pytest.fixture
+    def fx_reader(self, fx_sample_vcz):
+        return VczReader(fx_sample_vcz.group)
+
+    def test_subfield_out_of_bounds(self, fx_reader):
+        """AC{5} on a variant with fewer elements returns '.'."""
+        formatter = QueryFormatter(r"%AC{5}\n", fx_reader)
+        # Variant at 20:1234567 (index 6) has AC=1,1 — index 5 is out of bounds
+        variants = list(fx_reader.variants())
+        result = formatter.format_variant(variants[6])
+        assert result == ".\n"
+
+
+class TestWriteQuery:
+    """Test write_query integration."""
+
+    def test_write_query(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        output = StringIO()
+        write_query(reader, output, query_format=r"%CHROM:%POS")
+        result = output.getvalue()
+        lines = result.strip().split("\n")
+        assert len(lines) == 9
+        assert lines[0] == "19:111"
+        assert lines[-1] == "X:10"
+
+    def test_write_query_disable_automatic_newline(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        output = StringIO()
+        write_query(
+            reader,
+            output,
+            query_format=r"%POS ",
+            disable_automatic_newline=True,
+        )
+        result = output.getvalue()
+        assert "\n" not in result
+        assert result.startswith("111 112 ")
+
+
 def test_write_query__include_exclude(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
 

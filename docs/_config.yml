@@ -1,0 +1,33 @@
+title: vcztools Documentation
+author: the sgkit developers
+
+execute:
+  execute_notebooks: "off"
+
+repository:
+  url: https://github.com/sgkit-dev/vcztools
+  path_to_book: docs
+  branch: main
+
+html:
+  use_issues_button: true
+  use_repository_button: true
+  extra_footer: |
+      <p>
+      Documentation available under the terms of the
+      <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0</a>
+      license.
+      </p>
+
+sphinx:
+  extra_extensions:
+    - sphinx_click.ext
+    - sphinx.ext.todo
+  config:
+    html_show_copyright: false
+    todo_include_todos: true
+    myst_enable_extensions:
+      - colon_fence
+    intersphinx_mapping:
+      python: ["https://docs.python.org/3/", null]
+      zarr: ["https://zarr.readthedocs.io/en/stable/", null]

@@ -277,8 +277,9 @@ def test_vcf_output_with_output_option(tmp_path, fx_all_vcz, args, vcf_file):
         ),
         # Second subfield index
         ("query -f '%AC{1}'", "sample.vcf.gz"),
-        # TODO: multi-valued FORMAT fields in sample loops are not correctly
-        # formatted (outputs Python list repr instead of comma-joined values)
+        # TODO: multi-valued FORMAT fields differ from bcftools when the field
+        # is absent vs all-missing — zarr stores both as INT_MISSING, so
+        # vcztools outputs ".,." where bcftools outputs "." for absent fields.
         # (r"query -f '[%HQ ]'", "sample.vcf.gz"),
         # Sample exclusion with query
         (r"query -f '[%SAMPLE %GT\n]' -s '^NA00001'", "sample.vcf.gz"),

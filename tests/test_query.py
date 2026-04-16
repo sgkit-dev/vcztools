@@ -262,6 +262,17 @@ class TestQueryFormatterSampleLoop:
         result = formatter.format_variant(variant)
         assert result == "19 19 19 \n"
 
+    def test_multivalued_format_in_sample_loop(self, fx_reader):
+        """Multi-valued FORMAT field (HQ, 2 values per sample) is comma-joined."""
+        formatter = QueryFormatter(r"[%HQ ]\n", fx_reader)
+        variants = list(fx_reader.variants())
+        # First variant (19:111) has HQ 10,15 / 10,10 / 3,3
+        assert formatter.format_variant(variants[0]) == "10,15 10,10 3,3 \n"
+        # Third variant (20:14370) has HQ 51,51 / 51,51 / .,. (all-missing)
+        assert formatter.format_variant(variants[2]) == "51,51 51,51 .,. \n"
+        # Last variants have HQ absent — stored as all INT_MISSING in zarr
+        assert formatter.format_variant(variants[6]) == ".,. .,. .,. \n"
+
 
 class TestQueryFormatterSubfield:
     """Test subfield indexing paths."""

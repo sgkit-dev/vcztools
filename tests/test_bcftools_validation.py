@@ -275,6 +275,16 @@ def test_vcf_output_with_output_option(tmp_path, fx_all_vcz, args, vcf_file):
             r"query -f '[%CHROM %POS %SAMPLE %GT %DP %GQ\n]' -T ^tests/data/txt/regions-3col.tsv -i 'FMT/DP>3' -s 'NA00002,NA00003'",  # noqa: E501
             "sample.vcf.gz",
         ),
+        # Second subfield index
+        ("query -f '%AC{1}'", "sample.vcf.gz"),
+        # TODO: multi-valued FORMAT fields in sample loops are not correctly
+        # formatted (outputs Python list repr instead of comma-joined values)
+        # (r"query -f '[%HQ ]'", "sample.vcf.gz"),
+        # Sample exclusion with query
+        (r"query -f '[%SAMPLE %GT\n]' -s '^NA00001'", "sample.vcf.gz"),
+        # Query on 1kg data (1 sample, different fields)
+        ("query -f '%CHROM:%POS'", "1kg_2020_chrM.vcf.gz"),
+        (r"query -f '[%GT]'", "1kg_2020_chrM.vcf.gz"),
     ],
 )
 def test_output(tmp_path, fx_all_vcz, args, vcf_name):

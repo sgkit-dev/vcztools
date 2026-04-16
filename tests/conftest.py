@@ -43,6 +43,14 @@ class VczFixture:
     directory_path: pathlib.Path
     group: zarr.Group
 
+    def path(self, backend: str) -> pathlib.Path:
+        """Return the VCZ path for the given backend ("zip" or "directory")."""
+        if backend == "zip":
+            return self.zip_path
+        if backend == "directory":
+            return self.directory_path
+        raise ValueError(f"unknown backend: {backend!r}")
+
 
 def _load(name: str, vcf_filename: str, tmp_path_factory) -> VczFixture:
     vcf_path = _VCF_DIR / vcf_filename

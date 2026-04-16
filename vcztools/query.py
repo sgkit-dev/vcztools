@@ -155,12 +155,24 @@ class QueryFormatter:
 
             if sample_loop:
                 if isinstance(value, np.ndarray):
-                    value = value.tolist()
-                    return [
-                        (str(element) if element != constants.INT_MISSING else ".")
-                        for element in value
-                        if element != constants.INT_FILL
-                    ]
+                    if value.ndim == 1:
+                        # Scalar per sample (e.g., DP)
+                        return [
+                            (str(v) if v != constants.INT_MISSING else ".")
+                            for v in value.tolist()
+                            if v != constants.INT_FILL
+                        ]
+                    # Multi-valued per sample (e.g., HQ with shape
+                    # [samples, dim])
+                    result = []
+                    for sample_values in value.tolist():
+                        formatted = [
+                            (str(v) if v != constants.INT_MISSING else ".")
+                            for v in sample_values
+                            if v != constants.INT_FILL
+                        ]
+                        result.append(",".join(formatted) if formatted else ".")
+                    return result
                 return [str(value)] * self.sample_count
             elif subfield:
                 # Return raw value for subfield indexing

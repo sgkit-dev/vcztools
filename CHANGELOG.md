@@ -10,6 +10,7 @@ Bug fixes:
 
 - vcztools query silently truncated output on multi-chunk stores (#283)
 - vcztools view crash on FILTER expressions on multi-chunk stores (#282)
+- Incorrect output on vcztools query on FORMAT fields (#286, #287)
 
 ## [0.1.1] - 2026-03-02
 

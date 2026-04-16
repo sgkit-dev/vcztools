@@ -55,7 +55,7 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
     ("args", "vcf_file"),
     [
         ("view --no-version", "sample.vcf.gz"),
-        ("view --no-version", "chr22.vcf.gz"),
+
         ("view --no-version", "msprime_diploid.vcf.gz"),
         ("view --no-version -i 'CHROM == \"20\"'", "sample.vcf.gz"),
         ("view --no-version -i 'CHROM != \"Z\"'", "sample.vcf.gz"),
@@ -148,7 +148,6 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
             "view --no-version -i 'FILTER~\"VQSRTrancheINDEL99.00to100.00\"'",
             "1kg_2020_chrM.vcf.gz"
         ),
-        ("view --no-version -i 'INFO/AC>2'", "chr22.vcf.gz")
     ],
     # This is necessary when trying to run individual tests, as the arguments above
     # make for unworkable command lines
@@ -411,3 +410,81 @@ class TestRegionTargetSemantics:
         bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
         vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
         assert vcztools_output == bcftools_output
+
+
+# fmt: off
+class TestChr22:
+    """
+    Validation tests using the chr22 fixture (100 variants, 100 samples).
+    Each test case includes the expected number of variants so the reader
+    can see the mixture of result sizes at a glance.
+    """
+
+    @pytest.mark.parametrize(
+        ("args", "expected_variants"),
+        [
+            # All variants
+            ("view --no-version", 100),
+            ("view --no-version -G", 100),
+            ("view --no-version -s ^HG00096", 100),
+            # Large subsets
+            ("view --no-version -i 'QUAL>100'", 86),
+            ("view --no-version -i 'INFO/DP>5000'", 86),
+            # Medium subsets
+            ("view --no-version -i 'FMT/DP>10'", 72),
+            ("view --no-version -i 'FMT/GQ>50'", 35),
+            ("view --no-version -r 'chr22:10513000-10514000'", 34),
+            ("view --no-version -r 'chr22:10510000-10511000' -i 'QUAL>100'", 24),
+            # Small subsets
+            ("view --no-version -i 'INFO/AC>2'", 9),
+            ("view --no-version -e 'TYPE=\"snp\"'", 9),
+            ("view --no-version -i 'INFO/AF>0.1'", 6),
+            ("view --no-version -r 'chr22:10510000-10510200'", 6),
+            ("view --no-version -i 'INFO/AC>10'", 4),
+            ("view --no-version -r 'chr22:10512000-10513000'", 3),
+            ("view --no-version -i 'FILTER=\"PASS\"'", 2),
+            ("view --no-version -i 'INFO/AF>0.5'", 1),
+            # Empty sets
+            ("view --no-version -r 'chr22:10514100-'", 0),
+            ("view --no-version -r 'chr22:1-10510000'", 0),
+            ("view --no-version -i 'INFO/AC>200'", 0),
+        ],
+    )
+    # fmt: on
+    def test_vcf_output(self, tmp_path, fx_chr22_vcz, args, expected_variants):
+        bcftools_out, _ = run_bcftools(f"{args} {fx_chr22_vcz.vcf_path}")
+        bcftools_out_file = tmp_path / "bcftools_out.vcf"
+        bcftools_out_file.write_text(bcftools_out)
+
+        vcztools_out, _ = run_vcztools(f"{args} {fx_chr22_vcz.zip_path}")
+        vcztools_out_file = tmp_path / "vcztools_out.vcf"
+        vcztools_out_file.write_text(vcztools_out)
+
+        allow_zero = expected_variants == 0
+        assert_vcfs_close(
+            bcftools_out_file, vcztools_out_file, allow_zero_variants=allow_zero
+        )
+        variant_lines = [
+            line for line in vcztools_out.splitlines() if not line.startswith("#")
+        ]
+        assert len(variant_lines) == expected_variants
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("args", "expected_lines"),
+        [
+            ("index -n", 1),
+            ("index -s", 1),
+            ("query -l", 100),
+            (r"query -f '%CHROM %POS %REF %ALT{0}\n' -r 'chr22:10510000-10510200'", 6),
+            (r"query -f '%CHROM %POS\n' -i 'INFO/AC>10'", 4),
+            (r"query -f '%CHROM %POS\n' -i 'INFO/AC>200'", 0),
+        ],
+    )
+    # fmt: on
+    def test_output(self, tmp_path, fx_chr22_vcz, args, expected_lines):
+        bcftools_output, _ = run_bcftools(f"{args} {fx_chr22_vcz.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{args} {fx_chr22_vcz.zip_path}")
+        assert vcztools_output == bcftools_output
+        non_empty_lines = [line for line in vcztools_output.splitlines() if line]
+        assert len(non_empty_lines) == expected_lines

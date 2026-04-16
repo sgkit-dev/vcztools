@@ -101,11 +101,30 @@ def parse_regions_file(path: str) -> list[Region]:
     """Read a bcftools-style regions/targets TSV file into Region objects."""
     regions = []
     with open(path) as f:
-        for line in f:
+        for line_num, line in enumerate(f, start=1):
             parts = line.strip().split("\t")
-            regions.append(
-                Region(contig=parts[0], start=int(parts[1]), end=int(parts[2]))
-            )
+            if len(parts) < 3:
+                raise ValueError(
+                    f"expected at least 3 tab-separated columns "
+                    f"(chrom, start, end), got {len(parts)} at line {line_num}: "
+                    f"{path}"
+                )
+            try:
+                start = int(parts[1])
+            except ValueError:
+                raise ValueError(
+                    f"non-numeric start position '{parts[1]}' "
+                    f"at line {line_num}: {path}"
+                ) from None
+            try:
+                end = int(parts[2])
+            except ValueError:
+                raise ValueError(
+                    f"non-numeric end position '{parts[2]}' at line {line_num}: {path}"
+                ) from None
+            regions.append(Region(contig=parts[0], start=start, end=end))
+    if len(regions) == 0:
+        raise ValueError(f"regions file is empty: {path}")
     return regions
 
 

@@ -204,3 +204,31 @@ def test_version():
     result = runner.invoke(cli.vcztools_main, ["--version"], catch_exceptions=False)
     s = f"version {provenance.__version__}\n"
     assert result.stdout.endswith(s)
+
+
+@pytest.mark.parametrize("backend", ["zip", "directory"])
+class TestBackends:
+    """Smoke tests verifying each CLI command works with both storage backends."""
+
+    def test_view(self, fx_sample_vcz, backend):
+        vcz = fx_sample_vcz.path(backend).as_posix()
+        output, _ = run_vcztools(f"view --no-version {vcz}")
+        assert output.startswith("##fileformat=VCF")
+        assert "NA00001" in output
+
+    def test_query(self, fx_sample_vcz, backend):
+        vcz = fx_sample_vcz.path(backend).as_posix()
+        output, _ = run_vcztools(f"query -f '%POS\\n' {vcz}")
+        positions = output.strip().splitlines()
+        assert len(positions) == 9
+        assert positions[0] == "111"
+
+    def test_index_nrecords(self, fx_sample_vcz, backend):
+        vcz = fx_sample_vcz.path(backend).as_posix()
+        output, _ = run_vcztools(f"index -n {vcz}")
+        assert output.strip() == "9"
+
+    def test_index_stats(self, fx_sample_vcz, backend):
+        vcz = fx_sample_vcz.path(backend).as_posix()
+        output, _ = run_vcztools(f"index -s {vcz}")
+        assert output.strip().splitlines() == ["19\t.\t2", "20\t.\t6", "X\t.\t1"]

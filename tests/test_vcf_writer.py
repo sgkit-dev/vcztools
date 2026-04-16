@@ -243,6 +243,38 @@ class TestSmallChunks:
         got_positions = [variant.POS for variant in v]
         assert got_positions == list(range(5, 13))
 
+    @pytest.mark.parametrize("variants_chunk_size", [1, 2, 3, 5, 7, 10, None])
+    def test_region_and_info_filter(self, tmp_path, variants_chunk_size):
+        vcz = self._build(variants_chunk_size)
+        output = tmp_path / "out.vcf"
+        reader = VczReader(vcz, regions="chr1:5-12")
+        write_vcf(reader, output, include="INFO/AC>2", no_version=True)
+
+        expected_positions = [
+            i + 1
+            for i, ac in enumerate(self.AC_VALUES)
+            if 5 <= i + 1 <= 12 and ac > 2
+        ]
+        v = VCF(str(output))
+        got_positions = [variant.POS for variant in v]
+        assert got_positions == expected_positions
+
+    @pytest.mark.parametrize("variants_chunk_size", [1, 2, 3, 5, 7, 10, None])
+    def test_targets_complement_and_filter(self, tmp_path, variants_chunk_size):
+        vcz = self._build(variants_chunk_size)
+        output = tmp_path / "out.vcf"
+        reader = VczReader(vcz, targets="^chr1:5-12")
+        write_vcf(reader, output, include="INFO/AC>2", no_version=True)
+
+        expected_positions = [
+            i + 1
+            for i, ac in enumerate(self.AC_VALUES)
+            if not (5 <= i + 1 <= 12) and ac > 2
+        ]
+        v = VCF(str(output))
+        got_positions = [variant.POS for variant in v]
+        assert got_positions == expected_positions
+
 
 @pytest.mark.parametrize("variants_chunk_size", [3, 4, 5])
 def test_write_vcf__regions_split_alleles(

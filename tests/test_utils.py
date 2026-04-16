@@ -5,6 +5,7 @@ import pytest
 import zarr
 from numpy.testing import assert_array_equal
 
+from vcztools import utils
 from vcztools.constants import (
     FLOAT32_FILL,
     FLOAT32_MISSING,
@@ -111,6 +112,48 @@ def test_missing(arr, expected_missing):
 def test_missing__failure():
     with pytest.raises(ValueError, match="unrecognised dtype"):
         missing(np.array([1, 2], dtype=np.complex64))
+
+
+class TestArrayDims:
+    def test_zarr_v3_dimension_names(self):
+        store = zarr.storage.MemoryStore()
+        root = zarr.group(store=store, zarr_format=3)
+        arr = root.create_array(
+            "x", shape=(10, 3), dtype="f4", dimension_names=("variants", "ploidy")
+        )
+        assert utils.array_dims(arr) == ("variants", "ploidy")
+
+    def test_zarr_v3_1d(self):
+        store = zarr.storage.MemoryStore()
+        root = zarr.group(store=store, zarr_format=3)
+        arr = root.create_array(
+            "x", shape=(5,), dtype="<U8", dimension_names=("filters",)
+        )
+        assert utils.array_dims(arr) == ("filters",)
+
+    def test_zarr_v2_array_dimensions_attr(self):
+        store = zarr.storage.MemoryStore()
+        root = zarr.group(store=store, zarr_format=2)
+        arr = root.create_array("x", shape=(10, 3), dtype="f4")
+        arr.attrs["_ARRAY_DIMENSIONS"] = ["variants", "ploidy"]
+        assert utils.array_dims(arr) == ["variants", "ploidy"]
+
+    def test_zarr_v2_1d(self):
+        store = zarr.storage.MemoryStore()
+        root = zarr.group(store=store, zarr_format=2)
+        arr = root.create_array("x", shape=(5,), dtype="<U8")
+        arr.attrs["_ARRAY_DIMENSIONS"] = ["filters"]
+        assert utils.array_dims(arr) == ["filters"]
+
+    def test_v2_attr_takes_precedence(self):
+        """When _ARRAY_DIMENSIONS attr is set, it is returned even on v3."""
+        store = zarr.storage.MemoryStore()
+        root = zarr.group(store=store, zarr_format=3)
+        arr = root.create_array(
+            "x", shape=(10,), dtype="i4", dimension_names=("variants",)
+        )
+        arr.attrs["_ARRAY_DIMENSIONS"] = ["overridden"]
+        assert utils.array_dims(arr) == ["overridden"]
 
 
 class TestOpenZarr:

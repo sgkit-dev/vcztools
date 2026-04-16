@@ -3,7 +3,7 @@ import collections.abc
 import numpy as np
 
 from vcztools import filter as filter_mod
-from vcztools import vcf_writer
+from vcztools import utils
 from vcztools.regions import (
     parse_regions,
     parse_targets,
@@ -38,7 +38,7 @@ class VariantChunkReader(collections.abc.Sequence):
         self.arrays = {}
         self.static_data = {}
         for key, arr in all_arrays.items():
-            dim_names = vcf_writer.dims(arr)
+            dim_names = utils.array_dims(arr)
             if dim_names is not None and dim_names[0] == "variants":
                 self.arrays[key] = arr
             else:

@@ -6,6 +6,11 @@ Features:
 
 - Add support for .vcz.zip files (#280).
 
+Bug fixes:
+
+- vcztools query silently truncated output on multi-chunk stores (#283)
+- vcztools view crash on FILTER expressions on multi-chunk stores (#282)
+
 ## [0.1.1] - 2026-03-02
 
 Minor maintenance and bugfix release.

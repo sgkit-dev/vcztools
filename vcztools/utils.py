@@ -9,6 +9,15 @@ from vcztools import constants
 from vcztools.constants import RESERVED_VCF_FIELDS
 
 
+def array_dims(arr):
+    """Return the dimension names for a Zarr array.
+
+    Zarr v2 stores dimension names in ``_ARRAY_DIMENSIONS`` attrs;
+    Zarr v3 exposes them via ``metadata.dimension_names``.
+    """
+    return arr.attrs.get("_ARRAY_DIMENSIONS", None) or arr.metadata.dimension_names
+
+
 def search(a, v):
     """
     Finds the indices into an array a corresponding to the elements in v.

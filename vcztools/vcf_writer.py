@@ -5,6 +5,7 @@ from datetime import datetime
 
 import numpy as np
 
+from vcztools import utils
 from vcztools.regions import parse_regions, parse_targets
 from vcztools.samples import parse_samples
 from vcztools.utils import (
@@ -68,11 +69,6 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
     "PQ": "Phasing quality",
     "PS": "Phase set",
 }
-
-
-def dims(arr):
-    # Zarr format v2 has _ARRAY_DIMENSIONS, v3 has dedicated metadata
-    return arr.attrs.get("_ARRAY_DIMENSIONS", None) or arr.metadata.dimension_names
 
 
 def write_vcf(
@@ -327,7 +323,7 @@ def _generate_header(
             and not var.endswith("_fill")
             and not var.endswith("_mask")
             and var not in RESERVED_VARIABLE_NAMES
-            and dims(arr)[0] == "variants"
+            and utils.array_dims(arr)[0] == "variants"
         ):
             key = var[len("variant_") :]
             info_fields.append(key)
@@ -336,8 +332,8 @@ def _generate_header(
             and var.startswith("call_")
             and not var.endswith("_fill")
             and not var.endswith("_mask")
-            and dims(arr)[0] == "variants"
-            and dims(arr)[1] == "samples"
+            and utils.array_dims(arr)[0] == "variants"
+            and utils.array_dims(arr)[1] == "samples"
         ):
             key = var[len("call_") :]
             if key in ("genotype", "genotype_phased"):
@@ -456,12 +452,12 @@ def _array_to_vcf_number(category, key, a):
     # reverse of vcf_number_to_dimension_and_size
     if a.dtype == bool:
         return 0
-    elif category == "INFO" and len(dims(a)) == 1:
+    elif category == "INFO" and len(utils.array_dims(a)) == 1:
         return 1
-    elif category == "FORMAT" and len(dims(a)) == 2:
+    elif category == "FORMAT" and len(utils.array_dims(a)) == 2:
         return 1
 
-    last_dim = dims(a)[-1]
+    last_dim = utils.array_dims(a)[-1]
     if last_dim == "alt_alleles":
         return "A"
     elif last_dim == "alleles":

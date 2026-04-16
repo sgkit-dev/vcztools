@@ -28,8 +28,6 @@ import pytest
 import zarr
 import zarr.storage
 
-from . import vcz_builder
-
 _VCF_DIR = pathlib.Path(__file__).parent / "data" / "vcf"
 
 
@@ -142,16 +140,3 @@ def fx_all_vcz(
         fx_chr20_annotations_vcz,
     )
     return {fx.vcf_path.name: fx for fx in fixtures}
-
-
-# ---------------------------------------------------------------------------
-# Derived fixtures: chunked copies and directory materializations.
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def fx_sample_split_alleles_vcz_vcs4(fx_sample_split_alleles_vcz) -> zarr.Group:
-    """sample-split-alleles with variants_chunk_size=4, for region tests."""
-    return vcz_builder.copy_vcz(
-        fx_sample_split_alleles_vcz.group, variants_chunk_size=4
-    )

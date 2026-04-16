@@ -242,12 +242,15 @@ class TestSmallChunks:
         assert got_positions == list(range(5, 13))
 
 
-def test_write_vcf__regions_split_alleles(tmp_path, fx_sample_split_alleles_vcz_vcs4):
-    # variants_chunk_size=4 is chosen so that 20:1234567 (two alt alleles)
-    # spans two chunks. The fixture is a copy_vcz-backed rechunk of the
-    # committed sample-split-alleles.vcz.zip.
+@pytest.mark.parametrize("variants_chunk_size", [3, 4, 5])
+def test_write_vcf__regions_split_alleles(
+    tmp_path, fx_sample_split_alleles_vcz, variants_chunk_size
+):
+    vcz = copy_vcz(
+        fx_sample_split_alleles_vcz.group, variants_chunk_size=variants_chunk_size
+    )
     output = tmp_path.joinpath("output.vcf")
-    write_vcf(fx_sample_split_alleles_vcz_vcs4, output, regions="20:1234567")
+    write_vcf(vcz, output, regions="20:1234567")
 
     v = VCF(output)
     variants = list(v)

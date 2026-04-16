@@ -78,6 +78,11 @@ wheels = [
   "cibuildwheel",
 ]
 
+docs = [
+  "jupyter-book<2",
+  "sphinx-click",
+]
+
 dev = [
   {include-group = "test"},
   {include-group = "lint"},

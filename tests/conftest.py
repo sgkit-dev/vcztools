@@ -40,15 +40,26 @@ class VczFixture:
     name: str
     vcf_path: pathlib.Path
     zip_path: pathlib.Path
+    directory_path: pathlib.Path
     group: zarr.Group
 
 
-def _load(name: str, vcf_filename: str) -> VczFixture:
+def _load(name: str, vcf_filename: str, tmp_path_factory) -> VczFixture:
     vcf_path = _VCF_DIR / vcf_filename
     zip_path = _VCF_DIR / f"{name}.vcz.zip"
     store = zarr.storage.ZipStore(zip_path, mode="r")
     group = zarr.open(store, mode="r")
-    return VczFixture(name=name, vcf_path=vcf_path, zip_path=zip_path, group=group)
+    directory_path = tmp_path_factory.mktemp(f"{name}_vcz_dir") / f"{name}.vcz"
+    directory_path.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, mode="r") as zf:
+        zf.extractall(directory_path)
+    return VczFixture(
+        name=name,
+        vcf_path=vcf_path,
+        zip_path=zip_path,
+        directory_path=directory_path,
+        group=group,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -58,38 +69,44 @@ def _load(name: str, vcf_filename: str) -> VczFixture:
 
 
 @pytest.fixture(scope="session")
-def fx_sample_vcz() -> VczFixture:
-    return _load("sample", "sample.vcf.gz")
+def fx_sample_vcz(tmp_path_factory) -> VczFixture:
+    return _load("sample", "sample.vcf.gz", tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
-def fx_sample_split_alleles_vcz() -> VczFixture:
-    return _load("sample-split-alleles", "sample-split-alleles.vcf.gz")
+def fx_sample_split_alleles_vcz(tmp_path_factory) -> VczFixture:
+    return _load(
+        "sample-split-alleles", "sample-split-alleles.vcf.gz", tmp_path_factory
+    )
 
 
 @pytest.fixture(scope="session")
-def fx_msprime_diploid_vcz() -> VczFixture:
-    return _load("msprime_diploid", "msprime_diploid.vcf.gz")
+def fx_msprime_diploid_vcz(tmp_path_factory) -> VczFixture:
+    return _load("msprime_diploid", "msprime_diploid.vcf.gz", tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
-def fx_chr22_vcz() -> VczFixture:
-    return _load("chr22", "chr22.vcf.gz")
+def fx_chr22_vcz(tmp_path_factory) -> VczFixture:
+    return _load("chr22", "chr22.vcf.gz", tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
-def fx_chrM_vcz() -> VczFixture:
-    return _load("1kg_2020_chrM", "1kg_2020_chrM.vcf.gz")
+def fx_chrM_vcz(tmp_path_factory) -> VczFixture:
+    return _load("1kg_2020_chrM", "1kg_2020_chrM.vcf.gz", tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
-def fx_field_type_combos_vcz() -> VczFixture:
-    return _load("field_type_combos", "field_type_combos.vcf.gz")
+def fx_field_type_combos_vcz(tmp_path_factory) -> VczFixture:
+    return _load("field_type_combos", "field_type_combos.vcf.gz", tmp_path_factory)
 
 
 @pytest.fixture(scope="session")
-def fx_chr20_annotations_vcz() -> VczFixture:
-    return _load("1kg_2020_chr20_annotations", "1kg_2020_chr20_annotations.bcf")
+def fx_chr20_annotations_vcz(tmp_path_factory) -> VczFixture:
+    return _load(
+        "1kg_2020_chr20_annotations",
+        "1kg_2020_chr20_annotations.bcf",
+        tmp_path_factory,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -130,16 +147,3 @@ def fx_sample_split_alleles_vcz_vcs4(fx_sample_split_alleles_vcz) -> zarr.Group:
     return vcz_builder.copy_vcz(
         fx_sample_split_alleles_vcz.group, variants_chunk_size=4
     )
-
-
-@pytest.fixture(scope="session")
-def fx_sample_vcz_directory(fx_sample_vcz, tmp_path_factory) -> pathlib.Path:
-    """
-    Unpacked directory VCZ for backends that cannot read a ``ZipStore``
-    (obstore) or that need a writable source store (icechunk).
-    """
-    out = tmp_path_factory.mktemp("sample_vcz_dir") / "sample.vcz"
-    out.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(fx_sample_vcz.zip_path, mode="r") as zf:
-        zf.extractall(out)
-    return out

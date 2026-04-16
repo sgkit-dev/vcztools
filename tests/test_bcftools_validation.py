@@ -366,3 +366,48 @@ def test_error(tmp_path, fx_all_vcz, args, vcf_name, bcftools_error_string):
 
     _, vcztools_error = run_vcztools(f"{args} {fx.zip_path}", expect_error=True)
     assert "Error:" in vcztools_error
+
+
+class TestRegionTargetSemantics:
+    """Validate region/target selection against bcftools.
+
+    Uses ``query -f '%CHROM %POS\\n'`` so we compare only which variants
+    are selected, without noise from FORMAT fields or VCF headers.
+    """
+
+    FMT = r"query -f '%CHROM %POS\n'"
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # --- standalone regions (no filters) ---
+            "-r '20'",
+            "-r '20:1230237-1235237'",
+            "-r '19,X'",
+            "-R tests/data/txt/regions-3col.tsv",
+            # --- standalone targets (no filters) ---
+            "-t '20'",
+            "-t '20:1230237-1235237'",
+            "-t '^20'",
+            "-T tests/data/txt/regions-3col.tsv",
+            "-T ^tests/data/txt/regions-3col.tsv",
+            # --- regions vs targets semantic difference ---
+            "-r 'X:11'",      # overlap semantics: includes POS=10
+            "-t 'X:11'",      # exact position: empty result
+            # --- regions + targets combined ---
+            "-r '20' -t '^20:1110696-'",
+            # --- regions/targets + include ---
+            "-r '20' -i 'POS > 100000'",
+            "-t '20' -i 'POS > 100000'",
+            # --- regions/targets + exclude ---
+            "-r '20' -e 'POS < 100000'",
+            "-t '20' -e 'POS < 100000'",
+        ],
+    )
+    # fmt: on
+    def test_variant_selection(self, fx_sample_vcz, args):
+        cmd = f"{self.FMT} {args}"
+        bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
+        assert vcztools_output == bcftools_output

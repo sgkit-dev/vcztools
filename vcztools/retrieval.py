@@ -3,6 +3,7 @@ import collections.abc
 import numpy as np
 
 from vcztools import filter as filter_mod
+from vcztools import vcf_writer
 from vcztools.regions import (
     parse_regions,
     parse_targets,
@@ -30,19 +31,31 @@ class VariantChunkReader(collections.abc.Sequence):
                 for key in root.keys()
                 if key.startswith("variant_") or key.startswith("call_")
             ]
-        self.arrays = {key: self.root[key] for key in fields}
-        # TODO validate the arrays have the correct shapes setc
+        all_arrays = {key: self.root[key] for key in fields}
+        # Partition into variant-chunked arrays and static (non-variant-axis)
+        # arrays. Static arrays like filter_id are read once in full and
+        # returned unchanged for every chunk.
+        self.arrays = {}
+        self.static_data = {}
+        for key, arr in all_arrays.items():
+            dim_names = vcf_writer.dims(arr)
+            if dim_names is not None and dim_names[0] == "variants":
+                self.arrays[key] = arr
+            else:
+                self.static_data[key] = arr[:]
         self.num_chunks = next(iter(self.arrays.values())).cdata_shape[0]
 
     def __len__(self):
         return self.num_chunks
 
     def __getitem__(self, chunk):
-        return {key: array.blocks[chunk] for key, array in self.arrays.items()}
+        data = {key: array.blocks[chunk] for key, array in self.arrays.items()}
+        data.update(self.static_data)
+        return data
 
     def get_chunk_data(self, chunk, mask, samples_selection=None):
         num_samples = len(samples_selection) if samples_selection is not None else 0
-        return {
+        data = {
             key: get_vchunk_array(
                 array,
                 chunk,
@@ -53,6 +66,8 @@ class VariantChunkReader(collections.abc.Sequence):
             )
             for key, array in self.arrays.items()
         }
+        data.update(self.static_data)
+        return data
 
 
 def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):

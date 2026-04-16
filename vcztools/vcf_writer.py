@@ -69,42 +69,18 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
 
 
 def write_vcf(
-    vcz,
+    reader,
     output,
     *,
     header_only: bool = False,
     no_header: bool = False,
     no_version: bool = False,
-    regions=None,
-    regions_file=None,
-    targets=None,
-    targets_file=None,
     no_update=None,
-    samples=None,
-    samples_file=None,
-    force_samples: bool = False,
     drop_genotypes: bool = False,
     include: str | None = None,
     exclude: str | None = None,
-    zarr_backend_storage: str | None = None,
 ) -> None:
     with open_file_like(output) as output:
-        if (samples or samples_file) and drop_genotypes:
-            raise ValueError("Cannot select samples and drop genotypes.")
-
-        reader = retrieval.VczReader(
-            vcz,
-            regions=regions,
-            regions_file=regions_file,
-            targets=targets,
-            targets_file=targets_file,
-            samples=samples,
-            samples_file=samples_file,
-            force_samples=force_samples,
-            drop_genotypes=drop_genotypes,
-            zarr_backend_storage=zarr_backend_storage,
-        )
-
         # Need to try parsing filter expressions before writing header
         filter_mod.FilterExpression(
             field_names=set(reader.root), include=include, exclude=exclude

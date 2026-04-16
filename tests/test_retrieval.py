@@ -3,7 +3,7 @@ import numpy.testing as nt
 import pytest
 
 from tests import vcz_builder
-from vcztools.retrieval import VariantChunkReader, variant_chunk_iter, variant_iter
+from vcztools.retrieval import VariantChunkReader, VczReader, variant_chunk_iter
 from vcztools.samples import parse_samples
 
 
@@ -40,22 +40,20 @@ def test_variant_chunk_iter_empty_fields(fx_sample_vcz):
     [("20:1230236-", "NA00002,NA00003"), (["20:1230236-"], ["NA00002", "NA00003"])],
 )
 def test_variant_iter(fx_sample_vcz, regions, samples):
-    iter = variant_iter(
-        fx_sample_vcz.group,
+    reader = VczReader(fx_sample_vcz.group, regions=regions, samples=samples)
+    it = reader.variants(
         fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
-        regions=regions,
         include="FMT/DP>3",
-        samples=samples,
     )
 
-    variant1 = next(iter)
+    variant1 = next(it)
     assert variant1["variant_contig"] == 1
     assert variant1["variant_position"] == 1230237
     nt.assert_array_equal(variant1["call_DP"], [4, 2])
     nt.assert_array_equal(variant1["call_GQ"], [48, 61])
     nt.assert_array_equal(variant1["call_mask"], [True, False])
 
-    variant2 = next(iter)
+    variant2 = next(it)
     assert variant2["variant_contig"] == 1
     assert variant2["variant_position"] == 1234567
     nt.assert_array_equal(variant2["call_DP"], [2, 3])
@@ -63,12 +61,13 @@ def test_variant_iter(fx_sample_vcz, regions, samples):
     nt.assert_array_equal(variant2["call_mask"], [False, False])
 
     with pytest.raises(StopIteration):
-        next(iter)
+        next(it)
 
 
 def test_variant_iter_empty_fields(fx_sample_vcz):
+    reader = VczReader(fx_sample_vcz.group)
     with pytest.raises(StopIteration):
-        next(variant_iter(fx_sample_vcz.group, fields=[]))
+        next(reader.variants(fields=[]))
 
 
 def _make_filter_vcz(num_variants=9, variants_chunk_size=3):

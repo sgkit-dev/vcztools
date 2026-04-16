@@ -7,18 +7,19 @@ import pytest
 
 from tests import vcz_builder
 from vcztools.query import (
-    QueryFormatGenerator,
     QueryFormatParser,
+    QueryFormatter,
     list_samples,
     write_query,
 )
-from vcztools.retrieval import variant_chunk_iter
+from vcztools.retrieval import VczReader
 
 
 def test_list_samples(fx_sample_vcz):
     expected_output = "NA00001\nNA00002\nNA00003\n"
+    reader = VczReader(fx_sample_vcz.group)
     with StringIO() as output:
-        list_samples(fx_sample_vcz.group, output)
+        list_samples(reader, output)
         assert output.getvalue() == expected_output
 
 
@@ -27,9 +28,10 @@ def test_list_samples__missing(fx_sample_vcz):
     # delete sample NA00002 at index 1
     mutated["sample_id"][1] = ""
 
+    reader = VczReader(mutated)
     expected_output = "NA00001\nNA00003\n"
     with StringIO() as output:
-        list_samples(mutated, output)
+        list_samples(reader, output)
         assert output.getvalue() == expected_output
 
 
@@ -120,6 +122,10 @@ class TestQueryFormatEvaluator:
     def fx_root(self, fx_sample_vcz):
         return fx_sample_vcz.group
 
+    @pytest.fixture
+    def fx_reader(self, fx_root):
+        return VczReader(fx_root)
+
     @pytest.mark.parametrize(
         ("query_format", "expected_result"),
         [
@@ -141,16 +147,11 @@ class TestQueryFormatEvaluator:
             (r"%AF{0}\n", ".\n.\n0.5\n0.017\n0.333\n.\n.\n.\n.\n"),
         ],
     )
-    def test(self, fx_root, query_format, expected_result):
-        generator = QueryFormatGenerator(
-            query_format,
-            fx_root["sample_id"][:],
-            fx_root["contig_id"][:],
-            fx_root["filter_id"][:],
-        )
+    def test(self, fx_reader, query_format, expected_result):
+        formatter = QueryFormatter(query_format, fx_reader)
         result = ""
-        for chunk_data in variant_chunk_iter(fx_root):
-            result += "".join(generator(chunk_data))
+        for variant in fx_reader.variants():
+            result += formatter.format_variant(variant)
         assert result == expected_result
 
     # fmt: off
@@ -182,38 +183,26 @@ class TestQueryFormatEvaluator:
         ],
     )
     # fmt: on
-    def test_call_mask(self, fx_root, query_format, call_mask, expected_result):
-        # Use a single-chunk copy so the manually provided call_mask
-        # (which covers all 9 variants) can be injected into one chunk.
-        root = vcz_builder.copy_vcz(fx_root, variants_chunk_size=10_000)
-        generator = QueryFormatGenerator(
-            query_format,
-            root["sample_id"][:],
-            root["contig_id"][:],
-            root["filter_id"][:],
-        )
-        chunk_data = next(variant_chunk_iter(root))
-        if call_mask is not None:
-            chunk_data["call_mask"] = call_mask
-        result = "".join(generator(chunk_data))
+    def test_call_mask(self, fx_reader, query_format, call_mask, expected_result):
+        formatter = QueryFormatter(query_format, fx_reader)
+        result = ""
+        for i, variant in enumerate(fx_reader.variants()):
+            if call_mask is not None:
+                variant["call_mask"] = call_mask[i]
+            result += formatter.format_variant(variant)
         assert result == expected_result
 
     @pytest.mark.parametrize(
         ("query_format", "expected_result"),
         [(r"%QUAL\n", "9.6\n10\n29\n3\n67\n47\n50\n.\n10\n")],
     )
-    def test_with_parse_results(self, fx_root, query_format, expected_result):
+    def test_with_parse_results(self, fx_reader, query_format, expected_result):
         parser = QueryFormatParser()
         parse_results = parser(query_format)
-        generator = QueryFormatGenerator(
-            parse_results,
-            fx_root["sample_id"][:],
-            fx_root["contig_id"][:],
-            fx_root["filter_id"][:],
-        )
+        formatter = QueryFormatter(parse_results, fx_reader)
         result = ""
-        for chunk_data in variant_chunk_iter(fx_root):
-            result += "".join(generator(chunk_data))
+        for variant in fx_reader.variants():
+            result += formatter.format_variant(variant)
         assert result == expected_result
 
 
@@ -223,6 +212,7 @@ def test_write_query__include_exclude(tmp_path, fx_sample_vcz):
     query_format = r"%POS"
     variant_site_filter = "POS > 1"
 
+    reader = VczReader(fx_sample_vcz.group)
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -230,7 +220,7 @@ def test_write_query__include_exclude(tmp_path, fx_sample_vcz):
         ),
     ):
         write_query(
-            fx_sample_vcz.group,
+            reader,
             output,
             query_format=query_format,
             include=variant_site_filter,

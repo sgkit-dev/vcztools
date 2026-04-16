@@ -5,7 +5,7 @@ from functools import wraps
 
 import click
 
-from . import plink, provenance, vcf_writer
+from . import plink, provenance, retrieval, vcf_writer
 from . import query as query_module
 from . import stats as stats_module
 
@@ -147,11 +147,11 @@ def index(path, nrecords, stats, zarr_backend_storage):
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
     if nrecords:
-        stats_module.nrecords(
-            path, sys.stdout, zarr_backend_storage=zarr_backend_storage
-        )
+        reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
+        stats_module.nrecords(reader, sys.stdout)
     elif stats:
-        stats_module.stats(path, sys.stdout, zarr_backend_storage=zarr_backend_storage)
+        reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
+        stats_module.stats(reader, sys.stdout)
     else:
         raise click.UsageError("Building region indexes is not supported")
 
@@ -219,31 +219,33 @@ def query(
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
+        reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
         with handle_broken_pipe(output):
-            query_module.list_samples(
-                path, output, zarr_backend_storage=zarr_backend_storage
-            )
+            query_module.list_samples(reader, output)
         return
 
     if format is None:
         raise click.UsageError("Missing option -f / --format")
 
+    reader = retrieval.VczReader(
+        path,
+        regions=regions,
+        regions_file=regions_file,
+        targets=targets,
+        targets_file=targets_file,
+        samples=samples,
+        samples_file=samples_file,
+        force_samples=force_samples,
+        zarr_backend_storage=zarr_backend_storage,
+    )
     with handle_broken_pipe(output):
         query_module.write_query(
-            path,
+            reader,
             output,
             query_format=format,
-            regions=regions,
-            regions_file=regions_file,
-            targets=targets,
-            targets_file=targets_file,
-            samples=samples,
-            samples_file=samples_file,
-            force_samples=force_samples,
             include=include,
             exclude=exclude,
             disable_automatic_newline=disable_automatic_newline,
-            zarr_backend_storage=zarr_backend_storage,
         )
 
 
@@ -326,25 +328,32 @@ def view(
             f"Only uncompressed VCF output supported, suffix .{suffix} not allowed"
         )
 
+    if (samples or samples_file) and drop_genotypes:
+        raise ValueError("Cannot select samples and drop genotypes.")
+
+    reader = retrieval.VczReader(
+        path,
+        regions=regions,
+        regions_file=regions_file,
+        targets=targets,
+        targets_file=targets_file,
+        samples=samples,
+        samples_file=samples_file,
+        force_samples=force_samples,
+        drop_genotypes=drop_genotypes,
+        zarr_backend_storage=zarr_backend_storage,
+    )
     with handle_broken_pipe(output):
         vcf_writer.write_vcf(
-            path,
+            reader,
             output,
             header_only=header_only,
             no_header=no_header,
             no_version=no_version,
-            regions=regions,
-            regions_file=regions_file,
-            targets=targets,
-            targets_file=targets_file,
             no_update=no_update,
-            samples=samples,
-            samples_file=samples_file,
-            force_samples=force_samples,
             drop_genotypes=drop_genotypes,
             include=include,
             exclude=exclude,
-            zarr_backend_storage=zarr_backend_storage,
         )
 
 
@@ -361,13 +370,8 @@ def view_plink1(path, include, exclude, out, zarr_backend_storage):
     -o intermediate.vcf && plink 1.9 --vcf intermediate.vcf [plink options]``
     without generating the intermediate VCF.
     """
-    plink.write_plink(
-        path,
-        out,
-        include=include,
-        exclude=exclude,
-        zarr_backend_storage=zarr_backend_storage,
-    )
+    reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
+    plink.write_plink(reader, out, include=include, exclude=exclude)
 
 
 @version

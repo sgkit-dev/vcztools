@@ -17,6 +17,7 @@ import xarray.testing as xt
 
 from tests.utils import load_dataset
 from vcztools.plink import write_plink
+from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import write_vcf
 
 
@@ -211,7 +212,8 @@ def fx_simple_ts(tmp_path):
 class TestVcfRoundTrip:
     def assert_bio2zarr_rt(self, tmp_path, tskit_vcz):
         vcf_path = tmp_path / "out.vcf"
-        write_vcf(tskit_vcz, vcf_path)
+        reader = VczReader(tskit_vcz)
+        write_vcf(reader, vcf_path)
         rt_vcz_path = tmp_path / "rt.vcz"
         v2z.convert([vcf_path], rt_vcz_path)
         ds1 = load_dataset(tskit_vcz)
@@ -270,7 +272,8 @@ class TestPlinkRoundTrip:
         # import pathlib
         # tmp_path = pathlib.Path("tmp/plink")
         plink_path = tmp_path / "plink"
-        write_plink(tskit_vcz, plink_path)
+        reader = VczReader(tskit_vcz)
+        write_plink(reader, plink_path)
         rt_vcz_path = tmp_path / "rt.vcz"
         p2z.convert(plink_path, rt_vcz_path)
         ds1 = load_dataset(tskit_vcz)

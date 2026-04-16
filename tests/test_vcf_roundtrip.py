@@ -2,6 +2,7 @@ import sys
 
 import pytest
 
+from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import write_vcf
 
 from .utils import assert_vcfs_close
@@ -23,5 +24,6 @@ pytestmark = pytest.mark.skipif(
 def test_vcf_to_zarr_to_vcf__real_files(tmp_path, fx_all_vcz, vcf_file):
     fx = fx_all_vcz[vcf_file]
     generated = tmp_path.joinpath("output.vcf")
-    write_vcf(fx.group, generated, no_version=True)
+    reader = VczReader(fx.group)
+    write_vcf(reader, generated, no_version=True)
     assert_vcfs_close(fx.vcf_path, generated)

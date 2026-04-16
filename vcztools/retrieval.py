@@ -274,6 +274,16 @@ class VczReader:
         self.targets = parse_targets(targets, contigs_u, targets_file=targets_file)
 
     @functools.cached_property
+    def contig_ids(self):
+        """Contig IDs as raw zarr strings."""
+        return self.root["contig_id"][:]
+
+    @functools.cached_property
+    def filter_ids(self):
+        """Filter IDs as raw zarr strings."""
+        return self.root["filter_id"][:]
+
+    @functools.cached_property
     def contigs(self):
         """Contig IDs as fixed-length bytes (for VcfEncoder)."""
         return _as_fixed_length_string(self.root["contig_id"][:])
@@ -316,33 +326,3 @@ class VczReader:
             num_variants = len(first_field)
             for i in range(num_variants):
                 yield {name: chunk_data[name][i] for name in chunk_data}
-
-
-def variant_iter(
-    vcz,
-    *,
-    fields: list[str] | None = None,
-    regions: str | None = None,
-    targets: str | None = None,
-    include: str | None = None,
-    exclude: str | None = None,
-    samples: list[str] | str | None = None,
-    zarr_backend_storage: str | None = None,
-):
-    """Iterate over variants that overlap the given regions or targets
-    and which match the include/exclude filter expression.
-
-    Only values for the samples specified are returned.
-
-    Returns dicts containing the specified fields keyed by VCF Zarr name.
-
-    By default all fields for all variants and samples are returned.
-    """
-    reader = VczReader(
-        vcz,
-        regions=regions,
-        targets=targets,
-        samples=samples,
-        zarr_backend_storage=zarr_backend_storage,
-    )
-    yield from reader.variants(fields=fields, include=include, exclude=exclude)

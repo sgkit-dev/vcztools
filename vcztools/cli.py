@@ -7,6 +7,8 @@ import click
 
 from . import plink, provenance, retrieval, vcf_writer
 from . import query as query_module
+from . import regions as regions_mod
+from . import samples as samples_mod
 from . import stats as stats_module
 
 
@@ -111,6 +113,53 @@ zarr_backend_storage = click.option(
     default=None,
     help="Zarr backend storage to use; one of 'fsspec' (default) or 'obstore'.",
 )
+
+
+def make_reader(
+    path,
+    *,
+    regions=None,
+    regions_file=None,
+    targets=None,
+    targets_file=None,
+    samples=None,
+    samples_file=None,
+    force_samples=False,
+    drop_genotypes=False,
+    zarr_backend_storage=None,
+):
+    """Resolve file arguments and create a VczReader."""
+    if regions is not None and regions_file is not None:
+        raise ValueError(
+            "Cannot specify both a regions string (-r) and a regions file (-R)"
+        )
+    if targets is not None and targets_file is not None:
+        raise ValueError(
+            "Cannot specify both a target string (-t) and a targets file (-T)"
+        )
+    if samples is not None and samples_file is not None:
+        raise ValueError(
+            "Cannot specify both a samples string (-s) and a samples file (-S)"
+        )
+    if regions_file is not None:
+        regions = regions_mod.parse_regions_file(regions_file)
+    targets_complement = False
+    if targets_file is not None:
+        targets_complement = targets_file.startswith("^")
+        targets_path = targets_file.lstrip("^")
+        targets = regions_mod.parse_regions_file(targets_path)
+    if samples_file is not None:
+        samples = samples_mod.parse_samples_file(samples_file)
+    return retrieval.VczReader(
+        path,
+        regions=regions,
+        targets=targets,
+        targets_complement=targets_complement,
+        samples=samples,
+        force_samples=force_samples,
+        drop_genotypes=drop_genotypes,
+        zarr_backend_storage=zarr_backend_storage,
+    )
 
 
 class NaturalOrderGroup(click.Group):
@@ -227,7 +276,7 @@ def query(
     if format is None:
         raise click.UsageError("Missing option -f / --format")
 
-    reader = retrieval.VczReader(
+    reader = make_reader(
         path,
         regions=regions,
         regions_file=regions_file,
@@ -331,7 +380,7 @@ def view(
     if (samples or samples_file) and drop_genotypes:
         raise ValueError("Cannot select samples and drop genotypes.")
 
-    reader = retrieval.VczReader(
+    reader = make_reader(
         path,
         regions=regions,
         regions_file=regions_file,

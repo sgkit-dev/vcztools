@@ -186,7 +186,18 @@ def test_write_vcf__regions(
     # elsewhere.
     vcz = copy_vcz(fx_sample_vcz.group, variants_chunk_size=variants_chunk_size)
     output = tmp_path.joinpath("output.vcf")
-    reader = VczReader(vcz, regions=regions, targets=targets)
+    # The parametrize table uses bcftools-style "^" prefixes for complement
+    # targets; translate that to the explicit targets_complement flag.
+    targets_complement = False
+    if targets is not None and targets.startswith("^"):
+        targets_complement = True
+        targets = targets[1:]
+    reader = VczReader(
+        vcz,
+        regions=regions,
+        targets=targets,
+        targets_complement=targets_complement,
+    )
     write_vcf(reader, output)
 
     v = VCF(str(output))
@@ -263,7 +274,9 @@ class TestSmallChunks:
     def test_targets_complement_and_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        reader = VczReader(vcz, targets="^chr1:5-12")
+        reader = VczReader(
+            vcz, targets="chr1:5-12", targets_complement=True
+        )
         write_vcf(reader, output, include="INFO/AC>2", no_version=True)
 
         expected_positions = [

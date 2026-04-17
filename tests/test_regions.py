@@ -1,198 +1,210 @@
 import numpy as np
+import pandas as pd
 import pytest
 from numpy.testing import assert_array_equal
+from pandas.testing import assert_frame_equal
 
 from vcztools import regions
-from vcztools.regions import Region
 
 ALL_CONTIGS = ["chr1", "chr2", "chr3"]
+
+
+def _regions_df(rows):
+    """Build the canonical regions DataFrame for the test fixtures.
+
+    ``rows`` is a list of ``(contig, start, end)`` tuples; ``None`` is
+    mapped to ``pd.NA`` in the nullable Int64 start/end columns.
+    """
+    contigs = [r[0] for r in rows]
+    starts = [pd.NA if r[1] is None else r[1] for r in rows]
+    ends = [pd.NA if r[2] is None else r[2] for r in rows]
+    return pd.DataFrame(
+        {
+            "contig": contigs,
+            "start": pd.array(starts, dtype="Int64"),
+            "end": pd.array(ends, dtype="Int64"),
+        }
+    )
 
 
 class TestParseRegionString:
     @pytest.mark.parametrize(
         ("region_str", "expected"),
         [
-            ("chr1", Region("chr1")),
-            ("chr1:12", Region("chr1", 12, 12)),
-            ("chr1:12-", Region("chr1", 12, None)),
-            ("chr1:12-103", Region("chr1", 12, 103)),
+            ("chr1", ("chr1", None, None)),
+            ("chr1:12", ("chr1", 12, 12)),
+            ("chr1:12-", ("chr1", 12, None)),
+            ("chr1:12-103", ("chr1", 12, 103)),
             # Numeric contig names
-            ("22", Region("22")),
-            ("22:100-200", Region("22", 100, 200)),
+            ("22", ("22", None, None)),
+            ("22:100-200", ("22", 100, 200)),
             # Contig names containing colons
-            ("chr1:1:100-200", Region("chr1:1", 100, 200)),
+            ("chr1:1:100-200", ("chr1:1", 100, 200)),
         ],
     )
     def test_values(self, region_str, expected):
         assert regions.parse_region_string(region_str) == expected
 
 
-class TestParseRegionsFile:
+class TestReadRegionsFile:
     def test_basic(self):
-        result = regions.parse_regions_file("tests/data/txt/regions-3col.tsv")
-        assert result == [
-            Region("20", 1230237, 1235237),
-            Region("X", 10, 10),
-        ]
+        result = regions.read_regions_file("tests/data/txt/regions-3col.tsv")
+        expected = _regions_df(
+            [
+                ("20", 1230237, 1235237),
+                ("X", 10, 10),
+            ]
+        )
+        assert_frame_equal(result, expected)
 
     def test_extra_columns_ignored(self, tmp_path):
         f = tmp_path / "regions.tsv"
         f.write_text("chr1\t100\t200\textra\tmore\n")
-        result = regions.parse_regions_file(str(f))
-        assert result == [Region("chr1", 100, 200)]
+        result = regions.read_regions_file(str(f))
+        assert_frame_equal(result, _regions_df([("chr1", 100, 200)]))
 
     def test_empty_file(self, tmp_path):
         f = tmp_path / "empty.tsv"
         f.write_text("")
         with pytest.raises(ValueError, match="regions file is empty"):
-            regions.parse_regions_file(str(f))
+            regions.read_regions_file(str(f))
 
     def test_one_column(self, tmp_path):
         f = tmp_path / "onecol.tsv"
         f.write_text("chr1\n")
         with pytest.raises(ValueError, match="expected at least 3.*got 1"):
-            regions.parse_regions_file(str(f))
+            regions.read_regions_file(str(f))
 
     def test_two_columns(self, tmp_path):
         f = tmp_path / "twocol.tsv"
         f.write_text("chr1\t100\n")
         with pytest.raises(ValueError, match="expected at least 3.*got 2"):
-            regions.parse_regions_file(str(f))
+            regions.read_regions_file(str(f))
 
     def test_non_numeric_start(self, tmp_path):
         f = tmp_path / "bad.tsv"
         f.write_text("chr1\tabc\t200\n")
         with pytest.raises(ValueError, match="non-numeric start position 'abc'"):
-            regions.parse_regions_file(str(f))
+            regions.read_regions_file(str(f))
 
     def test_non_numeric_end(self, tmp_path):
         f = tmp_path / "bad.tsv"
         f.write_text("chr1\t100\txyz\n")
         with pytest.raises(ValueError, match="non-numeric end position 'xyz'"):
-            regions.parse_regions_file(str(f))
+            regions.read_regions_file(str(f))
 
     def test_nonexistent_file(self):
         with pytest.raises(FileNotFoundError):
-            regions.parse_regions_file("/nonexistent/path.tsv")
+            regions.read_regions_file("/nonexistent/path.tsv")
 
     def test_valid_row_followed_by_bad_row(self, tmp_path):
         f = tmp_path / "mixed.tsv"
         f.write_text("chr1\t100\t200\nchr1\tabc\t300\n")
         with pytest.raises(ValueError, match="non-numeric start position 'abc'"):
-            regions.parse_regions_file(str(f))
+            regions.read_regions_file(str(f))
 
 
-class TestRegionsToRanges:
+class TestRegionStringsToDataframe:
+    def test_single_string(self):
+        result = regions.region_strings_to_dataframe("chr1:100-200")
+        assert_frame_equal(result, _regions_df([("chr1", 100, 200)]))
+
+    def test_comma_separated_string(self):
+        result = regions.region_strings_to_dataframe("chr1:100-200,chr2:300-400")
+        assert_frame_equal(
+            result, _regions_df([("chr1", 100, 200), ("chr2", 300, 400)])
+        )
+
+    def test_list_of_strings(self):
+        result = regions.region_strings_to_dataframe(["chr1:100-200", "chr2:300-400"])
+        assert_frame_equal(
+            result, _regions_df([("chr1", 100, 200), ("chr2", 300, 400)])
+        )
+
+    def test_open_ended_end(self):
+        result = regions.region_strings_to_dataframe("chr1:100-")
+        assert_frame_equal(result, _regions_df([("chr1", 100, None)]))
+
+    def test_whole_contig(self):
+        result = regions.region_strings_to_dataframe("chr1")
+        assert_frame_equal(result, _regions_df([("chr1", None, None)]))
+
+    def test_contig_with_colon(self):
+        result = regions.region_strings_to_dataframe("chr1:1:100-200")
+        assert_frame_equal(result, _regions_df([("chr1:1", 100, 200)]))
+
+    def test_na_roundtrips_through_int64(self):
+        df = regions.region_strings_to_dataframe(["chr1", "chr1:100-200"])
+        assert df["start"].dtype == pd.Int64Dtype()
+        assert df["end"].dtype == pd.Int64Dtype()
+        assert pd.isna(df.loc[0, "start"])
+        assert pd.isna(df.loc[0, "end"])
+        assert df.loc[1, "start"] == 100
+        assert df.loc[1, "end"] == 200
+
+
+class TestDataframeToRanges:
     def test_single_region(self):
-        result = regions.regions_to_ranges([Region("chr1", 100, 200)], ALL_CONTIGS)
-        # 1-based start → 0-based
+        df = _regions_df([("chr1", 100, 200)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
+        # 1-based start -> 0-based
         assert_array_equal(result.contigs, [0])
         assert_array_equal(result.starts, [99])
         assert_array_equal(result.ends, [200])
 
-    def test_start_none_defaults_to_zero(self):
-        result = regions.regions_to_ranges([Region("chr1", None, 200)], ALL_CONTIGS)
-        assert_array_equal(result.starts, [0])
-
-    def test_end_none_defaults_to_max(self):
-        result = regions.regions_to_ranges([Region("chr1", 100, None)], ALL_CONTIGS)
-        assert result.ends[0] == np.iinfo(np.int32).max
-
     def test_multiple_regions(self):
-        result = regions.regions_to_ranges(
-            [Region("chr1", 10, 20), Region("chr3", 30, 40)], ALL_CONTIGS
-        )
+        df = _regions_df([("chr1", 10, 20), ("chr3", 30, 40)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
         assert_array_equal(result.contigs, [0, 2])
         assert_array_equal(result.starts, [9, 29])
         assert_array_equal(result.ends, [20, 40])
 
-    def test_unknown_contig_raises(self):
-        with pytest.raises(ValueError, match="not in list"):
-            regions.regions_to_ranges([Region("chrZ", 1, 10)], ALL_CONTIGS)
-
-    def test_complement_flag(self):
-        result = regions.regions_to_ranges(
-            [Region("chr1", 10, 20)], ALL_CONTIGS, complement=True
-        )
-        assert result.complement is True
-
-
-class TestParseRegions:
-    def test_comma_separated_string(self):
-        result = regions.parse_regions("chr1:100-200,chr2:300-400", ALL_CONTIGS)
-        assert_array_equal(result.contigs, [0, 1])
-        assert_array_equal(result.starts, [99, 299])
-        assert_array_equal(result.ends, [200, 400])
-
-    def test_single_region_string(self):
-        result = regions.parse_regions("chr1", ALL_CONTIGS)
-        assert_array_equal(result.contigs, [0])
+    def test_start_na_defaults_to_zero(self):
+        df = _regions_df([("chr1", None, 200)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
         assert_array_equal(result.starts, [0])
+
+    def test_end_na_defaults_to_max(self):
+        df = _regions_df([("chr1", 100, None)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
         assert result.ends[0] == np.iinfo(np.int32).max
 
-    def test_list_of_strings(self):
-        result = regions.parse_regions(["chr1:100-200", "chr2:300-400"], ALL_CONTIGS)
+    def test_both_ends_na(self):
+        df = _regions_df([("chr1", None, None), ("chr2", 300, None)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
+        int32_max = np.iinfo(np.int32).max
         assert_array_equal(result.contigs, [0, 1])
+        assert_array_equal(result.starts, [0, 299])
+        assert_array_equal(result.ends, [int32_max, int32_max])
 
-    def test_list_of_regions(self):
-        result = regions.parse_regions(
-            [Region("chr1", 100, 200), Region("chr2", 300, 400)], ALL_CONTIGS
-        )
-        assert_array_equal(result.contigs, [0, 1])
-        assert_array_equal(result.starts, [99, 299])
-        assert_array_equal(result.ends, [200, 400])
+    def test_unknown_contig_raises(self):
+        df = _regions_df([("chrZ", 1, 10)])
+        with pytest.raises(ValueError, match="not in list"):
+            regions.dataframe_to_ranges(df, ALL_CONTIGS)
+
+    def test_complement_default_false(self):
+        df = _regions_df([("chr1", 10, 20)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
+        assert result.complement is False
+
+    def test_complement_true(self):
+        df = _regions_df([("chr1", 10, 20)])
+        result = regions.dataframe_to_ranges(df, ALL_CONTIGS, complement=True)
+        assert result.complement is True
 
     def test_from_file(self):
         all_contigs = ["19", "20", "X"]
-        file_regions = regions.parse_regions_file("tests/data/txt/regions-3col.tsv")
-        result = regions.parse_regions(file_regions, all_contigs)
+        df = regions.read_regions_file("tests/data/txt/regions-3col.tsv")
+        result = regions.dataframe_to_ranges(df, all_contigs)
         assert_array_equal(result.contigs, [1, 2])
         assert_array_equal(result.starts, [1230236, 9])
         assert_array_equal(result.ends, [1235237, 10])
 
-    def test_genomic_ranges_passthrough(self):
-        gr = regions.GenomicRanges(contigs=[0], starts=[99], ends=[200])
-        result = regions.parse_regions(gr, ALL_CONTIGS)
-        assert result is gr
-
     def test_none_returns_none(self):
-        assert regions.parse_regions(None, ALL_CONTIGS) is None
+        assert regions.dataframe_to_ranges(None, ALL_CONTIGS) is None
 
-    def test_complement_not_allowed(self):
-        # Regions do not support complement; the ^ should be treated as
-        # part of the contig name and fail to match.
-        with pytest.raises(ValueError, match="not in list"):
-            regions.parse_regions("^chr1:100-200", ALL_CONTIGS)
-
-
-class TestParseTargets:
-    def test_complement_prefix(self):
-        result = regions.parse_targets("^chr1:100-200", ALL_CONTIGS)
-        assert result.complement is True
-        assert_array_equal(result.contigs, [0])
-        assert_array_equal(result.starts, [99])
-
-    def test_no_complement_prefix(self):
-        result = regions.parse_targets("chr1:100-200", ALL_CONTIGS)
-        assert result.complement is False
-
-    def test_from_file_with_complement(self):
-        all_contigs = ["19", "20", "X"]
-        file_regions = regions.parse_regions_file("tests/data/txt/regions-3col.tsv")
-        result = regions.parse_targets(file_regions, all_contigs, complement=True)
-        assert_array_equal(result.contigs, [1, 2])
-        assert_array_equal(result.starts, [1230236, 9])
-        assert_array_equal(result.ends, [1235237, 10])
-        assert result.complement is True
-
-    def test_from_file_without_complement(self):
-        all_contigs = ["19", "20", "X"]
-        file_regions = regions.parse_regions_file("tests/data/txt/regions-3col.tsv")
-        result = regions.parse_targets(file_regions, all_contigs, complement=False)
-        assert result.complement is False
-
-    def test_none_returns_none(self):
-        assert regions.parse_targets(None, ALL_CONTIGS) is None
+    def test_none_with_complement_returns_none(self):
+        assert regions.dataframe_to_ranges(None, ALL_CONTIGS, complement=True) is None
 
 
 class TestGenomicRangesCoordValidation:

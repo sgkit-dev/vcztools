@@ -142,12 +142,16 @@ def make_reader(
             "Cannot specify both a samples string (-s) and a samples file (-S)"
         )
     if regions_file is not None:
-        regions = regions_mod.parse_regions_file(regions_file)
+        regions = regions_mod.read_regions_file(regions_file)
     targets_complement = False
     if targets_file is not None:
-        targets_complement = targets_file.startswith("^")
-        targets_path = targets_file.lstrip("^")
-        targets = regions_mod.parse_regions_file(targets_path)
+        if targets_file.startswith("^"):
+            targets_complement = True
+            targets_file = targets_file[1:]
+        targets = regions_mod.read_regions_file(targets_file)
+    elif targets is not None and targets.startswith("^"):
+        targets_complement = True
+        targets = targets[1:]
     if samples_file is not None:
         samples = samples_mod.parse_samples_file(samples_file)
     return retrieval.VczReader(

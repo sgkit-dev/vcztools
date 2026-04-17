@@ -2,15 +2,11 @@ import collections.abc
 import functools
 
 import numpy as np
+import pandas as pd
 
 from vcztools import filter as filter_mod
+from vcztools import regions as regions_mod
 from vcztools import utils
-from vcztools.regions import (
-    parse_regions,
-    parse_targets,
-    regions_to_chunk_indexes,
-    regions_to_selection,
-)
 from vcztools.samples import parse_samples
 from vcztools.utils import (
     _as_fixed_length_string,
@@ -91,6 +87,9 @@ def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
 def variant_chunk_index_iter(root, regions=None, targets=None):
     """Iterate over variant chunk indexes that overlap the given regions or targets.
 
+    ``regions`` and ``targets`` are ``GenomicRanges`` instances (already parsed
+    by :class:`VczReader`) or ``None``.
+
     Returns tuples of variant chunk indexes and (optional) variant masks.
 
     A variant mask of None indicates that all the variants in the chunk are included.
@@ -106,17 +105,13 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
             yield v_chunk, v_mask_chunk
 
     else:
-        contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
-        regions_ranges = parse_regions(regions, contigs_u)
-        targets_ranges = parse_targets(targets, contigs_u)
-
         if regions is None:
             num_chunks = pos.cdata_shape[0]
             chunk_indexes = range(num_chunks)
         else:
             # Use the region index to find the chunks that overlap specified regions
             region_index = root["region_index"][:]
-            chunk_indexes = regions_to_chunk_indexes(regions_ranges, region_index)
+            chunk_indexes = regions_mod.regions_to_chunk_indexes(regions, region_index)
 
         if len(chunk_indexes) == 0:
             # no chunks - no variants to write
@@ -129,9 +124,9 @@ def variant_chunk_index_iter(root, regions=None, targets=None):
             region_variant_length = root["variant_length"].blocks[chunk_index][:]
 
             # Find the variant selection for the chunk
-            variant_selection = regions_to_selection(
-                regions_ranges,
-                targets_ranges,
+            variant_selection = regions_mod.regions_to_selection(
+                regions,
+                targets,
                 region_variant_contig,
                 region_variant_position,
                 region_variant_length,
@@ -233,11 +228,61 @@ def get_filter_ids(root):
     return filters
 
 
+_REGION_DF_COLUMNS = ("contig", "start", "end")
+
+
+def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
+    """Normalise a regions/targets input into the DataFrame schema used by
+    :mod:`vcztools.regions`.
+
+    Accepts ``None``, a single region string, a list of region strings, or a
+    DataFrame with ``contig``, ``start`` and ``end`` columns. A leading ``^``
+    on a string input is rejected with a ``ValueError`` pointing users at the
+    ``targets_complement`` flag.
+    """
+    if value is None:
+        return None
+    if isinstance(value, pd.DataFrame):
+        missing = set(_REGION_DF_COLUMNS) - set(value.columns)
+        if missing:
+            raise ValueError(
+                f"{arg_name} DataFrame is missing required columns: {sorted(missing)}"
+            )
+        return value
+    if isinstance(value, str):
+        if value.startswith("^"):
+            raise ValueError(
+                f"{arg_name} does not accept a '^' prefix in the Python API; "
+                f"use targets_complement=True for complement"
+            )
+        return regions_mod.region_strings_to_dataframe(value)
+    if isinstance(value, list):
+        return regions_mod.region_strings_to_dataframe(value)
+    raise TypeError(
+        f"{arg_name} must be str, list[str], pandas.DataFrame, or None; "
+        f"got {type(value).__name__}"
+    )
+
+
 class VczReader:
     """Central reader for VCZ (Zarr-based VCF) files.
 
     Owns the zarr root and provides metadata properties and
     variant iteration at both chunk and row granularity.
+
+    Parameters
+    ----------
+    regions, targets
+        Regions/targets to restrict iteration to. May be a single
+        comma-separated region string, a list of region strings, or a
+        pandas DataFrame with columns ``contig`` (str), ``start`` and
+        ``end`` (nullable ``Int64``, ``pd.NA`` for unbounded). ``None``
+        disables the filter. ``regions`` uses overlap semantics; ``targets``
+        uses exact-position semantics and additionally accepts
+        ``targets_complement``.
+    targets_complement
+        If ``True``, the targets selection is inverted (matches everything
+        *outside* the listed intervals).
     """
 
     def __init__(
@@ -252,6 +297,9 @@ class VczReader:
         drop_genotypes: bool = False,
         zarr_backend_storage: str | None = None,
     ):
+        regions_df = _regions_input_to_df(regions, arg_name="regions")
+        targets_df = _regions_input_to_df(targets, arg_name="targets")
+
         self.root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
         all_samples = self.root["sample_id"][:]
@@ -267,8 +315,10 @@ class VczReader:
             )
 
         contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()
-        self.regions = parse_regions(regions, contigs_u)
-        self.targets = parse_targets(targets, contigs_u, complement=targets_complement)
+        self.regions = regions_mod.dataframe_to_ranges(regions_df, contigs_u)
+        self.targets = regions_mod.dataframe_to_ranges(
+            targets_df, contigs_u, complement=targets_complement
+        )
 
     @functools.cached_property
     def contig_ids(self):

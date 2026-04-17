@@ -1,23 +1,22 @@
 import numpy as np
 import numpy.testing as nt
+import pandas as pd
 import pytest
 
 from tests import vcz_builder
 from vcztools.retrieval import VariantChunkReader, VczReader, variant_chunk_iter
-from vcztools.samples import parse_samples
 
 
-def test_variant_chunk_iter(fx_sample_vcz):
-    root = fx_sample_vcz.group
-
-    _, samples_selection = parse_samples("NA00002,NA00003", root["sample_id"][:])
+def test_variant_chunks(fx_sample_vcz):
+    reader = VczReader(
+        fx_sample_vcz.group,
+        regions="20:1230236-",
+        samples="NA00002,NA00003",
+    )
     chunk_data = next(
-        variant_chunk_iter(
-            root,
+        reader.variant_chunks(
             fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
-            regions="20:1230236-",
             include="FMT/DP>3",
-            samples_selection=samples_selection,
         )
     )
     nt.assert_array_equal(chunk_data["variant_contig"], [1, 1])
@@ -149,11 +148,10 @@ class TestFilterMultiChunk:
 
     def test_filter_with_regions(self):
         root = _make_filter_vcz()
+        reader = VczReader(root, regions="chr1:104-107")
         results = list(
-            variant_chunk_iter(
-                root,
+            reader.variant_chunks(
                 fields=["variant_position"],
-                regions="chr1:104-107",
                 include='FILTER="PASS"',
             )
         )
@@ -170,3 +168,79 @@ class TestFilterMultiChunk:
             chunk_data = reader[chunk_idx]
             assert "filter_id" in chunk_data
             nt.assert_array_equal(chunk_data["filter_id"], ["PASS", "q10"])
+
+
+class TestVczReaderRegions:
+    """Cover the three accepted region/target input shapes plus error paths."""
+
+    @staticmethod
+    def _vcz():
+        # 10 variants on chr1 at positions 1..10, alternating AC values.
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 10,
+            variant_position=list(range(1, 11)),
+            alleles=[("A", "T")] * 10,
+            contigs=("chr1",),
+            variants_chunk_size=3,
+        )
+
+    def _positions(self, reader):
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        if not chunks:
+            return np.array([], dtype=np.int32)
+        return np.concatenate([c["variant_position"] for c in chunks])
+
+    def test_regions_string(self):
+        reader = VczReader(self._vcz(), regions="chr1:3-5")
+        nt.assert_array_equal(self._positions(reader), [3, 4, 5])
+
+    def test_regions_list_of_strings(self):
+        reader = VczReader(self._vcz(), regions=["chr1:3-5", "chr1:8-9"])
+        nt.assert_array_equal(self._positions(reader), [3, 4, 5, 8, 9])
+
+    def test_regions_dataframe(self):
+        df = pd.DataFrame(
+            {
+                "contig": ["chr1"],
+                "start": pd.array([3], dtype="Int64"),
+                "end": pd.array([5], dtype="Int64"),
+            }
+        )
+        reader = VczReader(self._vcz(), regions=df)
+        nt.assert_array_equal(self._positions(reader), [3, 4, 5])
+
+    def test_regions_dataframe_with_na_end(self):
+        df = pd.DataFrame(
+            {
+                "contig": ["chr1"],
+                "start": pd.array([8], dtype="Int64"),
+                "end": pd.array([pd.NA], dtype="Int64"),
+            }
+        )
+        reader = VczReader(self._vcz(), regions=df)
+        nt.assert_array_equal(self._positions(reader), [8, 9, 10])
+
+    def test_targets_complement_flag(self):
+        reader = VczReader(self._vcz(), targets="chr1:3-5", targets_complement=True)
+        nt.assert_array_equal(self._positions(reader), [1, 2, 6, 7, 8, 9, 10])
+
+    def test_regions_rejects_caret_prefix(self):
+        with pytest.raises(ValueError, match="targets_complement=True"):
+            VczReader(self._vcz(), regions="^chr1:1-3")
+
+    def test_targets_rejects_caret_prefix(self):
+        with pytest.raises(ValueError, match="targets_complement=True"):
+            VczReader(self._vcz(), targets="^chr1:1-3")
+
+    def test_regions_invalid_type(self):
+        with pytest.raises(TypeError, match="regions must be"):
+            VczReader(self._vcz(), regions=42)
+
+    def test_targets_invalid_type(self):
+        with pytest.raises(TypeError, match="targets must be"):
+            VczReader(self._vcz(), targets=42)
+
+    def test_regions_dataframe_missing_columns(self):
+        df = pd.DataFrame({"contig": ["chr1"], "start": pd.array([1], dtype="Int64")})
+        with pytest.raises(ValueError, match="missing required columns.*end"):
+            VczReader(self._vcz(), regions=df)

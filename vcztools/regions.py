@@ -1,16 +1,8 @@
-import dataclasses
 import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
-
-
-@dataclasses.dataclass
-class Region:
-    contig: str
-    start: int | None = None
-    end: int | None = None
 
 
 def _to_int32_coords(values, name):
@@ -66,7 +58,6 @@ try:
 
 except ImportError:
     # Otherwise fallback to older pyranges
-    import pandas as pd
     from pyranges import PyRanges
 
     class GenomicRanges:
@@ -95,22 +86,77 @@ except ImportError:
             return overlap.df["index"].to_numpy()
 
 
-def parse_region_string(region: str) -> Region:
-    """Return a Region from a region string."""
+def parse_region_string(region: str) -> tuple[str, int | None, int | None]:
+    """Parse a region string into a (contig, start, end) tuple.
+
+    Region-string forms:
+
+    - "chr1"          -> ("chr1", None, None)
+    - "chr1:100"      -> ("chr1", 100, 100)
+    - "chr1:100-"     -> ("chr1", 100, None)
+    - "chr1:100-200"  -> ("chr1", 100, 200)
+
+    A contig name may itself contain ``:`` characters; only the final
+    ``:`` is treated as the contig/position separator.
+    """
     if re.search(r":\d+-\d*$", region):
         contig, start_end = region.rsplit(":", 1)
-        start, end = start_end.split("-")
-        return Region(contig, int(start), int(end) if len(end) > 0 else None)
-    elif re.search(r":\d+$", region):
-        contig, start = region.rsplit(":", 1)
-        return Region(contig, int(start), int(start))
+        start_str, end_str = start_end.split("-")
+        end = int(end_str) if len(end_str) > 0 else None
+        return contig, int(start_str), end
+    if re.search(r":\d+$", region):
+        contig, start_str = region.rsplit(":", 1)
+        start = int(start_str)
+        return contig, start, start
+    return region, None, None
+
+
+def _regions_dataframe(contigs, starts, ends) -> pd.DataFrame:
+    """Build a regions DataFrame with the documented schema."""
+    return pd.DataFrame(
+        {
+            "contig": contigs,
+            "start": pd.array(starts, dtype="Int64"),
+            "end": pd.array(ends, dtype="Int64"),
+        }
+    )
+
+
+def region_strings_to_dataframe(regions: str | list[str]) -> pd.DataFrame:
+    """Parse a single region string or list of region strings into a DataFrame.
+
+    A string input is split on commas. The returned DataFrame has columns
+    ``contig`` (str), ``start`` (nullable ``Int64``) and ``end`` (nullable
+    ``Int64``); ``pd.NA`` represents an unbounded start (``"chr1"``) or an
+    unbounded end (``"chr1:100-"``).
+    """
+    if isinstance(regions, str):
+        region_list = regions.split(",")
     else:
-        return Region(region)
+        region_list = list(regions)
+
+    contigs = []
+    starts = []
+    ends = []
+    for s in region_list:
+        contig, start, end = parse_region_string(s)
+        contigs.append(contig)
+        starts.append(pd.NA if start is None else start)
+        ends.append(pd.NA if end is None else end)
+    return _regions_dataframe(contigs, starts, ends)
 
 
-def parse_regions_file(path: str) -> list[Region]:
-    """Read a bcftools-style regions/targets TSV file into Region objects."""
-    regions = []
+def read_regions_file(path: str) -> pd.DataFrame:
+    """Read a bcftools-style regions/targets TSV file into a DataFrame.
+
+    The file must contain at least three tab-separated columns:
+    ``contig``, ``start`` and ``end``. Any further columns are ignored.
+    The returned DataFrame has the schema produced by
+    :func:`region_strings_to_dataframe`.
+    """
+    contigs: list[str] = []
+    starts: list[int] = []
+    ends: list[int] = []
     with open(path) as f:
         for line_num, line in enumerate(f, start=1):
             parts = line.strip().split("\t")
@@ -133,90 +179,36 @@ def parse_regions_file(path: str) -> list[Region]:
                 raise ValueError(
                     f"non-numeric end position '{parts[2]}' at line {line_num}: {path}"
                 ) from None
-            regions.append(Region(contig=parts[0], start=start, end=end))
-    if len(regions) == 0:
+            contigs.append(parts[0])
+            starts.append(start)
+            ends.append(end)
+    if len(contigs) == 0:
         raise ValueError(f"regions file is empty: {path}")
-    return regions
+    return _regions_dataframe(contigs, starts, ends)
 
 
-def regions_to_ranges(
-    regions: list[Region],
+def dataframe_to_ranges(
+    df: pd.DataFrame | None,
     all_contigs: list[str],
     complement: bool = False,
-) -> GenomicRanges:
-    """Convert Region objects to a GenomicRanges object."""
+) -> GenomicRanges | None:
+    """Convert a regions/targets DataFrame to a GenomicRanges object.
 
-    contigs = []
-    starts = []
-    ends = []
-    for region in regions:
-        if region.start is None:
-            start = 0
-        else:
-            start = region.start - 1
-
-        end = np.iinfo(np.int32).max if region.end is None else region.end
-
-        contigs.append(all_contigs.index(region.contig))
-        starts.append(start)
-        ends.append(end)
-
+    Resolves ``contig`` names against ``all_contigs`` and applies default
+    sentinels for unbounded positions: ``start=NA`` becomes ``0`` (after
+    1-based→0-based conversion) and ``end=NA`` becomes ``int32.max``.
+    ``complement=True`` flips the sense so the returned ranges describe
+    everything *outside* the listed intervals. Returns ``None`` when ``df``
+    is ``None``.
+    """
+    if df is None:
+        return None
+    int32_max = np.iinfo(np.int32).max
+    contig_indexes = [all_contigs.index(c) for c in df["contig"]]
+    starts = [0 if pd.isna(s) else int(s) - 1 for s in df["start"]]
+    ends = [int32_max if pd.isna(e) else int(e) for e in df["end"]]
     return GenomicRanges(
-        contigs=contigs, starts=starts, ends=ends, complement=complement
-    )
-
-
-def _parse_regions_or_targets(
-    regions: GenomicRanges | list[Region] | list[str] | str | None,
-    all_contigs: list[str],
-    allow_complement: bool = False,
-    complement: bool = False,
-) -> GenomicRanges | None:
-    if regions is None or isinstance(regions, GenomicRanges):
-        return regions
-
-    if (
-        isinstance(regions, list)
-        and len(regions) > 0
-        and isinstance(regions[0], Region)
-    ):
-        return regions_to_ranges(regions, all_contigs, complement=complement)
-
-    if isinstance(regions, list):
-        regions_list = regions
-    else:
-        assert isinstance(regions, str)
-        if allow_complement:
-            complement = regions.startswith("^")
-            if complement:
-                regions = regions[1:]
-        regions_list = regions.split(",")
-    return regions_to_ranges(
-        [parse_region_string(region) for region in regions_list],
-        all_contigs,
-        complement=complement,
-    )
-
-
-def parse_regions(
-    regions: GenomicRanges | list[Region] | list[str] | str | None,
-    all_contigs: list[str],
-) -> GenomicRanges | None:
-    """Return a GenomicRanges object from a comma-separated set of region strings,
-    a list of region strings, or a list of Region objects."""
-    return _parse_regions_or_targets(regions, all_contigs)
-
-
-def parse_targets(
-    targets: GenomicRanges | list[Region] | list[str] | str | None,
-    all_contigs: list[str],
-    complement: bool = False,
-) -> GenomicRanges | None:
-    """Return a GenomicRanges object from a comma-separated set of region strings,
-    optionally preceeded by a ^ character to indicate complement,
-    or a list of region strings, or a list of Region objects."""
-    return _parse_regions_or_targets(
-        targets, all_contigs, allow_complement=True, complement=complement
+        contigs=contig_indexes, starts=starts, ends=ends, complement=complement
     )
 
 

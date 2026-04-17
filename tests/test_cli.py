@@ -94,6 +94,60 @@ def test_samples_and_drop_genotypes(fx_vcz_path):
     assert "Cannot select samples and drop genotypes" in vcztools_error
 
 
+class TestMakeReader:
+    """Translation of bcftools-style ``^`` prefixes into ``targets_complement``."""
+
+    def test_targets_string_with_caret(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, targets="^19:112")
+        assert reader.targets is not None
+        assert reader.targets.complement is True
+
+    def test_targets_string_without_caret(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, targets="19:112")
+        assert reader.targets is not None
+        assert reader.targets.complement is False
+
+    def test_targets_file_with_caret(self, fx_vcz_path):
+        reader = cli.make_reader(
+            fx_vcz_path,
+            targets_file="^tests/data/txt/regions-3col.tsv",
+        )
+        assert reader.targets is not None
+        assert reader.targets.complement is True
+
+    def test_targets_file_without_caret(self, fx_vcz_path):
+        reader = cli.make_reader(
+            fx_vcz_path,
+            targets_file="tests/data/txt/regions-3col.tsv",
+        )
+        assert reader.targets is not None
+        assert reader.targets.complement is False
+
+    def test_regions_file(self, fx_vcz_path):
+        reader = cli.make_reader(
+            fx_vcz_path,
+            regions_file="tests/data/txt/regions-3col.tsv",
+        )
+        assert reader.regions is not None
+        assert reader.regions.complement is False
+
+    def test_regions_and_regions_file_mutually_exclusive(self, fx_vcz_path):
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            cli.make_reader(
+                fx_vcz_path,
+                regions="19",
+                regions_file="tests/data/txt/regions-3col.tsv",
+            )
+
+    def test_targets_and_targets_file_mutually_exclusive(self, fx_vcz_path):
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            cli.make_reader(
+                fx_vcz_path,
+                targets="19",
+                targets_file="tests/data/txt/regions-3col.tsv",
+            )
+
+
 def test_excluding_and_including_samples(fx_vcz_path):
     samples_file_path = pathlib.Path("tests/data/txt/samples.txt")
     error_message = "Cannot specify both a samples string (-s) and a samples file (-S)"

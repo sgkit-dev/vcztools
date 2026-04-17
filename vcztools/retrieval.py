@@ -74,139 +74,6 @@ class VariantChunkReader(collections.abc.Sequence):
         return data
 
 
-def variant_chunk_index_iter(root, regions=None, targets=None):
-    """Iterate over variant chunk indexes that overlap the given regions or targets.
-
-    ``regions`` and ``targets`` are ``GenomicRanges`` instances (already parsed
-    by :class:`VczReader`) or ``None``.
-
-    Returns tuples of variant chunk indexes and (optional) variant masks.
-
-    A variant mask of None indicates that all the variants in the chunk are included.
-    """
-
-    pos = root["variant_position"]
-
-    if regions is None and targets is None:
-        num_chunks = pos.cdata_shape[0]
-        # no regions or targets selected
-        for v_chunk in range(num_chunks):
-            v_mask_chunk = None
-            yield v_chunk, v_mask_chunk
-
-    else:
-        if regions is None:
-            num_chunks = pos.cdata_shape[0]
-            chunk_indexes = range(num_chunks)
-        else:
-            # Use the region index to find the chunks that overlap specified regions
-            region_index = root["region_index"][:]
-            chunk_indexes = regions_mod.regions_to_chunk_indexes(regions, region_index)
-
-        if len(chunk_indexes) == 0:
-            # no chunks - no variants to write
-            return
-
-        # Then only load required variant_contig/position chunks
-        for chunk_index in chunk_indexes:
-            region_variant_contig = root["variant_contig"].blocks[chunk_index][:]
-            region_variant_position = root["variant_position"].blocks[chunk_index][:]
-            region_variant_length = root["variant_length"].blocks[chunk_index][:]
-
-            # Find the variant selection for the chunk
-            variant_selection = regions_mod.regions_to_selection(
-                regions,
-                targets,
-                region_variant_contig,
-                region_variant_position,
-                region_variant_length,
-            )
-            variant_mask = np.zeros(region_variant_position.shape[0], dtype=bool)
-            variant_mask[variant_selection] = 1
-
-            yield chunk_index, variant_mask
-
-
-def variant_chunk_index_iter_with_filtering(
-    root,
-    *,
-    regions=None,
-    targets=None,
-    include: str | None = None,
-    exclude: str | None = None,
-):
-    """Iterate over variant chunk indexes that overlap the given regions or targets
-    and which match the include/exclude filter expression.
-
-    Returns tuples of variant chunk indexes and (optional) variant masks.
-
-    A variant mask of None indicates that all the variants in the chunk are included.
-    """
-
-    filter_expr = filter_mod.FilterExpression(
-        field_names=set(root), include=include, exclude=exclude
-    )
-    if filter_expr.parse_result is None:
-        filter_expr = None
-    else:
-        filter_fields = list(filter_expr.referenced_fields)
-        filter_fields_reader = VariantChunkReader(root, fields=filter_fields)
-
-    for v_chunk, v_mask_chunk in variant_chunk_index_iter(root, regions, targets):
-        if filter_expr is not None:
-            chunk_data = filter_fields_reader[v_chunk]
-            v_mask_chunk_filter = filter_expr.evaluate(chunk_data)
-            if v_mask_chunk is None:
-                v_mask_chunk = v_mask_chunk_filter
-            else:
-                if v_mask_chunk_filter.ndim == 2:
-                    v_mask_chunk = np.expand_dims(v_mask_chunk, axis=1)
-                v_mask_chunk = np.logical_and(v_mask_chunk, v_mask_chunk_filter)
-        if v_mask_chunk is None or np.any(v_mask_chunk):
-            yield v_chunk, v_mask_chunk
-
-
-def variant_chunk_iter(
-    root,
-    *,
-    fields: list[str] | None = None,
-    regions=None,
-    targets=None,
-    include: str | None = None,
-    exclude: str | None = None,
-    samples_selection,
-    subsetting_samples: bool = False,
-):
-    if fields is not None and len(fields) == 0:
-        return  # empty iterator
-    query_fields_reader = VariantChunkReader(root, fields=fields)
-    for v_chunk, v_mask_chunk in variant_chunk_index_iter_with_filtering(
-        root,
-        regions=regions,
-        targets=targets,
-        include=include,
-        exclude=exclude,
-    ):
-        # The variants_selection is used to subset variant chunks along
-        # the variants dimension.
-        # The call_mask is returned to the client to indicate which samples
-        # matched (for each variant) in the case of per-sample filtering.
-        if v_mask_chunk is None or v_mask_chunk.ndim == 1:
-            variants_selection = v_mask_chunk
-            call_mask = None
-        else:
-            variants_selection = np.any(v_mask_chunk, axis=1)
-            call_mask = v_mask_chunk[variants_selection]
-            if subsetting_samples:
-                call_mask = call_mask[:, samples_selection]
-        chunk_data = query_fields_reader.get_chunk_data(
-            v_chunk, variants_selection, samples_selection=samples_selection
-        )
-        if call_mask is not None:
-            chunk_data["call_mask"] = call_mask
-        yield chunk_data
-
-
 def get_filter_ids(root):
     """
     Returns the filter IDs from the specified Zarr store. If the array
@@ -371,17 +238,110 @@ class VczReader:
         include: str | None = None,
         exclude: str | None = None,
     ):
-        """Yield dict[str, np.ndarray] per chunk."""
-        yield from variant_chunk_iter(
-            self.root,
-            fields=fields,
-            regions=self.regions,
-            targets=self.targets,
-            include=include,
-            exclude=exclude,
-            samples_selection=self.samples_selection,
-            subsetting_samples=self.subsetting_samples,
+        """Yield dict[str, np.ndarray] per variant chunk that passes the
+        current regions/targets/samples/include-exclude selection.
+
+        The per-chunk computation runs in stages:
+
+        1. ``_chunk_indexes`` — which chunks to visit (region-index pruning).
+        2. ``_chunk_mask`` — build a per-variant (or per-variant-per-sample)
+           boolean mask combining regions/targets and filter expression.
+        3. ``_reduce_chunk_mask`` — split that mask into a
+           ``variants_selection`` and an optional ``call_mask``.
+        4. ``VariantChunkReader.get_chunk_data`` — load the query fields,
+           applying the variant and sample selections.
+        """
+        if fields is not None and len(fields) == 0:
+            return
+
+        filter_expr = self._make_filter_expression(include, exclude)
+        query_reader = VariantChunkReader(self.root, fields=fields)
+        filter_reader = (
+            VariantChunkReader(self.root, fields=list(filter_expr.referenced_fields))
+            if filter_expr is not None
+            else None
         )
+
+        for chunk_idx in self._chunk_indexes():
+            v_mask = self._chunk_mask(chunk_idx, filter_expr, filter_reader)
+            if v_mask is not None and not np.any(v_mask):
+                continue
+            variants_selection, call_mask = self._reduce_chunk_mask(v_mask)
+            chunk_data = query_reader.get_chunk_data(
+                chunk_idx, variants_selection, self.samples_selection
+            )
+            if call_mask is not None:
+                chunk_data["call_mask"] = call_mask
+            yield chunk_data
+
+    def _make_filter_expression(self, include, exclude):
+        """Return a :class:`FilterExpression` for ``include``/``exclude`` or
+        ``None`` when neither is supplied (or the expression is empty)."""
+        expr = filter_mod.FilterExpression(
+            field_names=set(self.root), include=include, exclude=exclude
+        )
+        return expr if expr.parse_result is not None else None
+
+    def _chunk_indexes(self):
+        """Variant-chunk indexes that may contain matching rows.
+
+        With ``self.regions`` set we prune via the region index; otherwise
+        we visit every chunk.
+        """
+        if self.regions is None:
+            num_chunks = self.root["variant_position"].cdata_shape[0]
+            return range(num_chunks)
+        region_index = self.root["region_index"][:]
+        return regions_mod.regions_to_chunk_indexes(self.regions, region_index)
+
+    def _chunk_region_mask(self, chunk_idx):
+        """1-D boolean per-variant mask from regions/targets for one chunk,
+        or ``None`` when neither ``self.regions`` nor ``self.targets`` is set.
+        """
+        if self.regions is None and self.targets is None:
+            return None
+        contig = self.root["variant_contig"].blocks[chunk_idx][:]
+        position = self.root["variant_position"].blocks[chunk_idx][:]
+        length = self.root["variant_length"].blocks[chunk_idx][:]
+        selection = regions_mod.regions_to_selection(
+            self.regions, self.targets, contig, position, length
+        )
+        mask = np.zeros(position.shape[0], dtype=bool)
+        mask[selection] = True
+        return mask
+
+    def _chunk_mask(self, chunk_idx, filter_expr, filter_reader):
+        """Combined region + filter mask for a chunk.
+
+        Returns ``None`` when no subsetting applies, a 1-D mask for variant-
+        scoped filters, or a 2-D mask for sample-scoped filters.
+        """
+        v_mask = self._chunk_region_mask(chunk_idx)
+        if filter_expr is None:
+            return v_mask
+        filter_mask = filter_expr.evaluate(filter_reader[chunk_idx])
+        if v_mask is None:
+            return filter_mask
+        if filter_mask.ndim == 2:
+            v_mask = np.expand_dims(v_mask, axis=1)
+        return np.logical_and(v_mask, filter_mask)
+
+    def _reduce_chunk_mask(self, v_mask):
+        """Reduce a chunk mask into ``(variants_selection, call_mask)``.
+
+        A ``None`` or 1-D mask is the variant selection; there is no
+        call mask. A 2-D mask (from a sample-scoped filter) collapses
+        along the sample axis for the variant selection and carries the
+        per-sample matches through as ``call_mask``, with the sample-axis
+        subset applied when a samples subset was requested.
+        """
+        if v_mask is None or v_mask.ndim == 1:
+            return v_mask, None
+        variants_selection = np.any(v_mask, axis=1)
+        call_mask = v_mask[variants_selection]
+        if self.subsetting_samples:
+            call_mask = call_mask[:, self.samples_selection]
+        return variants_selection, call_mask
 
     def variants(
         self,

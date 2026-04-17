@@ -614,15 +614,17 @@ def minimal_vcf_chunk(num_variants, num_samples, ploidy=2):
 def chunk_to_vcf(chunk):
     filters = np.array([b"PASS"])
     contigs = np.array([b"chr1"])
+    num_samples = chunk["call_genotype"].shape[1]
     output = StringIO()
     c_chunk_to_vcf(
         chunk,
-        samples_selection=None,
+        samples_selection=np.arange(num_samples),
         contigs=contigs,
         filters=filters,
         output=output,
         drop_genotypes=False,
         no_update=False,
+        subsetting_samples=False,
     )
     return output.getvalue()
 

@@ -23,13 +23,13 @@ class TestParseSamplesNone:
     def test_default_returns_all_samples(self):
         ids, selection = _call(None)
         assert ids == ["NA00001", "NA00002", "NA00003"]
-        assert selection is None
+        assert selection == [0, 1, 2]
 
     def test_complement_has_no_effect(self):
         # samples=None exits before the complement branch; the flag is a no-op.
         ids, selection = _call(None, complement=True)
         assert ids == ["NA00001", "NA00002", "NA00003"]
-        assert selection is None
+        assert selection == [0, 1, 2]
 
     def test_skips_missing_header_samples(self):
         all_samples = np.array(["NA00001", "", "NA00003"])
@@ -193,14 +193,15 @@ class TestReadSamplesFile:
 
 
 def test_parse_samples_returns_numpy_arrays():
-    """sample_ids is a numpy array; selection is a numpy int array (or None)."""
+    """sample_ids is a numpy array; selection is always a numpy int array."""
     sample_ids, selection = parse_samples(["NA00001"], ALL_SAMPLES)
     assert isinstance(sample_ids, np.ndarray)
     assert isinstance(selection, np.ndarray)
     assert np.issubdtype(selection.dtype, np.integer)
 
-    _, selection_none = parse_samples(None, ALL_SAMPLES)
-    assert selection_none is None
+    _, selection_default = parse_samples(None, ALL_SAMPLES)
+    assert isinstance(selection_default, np.ndarray)
+    assert np.issubdtype(selection_default.dtype, np.integer)
 
 
 def test_parse_samples_accepts_numpy_string_dtype():

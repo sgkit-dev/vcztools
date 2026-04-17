@@ -8,15 +8,22 @@ logger = logging.getLogger(__name__)
 
 
 def parse_samples(
-    samples: list[str] | str | None,
+    samples: list[str] | None,
     all_samples: np.ndarray,
     *,
-    force_samples: bool = True,
+    force_samples: bool = False,
+    complement: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Parse a bcftools-style samples string or a list of sample IDs.
+    """Resolve a list of sample IDs against ``all_samples``.
 
-    Returns an array of the sample IDs, and an array indicating the selection
-    from all samples.
+    ``samples=None`` selects every sample (skipping any empty-string entries
+    in the VCZ's ``sample_id`` array). A list selects those samples, or —
+    when ``complement=True`` — every sample *except* those.
+
+    Returns ``(sample_ids, samples_selection)``: the array of selected IDs
+    and the indices of the selection into ``all_samples``. When
+    ``samples=None`` and every ID is present, ``samples_selection`` is
+    ``None`` to signal "no subsetting needed".
     """
 
     # set a mask if any sample is missing
@@ -26,19 +33,12 @@ def parse_samples(
     if samples is None:
         if all_samples_mask is None:
             return all_samples, None
-        else:
-            sample_ids = all_samples[~all_samples_mask]
-            selection = np.arange(all_samples.size)[~all_samples_mask]
+        sample_ids = all_samples[~all_samples_mask]
+        selection = np.arange(all_samples.size)[~all_samples_mask]
         return sample_ids, selection
-    elif isinstance(samples, list):
-        exclude_samples = False
-        sample_ids = np.array(samples)
-    else:
-        exclude_samples = samples.startswith("^")
-        samples = samples.lstrip("^")
-        sample_ids = np.array(samples.split(","))
 
-    if np.all(sample_ids == np.array("")):
+    sample_ids = np.array(samples)
+    if sample_ids.size == 1 and sample_ids[0] == "":
         sample_ids = np.empty((0,), dtype=np.dtypes.StringDType())
 
     unknown_samples = np.setdiff1d(sample_ids, all_samples)
@@ -61,7 +61,7 @@ def parse_samples(
     sample_ids = _as_fixed_length_unicode(sample_ids)
 
     samples_selection = search(all_samples, sample_ids)
-    if exclude_samples:
+    if complement:
         samples_selection = np.setdiff1d(np.arange(all_samples.size), samples_selection)
     if all_samples_mask is not None:
         masked_sample_ids = all_samples[all_samples_mask]
@@ -70,19 +70,10 @@ def parse_samples(
     return sample_ids, samples_selection
 
 
-def parse_samples_file(samples_file: str) -> str:
-    """Parse a file of sample IDs.
+def read_samples_file(path: str) -> list[str]:
+    """Read a samples file (one sample ID per line) into a list.
 
-    Returns a comma-delimited string of sample IDs,
-    optionally preceeded by a ^ character to indicate complement.
+    Blank lines are ignored.
     """
-    samples = ""
-    exclude_samples_file = samples_file.startswith("^")
-    samples_file = samples_file.lstrip("^")
-
-    with open(samples_file) as file:
-        if exclude_samples_file:
-            samples = "^" + samples
-        samples += ",".join(line.strip() for line in file.readlines())
-
-        return samples
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]

@@ -6,8 +6,8 @@ import pandas as pd
 
 from vcztools import filter as filter_mod
 from vcztools import regions as regions_mod
+from vcztools import samples as samples_mod
 from vcztools import utils
-from vcztools.samples import parse_samples
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
@@ -269,6 +269,25 @@ def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
     )
 
 
+def _validate_samples_input(value) -> None:
+    """Reject samples inputs that are not ``None`` or a ``list[str]``.
+
+    A leading ``^`` on the first list element is rejected with a
+    ``ValueError`` pointing at ``samples_complement=True``, mirroring the
+    regions/targets rejection.
+    """
+    if value is None:
+        return
+    if isinstance(value, list):
+        if len(value) > 0 and isinstance(value[0], str) and value[0].startswith("^"):
+            raise ValueError(
+                "samples does not accept a '^' prefix in the Python API; "
+                "use samples_complement=True for complement"
+            )
+        return
+    raise TypeError(f"samples must be list[str] or None; got {type(value).__name__}")
+
+
 class VczReader:
     """Central reader for VCZ (Zarr-based VCF) files.
 
@@ -278,16 +297,20 @@ class VczReader:
     Parameters
     ----------
     regions, targets
-        Regions/targets to restrict iteration to. May be a single
-        comma-separated region string, a list of region strings, or a
-        pandas DataFrame with columns ``contig`` (str), ``start`` and
-        ``end`` (nullable ``Int64``, ``pd.NA`` for unbounded). ``None``
-        disables the filter. ``regions`` uses overlap semantics; ``targets``
-        uses exact-position semantics and additionally accepts
-        ``targets_complement``.
+        Regions/targets to restrict iteration to. May be a single region
+        string, a list of region strings, or a pandas DataFrame with
+        columns ``contig`` (str), ``start`` and ``end`` (nullable ``Int64``,
+        ``pd.NA`` for unbounded). ``None`` disables the filter.
+        ``regions`` uses overlap semantics; ``targets`` uses exact-position
+        semantics and additionally accepts ``targets_complement``.
     targets_complement
         If ``True``, the targets selection is inverted (matches everything
         *outside* the listed intervals).
+    samples
+        Sample IDs to select, as a ``list[str]``. ``None`` selects every
+        sample.
+    samples_complement
+        If ``True``, selects every sample *except* those in ``samples``.
     """
 
     def __init__(
@@ -298,12 +321,14 @@ class VczReader:
         targets=None,
         targets_complement: bool = False,
         samples=None,
+        samples_complement: bool = False,
         force_samples: bool = False,
         drop_genotypes: bool = False,
         zarr_backend_storage: str | None = None,
     ):
         regions_df = _regions_input_to_df(regions, arg_name="regions")
         targets_df = _regions_input_to_df(targets, arg_name="targets")
+        _validate_samples_input(samples)
 
         self.root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
 
@@ -313,10 +338,11 @@ class VczReader:
             self.sample_ids = []
             self.samples_selection = np.array([])
         else:
-            self.sample_ids, self.samples_selection = parse_samples(
+            self.sample_ids, self.samples_selection = samples_mod.parse_samples(
                 samples,
                 all_samples=all_samples,
                 force_samples=force_samples,
+                complement=samples_complement,
             )
 
         contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()

@@ -156,14 +156,24 @@ def make_reader(
             targets_complement = True
             targets = targets[1:]
         targets = targets.split(",")
+    samples_complement = False
     if samples_file is not None:
-        samples = samples_mod.parse_samples_file(samples_file)
+        if samples_file.startswith("^"):
+            samples_complement = True
+            samples_file = samples_file[1:]
+        samples = samples_mod.read_samples_file(samples_file)
+    elif samples is not None:
+        if samples.startswith("^"):
+            samples_complement = True
+            samples = samples[1:]
+        samples = samples.split(",")
     return retrieval.VczReader(
         path,
         regions=regions,
         targets=targets,
         targets_complement=targets_complement,
         samples=samples,
+        samples_complement=samples_complement,
         force_samples=force_samples,
         drop_genotypes=drop_genotypes,
         zarr_backend_storage=zarr_backend_storage,

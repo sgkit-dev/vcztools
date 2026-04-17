@@ -218,6 +218,11 @@ class TestParseSamplesEdgeCases:
       - ASCII letters, digits, and most punctuation.
       - Dots, dashes, underscores, forward and back slashes.
       - Embedded spaces (``"a b"``).
+      - Embedded commas (``"a,b"``) — preserved on the ``#CHROM`` line
+        by ``bcftools view``, but cannot be targeted by ``-s`` because
+        the CLI splits that argument on commas. Same constraint applies
+        to vcztools' CLI; ``parse_samples`` itself treats the comma as
+        an opaque character.
       - Numeric-only names (``"123"``, ``"0"``).
       - Unicode / non-ASCII (accented letters, CJK glyphs).
       - Very long names (no practical limit observed).
@@ -238,6 +243,15 @@ class TestParseSamplesEdgeCases:
         all_samples = np.array(["a b", "c d", "e f"])
         ids, selection = parse_samples(["a b"], all_samples)
         nt.assert_array_equal(ids, ["a b"])
+        nt.assert_array_equal(selection, [0])
+
+    def test_embedded_comma(self):
+        # Commas are valid in the VCF file (bcftools view preserves them
+        # byte-for-byte on #CHROM) but break CLI -s splitting. At the
+        # parse_samples layer the comma is just another character.
+        all_samples = np.array(["a,b", "c,d", "plain"])
+        ids, selection = parse_samples(["a,b"], all_samples)
+        nt.assert_array_equal(ids, ["a,b"])
         nt.assert_array_equal(selection, [0])
 
     def test_dots_and_dashes(self):
@@ -353,6 +367,7 @@ class TestRoundTripEdgeCaseSamples:
         cyvcf2 = pytest.importorskip("cyvcf2")
         sample_ids = [
             "a b",
+            "a,b",
             "sample.1",
             "sample-1",
             "123",

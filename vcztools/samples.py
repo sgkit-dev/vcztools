@@ -11,7 +11,7 @@ def parse_samples(
     samples: list[str] | None,
     all_samples: np.ndarray,
     *,
-    force_samples: bool = False,
+    ignore_missing_samples: bool = False,
     complement: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a list of sample IDs against ``all_samples``.
@@ -42,7 +42,7 @@ def parse_samples(
 
     unknown_samples = np.setdiff1d(sample_ids, all_samples)
     if len(unknown_samples) > 0:
-        if force_samples:
+        if ignore_missing_samples:
             # remove unknown samples from sample_ids
             logger.warning(
                 "subset called for sample(s) not in header: "

@@ -323,7 +323,7 @@ def test_write_vcf__regions_split_alleles(
 
 
 @pytest.mark.parametrize(
-    ("samples", "force_samples", "expected_samples", "expected_genotypes"),
+    ("samples", "ignore_missing_samples", "expected_samples", "expected_genotypes"),
     [
         ("NA00001", False, ["NA00001"], [[0, 0, True]]),
         (
@@ -348,7 +348,7 @@ def test_write_vcf__samples(
     tmp_path,
     fx_sample_vcz,
     samples,
-    force_samples,
+    ignore_missing_samples,
     expected_samples,
     expected_genotypes,
 ):
@@ -364,7 +364,7 @@ def test_write_vcf__samples(
         fx_sample_vcz.group,
         samples=samples,
         samples_complement=samples_complement,
-        force_samples=force_samples,
+        ignore_missing_samples=ignore_missing_samples,
     )
     write_vcf(reader, output)
 

@@ -174,7 +174,7 @@ def make_reader(
         targets_complement=targets_complement,
         samples=samples,
         samples_complement=samples_complement,
-        force_samples=force_samples,
+        ignore_missing_samples=force_samples,
         drop_genotypes=drop_genotypes,
         zarr_backend_storage=zarr_backend_storage,
     )

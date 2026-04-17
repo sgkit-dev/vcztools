@@ -126,21 +126,21 @@ class TestParseSamplesUnknown:
             parse_samples(["UNKNOWN1", "UNKNOWN2", "NA00001"], ALL_SAMPLES)
         assert "UNKNOWN2" in str(excinfo.value)
 
-    def test_force_samples_drops_unknowns(self, caplog):
+    def test_ignore_missing_samples_drops_unknowns(self, caplog):
         with caplog.at_level(logging.WARNING, logger="vcztools.samples"):
             ids, selection = parse_samples(
                 ["NA00001", "UNKNOWN", "NA00003"],
                 ALL_SAMPLES,
-                force_samples=True,
+                ignore_missing_samples=True,
             )
         nt.assert_array_equal(ids, ["NA00001", "NA00003"])
         nt.assert_array_equal(selection, [0, 2])
         assert "UNKNOWN" in caplog.text
 
-    def test_force_samples_all_unknown(self, caplog):
+    def test_ignore_missing_samples_all_unknown(self, caplog):
         with caplog.at_level(logging.WARNING, logger="vcztools.samples"):
             ids, selection = parse_samples(
-                ["UNKNOWN1", "UNKNOWN2"], ALL_SAMPLES, force_samples=True
+                ["UNKNOWN1", "UNKNOWN2"], ALL_SAMPLES, ignore_missing_samples=True
             )
         nt.assert_array_equal(ids, [])
         nt.assert_array_equal(selection, [])

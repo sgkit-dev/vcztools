@@ -61,34 +61,17 @@ class VariantChunkReader(collections.abc.Sequence):
         num_samples = len(samples_selection)
         data = {}
         for key, array in self.arrays.items():
+            result = array.blocks[chunk]
             if key.startswith("call_") and num_samples > 0:
-                data[key] = get_vchunk_call_array(array, chunk, mask, samples_selection)
-            else:
-                data[key] = get_vchunk_array(array, chunk, mask)
+                # Advanced indexing along a non-first axis of a 3-D array
+                # yields a non-C-contiguous view; ascontiguousarray produces
+                # the fresh contiguous buffer that the C encoder requires.
+                result = np.ascontiguousarray(result[:, samples_selection])
+            if mask is not None:
+                result = result[mask]
+            data[key] = result
         data.update(self.static_data)
         return data
-
-
-def get_vchunk_array(zarray, v_chunk, mask):
-    """Variant-axis slice for arrays without a samples dimension."""
-    v_chunksize = zarray.chunks[0]
-    start = v_chunksize * v_chunk
-    end = v_chunksize * (v_chunk + 1)
-    result = zarray[start:end]
-    if mask is not None:
-        result = result[mask]
-    return result
-
-
-def get_vchunk_call_array(zarray, v_chunk, mask, samples_selection):
-    """Variant-axis slice with orthogonal indexing along the samples axis."""
-    v_chunksize = zarray.chunks[0]
-    start = v_chunksize * v_chunk
-    end = v_chunksize * (v_chunk + 1)
-    result = zarray.oindex[start:end, samples_selection]
-    if mask is not None:
-        result = result[mask]
-    return result
 
 
 def variant_chunk_index_iter(root, regions=None, targets=None):

@@ -4,7 +4,11 @@ import numpy as np
 import numpy.testing as nt
 import pytest
 
+from vcztools.retrieval import VczReader
 from vcztools.samples import parse_samples, read_samples_file
+from vcztools.vcf_writer import write_vcf
+
+from .vcz_builder import make_vcz
 
 ALL_SAMPLES = np.array(["NA00001", "NA00002", "NA00003"])
 
@@ -201,6 +205,116 @@ class TestParseSamplesMissingHeader:
         nt.assert_array_equal(selection, [2])
 
 
+class TestParseSamplesEdgeCases:
+    """Probe handling of unusual-but-valid sample IDs.
+
+    bcftools (htslib) treats sample IDs on the ``#CHROM`` line as opaque
+    byte strings. The VCF 4.3 spec constrains them only via the field
+    structure of the line: tabs, newlines and carriage returns are
+    forbidden because they delimit fields and records; every other
+    character is legal.
+
+    Valid in bcftools 1.19 (confirmed empirically):
+      - ASCII letters, digits, and most punctuation.
+      - Dots, dashes, underscores, forward and back slashes.
+      - Embedded spaces (``"a b"``).
+      - Numeric-only names (``"123"``, ``"0"``).
+      - Unicode / non-ASCII (accented letters, CJK glyphs).
+      - Very long names (no practical limit observed).
+      - Case-sensitive (``"x"`` and ``"X"`` are distinct).
+
+    Invalid:
+      - Tab, newline, carriage return (break VCF structure).
+      - Empty string ``""`` (silently dropped from header parse by
+        bcftools; rejected as a ``-s`` target — see ``TestParseSamples*``
+        tests for vcztools' matching behaviour).
+      - Duplicates in the header (htslib errors at parse time).
+
+    These tests pin down that ``parse_samples`` treats IDs as opaque
+    strings across the categories bcftools accepts.
+    """
+
+    def test_embedded_space(self):
+        all_samples = np.array(["a b", "c d", "e f"])
+        ids, selection = parse_samples(["a b"], all_samples)
+        nt.assert_array_equal(ids, ["a b"])
+        nt.assert_array_equal(selection, [0])
+
+    def test_dots_and_dashes(self):
+        all_samples = np.array(["sample.1", "sample-1", "sample_1"])
+        ids, selection = parse_samples(["sample.1", "sample-1"], all_samples)
+        nt.assert_array_equal(ids, ["sample.1", "sample-1"])
+        nt.assert_array_equal(selection, [0, 1])
+
+    def test_slashes(self):
+        all_samples = np.array(["s/1", "s\\2", "s|3"])
+        ids, selection = parse_samples(["s\\2"], all_samples)
+        nt.assert_array_equal(ids, ["s\\2"])
+        nt.assert_array_equal(selection, [1])
+
+    def test_numeric_only(self):
+        all_samples = np.array(["0", "1", "123"])
+        ids, selection = parse_samples(["123", "0"], all_samples)
+        nt.assert_array_equal(ids, ["123", "0"])
+        nt.assert_array_equal(selection, [2, 0])
+
+    def test_single_character(self):
+        all_samples = np.array(["A", "B", "C"])
+        ids, selection = parse_samples(["B"], all_samples)
+        nt.assert_array_equal(ids, ["B"])
+        nt.assert_array_equal(selection, [1])
+
+    def test_unicode_accents(self):
+        all_samples = np.array(["sampléé", "sample", "café"])
+        ids, selection = parse_samples(["sampléé", "café"], all_samples)
+        nt.assert_array_equal(ids, ["sampléé", "café"])
+        nt.assert_array_equal(selection, [0, 2])
+
+    def test_unicode_cjk(self):
+        all_samples = np.array(["sample_中文", "sample_日本", "sample"])
+        ids, selection = parse_samples(["sample_日本"], all_samples)
+        nt.assert_array_equal(ids, ["sample_日本"])
+        nt.assert_array_equal(selection, [1])
+
+    def test_very_long_names(self):
+        long_name = "x" * 300
+        all_samples = np.array(["short", long_name, "other"])
+        ids, selection = parse_samples([long_name], all_samples)
+        nt.assert_array_equal(ids, [long_name])
+        nt.assert_array_equal(selection, [1])
+
+    def test_case_sensitive(self):
+        # bcftools is case-sensitive; "x" is unknown when header only has "X".
+        all_samples = np.array(["X", "Y", "Z"])
+        with pytest.raises(
+            ValueError, match=r"subset called for sample\(s\) not in header: x"
+        ):
+            parse_samples(["x"], all_samples)
+
+    def test_complement_with_unicode(self):
+        all_samples = np.array(["sampléé", "sample_中文", "ascii"])
+        ids, selection = parse_samples(["sampléé"], all_samples, complement=True)
+        nt.assert_array_equal(ids, ["sample_中文", "ascii"])
+        nt.assert_array_equal(selection, [1, 2])
+
+    def test_duplicate_detection_with_unicode(self):
+        all_samples = np.array(["sampléé", "café"])
+        with pytest.raises(ValueError, match=r'Duplicate sample name "sampléé"'):
+            parse_samples(["sampléé", "sampléé"], all_samples)
+
+    def test_ignore_missing_with_unicode_unknown(self, caplog):
+        all_samples = np.array(["sampléé", "café"])
+        with caplog.at_level(logging.WARNING, logger="vcztools.samples"):
+            ids, selection = parse_samples(
+                ["sampléé", "日本"],
+                all_samples,
+                ignore_missing_samples=True,
+            )
+        nt.assert_array_equal(ids, ["sampléé"])
+        nt.assert_array_equal(selection, [0])
+        assert "日本" in caplog.text
+
+
 class TestReadSamplesFile:
     def test_basic(self):
         assert read_samples_file("tests/data/txt/samples.txt") == [
@@ -217,6 +331,50 @@ class TestReadSamplesFile:
         f = tmp_path / "samples.txt"
         f.write_text("  NA00001\nNA00003  \n")
         assert read_samples_file(str(f)) == ["NA00001", "NA00003"]
+
+    def test_preserves_unicode_and_embedded_spaces(self, tmp_path):
+        # strip() only touches leading/trailing whitespace, so internal
+        # spaces survive. UTF-8 is the default open() encoding.
+        f = tmp_path / "samples.txt"
+        f.write_text("sampléé\na b\nsample_中文\n", encoding="utf-8")
+        assert read_samples_file(str(f)) == ["sampléé", "a b", "sample_中文"]
+
+
+class TestRoundTripEdgeCaseSamples:
+    """Confirm edge-case sample IDs survive zarr → VCF → parse end-to-end.
+
+    Covers the categories enumerated in ``TestParseSamplesEdgeCases`` in
+    one shot, to confirm the writer path (``#CHROM`` line emission)
+    preserves them byte-for-byte and a real VCF parser can read them
+    back.
+    """
+
+    def test_writer_preserves_edge_case_ids(self, tmp_path):
+        cyvcf2 = pytest.importorskip("cyvcf2")
+        sample_ids = [
+            "a b",
+            "sample.1",
+            "sample-1",
+            "123",
+            "sampléé",
+            "sample_中文",
+            "X",
+        ]
+        num_samples = len(sample_ids)
+        root = make_vcz(
+            variant_contig=[0],
+            variant_position=[1],
+            alleles=[["A", "T"]],
+            num_samples=num_samples,
+            sample_id=sample_ids,
+            call_genotype=np.zeros((1, num_samples, 2), dtype=np.int8),
+        )
+        reader = VczReader(root)
+        output_path = tmp_path / "out.vcf"
+        write_vcf(reader, output_path, no_version=True)
+
+        v = cyvcf2.VCF(output_path)
+        assert v.samples == sample_ids
 
 
 def test_parse_samples_returns_numpy_arrays():

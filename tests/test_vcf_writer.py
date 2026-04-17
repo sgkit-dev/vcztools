@@ -353,8 +353,18 @@ def test_write_vcf__samples(
     expected_genotypes,
 ):
     output = tmp_path.joinpath("output.vcf")
+    # Parametrize table uses bcftools-style "^"+comma syntax for readability;
+    # mirror what the CLI does before handing values to VczReader.
+    samples_complement = False
+    if samples.startswith("^"):
+        samples_complement = True
+        samples = samples[1:]
+    samples = samples.split(",")
     reader = VczReader(
-        fx_sample_vcz.group, samples=samples, force_samples=force_samples
+        fx_sample_vcz.group,
+        samples=samples,
+        samples_complement=samples_complement,
+        force_samples=force_samples,
     )
     write_vcf(reader, output)
 
@@ -383,7 +393,7 @@ def test_write_vcf__non_existent_sample(fx_sample_vcz):
             'Use "--force-samples" to ignore this error.'
         ),
     ):
-        VczReader(fx_sample_vcz.group, samples="NO_SAMPLE")
+        VczReader(fx_sample_vcz.group, samples=["NO_SAMPLE"])
 
 
 def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
@@ -428,11 +438,12 @@ def test_write_vcf__regions_samples_filtering(
     tmp_path, fx_sample_vcz, regions, targets, samples, include, expected_chrom_pos
 ):
     output = tmp_path.joinpath("output.vcf")
+    sample_list = None if samples is None else [samples]
     reader = VczReader(
         fx_sample_vcz.group,
         regions=regions,
         targets=targets,
-        samples=samples,
+        samples=sample_list,
     )
     write_vcf(reader, output, include=include)
 

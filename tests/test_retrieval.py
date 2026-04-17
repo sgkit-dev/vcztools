@@ -11,7 +11,7 @@ def test_variant_chunks(fx_sample_vcz):
     reader = VczReader(
         fx_sample_vcz.group,
         regions="20:1230236-",
-        samples="NA00002,NA00003",
+        samples=["NA00002", "NA00003"],
     )
     chunk_data = next(
         reader.variant_chunks(
@@ -36,7 +36,10 @@ def test_variant_chunk_iter_empty_fields(fx_sample_vcz):
 
 @pytest.mark.parametrize(
     ("regions", "samples"),
-    [("20:1230236-", "NA00002,NA00003"), (["20:1230236-"], ["NA00002", "NA00003"])],
+    [
+        ("20:1230236-", ["NA00002", "NA00003"]),
+        (["20:1230236-"], ["NA00002", "NA00003"]),
+    ],
 )
 def test_variant_iter(fx_sample_vcz, regions, samples):
     reader = VczReader(fx_sample_vcz.group, regions=regions, samples=samples)
@@ -252,3 +255,43 @@ class TestVczReaderRegions:
         df = pd.DataFrame({"contig": ["chr1"], "start": pd.array([1], dtype="Int64")})
         with pytest.raises(ValueError, match="missing required columns.*end"):
             VczReader(self._vcz(), regions=df)
+
+
+class TestVczReaderSamples:
+    """Cover VczReader sample input: None, list, complement, error cases."""
+
+    def test_samples_none_selects_all(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00002", "NA00003"])
+
+    def test_samples_list(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group, samples=["NA00001", "NA00003"])
+        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
+        nt.assert_array_equal(reader.samples_selection, [0, 2])
+
+    def test_samples_complement_flag(self, fx_sample_vcz):
+        reader = VczReader(
+            fx_sample_vcz.group,
+            samples=["NA00002"],
+            samples_complement=True,
+        )
+        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
+        nt.assert_array_equal(reader.samples_selection, [0, 2])
+
+    def test_samples_rejects_string_input(self, fx_sample_vcz):
+        with pytest.raises(TypeError, match="samples must be list"):
+            VczReader(fx_sample_vcz.group, samples="NA00001")
+
+    def test_samples_rejects_caret_prefix(self, fx_sample_vcz):
+        with pytest.raises(ValueError, match="samples_complement=True"):
+            VczReader(fx_sample_vcz.group, samples=["^NA00001"])
+
+    def test_samples_unknown_raises(self, fx_sample_vcz):
+        with pytest.raises(ValueError, match="not in header: NO_SAMPLE"):
+            VczReader(fx_sample_vcz.group, samples=["NO_SAMPLE"])
+
+    def test_samples_unknown_force(self, fx_sample_vcz):
+        reader = VczReader(
+            fx_sample_vcz.group, samples=["NO_SAMPLE"], force_samples=True
+        )
+        nt.assert_array_equal(reader.sample_ids, [])

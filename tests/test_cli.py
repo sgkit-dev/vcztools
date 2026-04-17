@@ -147,6 +147,29 @@ class TestMakeReader:
         assert reader.targets.complement is True
         assert len(reader.targets.contigs) == 2
 
+    def test_samples_string_splits_on_commas(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, samples="NA00001,NA00003")
+        assert list(reader.sample_ids) == ["NA00001", "NA00003"]
+
+    def test_samples_caret_translates_to_complement(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, samples="^NA00002")
+        assert list(reader.sample_ids) == ["NA00001", "NA00003"]
+
+    def test_samples_file_with_caret(self, fx_vcz_path):
+        reader = cli.make_reader(
+            fx_vcz_path,
+            samples_file="^tests/data/txt/samples.txt",
+        )
+        # samples.txt lists NA00001, NA00003 -> complement leaves NA00002
+        assert list(reader.sample_ids) == ["NA00002"]
+
+    def test_samples_file_without_caret(self, fx_vcz_path):
+        reader = cli.make_reader(
+            fx_vcz_path,
+            samples_file="tests/data/txt/samples.txt",
+        )
+        assert list(reader.sample_ids) == ["NA00001", "NA00003"]
+
     def test_regions_and_regions_file_mutually_exclusive(self, fx_vcz_path):
         with pytest.raises(ValueError, match="Cannot specify both"):
             cli.make_reader(

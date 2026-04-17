@@ -54,31 +54,38 @@ class VariantChunkReader(collections.abc.Sequence):
         data.update(self.static_data)
         return data
 
-    def get_chunk_data(self, chunk, mask, samples_selection=None):
-        num_samples = len(samples_selection) if samples_selection is not None else 0
-        data = {
-            key: get_vchunk_array(
-                array,
-                chunk,
-                mask,
-                samples_selection
-                if (key.startswith("call_") and num_samples > 0)
-                else None,
-            )
-            for key, array in self.arrays.items()
-        }
+    def get_chunk_data(self, chunk, mask, samples_selection):
+        # When samples_selection is empty (e.g. --force-samples filtered out
+        # every requested sample), we still read the full call arrays so
+        # downstream AC/AN recomputation can use the complete genotype set.
+        num_samples = len(samples_selection)
+        data = {}
+        for key, array in self.arrays.items():
+            if key.startswith("call_") and num_samples > 0:
+                data[key] = get_vchunk_call_array(array, chunk, mask, samples_selection)
+            else:
+                data[key] = get_vchunk_array(array, chunk, mask)
         data.update(self.static_data)
         return data
 
 
-def get_vchunk_array(zarray, v_chunk, mask, samples_selection=None):
+def get_vchunk_array(zarray, v_chunk, mask):
+    """Variant-axis slice for arrays without a samples dimension."""
     v_chunksize = zarray.chunks[0]
     start = v_chunksize * v_chunk
     end = v_chunksize * (v_chunk + 1)
-    if samples_selection is None:
-        result = zarray[start:end]
-    else:
-        result = zarray.oindex[start:end, samples_selection]
+    result = zarray[start:end]
+    if mask is not None:
+        result = result[mask]
+    return result
+
+
+def get_vchunk_call_array(zarray, v_chunk, mask, samples_selection):
+    """Variant-axis slice with orthogonal indexing along the samples axis."""
+    v_chunksize = zarray.chunks[0]
+    start = v_chunksize * v_chunk
+    end = v_chunksize * (v_chunk + 1)
+    result = zarray.oindex[start:end, samples_selection]
     if mask is not None:
         result = result[mask]
     return result
@@ -184,7 +191,8 @@ def variant_chunk_iter(
     targets=None,
     include: str | None = None,
     exclude: str | None = None,
-    samples_selection=None,
+    samples_selection,
+    subsetting_samples: bool = False,
 ):
     if fields is not None and len(fields) == 0:
         return  # empty iterator
@@ -206,7 +214,7 @@ def variant_chunk_iter(
         else:
             variants_selection = np.any(v_mask_chunk, axis=1)
             call_mask = v_mask_chunk[variants_selection]
-            if samples_selection is not None:
+            if subsetting_samples:
                 call_mask = call_mask[:, samples_selection]
         chunk_data = query_fields_reader.get_chunk_data(
             v_chunk, variants_selection, samples_selection=samples_selection
@@ -336,7 +344,8 @@ class VczReader:
 
         if drop_genotypes:
             self.sample_ids = []
-            self.samples_selection = np.array([])
+            self.samples_selection = np.array([], dtype=np.int64)
+            self.subsetting_samples = False
         else:
             self.sample_ids, self.samples_selection = samples_mod.parse_samples(
                 samples,
@@ -344,6 +353,7 @@ class VczReader:
                 force_samples=force_samples,
                 complement=samples_complement,
             )
+            self.subsetting_samples = samples is not None
 
         contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()
         self.regions = regions_mod.dataframe_to_ranges(regions_df, contigs_u)
@@ -387,6 +397,7 @@ class VczReader:
             include=include,
             exclude=exclude,
             samples_selection=self.samples_selection,
+            subsetting_samples=self.subsetting_samples,
         )
 
     def variants(

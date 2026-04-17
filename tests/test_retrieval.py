@@ -31,7 +31,15 @@ def test_variant_chunks(fx_sample_vcz):
 
 def test_variant_chunk_iter_empty_fields(fx_sample_vcz):
     with pytest.raises(StopIteration):
-        print(next(variant_chunk_iter(fx_sample_vcz.group, fields=[])))
+        print(
+            next(
+                variant_chunk_iter(
+                    fx_sample_vcz.group,
+                    fields=[],
+                    samples_selection=np.arange(3),
+                )
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -99,14 +107,17 @@ class TestFilterMultiChunk:
     handle this without IndexError or silent data loss.
     """
 
+    @staticmethod
+    def _iter(root, **kwargs):
+        # _make_filter_vcz has no samples, so pass an empty selection.
+        return variant_chunk_iter(
+            root, samples_selection=np.array([], dtype=np.int64), **kwargs
+        )
+
     def test_include_filter_eq_pass(self):
         root = _make_filter_vcz()
         results = list(
-            variant_chunk_iter(
-                root,
-                fields=["variant_position"],
-                include='FILTER="PASS"',
-            )
+            self._iter(root, fields=["variant_position"], include='FILTER="PASS"')
         )
         positions = np.concatenate([chunk["variant_position"] for chunk in results])
         # Even-indexed variants (0, 2, 4, 6, 8) are PASS → positions 100, 102, ...
@@ -115,11 +126,7 @@ class TestFilterMultiChunk:
     def test_include_filter_ne_pass(self):
         root = _make_filter_vcz()
         results = list(
-            variant_chunk_iter(
-                root,
-                fields=["variant_position"],
-                include='FILTER!="PASS"',
-            )
+            self._iter(root, fields=["variant_position"], include='FILTER!="PASS"')
         )
         positions = np.concatenate([chunk["variant_position"] for chunk in results])
         # Odd-indexed variants are q10 → positions 101, 103, ...
@@ -128,11 +135,7 @@ class TestFilterMultiChunk:
     def test_exclude_filter_pass(self):
         root = _make_filter_vcz()
         results = list(
-            variant_chunk_iter(
-                root,
-                fields=["variant_position"],
-                exclude='FILTER="PASS"',
-            )
+            self._iter(root, fields=["variant_position"], exclude='FILTER="PASS"')
         )
         positions = np.concatenate([chunk["variant_position"] for chunk in results])
         nt.assert_array_equal(positions, [101, 103, 105, 107])
@@ -140,11 +143,7 @@ class TestFilterMultiChunk:
     def test_filter_subset_match(self):
         root = _make_filter_vcz()
         results = list(
-            variant_chunk_iter(
-                root,
-                fields=["variant_position"],
-                include='FILTER~"q10"',
-            )
+            self._iter(root, fields=["variant_position"], include='FILTER~"q10"')
         )
         positions = np.concatenate([chunk["variant_position"] for chunk in results])
         nt.assert_array_equal(positions, [101, 103, 105, 107])

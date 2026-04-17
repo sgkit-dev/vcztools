@@ -13,7 +13,7 @@ def parse_samples(
     *,
     force_samples: bool = False,
     complement: bool = False,
-) -> tuple[np.ndarray, np.ndarray | None]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Resolve a list of sample IDs against ``all_samples``.
 
     ``samples=None`` selects every sample (skipping any empty-string entries
@@ -21,9 +21,8 @@ def parse_samples(
     when ``complement=True`` — every sample *except* those.
 
     Returns ``(sample_ids, samples_selection)``: the array of selected IDs
-    and the indices of the selection into ``all_samples``. When
-    ``samples=None`` and every ID is present, ``samples_selection`` is
-    ``None`` to signal "no subsetting needed".
+    and the integer indices of the selection into ``all_samples``. The
+    selection is always a concrete array (never ``None``).
     """
 
     # set a mask if any sample is missing
@@ -32,7 +31,7 @@ def parse_samples(
 
     if samples is None:
         if all_samples_mask is None:
-            return all_samples, None
+            return all_samples, np.arange(all_samples.size)
         sample_ids = all_samples[~all_samples_mask]
         selection = np.arange(all_samples.size)[~all_samples_mask]
         return sample_ids, selection

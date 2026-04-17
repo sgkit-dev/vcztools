@@ -87,9 +87,7 @@ def write_vcf(
         )
 
         if not no_header:
-            force_ac_an_header = (
-                not drop_genotypes and reader.samples_selection is not None
-            )
+            force_ac_an_header = not drop_genotypes and reader.subsetting_samples
             vcf_header = _generate_header(
                 reader.root,
                 reader.sample_ids,
@@ -110,6 +108,7 @@ def write_vcf(
                 output,
                 drop_genotypes=drop_genotypes,
                 no_update=no_update,
+                subsetting_samples=reader.subsetting_samples,
             )
 
 
@@ -122,10 +121,11 @@ def c_chunk_to_vcf(
     *,
     drop_genotypes,
     no_update,
+    subsetting_samples,
 ):
     format_fields = {}
     info_fields = {}
-    num_samples = len(samples_selection) if samples_selection is not None else None
+    num_samples = len(samples_selection)
 
     # TODO check we don't truncate silently by doing this
     pos = chunk_data["variant_position"].astype(np.int32)
@@ -161,7 +161,7 @@ def c_chunk_to_vcf(
         if (
             "call_genotype_phased" in chunk_data
             and not drop_genotypes
-            and (samples_selection is None or num_samples != 0)
+            and num_samples != 0
         ):
             gt_phased = chunk_data["call_genotype_phased"]
         else:
@@ -177,8 +177,6 @@ def c_chunk_to_vcf(
         ):
             vcf_name = name[len("call_") :]
             format_fields[vcf_name] = array
-            if num_samples is None:
-                num_samples = array.shape[1]
         elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
             vcf_name = name[len("variant_") :]
             info_fields[vcf_name] = array
@@ -190,20 +188,21 @@ def c_chunk_to_vcf(
         id = id.reshape((-1, 1))
     if (
         not no_update
-        and samples_selection is not None
+        and subsetting_samples
         and "call_genotype" in chunk_data
         and not drop_genotypes
     ):
-        # Recompute INFO/AC and INFO/AN
+        # Recompute INFO/AC and INFO/AN. When the effective subset is empty
+        # (num_samples == 0), ``gt`` still contains all samples (see the
+        # bypass in ``VariantChunkReader.get_chunk_data``), so AC/AN are
+        # recomputed over the full genotype set to match bcftools.
         info_fields |= _compute_info_fields(gt, alt)
     if num_samples == 0:
         gt = None
-    if gt is not None and num_samples is None:
-        num_samples = gt.shape[1]
 
     encoder = _vcztools.VcfEncoder(
         num_variants,
-        num_samples if num_samples is not None else 0,
+        num_samples,
         chrom=chrom,
         pos=pos,
         id=id,

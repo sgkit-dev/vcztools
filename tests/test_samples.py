@@ -50,22 +50,47 @@ class TestParseSamplesList:
         nt.assert_array_equal(ids, [])
         nt.assert_array_equal(selection, [])
 
-    def test_empty_string_element(self):
-        # [""] is a special input representing "no samples".
-        ids, selection = parse_samples([""], ALL_SAMPLES)
+    def test_empty_string_element_raises(self):
+        # bcftools rejects "" as an unknown sample; vcztools matches.
+        with pytest.raises(
+            ValueError, match=r"subset called for sample\(s\) not in header: \."
+        ):
+            parse_samples([""], ALL_SAMPLES)
+
+    def test_empty_string_element_with_ignore_missing(self):
+        # With ignore_missing_samples=True, "" is dropped silently and we
+        # end up with no samples selected (matches bcftools -s '' --force-samples).
+        ids, selection = parse_samples([""], ALL_SAMPLES, ignore_missing_samples=True)
         nt.assert_array_equal(ids, [])
         nt.assert_array_equal(selection, [])
 
 
 class TestParseSamplesDuplicates:
-    def test_duplicates_preserved(self):
-        ids, selection = parse_samples(["NA00001", "NA00001"], ALL_SAMPLES)
-        nt.assert_array_equal(ids, ["NA00001", "NA00001"])
-        nt.assert_array_equal(selection, [0, 0])
+    def test_duplicates_raise(self):
+        with pytest.raises(ValueError, match=r'Duplicate sample name "NA00001"'):
+            parse_samples(["NA00001", "NA00001"], ALL_SAMPLES)
+
+    def test_duplicates_raise_with_ignore_missing(self):
+        # The duplicate check runs after unknown-sample removal, so a list
+        # that contains both unknowns and duplicates still trips on the dup
+        # even when ignore_missing_samples=True (matches bcftools 1.19).
+        with pytest.raises(ValueError, match=r'Duplicate sample name "NA00001"'):
+            parse_samples(
+                ["NA00001", "NA00001", "UNKNOWN"],
+                ALL_SAMPLES,
+                ignore_missing_samples=True,
+            )
 
     def test_duplicates_collapsed_under_complement(self):
         ids, selection = parse_samples(
             ["NA00002", "NA00002"], ALL_SAMPLES, complement=True
+        )
+        nt.assert_array_equal(ids, ["NA00001", "NA00003"])
+        nt.assert_array_equal(selection, [0, 2])
+
+    def test_many_duplicates_collapsed_under_complement(self):
+        ids, selection = parse_samples(
+            ["NA00002", "NA00002", "NA00002"], ALL_SAMPLES, complement=True
         )
         nt.assert_array_equal(ids, ["NA00001", "NA00003"])
         nt.assert_array_equal(selection, [0, 2])

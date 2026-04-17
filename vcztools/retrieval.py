@@ -180,7 +180,7 @@ class VczReader:
         targets_complement: bool = False,
         samples=None,
         samples_complement: bool = False,
-        force_samples: bool = False,
+        ignore_missing_samples: bool = False,
         drop_genotypes: bool = False,
         zarr_backend_storage: str | None = None,
     ):
@@ -200,7 +200,7 @@ class VczReader:
             self.sample_ids, self.samples_selection = samples_mod.parse_samples(
                 samples,
                 all_samples=all_samples,
-                force_samples=force_samples,
+                ignore_missing_samples=ignore_missing_samples,
                 complement=samples_complement,
             )
             self.subsetting_samples = samples is not None

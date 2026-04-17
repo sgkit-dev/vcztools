@@ -267,8 +267,8 @@ class TestVczReaderSamples:
         with pytest.raises(ValueError, match="not in header: NO_SAMPLE"):
             VczReader(fx_sample_vcz.group, samples=["NO_SAMPLE"])
 
-    def test_samples_unknown_force(self, fx_sample_vcz):
+    def test_samples_unknown_ignore_missing(self, fx_sample_vcz):
         reader = VczReader(
-            fx_sample_vcz.group, samples=["NO_SAMPLE"], force_samples=True
+            fx_sample_vcz.group, samples=["NO_SAMPLE"], ignore_missing_samples=True
         )
         nt.assert_array_equal(reader.sample_ids, [])

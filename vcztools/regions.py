@@ -13,6 +13,17 @@ class Region:
     end: int | None = None
 
 
+def _to_int32_coords(values, name):
+    """Cast a coordinate array to int32, raising if any value overflows."""
+    arr = np.asarray(values)
+    info = np.iinfo(np.int32)
+    if arr.size > 0 and (arr.min() < info.min or arr.max() > info.max):
+        raise ValueError(
+            f"{name} coordinate out of range for int32 [{info.min}, {info.max}]"
+        )
+    return arr.astype(np.int32)
+
+
 try:
     # Use ruranges if installed
     from ruranges_py import overlaps, subtract
@@ -21,8 +32,8 @@ try:
         def __init__(self, contigs, starts, ends, complement=False):
             # note that ruranges groups must be unsigned
             self.contigs = np.ascontiguousarray(contigs, dtype=np.uint64)
-            self.starts = np.ascontiguousarray(starts)
-            self.ends = np.ascontiguousarray(ends)
+            self.starts = np.ascontiguousarray(_to_int32_coords(starts, "start"))
+            self.ends = np.ascontiguousarray(_to_int32_coords(ends, "end"))
             self.complement = complement
 
         def overlaps(self, other: "GenomicRanges"):
@@ -63,8 +74,8 @@ except ImportError:
             df = pd.DataFrame(
                 {
                     "Chromosome": contigs,
-                    "Start": starts,
-                    "End": ends,
+                    "Start": _to_int32_coords(starts, "start"),
+                    "End": _to_int32_coords(ends, "end"),
                 }
             )
             df["index"] = df.index
@@ -144,7 +155,7 @@ def regions_to_ranges(
         else:
             start = region.start - 1
 
-        end = np.iinfo(np.int64).max if region.end is None else region.end
+        end = np.iinfo(np.int32).max if region.end is None else region.end
 
         contigs.append(all_contigs.index(region.contig))
         starts.append(start)

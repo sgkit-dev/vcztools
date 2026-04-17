@@ -96,7 +96,7 @@ class TestRegionsToRanges:
 
     def test_end_none_defaults_to_max(self):
         result = regions.regions_to_ranges([Region("chr1", 100, None)], ALL_CONTIGS)
-        assert result.ends[0] == np.iinfo(np.int64).max
+        assert result.ends[0] == np.iinfo(np.int32).max
 
     def test_multiple_regions(self):
         result = regions.regions_to_ranges(
@@ -128,7 +128,7 @@ class TestParseRegions:
         result = regions.parse_regions("chr1", ALL_CONTIGS)
         assert_array_equal(result.contigs, [0])
         assert_array_equal(result.starts, [0])
-        assert result.ends[0] == np.iinfo(np.int64).max
+        assert result.ends[0] == np.iinfo(np.int32).max
 
     def test_list_of_strings(self):
         result = regions.parse_regions(["chr1:100-200", "chr2:300-400"], ALL_CONTIGS)
@@ -193,6 +193,24 @@ class TestParseTargets:
 
     def test_none_returns_none(self):
         assert regions.parse_targets(None, ALL_CONTIGS) is None
+
+
+class TestGenomicRangesCoordValidation:
+    def test_start_overflow_raises(self):
+        with pytest.raises(ValueError, match="start coordinate out of range"):
+            regions.GenomicRanges(
+                contigs=[0],
+                starts=[2**31],
+                ends=[2**31 + 10],
+            )
+
+    def test_end_overflow_raises(self):
+        with pytest.raises(ValueError, match="end coordinate out of range"):
+            regions.GenomicRanges(
+                contigs=[0],
+                starts=[0],
+                ends=[2**31],
+            )
 
 
 class TestGenomicRangesOverlaps:

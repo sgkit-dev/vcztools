@@ -37,7 +37,7 @@ def parse_samples(
         selection = np.arange(all_samples.size)[~all_samples_mask]
         return sample_ids, selection
 
-    sample_ids = np.array(samples)
+    sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
     if sample_ids.size == 1 and sample_ids[0] == "":
         sample_ids = np.empty((0,), dtype=np.dtypes.StringDType())
 
@@ -64,8 +64,11 @@ def parse_samples(
     if complement:
         samples_selection = np.setdiff1d(np.arange(all_samples.size), samples_selection)
     if all_samples_mask is not None:
-        masked_sample_ids = all_samples[all_samples_mask]
-        samples_selection = np.setdiff1d(samples_selection, masked_sample_ids)
+        # Remove indices of masked (empty-string) samples from the selection.
+        # Using indices rather than names avoids an int/string dtype mismatch
+        # in np.setdiff1d.
+        masked_indices = np.flatnonzero(all_samples_mask)
+        samples_selection = np.setdiff1d(samples_selection, masked_indices)
     sample_ids = all_samples[samples_selection]
     return sample_ids, samples_selection
 

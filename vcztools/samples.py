@@ -37,8 +37,6 @@ def parse_samples(
         return sample_ids, selection
 
     sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
-    if sample_ids.size == 1 and sample_ids[0] == "":
-        sample_ids = np.empty((0,), dtype=np.dtypes.StringDType())
 
     unknown_samples = np.setdiff1d(sample_ids, all_samples)
     if len(unknown_samples) > 0:
@@ -55,6 +53,12 @@ def parse_samples(
                 f"{','.join(unknown_samples)}. "
                 'Use "--force-samples" to ignore this error.'
             )
+
+    if not complement:
+        unique_ids, counts = np.unique(sample_ids, return_counts=True)
+        duplicates = unique_ids[counts > 1]
+        if duplicates.size > 0:
+            raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
 
     all_samples = _as_fixed_length_unicode(all_samples)
     sample_ids = _as_fixed_length_unicode(sample_ids)

@@ -112,6 +112,18 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
         ("view --no-version -s ^NA00003,NA00002,NA00003", "sample.vcf.gz"),
         ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
+        # Complement collapses duplicate excludes
+        ("view --no-version -s ^NA00001,NA00001", "sample.vcf.gz"),
+        # Complement that excludes every sample (no sample columns)
+        ("view --no-version -s ^NA00001,NA00002,NA00003", "sample.vcf.gz"),
+        # All requested samples are unknown -> no sample columns
+        ("view --no-version -s FOO,BAR,BAZ --force-samples", "sample.vcf.gz"),
+        # Complement with one unknown name -> the unknown is dropped
+        ("view --no-version -s ^NA00001,NOPE --force-samples", "sample.vcf.gz"),
+        # Complement with all-unknown excludes -> every sample retained
+        ("view --no-version -s ^NOPE1,NOPE2 --force-samples", "sample.vcf.gz"),
+        # Empty samples file -> no sample columns
+        ("view --no-version -S tests/data/txt/samples_empty.txt", "sample.vcf.gz"),
         (
             "view --no-version -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
             "sample.vcf.gz"
@@ -353,6 +365,17 @@ def test_query_logic_precendence(tmp_path, fx_sample_vcz, expr, expected):
         ("view -i 'DP > 10'", "sample.vcf.gz", True),
         # bcftools output does not start with "Error"
         ("view -i 'FILTER=\"F\"'", "sample.vcf.gz", False),
+        # Duplicate samples in regular mode are rejected (bcftools error
+        # has the [E:: prefix from htslib, not "Error:")
+        ("view -s NA00001,NA00001", "sample.vcf.gz", True),
+        # --force-samples does not relax the duplicate rule
+        ("view -s NA00001,NA00001 --force-samples", "sample.vcf.gz", True),
+        # Duplicates trip the check even after --force-samples removes
+        # unknowns. bcftools stderr starts with "Warn: ..." for the unknown
+        # before the [E:: line, so we don't pin the prefix here.
+        ("view -s NA00001,NA00001,NOPE --force-samples", "sample.vcf.gz", False),
+        # Empty-string sample is treated as an unknown sample
+        ("view -s ''", "sample.vcf.gz", True),
     ],
 )
 # fmt: on

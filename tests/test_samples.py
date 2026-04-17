@@ -353,6 +353,14 @@ class TestReadSamplesFile:
         f.write_text("sampléé\na b\nsample_中文\n", encoding="utf-8")
         assert read_samples_file(str(f)) == ["sampléé", "a b", "sample_中文"]
 
+    def test_preserves_embedded_commas(self, tmp_path):
+        # The samples-file reader is line-oriented (no comma splitting),
+        # so "a,b" on a line survives as a single ID — unlike the CLI's
+        # -s argument, which does split on commas.
+        f = tmp_path / "samples.txt"
+        f.write_text("a,b\nc,d,e\nplain\n")
+        assert read_samples_file(str(f)) == ["a,b", "c,d,e", "plain"]
+
 
 class TestRoundTripEdgeCaseSamples:
     """Confirm edge-case sample IDs survive zarr → VCF → parse end-to-end.

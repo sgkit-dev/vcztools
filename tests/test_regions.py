@@ -105,15 +105,9 @@ class TestReadRegionsFile:
 
 
 class TestRegionStringsToDataframe:
-    def test_single_string(self):
-        result = regions.region_strings_to_dataframe("chr1:100-200")
+    def test_single_element_list(self):
+        result = regions.region_strings_to_dataframe(["chr1:100-200"])
         assert_frame_equal(result, _regions_df([("chr1", 100, 200)]))
-
-    def test_comma_separated_string(self):
-        result = regions.region_strings_to_dataframe("chr1:100-200,chr2:300-400")
-        assert_frame_equal(
-            result, _regions_df([("chr1", 100, 200), ("chr2", 300, 400)])
-        )
 
     def test_list_of_strings(self):
         result = regions.region_strings_to_dataframe(["chr1:100-200", "chr2:300-400"])
@@ -122,15 +116,15 @@ class TestRegionStringsToDataframe:
         )
 
     def test_open_ended_end(self):
-        result = regions.region_strings_to_dataframe("chr1:100-")
+        result = regions.region_strings_to_dataframe(["chr1:100-"])
         assert_frame_equal(result, _regions_df([("chr1", 100, None)]))
 
     def test_whole_contig(self):
-        result = regions.region_strings_to_dataframe("chr1")
+        result = regions.region_strings_to_dataframe(["chr1"])
         assert_frame_equal(result, _regions_df([("chr1", None, None)]))
 
     def test_contig_with_colon(self):
-        result = regions.region_strings_to_dataframe("chr1:1:100-200")
+        result = regions.region_strings_to_dataframe(["chr1:1:100-200"])
         assert_frame_equal(result, _regions_df([("chr1:1", 100, 200)]))
 
     def test_na_roundtrips_through_int64(self):
@@ -167,15 +161,15 @@ class TestDataframeToRanges:
     def test_end_na_defaults_to_max(self):
         df = _regions_df([("chr1", 100, None)])
         result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
-        assert result.ends[0] == np.iinfo(np.int32).max
+        assert result.ends[0] == np.iinfo(np.int64).max
 
     def test_both_ends_na(self):
         df = _regions_df([("chr1", None, None), ("chr2", 300, None)])
         result = regions.dataframe_to_ranges(df, ALL_CONTIGS)
-        int32_max = np.iinfo(np.int32).max
+        int64_max = np.iinfo(np.int64).max
         assert_array_equal(result.contigs, [0, 1])
         assert_array_equal(result.starts, [0, 299])
-        assert_array_equal(result.ends, [int32_max, int32_max])
+        assert_array_equal(result.ends, [int64_max, int64_max])
 
     def test_unknown_contig_raises(self):
         df = _regions_df([("chrZ", 1, 10)])
@@ -205,24 +199,6 @@ class TestDataframeToRanges:
 
     def test_none_with_complement_returns_none(self):
         assert regions.dataframe_to_ranges(None, ALL_CONTIGS, complement=True) is None
-
-
-class TestGenomicRangesCoordValidation:
-    def test_start_overflow_raises(self):
-        with pytest.raises(ValueError, match="start coordinate out of range"):
-            regions.GenomicRanges(
-                contigs=[0],
-                starts=[2**31],
-                ends=[2**31 + 10],
-            )
-
-    def test_end_overflow_raises(self):
-        with pytest.raises(ValueError, match="end coordinate out of range"):
-            regions.GenomicRanges(
-                contigs=[0],
-                starts=[0],
-                ends=[2**31],
-            )
 
 
 class TestGenomicRangesOverlaps:

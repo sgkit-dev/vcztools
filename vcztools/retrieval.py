@@ -255,7 +255,12 @@ def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
                 f"{arg_name} does not accept a '^' prefix in the Python API; "
                 f"use targets_complement=True for complement"
             )
-        return regions_mod.region_strings_to_dataframe(value)
+        if "," in value:
+            raise ValueError(
+                f"{arg_name} string '{value}' contains ','. "
+                f"Pass a list[str] for multiple regions."
+            )
+        return regions_mod.region_strings_to_dataframe([value])
     if isinstance(value, list):
         return regions_mod.region_strings_to_dataframe(value)
     raise TypeError(

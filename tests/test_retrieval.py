@@ -232,6 +232,14 @@ class TestVczReaderRegions:
         with pytest.raises(ValueError, match="targets_complement=True"):
             VczReader(self._vcz(), targets="^chr1:1-3")
 
+    def test_regions_rejects_comma(self):
+        with pytest.raises(ValueError, match=r"regions string .* contains ','"):
+            VczReader(self._vcz(), regions="chr1:1-3,chr1:5-7")
+
+    def test_targets_rejects_comma(self):
+        with pytest.raises(ValueError, match=r"targets string .* contains ','"):
+            VczReader(self._vcz(), targets="chr1:1-3,chr1:5-7")
+
     def test_regions_invalid_type(self):
         with pytest.raises(TypeError, match="regions must be"):
             VczReader(self._vcz(), regions=42)

@@ -186,12 +186,17 @@ def test_write_vcf__regions(
     # elsewhere.
     vcz = copy_vcz(fx_sample_vcz.group, variants_chunk_size=variants_chunk_size)
     output = tmp_path.joinpath("output.vcf")
-    # The parametrize table uses bcftools-style "^" prefixes for complement
-    # targets; translate that to the explicit targets_complement flag.
+    # The parametrize table keeps bcftools-style "^" prefixes and
+    # comma-separated strings for readability; mirror what the CLI does
+    # before handing values to VczReader.
     targets_complement = False
     if targets is not None and targets.startswith("^"):
         targets_complement = True
         targets = targets[1:]
+    if regions is not None and "," in regions:
+        regions = regions.split(",")
+    if targets is not None and "," in targets:
+        targets = targets.split(",")
     reader = VczReader(
         vcz,
         regions=regions,

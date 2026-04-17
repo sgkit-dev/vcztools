@@ -4,18 +4,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-
-def _to_int32_coords(values, name):
-    """Cast a coordinate array to int32, raising if any value overflows."""
-    arr = np.asarray(values)
-    info = np.iinfo(np.int32)
-    if arr.size > 0 and (arr.min() < info.min or arr.max() > info.max):
-        raise ValueError(
-            f"{name} coordinate out of range for int32 [{info.min}, {info.max}]"
-        )
-    return arr.astype(np.int32)
-
-
 try:
     # Use ruranges if installed
     from ruranges_py import overlaps, subtract
@@ -24,8 +12,8 @@ try:
         def __init__(self, contigs, starts, ends, complement=False):
             # note that ruranges groups must be unsigned
             self.contigs = np.ascontiguousarray(contigs, dtype=np.uint64)
-            self.starts = np.ascontiguousarray(_to_int32_coords(starts, "start"))
-            self.ends = np.ascontiguousarray(_to_int32_coords(ends, "end"))
+            self.starts = np.ascontiguousarray(starts)
+            self.ends = np.ascontiguousarray(ends)
             self.complement = complement
 
         def overlaps(self, other: "GenomicRanges"):
@@ -65,8 +53,8 @@ except ImportError:
             df = pd.DataFrame(
                 {
                     "Chromosome": contigs,
-                    "Start": _to_int32_coords(starts, "start"),
-                    "End": _to_int32_coords(ends, "end"),
+                    "Start": starts,
+                    "End": ends,
                 }
             )
             df["index"] = df.index
@@ -122,23 +110,17 @@ def _regions_dataframe(contigs, starts, ends) -> pd.DataFrame:
     )
 
 
-def region_strings_to_dataframe(regions: str | list[str]) -> pd.DataFrame:
-    """Parse a single region string or list of region strings into a DataFrame.
+def region_strings_to_dataframe(regions: list[str]) -> pd.DataFrame:
+    """Parse a list of region strings into a DataFrame.
 
-    A string input is split on commas. The returned DataFrame has columns
-    ``contig`` (str), ``start`` (nullable ``Int64``) and ``end`` (nullable
-    ``Int64``); ``pd.NA`` represents an unbounded start (``"chr1"``) or an
-    unbounded end (``"chr1:100-"``).
+    The returned DataFrame has columns ``contig`` (str), ``start`` (nullable
+    ``Int64``) and ``end`` (nullable ``Int64``); ``pd.NA`` represents an
+    unbounded start (``"chr1"``) or an unbounded end (``"chr1:100-"``).
     """
-    if isinstance(regions, str):
-        region_list = regions.split(",")
-    else:
-        region_list = list(regions)
-
     contigs = []
     starts = []
     ends = []
-    for s in region_list:
+    for s in regions:
         contig, start, end = parse_region_string(s)
         contigs.append(contig)
         starts.append(pd.NA if start is None else start)
@@ -196,17 +178,17 @@ def dataframe_to_ranges(
 
     Resolves ``contig`` names against ``all_contigs`` and applies default
     sentinels for unbounded positions: ``start=NA`` becomes ``0`` (after
-    1-based→0-based conversion) and ``end=NA`` becomes ``int32.max``.
+    1-based→0-based conversion) and ``end=NA`` becomes ``int64.max``.
     ``complement=True`` flips the sense so the returned ranges describe
     everything *outside* the listed intervals. Returns ``None`` when ``df``
     is ``None``.
     """
     if df is None:
         return None
-    int32_max = np.iinfo(np.int32).max
+    int64_max = np.iinfo(np.int64).max
     contig_indexes = [all_contigs.index(c) for c in df["contig"]]
     starts = [0 if pd.isna(s) else int(s) - 1 for s in df["start"]]
-    ends = [int32_max if pd.isna(e) else int(e) for e in df["end"]]
+    ends = [int64_max if pd.isna(e) else int(e) for e in df["end"]]
     return GenomicRanges(
         contigs=contig_indexes, starts=starts, ends=ends, complement=complement
     )

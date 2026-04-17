@@ -143,15 +143,19 @@ def make_reader(
         )
     if regions_file is not None:
         regions = regions_mod.read_regions_file(regions_file)
+    elif regions is not None:
+        regions = regions.split(",")
     targets_complement = False
     if targets_file is not None:
         if targets_file.startswith("^"):
             targets_complement = True
             targets_file = targets_file[1:]
         targets = regions_mod.read_regions_file(targets_file)
-    elif targets is not None and targets.startswith("^"):
-        targets_complement = True
-        targets = targets[1:]
+    elif targets is not None:
+        if targets.startswith("^"):
+            targets_complement = True
+            targets = targets[1:]
+        targets = targets.split(",")
     if samples_file is not None:
         samples = samples_mod.parse_samples_file(samples_file)
     return retrieval.VczReader(

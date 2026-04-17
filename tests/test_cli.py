@@ -131,6 +131,22 @@ class TestMakeReader:
         assert reader.regions is not None
         assert reader.regions.complement is False
 
+    def test_regions_string_splits_on_commas(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, regions="19,X")
+        assert reader.regions is not None
+        assert len(reader.regions.contigs) == 2
+
+    def test_targets_string_splits_on_commas(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, targets="19,X")
+        assert reader.targets is not None
+        assert len(reader.targets.contigs) == 2
+
+    def test_targets_caret_and_comma(self, fx_vcz_path):
+        reader = cli.make_reader(fx_vcz_path, targets="^19,X")
+        assert reader.targets is not None
+        assert reader.targets.complement is True
+        assert len(reader.targets.contigs) == 2
+
     def test_regions_and_regions_file_mutually_exclusive(self, fx_vcz_path):
         with pytest.raises(ValueError, match="Cannot specify both"):
             cli.make_reader(

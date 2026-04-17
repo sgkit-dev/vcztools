@@ -79,7 +79,9 @@ def parse_samples(
 def read_samples_file(path: str) -> list[str]:
     """Read a samples file (one sample ID per line) into a list.
 
-    Blank lines are ignored.
+    Blank lines are ignored. The file is decoded as UTF-8 regardless of
+    the platform locale, matching the VCF 4.3 spec's encoding for
+    sample IDs.
     """
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]

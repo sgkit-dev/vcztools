@@ -808,7 +808,7 @@ class TestSampleSubsetFilterSemantics:
 
     vcztools matches both: the ``view`` CLI uses the reader's default
     pre-subset evaluation; the ``query`` CLI constructs the reader
-    with ``filter_after_samples=True`` so FMT-scope filters see only
+    with ``filter_on_subset_samples=True`` so FMT-scope filters see only
     the subset. INFO-scope filters touch no sample dimension so the
     flag is a no-op for them.
 

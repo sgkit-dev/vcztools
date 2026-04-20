@@ -127,7 +127,7 @@ def make_reader(
     samples_file=None,
     include=None,
     exclude=None,
-    filter_after_samples=False,
+    filter_on_subset_samples=False,
     force_samples=False,
     drop_genotypes=False,
     zarr_backend_storage=None,
@@ -187,7 +187,7 @@ def make_reader(
         ignore_missing_samples=force_samples,
         drop_genotypes=drop_genotypes,
         variant_filter=variant_filter,
-        filter_after_samples=filter_after_samples,
+        filter_on_subset_samples=filter_on_subset_samples,
     )
 
 
@@ -316,7 +316,7 @@ def query(
         samples_file=samples_file,
         include=include,
         exclude=exclude,
-        filter_after_samples=True,
+        filter_on_subset_samples=True,
         force_samples=force_samples,
         zarr_backend_storage=zarr_backend_storage,
     )

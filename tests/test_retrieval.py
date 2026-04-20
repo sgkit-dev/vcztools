@@ -237,28 +237,47 @@ class TestVczReaderRegions:
 
 
 class TestVczReaderSamples:
-    """Cover VczReader sample input: None, list, complement, error cases."""
+    """Cover VczReader sample input: None, integer-index list, error cases."""
 
     def test_samples_none_selects_all(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00002", "NA00003"])
 
     def test_samples_list(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group, samples=["NA00001", "NA00003"])
+        reader = VczReader(fx_sample_vcz.group, samples=[0, 2])
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
         nt.assert_array_equal(reader.samples_selection, [0, 2])
 
+    def test_samples_preserves_input_order(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group, samples=[2, 0])
+        nt.assert_array_equal(reader.sample_ids, ["NA00003", "NA00001"])
+        nt.assert_array_equal(reader.samples_selection, [2, 0])
+
     def test_samples_rejects_string_input(self, fx_sample_vcz):
-        with pytest.raises(TypeError, match="samples must be list"):
+        with pytest.raises(TypeError, match="integer indexes"):
+            VczReader(fx_sample_vcz.group, samples=["NA00001"])
+
+    def test_samples_rejects_string_scalar(self, fx_sample_vcz):
+        with pytest.raises(TypeError, match="integer indexes"):
             VczReader(fx_sample_vcz.group, samples="NA00001")
 
-    def test_samples_rejects_caret_prefix(self, fx_sample_vcz):
-        with pytest.raises(ValueError, match="pre-expanded list"):
-            VczReader(fx_sample_vcz.group, samples=["^NA00001"])
+    def test_samples_rejects_non_integer_numpy_array(self, fx_sample_vcz):
+        with pytest.raises(TypeError, match="integer indexes"):
+            VczReader(fx_sample_vcz.group, samples=np.array([0.0, 2.0]))
 
-    def test_samples_unknown_raises(self, fx_sample_vcz):
-        with pytest.raises(ValueError, match="not in header: NO_SAMPLE"):
-            VczReader(fx_sample_vcz.group, samples=["NO_SAMPLE"])
+    def test_samples_accepts_numpy_int_array(self, fx_sample_vcz):
+        reader = VczReader(
+            fx_sample_vcz.group, samples=np.array([0, 2], dtype=np.int64)
+        )
+        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
+
+    def test_samples_out_of_range_raises(self, fx_sample_vcz):
+        with pytest.raises(ValueError, match="sample index out of range"):
+            VczReader(fx_sample_vcz.group, samples=[0, 99])
+
+    def test_samples_negative_raises(self, fx_sample_vcz):
+        with pytest.raises(ValueError, match="sample index out of range"):
+            VczReader(fx_sample_vcz.group, samples=[-1])
 
     def test_samples_empty_list(self, fx_sample_vcz):
         # Post-resolve, an empty list means "no samples" (e.g. all
@@ -302,7 +321,7 @@ class TestVczReaderSampleChunks:
 
     def test_single_chunk_selection(self):
         # s2, s3 both live in sample chunk 1 (indexes 2, 3).
-        reader = VczReader(self._vcz(), samples=["s2", "s3"])
+        reader = VczReader(self._vcz(), samples=[2, 3])
         nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [1])
         nt.assert_array_equal(reader.sample_chunk_plan.local_selection, [0, 1])
         dp = self._call_dp(reader)
@@ -310,7 +329,7 @@ class TestVczReaderSampleChunks:
 
     def test_multi_chunk_selection(self):
         # s1 is in chunk 0; s4 is in chunk 2; chunk 1 is skipped.
-        reader = VczReader(self._vcz(), samples=["s1", "s4"])
+        reader = VczReader(self._vcz(), samples=[1, 4])
         nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 2])
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[1, 4], [11, 14], [21, 24]])
@@ -318,7 +337,7 @@ class TestVczReaderSampleChunks:
     def test_preserves_user_order(self):
         # Same chunks as the multi-chunk test, but the user order is
         # reversed — the output must follow the input list.
-        reader = VczReader(self._vcz(), samples=["s4", "s1"])
+        reader = VczReader(self._vcz(), samples=[4, 1])
         nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 2])
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[4, 1], [14, 11], [24, 21]])
@@ -326,9 +345,7 @@ class TestVczReaderSampleChunks:
     def test_partial_final_chunk(self):
         # 5 samples with chunk size 2 → chunks sized [2, 2, 1]. s4 sits
         # alone in the final chunk.
-        reader = VczReader(
-            self._vcz(num_samples=5, samples_chunk_size=2), samples=["s4"]
-        )
+        reader = VczReader(self._vcz(num_samples=5, samples_chunk_size=2), samples=[4])
         nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [2])
         nt.assert_array_equal(reader.sample_chunk_plan.local_selection, [0])
         dp = self._call_dp(reader)
@@ -412,7 +429,7 @@ class TestVariantChunkReaderCaching:
         root = self._vcz(num_samples=6, samples_chunk_size=2)
         # Plan selects sample 1 (chunk 0) and sample 5 (chunk 2);
         # chunk 1 is NOT in the plan.
-        reader = VczReader(root, samples=["s1", "s5"])
+        reader = VczReader(root, samples=[1, 5])
         inner = VariantChunkReader(root, sample_chunk_plan=reader.sample_chunk_plan)
         inner.set_chunk(0)
         inner.get("call_DP")
@@ -493,7 +510,7 @@ class TestVariantChunksFilterPlusSamples:
         reader = VczReader(
             fx_sample_vcz.group,
             regions="20:1230236-",
-            samples=["NA00002", "NA00003"],
+            samples=[1, 2],
             variant_filter=variant_filter,
             filter_on_subset_samples=True,
         )
@@ -534,7 +551,7 @@ class TestVariantChunksFilterPlusSamples:
         def build(filter_on_subset_samples):
             return VczReader(
                 root,
-                samples=["NA00001"],
+                samples=[0],
                 variant_filter=BcftoolsFilter(
                     field_names=field_names, include="POS > 1000000"
                 ),

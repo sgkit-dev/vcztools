@@ -7,7 +7,7 @@ from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.retrieval import VczReader
-from vcztools.samples import resolve_sample_names
+from vcztools.samples import resolve_sample_selection
 from vcztools.utils import open_zarr
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
@@ -369,7 +369,7 @@ def test_write_vcf__samples(
         samples_complement = True
         samples = samples[1:]
     samples = samples.split(",")
-    resolved = resolve_sample_names(
+    resolved = resolve_sample_selection(
         samples,
         fx_sample_vcz.group["sample_id"][:],
         complement=samples_complement,
@@ -396,7 +396,7 @@ def test_write_vcf__samples(
 
 
 def test_write_vcf__non_existent_sample(fx_sample_vcz):
-    # The bcftools-style error message comes from resolve_sample_names,
+    # The bcftools-style error message comes from resolve_sample_selection,
     # which is what the CLI calls before handing the list to VczReader.
     with pytest.raises(
         ValueError,
@@ -405,7 +405,7 @@ def test_write_vcf__non_existent_sample(fx_sample_vcz):
             'Use "--force-samples" to ignore this error.'
         ),
     ):
-        resolve_sample_names(
+        resolve_sample_selection(
             ["NO_SAMPLE"], fx_sample_vcz.group["sample_id"][:]
         )
 

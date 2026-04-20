@@ -173,7 +173,7 @@ def make_reader(
         samples = samples.split(",")
     root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
     if not drop_genotypes:
-        samples = samples_mod.resolve_sample_names(
+        samples = samples_mod.resolve_sample_selection(
             samples,
             root["sample_id"][:],
             complement=samples_complement,

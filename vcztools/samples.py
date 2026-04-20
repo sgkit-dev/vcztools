@@ -49,41 +49,43 @@ def build_chunk_plan(
     return SampleChunkPlan(chunk_indexes=chunk_indexes, local_selection=local_selection)
 
 
-def parse_samples(
+def resolve_sample_names(
     samples: list[str] | None,
     all_samples: np.ndarray,
     *,
-    ignore_missing_samples: bool = False,
     complement: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Resolve a list of sample IDs against ``all_samples``.
+    ignore_missing_samples: bool = False,
+) -> list[str] | None:
+    """Resolve a bcftools-style sample selection into a concrete list.
 
-    ``samples=None`` selects every sample (skipping any empty-string entries
-    in the VCZ's ``sample_id`` array). A list selects those samples, or —
-    when ``complement=True`` — every sample *except* those.
+    This is the CLI-layer helper for ``-s``/``-S``/``--force-samples``.
+    The returned list (or ``None``) is the final, post-expansion
+    selection that :class:`~vcztools.retrieval.VczReader` consumes
+    directly.
 
-    Returns ``(sample_ids, samples_selection)``: the array of selected IDs
-    and the integer indices of the selection into ``all_samples``. The
-    selection is always a concrete array (never ``None``).
+    - ``samples=None`` and ``complement=False`` → returns ``None``
+      (reader selects every sample).
+    - ``samples=None`` and ``complement=True`` → returns an empty list
+      (everything excluded).
+    - ``samples=list`` and ``complement=False`` → returns the list
+      itself after unknown-name handling.
+    - ``samples=list`` and ``complement=True`` → returns
+      ``all_samples - samples`` in ``all_samples`` order, skipping
+      any empty-string entries.
+
+    Unknown names either raise ``ValueError`` or are dropped with a
+    warning (``ignore_missing_samples=True``). Duplicates always
+    raise.
     """
-
-    # set a mask if any sample is missing
-    mask = all_samples == ""
-    all_samples_mask = mask if np.any(mask) else None
-
     if samples is None:
-        if all_samples_mask is None:
-            return all_samples, np.arange(all_samples.size)
-        sample_ids = all_samples[~all_samples_mask]
-        selection = np.arange(all_samples.size)[~all_samples_mask]
-        return sample_ids, selection
+        if not complement:
+            return None
+        return [s for s in all_samples.tolist() if s != ""]
 
     sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
-
     unknown_samples = np.setdiff1d(sample_ids, all_samples)
     if len(unknown_samples) > 0:
         if ignore_missing_samples:
-            # remove unknown samples from sample_ids
             logger.warning(
                 "subset called for sample(s) not in header: "
                 f"{','.join(unknown_samples)}."
@@ -101,13 +103,56 @@ def parse_samples(
         duplicates = unique_ids[counts > 1]
         if duplicates.size > 0:
             raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
+        return sample_ids.tolist()
+
+    # Complement: duplicates in the exclude list are harmless — dedupe
+    # silently. Matches bcftools view -s ^foo,foo.
+    excluded = set(sample_ids.tolist())
+    return [s for s in all_samples.tolist() if s != "" and s not in excluded]
+
+
+def parse_samples(
+    samples: list[str] | None,
+    all_samples: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve a list of sample IDs against ``all_samples``.
+
+    ``samples=None`` selects every sample (skipping any empty-string
+    entries in the VCZ's ``sample_id`` array). A list selects exactly
+    those samples, in that order. Unknown or duplicate names raise
+    ``ValueError``; bcftools-specific knobs like ``--force-samples``
+    and ``-s ^`` live in :func:`resolve_sample_names` one layer up.
+
+    Returns ``(sample_ids, samples_selection)``: the array of selected
+    IDs and the integer indices of the selection into ``all_samples``.
+    """
+
+    # set a mask if any sample is missing
+    mask = all_samples == ""
+    all_samples_mask = mask if np.any(mask) else None
+
+    if samples is None:
+        if all_samples_mask is None:
+            return all_samples, np.arange(all_samples.size)
+        sample_ids = all_samples[~all_samples_mask]
+        selection = np.arange(all_samples.size)[~all_samples_mask]
+        return sample_ids, selection
+
+    sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
+
+    unknown_samples = np.setdiff1d(sample_ids, all_samples)
+    if len(unknown_samples) > 0:
+        raise ValueError(f"sample(s) not in header: {','.join(unknown_samples)}")
+
+    unique_ids, counts = np.unique(sample_ids, return_counts=True)
+    duplicates = unique_ids[counts > 1]
+    if duplicates.size > 0:
+        raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
 
     all_samples = _as_fixed_length_unicode(all_samples)
     sample_ids = _as_fixed_length_unicode(sample_ids)
 
     samples_selection = search(all_samples, sample_ids)
-    if complement:
-        samples_selection = np.setdiff1d(np.arange(all_samples.size), samples_selection)
     if all_samples_mask is not None:
         # Remove indices of masked (empty-string) samples from the selection.
         # Using indices rather than names avoids an int/string dtype mismatch

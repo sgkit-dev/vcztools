@@ -7,6 +7,7 @@ from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.retrieval import VczReader
+from vcztools.samples import resolve_sample_names
 from vcztools.utils import open_zarr
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
@@ -368,12 +369,13 @@ def test_write_vcf__samples(
         samples_complement = True
         samples = samples[1:]
     samples = samples.split(",")
-    reader = VczReader(
-        fx_sample_vcz.group,
-        samples=samples,
-        samples_complement=samples_complement,
+    resolved = resolve_sample_names(
+        samples,
+        fx_sample_vcz.group["sample_id"][:],
+        complement=samples_complement,
         ignore_missing_samples=ignore_missing_samples,
     )
+    reader = VczReader(fx_sample_vcz.group, samples=resolved)
     write_vcf(reader, output)
 
     v = VCF(output)
@@ -394,6 +396,8 @@ def test_write_vcf__samples(
 
 
 def test_write_vcf__non_existent_sample(fx_sample_vcz):
+    # The bcftools-style error message comes from resolve_sample_names,
+    # which is what the CLI calls before handing the list to VczReader.
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -401,7 +405,9 @@ def test_write_vcf__non_existent_sample(fx_sample_vcz):
             'Use "--force-samples" to ignore this error.'
         ),
     ):
-        VczReader(fx_sample_vcz.group, samples=["NO_SAMPLE"])
+        resolve_sample_names(
+            ["NO_SAMPLE"], fx_sample_vcz.group["sample_id"][:]
+        )
 
 
 def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):

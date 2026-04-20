@@ -17,15 +17,15 @@ def make_reader(root, *, include=None, exclude=None, **kwargs):
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings.
 
     ``root`` must be an opened :class:`zarr.Group` (as
-    :class:`VczReader` itself now requires). All non-filter keyword
+    :class:`VczReader` itself requires). All non-filter keyword
     arguments are forwarded to :class:`VczReader`.
     """
-    reader = retrieval.VczReader(root, **kwargs)
+    variant_filter = None
     if include is not None or exclude is not None:
-        reader.variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=set(reader.root), include=include, exclude=exclude
+        variant_filter = bcftools_filter.BcftoolsFilter(
+            field_names=set(root), include=include, exclude=exclude
         )
-    return reader
+    return retrieval.VczReader(root, variant_filter=variant_filter, **kwargs)
 
 
 def load_dataset(

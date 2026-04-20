@@ -435,6 +435,60 @@ class TestRegionTargetSemantics:
         assert vcztools_output == bcftools_output
 
 
+class TestSampleSubsetFilterSemantics:
+    """Filter expressions are evaluated on the original record, before
+    ``-s``/``-S`` sample subsetting is applied. Each case below is
+    chosen so pre-subset and post-subset evaluation give different
+    results — a regression in ordering would fail the assertion.
+
+    Uses ``query -f '%CHROM %POS\\n'`` to compare only the selected
+    variants without noise from FORMAT fields or VCF headers. Note
+    that for INFO-scoped filters ``bcftools query`` matches
+    ``bcftools view``, but for FMT-scoped filters ``query`` applies
+    subsetting first — so ``-i 'FMT/DP>7'`` is exercised with a
+    selection where that distinction does not alter the outcome.
+    """
+
+    FMT = r"query -f '%CHROM %POS\n'"
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # Scalar INFO filter x sample subset: only 20:1234567 has
+            # source INFO/AN; if the filter ran post-subset (with AN
+            # recomputed to 0) no row would pass.
+            "-s NA00001 -i 'INFO/AN>0'",
+            "-s NA00003 -i 'INFO/AN>0'",
+            "-s ^NA00001 -i 'INFO/AN>0'",
+            "-S tests/data/txt/samples.txt -i 'INFO/AN>0'",
+            "-S ^tests/data/txt/samples.txt -i 'INFO/AN>0'",
+
+            # Per-allele INFO filter (2-D variant-scoped mask — used
+            # to crash with ``IndexError`` when combined with ``-s``).
+            "-s NA00001 -i 'INFO/AC>0'",
+            "-s NA00003 -i 'INFO/AC>0'",
+            "-s ^NA00002 -i 'INFO/AC>0'",
+            "-s NA00001 -e 'INFO/AC=0'",
+
+            # Complement + scalar INFO filter.
+            "-s ^NA00003 -i 'INFO/AN>0'",
+
+            # Region + sample + INFO filter.
+            "-r '20' -s NA00001 -i 'INFO/AN>0'",
+
+            # Mixed variant-scope and sample-scope filters under -s.
+            "-s NA00001 -i 'INFO/AN>0 && FMT/DP>5'",
+        ],
+    )
+    # fmt: on
+    def test_variant_selection(self, fx_sample_vcz, args):
+        cmd = f"{self.FMT} {args}"
+        bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
+        assert vcztools_output == bcftools_output
+
+
 # fmt: off
 class TestChr22:
     """
@@ -471,6 +525,12 @@ class TestChr22:
             ("view --no-version -r 'chr22:10514100-'", 0),
             ("view --no-version -r 'chr22:1-10510000'", 0),
             ("view --no-version -i 'INFO/AC>200'", 0),
+            # -s + -i/-e: filter evaluates on original record; sample
+            # subsetting and INFO/AC,AN recompute happen after.
+            ("view --no-version -s HG00096,HG00101 -i 'INFO/AC>10'", 4),
+            ("view --no-version -s ^HG00096 -i 'INFO/AC>2'", 9),
+            ("view --no-version -s HG00101 -i 'FMT/DP>20'", 19),
+            ("view --no-version -s HG00101 --no-update -i 'INFO/AC>2'", 9),
         ],
     )
     # fmt: on

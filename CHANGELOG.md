@@ -12,6 +12,9 @@ Bug fixes:
 - vcztools view crash on FILTER expressions on multi-chunk stores (#282)
 - Incorrect output on vcztools query on FORMAT fields (#286, #287)
 - Per-allele INFO field + -s crashes (#295)
+- VCF header emitted even when filter expression is invalid (#221)
+- Incorrect behaviour for bcftools query with FORMAT scoped filters
+  and sample subsetting (#297)
 
 ## [0.1.1] - 2026-03-02
 

@@ -435,6 +435,363 @@ class TestRegionTargetSemantics:
         assert vcztools_output == bcftools_output
 
 
+class TestFilterExpressionLanguage:
+    """Validation coverage of the bcftools filter-expression subset
+    implemented in :mod:`vcztools.bcftools_filter`.
+
+    The implemented subset is: arithmetic (``+ - * /``, unary ``-``);
+    comparison (``= == != < <= > >=``); variant-scope logical
+    (``& |``) and sample-scope logical (``&& ||``); parenthesised
+    grouping; the special identifiers ``CHROM``, ``FILTER`` (set
+    semantics with ``= != ~ !~``), and ``TYPE`` (only ``"ref"`` /
+    ``"snp"``, with ``= == != ~ !~``); ``INFO/X`` / ``FORMAT/X`` /
+    ``FMT/X`` / bare ``X`` identifiers (with Number=A per-allele
+    collapse at the root); and ``-e`` as the inverse of ``-i``.
+
+    Each method below groups cases by feature area and compares
+    vcztools to bcftools via ``query -f '%CHROM %POS\\n'``. Known
+    divergences live in :meth:`test_known_divergences` and
+    :meth:`test_unary_minus_missing_qual_warning`, each marked
+    ``xfail(strict=True)`` so they surface in CI as bugs to fix.
+
+    Features that deliberately raise ``UnsupportedFilteringFeatureError``
+    at parse time (missing-value literal ``"."`` #163, GT #165, TYPE
+    outside ``ref/snp`` #166, array subscripts #167, regex ``~``/``!~``
+    applied to non-FILTER/TYPE #174, file refs #175, functions #190,
+    higher-dim FORMAT #232) are covered in ``tests/test_filter.py``
+    rather than here — they don't round-trip through bcftools.
+
+    For ``-s`` + filter ordering coverage see
+    :class:`TestSampleSubsetFilterSemantics`.
+    """
+
+    FMT = r"query -f '%CHROM %POS\n'"
+
+    def _check(self, fx_sample_vcz, flag, expr):
+        cmd = f"{self.FMT} {flag} '{expr}'"
+        bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
+        assert vcztools_output == bcftools_output
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "POS > 100000 + 50000",
+            "POS > 2 * 100000",
+            "INFO/DP / 2 >= 5",
+            # Keep arithmetic operands off ``QUAL`` — records with
+            # ``QUAL=.`` encode as NaN and trigger a numpy warning;
+            # see ``test_nan_arithmetic_warning`` for that bug.
+            "INFO/DP + 1 > 15",
+            "POS - 10000 > 0",
+        ],
+    )
+    # fmt: on
+    def test_arithmetic(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # Parenthesised OR-within-AND.
+            '(POS>1000 || ID=="rs6054257") && QUAL>0',
+            # Default precedence: && binds tighter than ||.
+            "POS>1000 && QUAL>0 || POS<200",
+            # Parenthesised AND-within-OR.
+            '(QUAL>10 && POS>100000) || ID=="rs6054257"',
+        ],
+    )
+    # fmt: on
+    def test_parentheses_and_precedence(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("flag", "expr"),
+        [
+            # Bare identifier resolves to INFO-only fields in this VCF.
+            ("-i", "AN > 0"),
+            ("-i", "AC != 0"),
+            # Bare identifier resolves to the FMT field (no INFO/GQ).
+            ("-i", "GQ > 40"),
+            # Bare ID + the `-e` path.
+            ("-e", 'ID == "rs6054257"'),
+        ],
+    )
+    # fmt: on
+    def test_bare_identifier(self, fx_sample_vcz, flag, expr):
+        self._check(fx_sample_vcz, flag, expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("flag", "expr"),
+        [
+            ("-i", "DB=1"),
+            ("-i", "DB=0"),
+            ("-i", "H2=1"),
+            # Exclude of a flag: inverse of -i 'DB=1'.
+            ("-e", "DB=1"),
+        ],
+    )
+    # fmt: on
+    def test_flag_fields(self, fx_sample_vcz, flag, expr):
+        self._check(fx_sample_vcz, flag, expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # Exact single-filter match.
+            'FILTER="q10"',
+            # Exact inequality.
+            'FILTER!="PASS"',
+            # Subset match (any filter named).
+            'FILTER~"q10"',
+            # Complement of subset match.
+            'FILTER!~"q10"',
+            # Compound filter string — order-insensitive set compare.
+            # Fixture has no record with both q10 and s50 set → empty.
+            'FILTER="s50;q10"',
+            'FILTER~"PASS"',
+        ],
+    )
+    # fmt: on
+    def test_filter_set_ops(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("flag", "expr"),
+        [
+            ("-i", 'TYPE="ref"'),
+            ("-i", 'TYPE="snp"'),
+            ("-i", 'TYPE!="snp"'),
+            ("-i", 'TYPE~"snp"'),
+            ("-i", 'TYPE!~"snp"'),
+            ("-e", 'TYPE="snp"'),
+        ],
+    )
+    # fmt: on
+    def test_type_field(self, fx_sample_vcz, flag, expr):
+        self._check(fx_sample_vcz, flag, expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("flag", "expr"),
+        [
+            # `=` (single) and `==` should be equivalent.
+            ("-i", 'CHROM="20"'),
+            ("-i", 'CHROM=="20"'),
+            ("-i", 'CHROM!="20"'),
+            # Non-existent contig → empty result.
+            ("-i", 'CHROM=="nonexistent"'),
+            # Exclude path.
+            ("-e", 'CHROM=="X"'),
+        ],
+    )
+    # fmt: on
+    def test_chrom_equality(self, fx_sample_vcz, flag, expr):
+        self._check(fx_sample_vcz, flag, expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # INFO/AC (Number=A) with equality/inequality.
+            "INFO/AC==1",
+            "INFO/AC!=0",
+            # INFO/AF (Number=A, float) with scalar threshold.
+            "INFO/AF>0.4",
+            "INFO/AF>0.6",
+            # Compound per-allele: both sides see the 2-D array;
+            # root collapses via np.any.
+            "INFO/AC>0 && INFO/AC<2",
+        ],
+    )
+    # fmt: on
+    def test_per_allele_info(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # QUAL=. at 20:1235237 — NaN encoding must exclude.
+            "QUAL>0",
+            # INFO/AN present only at 20:1234567.
+            "INFO/AN>0",
+            # INFO/DP present at a subset of records.
+            "INFO/DP>=14",
+        ],
+    )
+    # fmt: on
+    def test_missing_data(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            "POS==14370",
+            "INFO/AN>0",
+            'FILTER="PASS"',
+            "FMT/DP>=5",
+        ],
+    )
+    # fmt: on
+    def test_exclude_inverse(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-e", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # ---- BUG 1: missing Number=A INFO field + numeric < ----
+            #
+            # On ``sample.vcf.gz`` only 20:1234567 has source
+            # ``INFO/AC`` (=1,1); every other record has no AC at all.
+            #
+            #   bcftools query -i 'INFO/AC<2' sample.vcf.gz
+            #     → 20 1234567          (missing excludes)
+            #   vcztools query -i 'INFO/AC<2' sample.vcz.zip
+            #     → every record       (missing fills with min-int,
+            #                           which satisfies <2)
+            #
+            # Root cause: ``ComparisonOperator.eval`` in
+            # ``vcztools/bcftools_filter.py:309-310`` delegates
+            # straight to ``operator.lt`` on the raw zarr array. The
+            # int-sentinel fill value for a record that has no AC at
+            # all is not masked out, so the comparison treats it as
+            # a real value.
+            #
+            # Fix direction: track per-element missingness (min-int
+            # for ints, NaN for floats) and force the comparison
+            # result to False wherever the operand was missing. This
+            # is the numeric counterpart to the ``"."`` literal case
+            # (issue #163) — the two should probably be fixed
+            # together.
+            pytest.param(
+                "INFO/AC<2",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason=(
+                        "Missing INFO/AC treated as -INT_MAX; "
+                        "see TestFilterExpressionLanguage."
+                        "test_known_divergences "
+                        "comment for the bug-report text."
+                    ),
+                ),
+            ),
+
+            # ---- BUG 2: bare flag identifier as the whole predicate ----
+            #
+            #   bcftools query -i 'DB' sample.vcf.gz
+            #     → empty (bcftools rejects bare flag as predicate)
+            #   vcztools query -i 'DB' sample.vcz.zip
+            #     → 20 14370, 20 1110696   (the two DB=1 records)
+            #
+            # Root cause: ``Identifier.eval`` in
+            # ``vcztools/bcftools_filter.py:143-147`` returns the raw
+            # int array; ``BcftoolsFilter.evaluate`` then uses it
+            # directly as the include-mask, so truthy (=1) records
+            # pass the filter.
+            #
+            # Fix direction: in ``BcftoolsFilter.__init__`` reject a
+            # parse tree whose root is a plain ``Identifier`` (no
+            # comparison / logical / filter-set operator wrapping
+            # it). The correct bcftools form is ``DB=1`` — callers
+            # should be told so. Alternatively, if we want to be
+            # lenient, translate a bare flag into ``<flag>=1`` at
+            # parse time, but matching bcftools's behaviour is
+            # probably the safer default.
+            pytest.param(
+                "DB",
+                marks=pytest.mark.xfail(
+                    strict=True,
+                    reason=(
+                        "Bare flag identifier is not a valid "
+                        "bcftools predicate; vcztools evaluates it "
+                        "as a truthy mask. See comment for details."
+                    ),
+                ),
+            ),
+        ],
+    )
+    # fmt: on
+    def test_known_divergences(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # ---- BUG 3: arithmetic on a float field with missing values ----
+    #
+    # Any arithmetic that touches ``QUAL`` on sample.vcf.gz — which
+    # has ``QUAL=.`` at 20:1235237, encoded as float NaN — causes
+    # numpy to emit a ``RuntimeWarning: invalid value encountered in
+    # {multiply,add,subtract,...}``. Both the unary-minus path and
+    # the binary-arithmetic path suffer from this. Output values are
+    # correct in both cases; only stderr is noisy.
+    #
+    # Observed locations:
+    #
+    #   vcztools/bcftools_filter.py:183 (UnaryMinus.eval, ``-1*value``)
+    #   vcztools/bcftools_filter.py:271 (BinaryOperator.eval,
+    #                                    ``arith_fn(ret, operand.eval(data))``)
+    #
+    # Root cause: evaluation doesn't mask out missing operands before
+    # arithmetic. For unary minus specifically, ``-1 * NaN`` warns
+    # even though ``-NaN`` would not. For binary arithmetic, any op
+    # on NaN warns.
+    #
+    # Fix directions:
+    #  - Replace ``-1 * value`` with ``np.negative(value)`` or
+    #    ``-value`` in ``UnaryMinus.eval`` (NaN-safe and shorter).
+    #  - For binary arithmetic, either (a) propagate a missingness
+    #    mask so arithmetic on missing short-circuits to missing, or
+    #    (b) wrap the eval in ``np.errstate(invalid="ignore")``.
+    #    Option (a) is more honest; (b) is the one-liner.
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # UnaryMinus path (bcftools_filter.py:183).
+            "-QUAL>-20",
+            # BinaryOperator path (bcftools_filter.py:271).
+            "QUAL + 1 > 11",
+        ],
+    )
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Arithmetic on NaN-valued QUAL emits numpy "
+            "RuntimeWarning; bug covers both UnaryMinus and "
+            "BinaryOperator. Output values match bcftools; only "
+            "stderr is noisy."
+        ),
+    )
+    def test_nan_arithmetic_warning(self, fx_sample_vcz, expr):
+        # Run vcztools in a subprocess rather than through the in-
+        # process CliRunner: Python's per-module warning registry
+        # and numpy's FPU state both persist across tests in the
+        # same process, making ``warnings.catch_warnings`` unreliable
+        # for detecting a warning that earlier tests may have
+        # "consumed". A fresh subprocess guarantees the RuntimeWarning
+        # surfaces on stderr whenever the buggy code path runs.
+        cmd = f"{self.FMT} -i '{expr}' {fx_sample_vcz.vcf_path}"
+        bcftools_output, _ = run_bcftools(cmd)
+        result = subprocess.run(
+            f"uv run vcztools {self.FMT} -i '{expr}' {fx_sample_vcz.zip_path}",
+            capture_output=True,
+            check=True,
+            shell=True,
+        )
+        vcztools_output = result.stdout.decode("utf-8")
+        vcztools_stderr = result.stderr.decode("utf-8")
+        assert vcztools_output == bcftools_output
+        assert "RuntimeWarning" not in vcztools_stderr, (
+            f"unexpected RuntimeWarning in stderr:\n{vcztools_stderr}"
+        )
+
+
 class TestSampleSubsetFilterSemantics:
     """Sample subset vs filter-evaluation ordering.
 

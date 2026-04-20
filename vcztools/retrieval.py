@@ -3,10 +3,10 @@ import functools
 import numpy as np
 import pandas as pd
 
-from vcztools import filter as filter_mod
 from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
 from vcztools import utils
+from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
@@ -221,6 +221,20 @@ class VczReader:
         sample.
     samples_complement
         If ``True``, selects every sample *except* those in ``samples``.
+    variant_filter
+        An object implementing the
+        :class:`~vcztools.variant_filter.VariantFilter` protocol, or
+        ``None`` for no filter. The CLI constructs a
+        :class:`~vcztools.bcftools_filter.BcftoolsFilter` from ``-i``/
+        ``-e`` flags; external callers can plug in any alternative
+        implementation.
+    filter_after_samples
+        Controls when a sample-scope filter sees the sample axis.
+        ``False`` (default) evaluates on the full sample axis, matching
+        ``bcftools view`` semantics. ``True`` evaluates on the
+        sample-subsetted view, matching ``bcftools query``'s FMT-scope
+        post-subset semantics and avoiding reads of unselected sample
+        chunks. No-op for variant-scope filters.
     """
 
     def __init__(
@@ -234,6 +248,8 @@ class VczReader:
         samples_complement: bool = False,
         ignore_missing_samples: bool = False,
         drop_genotypes: bool = False,
+        variant_filter: variant_filter_mod.VariantFilter | None = None,
+        filter_after_samples: bool = False,
         zarr_backend_storage: str | None = None,
     ):
         regions_df = _regions_input_to_df(regions, arg_name="regions")
@@ -276,6 +292,17 @@ class VczReader:
             targets_df, contigs_u, complement=targets_complement
         )
 
+        if (
+            variant_filter is not None
+            and drop_genotypes
+            and variant_filter.scope == "sample"
+        ):
+            raise ValueError(
+                "sample-scope variant_filter is incompatible with drop_genotypes=True"
+            )
+        self.variant_filter = variant_filter
+        self.filter_after_samples = filter_after_samples
+
     @functools.cached_property
     def contig_ids(self):
         """Contig IDs as raw zarr strings."""
@@ -300,11 +327,9 @@ class VczReader:
         self,
         *,
         fields: list[str] | None = None,
-        include: str | None = None,
-        exclude: str | None = None,
     ):
         """Yield dict[str, np.ndarray] per variant chunk that passes the
-        current regions/targets/samples/include-exclude selection.
+        current regions/targets/samples/variant-filter selection.
 
         The per-chunk computation runs in stages:
 
@@ -323,18 +348,22 @@ class VczReader:
         if fields is not None and len(fields) == 0:
             return
 
-        filter_expr = self._make_filter_expression(include, exclude)
         reader = VariantChunkReader(self.root, sample_chunk_plan=self.sample_chunk_plan)
         query_fields = self._resolve_query_fields(fields)
+        filter_getter = (
+            reader.get_for_output
+            if self.filter_after_samples
+            else reader.get_for_filter
+        )
 
         for chunk_idx in self._chunk_indexes():
             reader.set_chunk(chunk_idx)
             v_mask = self._chunk_region_mask(reader)
-            if filter_expr is not None:
+            if self.variant_filter is not None:
                 filter_data = {
-                    f: reader.get_for_filter(f) for f in filter_expr.referenced_fields
+                    f: filter_getter(f) for f in self.variant_filter.referenced_fields
                 }
-                filter_mask = filter_expr.evaluate(filter_data)
+                filter_mask = self.variant_filter.evaluate(filter_data)
                 v_mask = _combine_masks(v_mask, filter_mask)
             if v_mask is not None and not np.any(v_mask):
                 continue
@@ -361,14 +390,6 @@ class VczReader:
                 value = value[variants_selection]
             data[field] = value
         return data
-
-    def _make_filter_expression(self, include, exclude):
-        """Return a :class:`FilterExpression` for ``include``/``exclude`` or
-        ``None`` when neither is supplied (or the expression is empty)."""
-        expr = filter_mod.FilterExpression(
-            field_names=set(self.root), include=include, exclude=exclude
-        )
-        return expr if expr.parse_result is not None else None
 
     def _chunk_indexes(self):
         """Variant-chunk indexes that may contain matching rows.
@@ -404,14 +425,16 @@ class VczReader:
         A ``None`` or 1-D mask is the variant selection; there is no
         call mask. A 2-D mask (from a sample-scoped filter) collapses
         along the sample axis for the variant selection and carries the
-        per-sample matches through as ``call_mask``, with the sample-axis
-        subset applied when a samples subset was requested.
+        per-sample matches through as ``call_mask``. The sample-axis
+        subset is applied here only when the filter was evaluated on
+        the *full* sample axis; under ``filter_after_samples`` the
+        mask is already in subset-sample space.
         """
         if v_mask is None or v_mask.ndim == 1:
             return v_mask, None
         variants_selection = np.any(v_mask, axis=1)
         call_mask = v_mask[variants_selection]
-        if self.subsetting_samples:
+        if self.subsetting_samples and not self.filter_after_samples:
             call_mask = call_mask[:, self.samples_selection]
         return variants_selection, call_mask
 
@@ -419,13 +442,9 @@ class VczReader:
         self,
         *,
         fields: list[str] | None = None,
-        include: str | None = None,
-        exclude: str | None = None,
     ):
         """Yield dict[str, scalar/1d-array] per variant row."""
-        for chunk_data in self.variant_chunks(
-            fields=fields, include=include, exclude=exclude
-        ):
+        for chunk_data in self.variant_chunks(fields=fields):
             first_field = next(iter(chunk_data.values()))
             num_variants = len(first_field)
             for i in range(num_variants):

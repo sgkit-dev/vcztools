@@ -153,7 +153,7 @@ class Writer:
             f.write(generate_fam(self.root))
 
 
-def write_plink(reader, out, *, include=None, exclude=None):
+def write_plink(reader, out):
     out_prefix = pathlib.Path(out)
     writer = Writer(
         reader,

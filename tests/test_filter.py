@@ -3,7 +3,8 @@ import numpy.testing as nt
 import pyparsing as pp
 import pytest
 
-from vcztools import filter as filter_mod
+from vcztools import bcftools_filter as filter_mod
+from vcztools import filter as legacy_filter_mod
 
 
 class TestFilterExpressionParser:
@@ -156,13 +157,13 @@ class TestFilterExpressionSample:
     def test(self, fx_sample_vcz, expression, expected_result):
         root = fx_sample_vcz.group
         data = {field: root[field][:] for field in root.keys()}
-        filter_expr = filter_mod.FilterExpression(
+        filter_expr = filter_mod.BcftoolsFilter(
             field_names=set(root), include=expression
         )
         result = filter_expr.evaluate(data)
         nt.assert_array_equal(result, expected_result)
 
-        filter_expr = filter_mod.FilterExpression(
+        filter_expr = filter_mod.BcftoolsFilter(
             field_names=set(root), exclude=expression
         )
         result = filter_expr.evaluate(data)
@@ -189,7 +190,7 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate(self, expression, data, expected):
-        fee = filter_mod.FilterExpression(field_names=data.keys(), include=expression)
+        fee = filter_mod.BcftoolsFilter(field_names=data.keys(), include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -221,7 +222,7 @@ class TestFilterExpression:
             ],
             "filter_id": ["PASS", "A", "B", "C"],
         }
-        fee = filter_mod.FilterExpression(include=expression)
+        fee = filter_mod.BcftoolsFilter(include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -251,7 +252,7 @@ class TestFilterExpression:
                 ["A", "T", "G", "C"],
             ],
         }
-        fee = filter_mod.FilterExpression(include=expression)
+        fee = filter_mod.BcftoolsFilter(include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -265,7 +266,7 @@ class TestFilterExpression:
         ],
     )
     def test_referenced_fields(self, expr, expected):
-        fe = filter_mod.FilterExpression(
+        fe = filter_mod.BcftoolsFilter(
             field_names={f"variant_{x}" for x in "abcd"}, include=expr
         )
         assert fe.referenced_fields == expected
@@ -283,7 +284,7 @@ class TestFilterExpression:
         ],
     )
     def test_repr(self, expr, expected):
-        fe = filter_mod.FilterExpression(
+        fe = filter_mod.BcftoolsFilter(
             field_names={"variant_a", "variant_b"}, include=expr
         )
         assert repr(fe.parse_result[0]) == expected
@@ -475,4 +476,15 @@ class TestBcftoolsParser:
 class TestAPIErrors:
     def test_include_and_exclude(self):
         with pytest.raises(ValueError, match="Cannot handle both an include "):
-            filter_mod.FilterExpression(include="x", exclude="y")
+            filter_mod.BcftoolsFilter(include="x", exclude="y")
+
+
+class TestLegacyShim:
+    """The ``vcztools.filter`` module is kept as a compatibility shim
+    exposing ``FilterExpression`` as an alias for ``BcftoolsFilter``.
+    Drop this test when the shim is removed.
+    """
+
+    def test_alias_is_bcftools_filter(self):
+        assert legacy_filter_mod.FilterExpression is filter_mod.BcftoolsFilter
+        assert legacy_filter_mod.ParseError is filter_mod.ParseError

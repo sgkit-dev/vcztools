@@ -449,21 +449,20 @@ class TestSampleSubsetFilterSemantics:
       record too (matching ``view``). FMT-scope filters, however,
       evaluate on the SUBSET record — sample subsetting happens first.
 
-    vcztools uniformly uses the pre-subset (``view``-style) ordering
-    for both subcommands. It therefore matches ``bcftools view`` but
-    diverges from ``bcftools query`` whenever an FMT-scope filter
-    gives a different answer pre- vs post-subset.
+    vcztools matches both: the ``view`` CLI uses the reader's default
+    pre-subset evaluation; the ``query`` CLI constructs the reader
+    with ``filter_after_samples=True`` so FMT-scope filters see only
+    the subset. INFO-scope filters touch no sample dimension so the
+    flag is a no-op for them.
 
     The three methods below cover:
 
     - ``test_query_variant_selection``: ``query`` cases where pre/post
       agree (INFO-scope, and a mixed case chosen so the FMT leg does
-      not alter the outcome), so vcztools and bcftools match.
-    - ``test_query_fmt_post_subset_divergence``: ``xfail(strict=True)``
-      — pins the cases where vcztools's ``query`` does not match
-      ``bcftools query`` for FMT-scope filters under ``-s``. If
-      vcztools is ever changed to post-subset FMT evaluation these
-      will flip to XPASS and the failure prompts a follow-up.
+      not alter the outcome).
+    - ``test_query_fmt_post_subset``: ``query`` cases with FMT-scope
+      filters under ``-s`` — pins vcztools to bcftools query's
+      post-subset semantics.
     - ``test_view_fmt_pre_subset``: ``view`` cases exercising
       pre-subset FMT semantics, with selections where pre- and
       post-subset would give different answers. vcztools must match
@@ -518,15 +517,6 @@ class TestSampleSubsetFilterSemantics:
         assert vcztools_output == bcftools_output
 
     # fmt: off
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "bcftools query evaluates FMT-scope filters AFTER sample "
-            "subsetting; vcztools evaluates pre-subset uniformly for "
-            "view and query. See TestSampleSubsetFilterSemantics "
-            "docstring."
-        ),
-    )
     @pytest.mark.parametrize(
         "args",
         [
@@ -554,7 +544,7 @@ class TestSampleSubsetFilterSemantics:
         ],
     )
     # fmt: on
-    def test_query_fmt_post_subset_divergence(self, fx_sample_vcz, args):
+    def test_query_fmt_post_subset(self, fx_sample_vcz, args):
         cmd = f"{self.FMT} {args}"
         bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
         vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")

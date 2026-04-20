@@ -9,7 +9,7 @@ from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
-from .utils import assert_vcfs_close, to_vcz_icechunk
+from .utils import assert_vcfs_close, make_reader, to_vcz_icechunk
 from .vcz_builder import copy_vcz, make_vcz
 
 cyvcf2 = pytest.importorskip("cyvcf2")
@@ -126,8 +126,8 @@ def test_write_vcf__filtering(
     tmp_path, fx_sample_vcz, include, exclude, expected_chrom_pos
 ):
     output = tmp_path.joinpath("output.vcf")
-    reader = VczReader(fx_sample_vcz.group)
-    write_vcf(reader, output, include=include, exclude=exclude)
+    reader = make_reader(fx_sample_vcz.group, include=include, exclude=exclude)
+    write_vcf(reader, output)
 
     v = VCF(str(output))
     variants = list(v)
@@ -238,8 +238,8 @@ class TestSmallChunks:
     def test_info_ac_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        reader = VczReader(vcz)
-        write_vcf(reader, output, include="INFO/AC>2", no_version=True)
+        reader = make_reader(vcz, include="INFO/AC>2")
+        write_vcf(reader, output, no_version=True)
 
         expected_positions = [
             i + 1 for i, ac in enumerate(self.AC_VALUES) if ac > 2
@@ -263,8 +263,8 @@ class TestSmallChunks:
     def test_region_and_info_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        reader = VczReader(vcz, regions="chr1:5-12")
-        write_vcf(reader, output, include="INFO/AC>2", no_version=True)
+        reader = make_reader(vcz, regions="chr1:5-12", include="INFO/AC>2")
+        write_vcf(reader, output, no_version=True)
 
         expected_positions = [
             i + 1
@@ -279,10 +279,13 @@ class TestSmallChunks:
     def test_targets_complement_and_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        reader = VczReader(
-            vcz, targets="chr1:5-12", targets_complement=True
+        reader = make_reader(
+            vcz,
+            targets="chr1:5-12",
+            targets_complement=True,
+            include="INFO/AC>2",
         )
-        write_vcf(reader, output, include="INFO/AC>2", no_version=True)
+        write_vcf(reader, output, no_version=True)
 
         expected_positions = [
             i + 1
@@ -439,13 +442,14 @@ def test_write_vcf__regions_samples_filtering(
 ):
     output = tmp_path.joinpath("output.vcf")
     sample_list = None if samples is None else [samples]
-    reader = VczReader(
+    reader = make_reader(
         fx_sample_vcz.group,
         regions=regions,
         targets=targets,
         samples=sample_list,
+        include=include,
     )
-    write_vcf(reader, output, include=include)
+    write_vcf(reader, output)
 
     v = VCF(str(output))
     variants = list(v)
@@ -460,20 +464,16 @@ def test_write_vcf__regions_samples_filtering(
         assert variant.POS == pos
 
 
-def test_write_vcf__include_exclude(tmp_path, fx_sample_vcz):
-    output = tmp_path.joinpath("output.vcf")
+def test_write_vcf__include_exclude(fx_sample_vcz):
     variant_site_filter = "POS > 1"
-
-    reader = VczReader(fx_sample_vcz.group)
     with pytest.raises(
         ValueError,
         match=re.escape(
             "Cannot handle both an include expression and an exclude expression."
         ),
     ):
-        write_vcf(
-            reader,
-            output,
+        make_reader(
+            fx_sample_vcz.group,
             include=variant_site_filter,
             exclude=variant_site_filter,
         )
@@ -589,11 +589,8 @@ class TestApiErrors:
         return fx_sample_vcz.group
 
     def test_no_output_filter_parse_error(self, fx_vcz):
-        output = StringIO()
-        reader = VczReader(fx_vcz)
         with pytest.raises(ValueError, match='the tag "Not" is not defined'):
-            write_vcf(reader, output, include="Not a valid expression")
-        assert output.getvalue() == ""
+            make_reader(fx_vcz, include="Not a valid expression")
 
 
 def minimal_vcf_chunk(num_variants, num_samples, ploidy=2):

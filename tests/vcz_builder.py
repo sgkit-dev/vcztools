@@ -167,7 +167,7 @@ def make_vcz(
             root,
             "sample_id",
             sample_id_arr,
-            chunks=(max(num_samples, 1),),
+            chunks=(s_chunk,),
             dimension_names=("samples",),
         )
         _create_array(

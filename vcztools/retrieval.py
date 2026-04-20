@@ -24,7 +24,7 @@ class VariantChunkReader(collections.abc.Sequence):
     variants dimension.
     """
 
-    def __init__(self, root, *, fields=None):
+    def __init__(self, root, *, fields=None, sample_chunk_plan=None):
         self.root = root
         if fields is None:
             fields = [
@@ -45,6 +45,7 @@ class VariantChunkReader(collections.abc.Sequence):
             else:
                 self.static_data[key] = arr[:]
         self.num_chunks = next(iter(self.arrays.values())).cdata_shape[0]
+        self.sample_chunk_plan = sample_chunk_plan
 
     def __len__(self):
         return self.num_chunks
@@ -54,19 +55,22 @@ class VariantChunkReader(collections.abc.Sequence):
         data.update(self.static_data)
         return data
 
-    def get_chunk_data(self, chunk, mask, samples_selection):
-        # When samples_selection is empty (e.g. --force-samples filtered out
-        # every requested sample), we still read the full call arrays so
-        # downstream AC/AN recomputation can use the complete genotype set.
-        num_samples = len(samples_selection)
+    def get_chunk_data(self, chunk, mask):
+        plan = self.sample_chunk_plan
         data = {}
         for key, array in self.arrays.items():
-            result = array.blocks[chunk]
-            if key.startswith("call_") and num_samples > 0:
+            if key.startswith("call_") and plan is not None:
+                parts = [
+                    array.blocks[(chunk, sci) + (slice(None),) * (array.ndim - 2)]
+                    for sci in plan.chunk_indexes
+                ]
+                raw = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
                 # Advanced indexing along a non-first axis of a 3-D array
                 # yields a non-C-contiguous view; ascontiguousarray produces
                 # the fresh contiguous buffer that the C encoder requires.
-                result = np.ascontiguousarray(result[:, samples_selection])
+                result = np.ascontiguousarray(raw[:, plan.local_selection])
+            else:
+                result = array.blocks[chunk]
             if mask is not None:
                 result = result[mask]
             data[key] = result
@@ -205,6 +209,19 @@ class VczReader:
             )
             self.subsetting_samples = samples is not None
 
+        if len(self.samples_selection) > 0:
+            # Plan covers the missing-header-samples case too (samples=None
+            # with empty-string entries): samples_selection excludes those
+            # indices, and the plan reduces accordingly. When the selection
+            # covers every sample in order, the plan is a no-op index.
+            self.sample_chunk_plan = samples_mod.build_chunk_plan(
+                self.samples_selection,
+                num_samples=len(all_samples),
+                samples_chunk_size=int(self.root["sample_id"].chunks[0]),
+            )
+        else:
+            self.sample_chunk_plan = None
+
         contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()
         self.regions = regions_mod.dataframe_to_ranges(regions_df, contigs_u)
         self.targets = regions_mod.dataframe_to_ranges(
@@ -255,7 +272,9 @@ class VczReader:
             return
 
         filter_expr = self._make_filter_expression(include, exclude)
-        query_reader = VariantChunkReader(self.root, fields=fields)
+        query_reader = VariantChunkReader(
+            self.root, fields=fields, sample_chunk_plan=self.sample_chunk_plan
+        )
         filter_reader = (
             VariantChunkReader(self.root, fields=list(filter_expr.referenced_fields))
             if filter_expr is not None
@@ -267,9 +286,7 @@ class VczReader:
             if v_mask is not None and not np.any(v_mask):
                 continue
             variants_selection, call_mask = self._reduce_chunk_mask(v_mask)
-            chunk_data = query_reader.get_chunk_data(
-                chunk_idx, variants_selection, self.samples_selection
-            )
+            chunk_data = query_reader.get_chunk_data(chunk_idx, variants_selection)
             if call_mask is not None:
                 chunk_data["call_mask"] = call_mask
             yield chunk_data

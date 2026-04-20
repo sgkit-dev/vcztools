@@ -5,7 +5,7 @@ import numpy.testing as nt
 import pytest
 
 from vcztools.retrieval import VczReader
-from vcztools.samples import parse_samples, read_samples_file
+from vcztools.samples import build_chunk_plan, parse_samples, read_samples_file
 from vcztools.vcf_writer import write_vcf
 
 from .vcz_builder import make_vcz
@@ -398,6 +398,64 @@ class TestRoundTripEdgeCaseSamples:
 
         v = cyvcf2.VCF(output_path)
         assert v.samples == sample_ids
+
+
+class TestBuildChunkPlan:
+    """Translate a global sample selection into a sample-chunk read plan."""
+
+    def test_single_sample_middle_chunk(self):
+        # num_samples=10, chunks of 3: [0-2][3-5][6-8][9]. Sample 4 is in chunk 1.
+        plan = build_chunk_plan(np.array([4]), num_samples=10, samples_chunk_size=3)
+        nt.assert_array_equal(plan.chunk_indexes, [1])
+        nt.assert_array_equal(plan.local_selection, [1])
+
+    def test_samples_spanning_two_chunks_with_gap(self):
+        # Samples 1 and 7 sit in chunks 0 and 2; chunk 1 is skipped.
+        plan = build_chunk_plan(np.array([1, 7]), num_samples=10, samples_chunk_size=3)
+        nt.assert_array_equal(plan.chunk_indexes, [0, 2])
+        # Concat is (chunk0: size 3) + (chunk2: size 3) = 6 samples.
+        # Sample 1 → local 1; sample 7 → offset 3 + (7 % 3) = 4.
+        nt.assert_array_equal(plan.local_selection, [1, 4])
+
+    def test_partial_final_chunk(self):
+        # num_samples=10, chunk size 3 → last chunk has 1 sample (index 9).
+        plan = build_chunk_plan(np.array([9]), num_samples=10, samples_chunk_size=3)
+        nt.assert_array_equal(plan.chunk_indexes, [3])
+        nt.assert_array_equal(plan.local_selection, [0])
+
+    def test_preserves_user_order(self):
+        # selection order [7, 1] must round-trip through the plan.
+        plan = build_chunk_plan(np.array([7, 1]), num_samples=10, samples_chunk_size=3)
+        nt.assert_array_equal(plan.chunk_indexes, [0, 2])
+        # Sample 7 first → local 4; sample 1 second → local 1.
+        nt.assert_array_equal(plan.local_selection, [4, 1])
+
+    def test_chunk_size_one(self):
+        # Each sample is its own chunk.
+        plan = build_chunk_plan(
+            np.array([0, 3, 5]), num_samples=6, samples_chunk_size=1
+        )
+        nt.assert_array_equal(plan.chunk_indexes, [0, 3, 5])
+        nt.assert_array_equal(plan.local_selection, [0, 1, 2])
+
+    def test_single_chunk_covers_all_samples(self):
+        # samples_chunk_size >= num_samples → one chunk.
+        plan = build_chunk_plan(np.array([0, 2]), num_samples=3, samples_chunk_size=3)
+        nt.assert_array_equal(plan.chunk_indexes, [0])
+        nt.assert_array_equal(plan.local_selection, [0, 2])
+
+    def test_empty_selection(self):
+        plan = build_chunk_plan(
+            np.array([], dtype=np.int64), num_samples=10, samples_chunk_size=3
+        )
+        assert plan.chunk_indexes.shape == (0,)
+        assert plan.local_selection.shape == (0,)
+
+    def test_duplicate_samples_preserved(self):
+        # Duplicate global indices are passed through to duplicate local indices.
+        plan = build_chunk_plan(np.array([1, 1]), num_samples=10, samples_chunk_size=3)
+        nt.assert_array_equal(plan.chunk_indexes, [0])
+        nt.assert_array_equal(plan.local_selection, [1, 1])
 
 
 def test_parse_samples_returns_numpy_arrays():

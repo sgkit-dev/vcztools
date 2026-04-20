@@ -9,6 +9,26 @@ import numpy as np
 import xarray as xr
 import zarr
 
+from vcztools import bcftools_filter, retrieval
+
+
+def make_reader(source, *, include=None, exclude=None, **kwargs):
+    """Build a :class:`VczReader` with an optional
+    :class:`BcftoolsFilter` from ``include``/``exclude`` strings.
+
+    ``source`` accepts the same inputs as :class:`VczReader` — a path,
+    store, or opened Group. All non-filter keyword arguments are
+    forwarded to :class:`VczReader`.
+    """
+    reader = retrieval.VczReader(source, **kwargs)
+    if include is not None or exclude is not None:
+        candidate = bcftools_filter.BcftoolsFilter(
+            field_names=set(reader.root), include=include, exclude=exclude
+        )
+        if candidate.parse_result is not None:
+            reader.variant_filter = candidate
+    return reader
+
 
 def load_dataset(
     store: str | Path | MutableMapping[str, bytes],

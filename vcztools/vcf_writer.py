@@ -13,7 +13,6 @@ from vcztools.utils import (
 )
 
 from . import _vcztools, constants, retrieval
-from . import filter as filter_mod
 from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 
 logger = logging.getLogger(__name__)
@@ -77,15 +76,8 @@ def write_vcf(
     no_version: bool = False,
     no_update=None,
     drop_genotypes: bool = False,
-    include: str | None = None,
-    exclude: str | None = None,
 ) -> None:
     with open_file_like(output) as output:
-        # Need to try parsing filter expressions before writing header
-        filter_mod.FilterExpression(
-            field_names=set(reader.root), include=include, exclude=exclude
-        )
-
         if not no_header:
             force_ac_an_header = not drop_genotypes and reader.subsetting_samples
             vcf_header = _generate_header(
@@ -99,7 +91,7 @@ def write_vcf(
         if header_only:
             return
 
-        for chunk_data in reader.variant_chunks(include=include, exclude=exclude):
+        for chunk_data in reader.variant_chunks():
             c_chunk_to_vcf(
                 chunk_data,
                 reader.samples_selection,

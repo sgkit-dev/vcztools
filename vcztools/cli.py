@@ -5,11 +5,12 @@ from functools import wraps
 
 import click
 
-from . import plink, provenance, retrieval, vcf_writer
+from . import bcftools_filter, plink, provenance, retrieval, vcf_writer
 from . import query as query_module
 from . import regions as regions_mod
 from . import samples as samples_mod
 from . import stats as stats_module
+from .utils import open_zarr
 
 
 @contextlib.contextmanager
@@ -124,6 +125,9 @@ def make_reader(
     targets_file=None,
     samples=None,
     samples_file=None,
+    include=None,
+    exclude=None,
+    filter_after_samples=False,
     force_samples=False,
     drop_genotypes=False,
     zarr_backend_storage=None,
@@ -167,6 +171,14 @@ def make_reader(
             samples_complement = True
             samples = samples[1:]
         samples = samples.split(",")
+    variant_filter = None
+    if include is not None or exclude is not None:
+        root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+        candidate = bcftools_filter.BcftoolsFilter(
+            field_names=set(root), include=include, exclude=exclude
+        )
+        if candidate.parse_result is not None:
+            variant_filter = candidate
     return retrieval.VczReader(
         path,
         regions=regions,
@@ -176,6 +188,8 @@ def make_reader(
         samples_complement=samples_complement,
         ignore_missing_samples=force_samples,
         drop_genotypes=drop_genotypes,
+        variant_filter=variant_filter,
+        filter_after_samples=filter_after_samples,
         zarr_backend_storage=zarr_backend_storage,
     )
 
@@ -302,6 +316,9 @@ def query(
         targets_file=targets_file,
         samples=samples,
         samples_file=samples_file,
+        include=include,
+        exclude=exclude,
+        filter_after_samples=True,
         force_samples=force_samples,
         zarr_backend_storage=zarr_backend_storage,
     )
@@ -310,8 +327,6 @@ def query(
             reader,
             output,
             query_format=format,
-            include=include,
-            exclude=exclude,
             disable_automatic_newline=disable_automatic_newline,
         )
 
@@ -406,6 +421,8 @@ def view(
         targets_file=targets_file,
         samples=samples,
         samples_file=samples_file,
+        include=include,
+        exclude=exclude,
         force_samples=force_samples,
         drop_genotypes=drop_genotypes,
         zarr_backend_storage=zarr_backend_storage,
@@ -419,8 +436,6 @@ def view(
             no_version=no_version,
             no_update=no_update,
             drop_genotypes=drop_genotypes,
-            include=include,
-            exclude=exclude,
         )
 
 
@@ -437,8 +452,13 @@ def view_plink1(path, include, exclude, out, zarr_backend_storage):
     -o intermediate.vcf && plink 1.9 --vcf intermediate.vcf [plink options]``
     without generating the intermediate VCF.
     """
-    reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
-    plink.write_plink(reader, out, include=include, exclude=exclude)
+    reader = make_reader(
+        path,
+        include=include,
+        exclude=exclude,
+        zarr_backend_storage=zarr_backend_storage,
+    )
+    plink.write_plink(reader, out)
 
 
 @version

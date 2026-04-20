@@ -4,19 +4,21 @@ import pandas as pd
 import pytest
 
 from tests import vcz_builder
+from tests.utils import make_reader
+from vcztools.bcftools_filter import BcftoolsFilter
 from vcztools.retrieval import VariantChunkReader, VczReader
 
 
 def test_variant_chunks(fx_sample_vcz):
-    reader = VczReader(
+    reader = make_reader(
         fx_sample_vcz.group,
         regions="20:1230236-",
         samples=["NA00002", "NA00003"],
+        include="FMT/DP>3",
     )
     chunk_data = next(
         reader.variant_chunks(
             fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
-            include="FMT/DP>3",
         )
     )
     nt.assert_array_equal(chunk_data["variant_contig"], [1, 1])
@@ -43,10 +45,14 @@ def test_variant_chunks_empty_fields(fx_sample_vcz):
     ],
 )
 def test_variant_iter(fx_sample_vcz, regions, samples):
-    reader = VczReader(fx_sample_vcz.group, regions=regions, samples=samples)
+    reader = make_reader(
+        fx_sample_vcz.group,
+        regions=regions,
+        samples=samples,
+        include="FMT/DP>3",
+    )
     it = reader.variants(
         fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
-        include="FMT/DP>3",
     )
 
     variant1 = next(it)
@@ -102,7 +108,8 @@ class TestFilterMultiChunk:
 
     @staticmethod
     def _chunks(root, **kwargs):
-        return VczReader(root).variant_chunks(fields=["variant_position"], **kwargs)
+        reader = make_reader(root, **kwargs)
+        return reader.variant_chunks(fields=["variant_position"])
 
     def test_include_filter_eq_pass(self):
         results = list(self._chunks(_make_filter_vcz(), include='FILTER="PASS"'))
@@ -128,13 +135,8 @@ class TestFilterMultiChunk:
 
     def test_filter_with_regions(self):
         root = _make_filter_vcz()
-        reader = VczReader(root, regions="chr1:104-107")
-        results = list(
-            reader.variant_chunks(
-                fields=["variant_position"],
-                include='FILTER="PASS"',
-            )
-        )
+        reader = make_reader(root, regions="chr1:104-107", include='FILTER="PASS"')
+        results = list(reader.variant_chunks(fields=["variant_position"]))
         positions = np.concatenate([chunk["variant_position"] for chunk in results])
         # Positions 104-107 intersected with PASS (even) → 104, 106
         nt.assert_array_equal(positions, [104, 106])
@@ -471,21 +473,114 @@ class TestVariantChunksFilterPlusSamples:
     """End-to-end: a call_* field referenced by both filter and query,
     with sample subsetting active, preserves bcftools semantics."""
 
+    def test_custom_variant_filter_no_bcftools(self, fx_sample_vcz):
+        # Hand-rolled filter implementing the VariantFilter protocol —
+        # proves VczReader has no bcftools-specific coupling.
+        class PositionGt:
+            referenced_fields = frozenset({"variant_position"})
+            scope = "variant"
+
+            def __init__(self, threshold):
+                self._threshold = threshold
+
+            def evaluate(self, chunk_data):
+                return chunk_data["variant_position"] > self._threshold
+
+        reader = VczReader(fx_sample_vcz.group, variant_filter=PositionGt(1000000))
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        nt.assert_array_equal(positions, [1110696, 1230237, 1234567, 1235237])
+
+    def test_filter_after_samples_sample_scope(self, fx_sample_vcz):
+        # bcftools-query-style post-subset evaluation: filter sees only
+        # the selected samples, so position 1234567 (where NA00001 but
+        # not NA00002/NA00003 matched FMT/DP>3) is DROPPED.
+        variant_filter = BcftoolsFilter(
+            field_names=set(VczReader(fx_sample_vcz.group).root),
+            include="FMT/DP>3",
+        )
+        reader = VczReader(
+            fx_sample_vcz.group,
+            regions="20:1230236-",
+            samples=["NA00002", "NA00003"],
+            variant_filter=variant_filter,
+            filter_after_samples=True,
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
+        chunk = chunks[0]
+        assert chunk["call_DP"].shape[1] == 2
+        nt.assert_array_equal(chunk["variant_position"], [1230237])
+
+    def test_filter_after_samples_no_subset_is_noop(self, fx_sample_vcz):
+        # With no sample subset, filter_after_samples=True must return
+        # identical results to the default mode.
+        root = fx_sample_vcz.group
+        field_names = set(VczReader(root).root)
+
+        def build(filter_after_samples):
+            return VczReader(
+                root,
+                regions="20:1230236-",
+                variant_filter=BcftoolsFilter(
+                    field_names=field_names, include="FMT/DP>3"
+                ),
+                filter_after_samples=filter_after_samples,
+            )
+
+        pre = list(build(False).variant_chunks(fields=["variant_position"]))
+        post = list(build(True).variant_chunks(fields=["variant_position"]))
+        nt.assert_array_equal(
+            np.concatenate([c["variant_position"] for c in pre]),
+            np.concatenate([c["variant_position"] for c in post]),
+        )
+
+    def test_filter_after_samples_variant_scope_unchanged(self, fx_sample_vcz):
+        # Variant-scope filters touch no sample axis; the flag is a
+        # no-op regardless of subset.
+        root = fx_sample_vcz.group
+        field_names = set(VczReader(root).root)
+
+        def build(filter_after_samples):
+            return VczReader(
+                root,
+                samples=["NA00001"],
+                variant_filter=BcftoolsFilter(
+                    field_names=field_names, include="POS > 1000000"
+                ),
+                filter_after_samples=filter_after_samples,
+            )
+
+        pre = list(build(False).variant_chunks(fields=["variant_position"]))
+        post = list(build(True).variant_chunks(fields=["variant_position"]))
+        nt.assert_array_equal(
+            np.concatenate([c["variant_position"] for c in pre]),
+            np.concatenate([c["variant_position"] for c in post]),
+        )
+
+    def test_drop_genotypes_rejects_sample_scope_filter(self, fx_sample_vcz):
+        field_names = set(VczReader(fx_sample_vcz.group).root)
+        variant_filter = BcftoolsFilter(field_names=field_names, include="FMT/DP>3")
+        with pytest.raises(
+            ValueError, match="sample-scope variant_filter is incompatible"
+        ):
+            VczReader(
+                fx_sample_vcz.group,
+                variant_filter=variant_filter,
+                drop_genotypes=True,
+            )
+
     def test_filter_sees_full_samples_output_is_pruned(self, fx_sample_vcz):
         # Locks in that variants can be included because non-selected
         # samples matched the filter, while the returned call_* arrays
         # are sample-pruned — exercising the single-reader path where
         # both views coexist on one field.
-        reader = VczReader(
+        reader = make_reader(
             fx_sample_vcz.group,
             regions="20:1230236-",
             samples=["NA00002", "NA00003"],
+            include="FMT/DP>3",
         )
-        chunks = list(
-            reader.variant_chunks(
-                fields=["variant_position", "call_DP"], include="FMT/DP>3"
-            )
-        )
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
         chunk = chunks[0]
         # Sample-pruned shape: 2 samples (NA00002, NA00003).
         assert chunk["call_DP"].shape[1] == 2

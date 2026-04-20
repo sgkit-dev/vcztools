@@ -6,6 +6,7 @@ import pyparsing as pp
 import pytest
 
 from tests import vcz_builder
+from tests.utils import make_reader
 from vcztools.query import (
     QueryFormatParser,
     QueryFormatter,
@@ -317,23 +318,16 @@ class TestWriteQuery:
         assert result.startswith("111 112 ")
 
 
-def test_write_query__include_exclude(tmp_path, fx_sample_vcz):
-    output = tmp_path.joinpath("output.vcf")
-
-    query_format = r"%POS"
+def test_write_query__include_exclude(fx_sample_vcz):
     variant_site_filter = "POS > 1"
-
-    reader = VczReader(fx_sample_vcz.group)
     with pytest.raises(
         ValueError,
         match=re.escape(
             "Cannot handle both an include expression and an exclude expression."
         ),
     ):
-        write_query(
-            reader,
-            output,
-            query_format=query_format,
+        make_reader(
+            fx_sample_vcz.group,
             include=variant_site_filter,
             exclude=variant_site_filter,
         )

@@ -251,8 +251,6 @@ def write_query(
     output,
     *,
     query_format: str,
-    include: str | None = None,
-    exclude: str | None = None,
     disable_automatic_newline: bool = False,
 ):
     if "\\n" not in query_format and not disable_automatic_newline:
@@ -260,5 +258,5 @@ def write_query(
 
     formatter = QueryFormatter(query_format, reader)
 
-    for variant in reader.variants(include=include, exclude=exclude):
+    for variant in reader.variants():
         print(formatter.format_variant(variant), sep="", end="", file=output)

@@ -189,8 +189,9 @@ def _validate_samples_input(value) -> None:
     """Reject samples inputs that are not ``None`` or a ``list[str]``.
 
     A leading ``^`` on the first list element is rejected with a
-    ``ValueError`` pointing at ``samples_complement=True``, mirroring the
-    regions/targets rejection.
+    ``ValueError`` — the Python API expects a pre-expanded list;
+    ``^``-prefix and complement handling live in the CLI layer
+    (see :func:`vcztools.samples.resolve_sample_names`).
     """
     if value is None:
         return
@@ -198,7 +199,7 @@ def _validate_samples_input(value) -> None:
         if len(value) > 0 and isinstance(value[0], str) and value[0].startswith("^"):
             raise ValueError(
                 "samples does not accept a '^' prefix in the Python API; "
-                "use samples_complement=True for complement"
+                "pass a pre-expanded list of sample IDs"
             )
         return
     raise TypeError(f"samples must be list[str] or None; got {type(value).__name__}")
@@ -228,10 +229,9 @@ class VczReader:
         If ``True``, the targets selection is inverted (matches everything
         *outside* the listed intervals).
     samples
-        Sample IDs to select, as a ``list[str]``. ``None`` selects every
-        sample.
-    samples_complement
-        If ``True``, selects every sample *except* those in ``samples``.
+        Sample IDs to select, as a ``list[str]``, in the order the
+        caller wants. ``None`` selects every sample (skipping any
+        empty-string masked entries in the VCZ).
     variant_filter
         An object implementing the
         :class:`~vcztools.variant_filter.VariantFilter` protocol, or
@@ -256,8 +256,6 @@ class VczReader:
         targets=None,
         targets_complement: bool = False,
         samples=None,
-        samples_complement: bool = False,
-        ignore_missing_samples: bool = False,
         drop_genotypes: bool = False,
         variant_filter: variant_filter_mod.VariantFilter | None = None,
         filter_on_subset_samples: bool = False,
@@ -276,10 +274,7 @@ class VczReader:
             self.subsetting_samples = False
         else:
             self.sample_ids, self.samples_selection = samples_mod.parse_samples(
-                samples,
-                all_samples=all_samples,
-                ignore_missing_samples=ignore_missing_samples,
-                complement=samples_complement,
+                samples, all_samples=all_samples
             )
             self.subsetting_samples = samples is not None
 

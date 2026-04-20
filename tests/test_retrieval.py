@@ -248,32 +248,24 @@ class TestVczReaderSamples:
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
         nt.assert_array_equal(reader.samples_selection, [0, 2])
 
-    def test_samples_complement_flag(self, fx_sample_vcz):
-        reader = VczReader(
-            fx_sample_vcz.group,
-            samples=["NA00002"],
-            samples_complement=True,
-        )
-        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
-        nt.assert_array_equal(reader.samples_selection, [0, 2])
-
     def test_samples_rejects_string_input(self, fx_sample_vcz):
         with pytest.raises(TypeError, match="samples must be list"):
             VczReader(fx_sample_vcz.group, samples="NA00001")
 
     def test_samples_rejects_caret_prefix(self, fx_sample_vcz):
-        with pytest.raises(ValueError, match="samples_complement=True"):
+        with pytest.raises(ValueError, match="pre-expanded list"):
             VczReader(fx_sample_vcz.group, samples=["^NA00001"])
 
     def test_samples_unknown_raises(self, fx_sample_vcz):
         with pytest.raises(ValueError, match="not in header: NO_SAMPLE"):
             VczReader(fx_sample_vcz.group, samples=["NO_SAMPLE"])
 
-    def test_samples_unknown_ignore_missing(self, fx_sample_vcz):
-        reader = VczReader(
-            fx_sample_vcz.group, samples=["NO_SAMPLE"], ignore_missing_samples=True
-        )
+    def test_samples_empty_list(self, fx_sample_vcz):
+        # Post-resolve, an empty list means "no samples" (e.g. all
+        # requested names were dropped by ignore_missing_samples).
+        reader = VczReader(fx_sample_vcz.group, samples=[])
         nt.assert_array_equal(reader.sample_ids, [])
+        assert reader.sample_chunk_plan is None
 
 
 class TestVczReaderSampleChunks:
@@ -368,12 +360,11 @@ class TestVczReaderSampleChunks:
         reader = VczReader(self._vcz(), drop_genotypes=True)
         assert reader.sample_chunk_plan is None
 
-    def test_force_samples_empty_has_no_plan(self):
-        # --force-samples eliminates every requested sample → plan=None,
-        # read full call arrays so AC/AN can still be recomputed.
-        reader = VczReader(
-            self._vcz(), samples=["UNKNOWN"], ignore_missing_samples=True
-        )
+    def test_empty_samples_list_has_no_plan(self):
+        # An empty samples list (e.g. after --force-samples drops every
+        # requested unknown) means no sample-chunk plan — full call
+        # arrays are read so AC/AN can still be recomputed.
+        reader = VczReader(self._vcz(), samples=[])
         assert reader.sample_chunk_plan is None
 
 

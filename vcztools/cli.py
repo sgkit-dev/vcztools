@@ -172,6 +172,13 @@ def make_reader(
             samples = samples[1:]
         samples = samples.split(",")
     root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+    if not drop_genotypes:
+        samples = samples_mod.resolve_sample_names(
+            samples,
+            root["sample_id"][:],
+            complement=samples_complement,
+            ignore_missing_samples=force_samples,
+        )
     variant_filter = None
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
@@ -183,8 +190,6 @@ def make_reader(
         targets=targets,
         targets_complement=targets_complement,
         samples=samples,
-        samples_complement=samples_complement,
-        ignore_missing_samples=force_samples,
         drop_genotypes=drop_genotypes,
         variant_filter=variant_filter,
         filter_on_subset_samples=filter_on_subset_samples,

@@ -89,6 +89,13 @@ class EvaluationNode:
     def referenced_fields(self):
         return frozenset()
 
+    def scope(self):
+        # A 2-D mask with sample-axis semantics (axis 1 = samples) is
+        # produced only by identifiers on ``call_*`` fields; every other
+        # node is variant-scoped (axis 1, if present, is alleles or
+        # filters and collapses to a 1-D variant mask at the root).
+        return "variant"
+
 
 class Constant(EvaluationNode):
     def eval(self, data):
@@ -145,6 +152,9 @@ class Identifier(EvaluationNode):
     def referenced_fields(self):
         return frozenset([self.field_name])
 
+    def scope(self):
+        return "sample" if self.field_name.startswith("call_") else "variant"
+
 
 class IndexedIdentifier(EvaluationNode):
     def __init__(self, tokens):
@@ -177,6 +187,9 @@ class UnaryMinus(EvaluationNode):
 
     def referenced_fields(self):
         return self.operand.referenced_fields()
+
+    def scope(self):
+        return self.operand.scope()
 
 
 def double_and(a, b):
@@ -270,6 +283,12 @@ class BinaryOperator(EvaluationNode):
             ret |= operand.referenced_fields()
         return ret
 
+    def scope(self):
+        for operand in self.operands:
+            if operand.scope() == "sample":
+                return "sample"
+        return "variant"
+
 
 class ComparisonOperator(EvaluationNode):
     op_map = {
@@ -295,6 +314,11 @@ class ComparisonOperator(EvaluationNode):
 
     def referenced_fields(self):
         return self.op1.referenced_fields() | self.op2.referenced_fields()
+
+    def scope(self):
+        if self.op1.scope() == "sample" or self.op2.scope() == "sample":
+            return "sample"
+        return "variant"
 
 
 # CHROM field expressions are translated to contig IDs to avoid string
@@ -577,6 +601,7 @@ class FilterExpression:
             field_names = set()
         self.parse_result = None
         self.referenced_fields = set()
+        self.scope = "variant"
         self.invert = False
         expr = None
         if include is not None and exclude is not None:
@@ -598,6 +623,7 @@ class FilterExpression:
                 raise ParseError(e) from None
             # This isn't a very good pattern, fix
             self.referenced_fields = self.parse_result[0].referenced_fields()
+            self.scope = self.parse_result[0].scope()
 
     def evaluate(self, chunk_data):
         if self.parse_result is None:
@@ -607,4 +633,10 @@ class FilterExpression:
         result = self.parse_result[0].eval(chunk_data)
         if self.invert:
             result = np.logical_not(result)
+        # Variant-scoped 2-D results (axis 1 = alleles, from fields like
+        # INFO/AC with Number=A) collapse to a 1-D variant mask so that
+        # downstream consumers can rely on a 2-D result always meaning
+        # axis 1 = samples.
+        if self.scope == "variant" and result.ndim == 2:
+            result = np.any(result, axis=1)
         return result

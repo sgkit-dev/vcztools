@@ -10,22 +10,29 @@ import xarray as xr
 import zarr
 
 from vcztools import bcftools_filter, retrieval
+from vcztools import samples as samples_mod
 
 
-def make_reader(root, *, include=None, exclude=None, **kwargs):
+def make_reader(root, *, include=None, exclude=None, samples=None, **kwargs):
     """Build a :class:`VczReader` with an optional
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings.
 
-    ``root`` must be an opened :class:`zarr.Group` (as
-    :class:`VczReader` itself requires). All non-filter keyword
-    arguments are forwarded to :class:`VczReader`.
+    ``root`` must be an opened :class:`zarr.Group`. ``samples`` may be
+    a ``list[str]`` of sample names (resolved to indexes via
+    :func:`vcztools.samples.resolve_sample_selection`) or already an
+    integer-index list. Non-filter/sample keyword arguments are
+    forwarded to :class:`VczReader`.
     """
     variant_filter = None
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=set(root), include=include, exclude=exclude
         )
-    return retrieval.VczReader(root, variant_filter=variant_filter, **kwargs)
+    if samples is not None and samples and isinstance(samples[0], str):
+        samples = samples_mod.resolve_sample_selection(samples, root["sample_id"][:])
+    return retrieval.VczReader(
+        root, variant_filter=variant_filter, samples=samples, **kwargs
+    )
 
 
 def load_dataset(

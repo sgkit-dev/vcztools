@@ -186,23 +186,36 @@ def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
 
 
 def _validate_samples_input(value) -> None:
-    """Reject samples inputs that are not ``None`` or a ``list[str]``.
+    """Reject samples inputs that are not ``None`` or an integer
+    sequence.
 
-    A leading ``^`` on the first list element is rejected with a
-    ``ValueError`` — the Python API expects a pre-expanded list;
-    ``^``-prefix and complement handling live in the CLI layer
-    (see :func:`vcztools.samples.resolve_sample_names`).
+    String IDs are rejected with a pointer at
+    :func:`vcztools.samples.resolve_sample_selection`, which translates
+    bcftools-style name arguments into the integer indexes this
+    constructor expects.
     """
     if value is None:
         return
-    if isinstance(value, list):
-        if len(value) > 0 and isinstance(value[0], str) and value[0].startswith("^"):
-            raise ValueError(
-                "samples does not accept a '^' prefix in the Python API; "
-                "pass a pre-expanded list of sample IDs"
+    if isinstance(value, np.ndarray):
+        if not np.issubdtype(value.dtype, np.integer):
+            raise TypeError(
+                "samples must be a sequence of integer indexes or None; "
+                "use vcztools.samples.resolve_sample_selection to translate "
+                "sample names into indexes"
             )
         return
-    raise TypeError(f"samples must be list[str] or None; got {type(value).__name__}")
+    if isinstance(value, list):
+        if len(value) > 0 and not isinstance(value[0], int | np.integer):
+            raise TypeError(
+                "samples must be a sequence of integer indexes or None; "
+                "use vcztools.samples.resolve_sample_selection to translate "
+                "sample names into indexes"
+            )
+        return
+    raise TypeError(
+        f"samples must be a sequence of integer indexes or None; "
+        f"got {type(value).__name__}"
+    )
 
 
 class VczReader:
@@ -229,9 +242,12 @@ class VczReader:
         If ``True``, the targets selection is inverted (matches everything
         *outside* the listed intervals).
     samples
-        Sample IDs to select, as a ``list[str]``, in the order the
-        caller wants. ``None`` selects every sample (skipping any
-        empty-string masked entries in the VCZ).
+        Integer indexes into the VCZ ``sample_id`` array, in the
+        order the caller wants. ``None`` selects every real sample
+        (skipping any empty-string masked entries). Out-of-range
+        indexes raise ``ValueError``; duplicates are permitted.
+        See :func:`vcztools.samples.resolve_sample_selection` for
+        the bcftools-style name-to-index translation the CLI uses.
     variant_filter
         An object implementing the
         :class:`~vcztools.variant_filter.VariantFilter` protocol, or
@@ -272,11 +288,21 @@ class VczReader:
             self.sample_ids = []
             self.samples_selection = np.array([], dtype=np.int64)
             self.subsetting_samples = False
+        elif samples is None:
+            self.samples_selection = np.flatnonzero(all_samples != "")
+            self.sample_ids = all_samples[self.samples_selection]
+            self.subsetting_samples = False
         else:
-            self.sample_ids, self.samples_selection = samples_mod.parse_samples(
-                samples, all_samples=all_samples
-            )
-            self.subsetting_samples = samples is not None
+            self.samples_selection = np.asarray(samples, dtype=np.int64)
+            if self.samples_selection.size > 0:
+                lo = self.samples_selection.min()
+                hi = self.samples_selection.max()
+                if lo < 0 or hi >= all_samples.size:
+                    raise ValueError(
+                        f"sample index out of range: must be in [0, {all_samples.size})"
+                    )
+            self.sample_ids = all_samples[self.samples_selection]
+            self.subsetting_samples = True
 
         if len(self.samples_selection) > 0:
             # Plan covers the missing-header-samples case too (samples=None

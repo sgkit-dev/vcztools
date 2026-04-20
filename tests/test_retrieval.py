@@ -149,7 +149,7 @@ class TestFilterMultiChunk:
         assert num_chunks == 3
         for chunk_idx in range(num_chunks):
             reader.set_chunk(chunk_idx)
-            nt.assert_array_equal(reader.get_for_output("filter_id"), ["PASS", "q10"])
+            nt.assert_array_equal(reader.get("filter_id"), ["PASS", "q10"])
 
 
 class TestVczReaderRegions:
@@ -406,11 +406,11 @@ class TestVariantChunkReaderCaching:
         # check proves we did not re-fetch.
         reader = VariantChunkReader(self._vcz())
         reader.set_chunk(0)
-        reader.get_for_filter("call_DP")
+        reader.get_with_all_samples("call_DP")
         cached_after_full = dict(reader._call_blocks)
         # 2 sample chunks populated.
         assert len(cached_after_full) == 2
-        reader.get_for_output("call_DP")
+        reader.get("call_DP")
         for key, block in cached_after_full.items():
             assert reader._call_blocks[key] is block
 
@@ -424,11 +424,11 @@ class TestVariantChunkReaderCaching:
         reader = VczReader(root, samples=["s1", "s5"])
         inner = VariantChunkReader(root, sample_chunk_plan=reader.sample_chunk_plan)
         inner.set_chunk(0)
-        inner.get_for_output("call_DP")
+        inner.get("call_DP")
         # Only plan chunks (0 and 2) are cached so far.
         assert {key[2] for key in inner._call_blocks} == {0, 2}
         pruned_block_0 = inner._call_blocks[(0, "call_DP", 0)]
-        inner.get_for_filter("call_DP")
+        inner.get_with_all_samples("call_DP")
         # All 3 sample chunks now cached; chunk 0's block is the same
         # object (proving it wasn't re-fetched).
         assert {key[2] for key in inner._call_blocks} == {0, 1, 2}
@@ -437,7 +437,7 @@ class TestVariantChunkReaderCaching:
     def test_set_chunk_evicts_previous_chunk_blocks(self):
         reader = VariantChunkReader(self._vcz())
         reader.set_chunk(0)
-        reader.get_for_filter("call_DP")
+        reader.get_with_all_samples("call_DP")
         assert len(reader._call_blocks) == 2
         reader.set_chunk(1)
         assert reader._call_blocks == {}
@@ -446,7 +446,7 @@ class TestVariantChunkReaderCaching:
     def test_set_chunk_same_idx_is_idempotent(self):
         reader = VariantChunkReader(self._vcz())
         reader.set_chunk(0)
-        reader.get_for_filter("call_DP")
+        reader.get_with_all_samples("call_DP")
         cached_len = len(reader._call_blocks)
         reader.set_chunk(0)
         assert len(reader._call_blocks) == cached_len
@@ -455,16 +455,16 @@ class TestVariantChunkReaderCaching:
         # filter_id has no variants axis — it survives set_chunk.
         reader = VariantChunkReader(_make_filter_vcz())
         reader.set_chunk(0)
-        filters_first = reader.get_for_output("filter_id")
+        filters_first = reader.get("filter_id")
         reader.set_chunk(1)
-        filters_second = reader.get_for_output("filter_id")
+        filters_second = reader.get("filter_id")
         assert filters_first is filters_second
 
     def test_variant_field_cached_within_chunk(self):
         reader = VariantChunkReader(self._vcz())
         reader.set_chunk(0)
-        first = reader.get_for_output("variant_position")
-        second = reader.get_for_output("variant_position")
+        first = reader.get("variant_position")
+        second = reader.get("variant_position")
         # Same object — second access hit the cache.
         assert first is second
 
@@ -491,7 +491,7 @@ class TestVariantChunksFilterPlusSamples:
         positions = np.concatenate([c["variant_position"] for c in chunks])
         nt.assert_array_equal(positions, [1110696, 1230237, 1234567, 1235237])
 
-    def test_filter_after_samples_sample_scope(self, fx_sample_vcz):
+    def test_filter_on_subset_samples_sample_scope(self, fx_sample_vcz):
         # bcftools-query-style post-subset evaluation: filter sees only
         # the selected samples, so position 1234567 (where NA00001 but
         # not NA00002/NA00003 matched FMT/DP>3) is DROPPED.
@@ -504,27 +504,27 @@ class TestVariantChunksFilterPlusSamples:
             regions="20:1230236-",
             samples=["NA00002", "NA00003"],
             variant_filter=variant_filter,
-            filter_after_samples=True,
+            filter_on_subset_samples=True,
         )
         chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
         chunk = chunks[0]
         assert chunk["call_DP"].shape[1] == 2
         nt.assert_array_equal(chunk["variant_position"], [1230237])
 
-    def test_filter_after_samples_no_subset_is_noop(self, fx_sample_vcz):
-        # With no sample subset, filter_after_samples=True must return
+    def test_filter_on_subset_samples_no_subset_is_noop(self, fx_sample_vcz):
+        # With no sample subset, filter_on_subset_samples=True must return
         # identical results to the default mode.
         root = fx_sample_vcz.group
         field_names = set(VczReader(root).root)
 
-        def build(filter_after_samples):
+        def build(filter_on_subset_samples):
             return VczReader(
                 root,
                 regions="20:1230236-",
                 variant_filter=BcftoolsFilter(
                     field_names=field_names, include="FMT/DP>3"
                 ),
-                filter_after_samples=filter_after_samples,
+                filter_on_subset_samples=filter_on_subset_samples,
             )
 
         pre = list(build(False).variant_chunks(fields=["variant_position"]))
@@ -534,20 +534,20 @@ class TestVariantChunksFilterPlusSamples:
             np.concatenate([c["variant_position"] for c in post]),
         )
 
-    def test_filter_after_samples_variant_scope_unchanged(self, fx_sample_vcz):
+    def test_filter_on_subset_samples_variant_scope_unchanged(self, fx_sample_vcz):
         # Variant-scope filters touch no sample axis; the flag is a
         # no-op regardless of subset.
         root = fx_sample_vcz.group
         field_names = set(VczReader(root).root)
 
-        def build(filter_after_samples):
+        def build(filter_on_subset_samples):
             return VczReader(
                 root,
                 samples=["NA00001"],
                 variant_filter=BcftoolsFilter(
                     field_names=field_names, include="POS > 1000000"
                 ),
-                filter_after_samples=filter_after_samples,
+                filter_on_subset_samples=filter_on_subset_samples,
             )
 
         pre = list(build(False).variant_chunks(fields=["variant_position"]))

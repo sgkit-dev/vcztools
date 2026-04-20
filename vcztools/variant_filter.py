@@ -17,7 +17,7 @@ class VariantFilter(Protocol):
     A ``"variant"``-scope filter MUST return a 1-D bool array of length
     ``n_variants``. A ``"sample"``-scope filter MUST return a 2-D bool
     array of shape ``(n_variants, n_samples)``. When the reader is
-    configured with ``filter_after_samples=True``, a sample-scope
+    configured with ``filter_on_subset_samples=True``, a sample-scope
     filter sees (and must return a mask for) only the *subset* sample
     axis; otherwise it sees the full sample axis.
     """

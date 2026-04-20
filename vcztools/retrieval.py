@@ -20,17 +20,19 @@ class VariantChunkReader:
     for a chunk visit is fetched at most once. Readahead/caching will
     be added here later; callers should not go around it.
 
-    Two access modes for ``call_*`` fields:
+    Two public accessors differ only for ``call_*`` fields when a
+    ``sample_chunk_plan`` is set:
 
-    - :meth:`get_for_filter` returns the full sample dimension (filter
-      evaluation must see every sample, even those not in the user's
-      selection).
-    - :meth:`get_for_output` applies ``sample_chunk_plan`` (reads only
-      the sample chunks that contain selected samples and indexes into
-      their concatenation).
+    - :meth:`get` is the default — applies the plan, so only the sample
+      chunks containing selected samples are read, then indexed and
+      returned C-contiguous for the C encoder.
+    - :meth:`get_with_all_samples` opts out of sample pruning and
+      returns the full sample dimension. Needed when a filter
+      expression must see every sample to decide variant membership
+      (pre-subset semantics).
 
-    For variant-only and static fields the two modes are equivalent —
-    there is no samples axis to prune.
+    For variant-only and static fields the two are equivalent — there
+    is no samples axis to prune.
     """
 
     def __init__(self, root, *, sample_chunk_plan=None):
@@ -50,14 +52,19 @@ class VariantChunkReader:
         self._variant_blocks.clear()
         self._call_blocks.clear()
 
-    def get_for_filter(self, field):
-        """Return the field at the full sample dimension."""
-        return self._get(field, prune=False)
-
-    def get_for_output(self, field):
-        """Return the field with ``sample_chunk_plan`` applied to the
-        samples axis of ``call_*`` fields."""
+    def get(self, field):
+        """Return ``field`` from the current chunk, with
+        ``sample_chunk_plan`` applied to the samples axis of
+        ``call_*`` fields. For variant-only and static fields the plan
+        is irrelevant and the field is returned as-is."""
         return self._get(field, prune=True)
+
+    def get_with_all_samples(self, field):
+        """Like :meth:`get` but for ``call_*`` fields returns the full
+        sample dimension (no pruning). Use when a filter expression
+        must see every sample in order to decide variant membership.
+        Equivalent to :meth:`get` for variant-only and static fields."""
+        return self._get(field, prune=False)
 
     def has_variants_axis(self, field):
         """Whether ``field``'s first dimension is ``variants``. Static
@@ -232,11 +239,11 @@ class VczReader:
         :class:`~vcztools.bcftools_filter.BcftoolsFilter` from ``-i``/
         ``-e`` flags; external callers can plug in any alternative
         implementation.
-    filter_after_samples
-        Controls when a sample-scope filter sees the sample axis.
-        ``False`` (default) evaluates on the full sample axis, matching
-        ``bcftools view`` semantics. ``True`` evaluates on the
-        sample-subsetted view, matching ``bcftools query``'s FMT-scope
+    filter_on_subset_samples
+        Which sample axis a sample-scope filter sees. ``False``
+        (default) evaluates on the full sample axis, matching
+        ``bcftools view`` semantics. ``True`` evaluates on the subset
+        sample axis, matching ``bcftools query``'s FMT-scope
         post-subset semantics and avoiding reads of unselected sample
         chunks. No-op for variant-scope filters.
     """
@@ -253,7 +260,7 @@ class VczReader:
         ignore_missing_samples: bool = False,
         drop_genotypes: bool = False,
         variant_filter: variant_filter_mod.VariantFilter | None = None,
-        filter_after_samples: bool = False,
+        filter_on_subset_samples: bool = False,
     ):
         regions_df = _regions_input_to_df(regions, arg_name="regions")
         targets_df = _regions_input_to_df(targets, arg_name="targets")
@@ -304,7 +311,7 @@ class VczReader:
                 "sample-scope variant_filter is incompatible with drop_genotypes=True"
             )
         self.variant_filter = variant_filter
-        self.filter_after_samples = filter_after_samples
+        self.filter_on_subset_samples = filter_on_subset_samples
 
     @functools.cached_property
     def contig_ids(self):
@@ -354,9 +361,7 @@ class VczReader:
         reader = VariantChunkReader(self.root, sample_chunk_plan=self.sample_chunk_plan)
         query_fields = self._resolve_query_fields(fields)
         filter_getter = (
-            reader.get_for_output
-            if self.filter_after_samples
-            else reader.get_for_filter
+            reader.get if self.filter_on_subset_samples else reader.get_with_all_samples
         )
 
         for chunk_idx in self._chunk_indexes():
@@ -388,7 +393,7 @@ class VczReader:
     def _collect_output(self, reader, fields, variants_selection):
         data = {}
         for field in fields:
-            value = reader.get_for_output(field)
+            value = reader.get(field)
             if variants_selection is not None and reader.has_variants_axis(field):
                 value = value[variants_selection]
             data[field] = value
@@ -412,9 +417,9 @@ class VczReader:
         nor ``self.targets`` is set."""
         if self.regions is None and self.targets is None:
             return None
-        contig = reader.get_for_output("variant_contig")
-        position = reader.get_for_output("variant_position")
-        length = reader.get_for_output("variant_length")
+        contig = reader.get("variant_contig")
+        position = reader.get("variant_position")
+        length = reader.get("variant_length")
         selection = regions_mod.regions_to_selection(
             self.regions, self.targets, contig, position, length
         )
@@ -430,14 +435,14 @@ class VczReader:
         along the sample axis for the variant selection and carries the
         per-sample matches through as ``call_mask``. The sample-axis
         subset is applied here only when the filter was evaluated on
-        the *full* sample axis; under ``filter_after_samples`` the
+        the *full* sample axis; under ``filter_on_subset_samples`` the
         mask is already in subset-sample space.
         """
         if v_mask is None or v_mask.ndim == 1:
             return v_mask, None
         variants_selection = np.any(v_mask, axis=1)
         call_mask = v_mask[variants_selection]
-        if self.subsetting_samples and not self.filter_after_samples:
+        if self.subsetting_samples and not self.filter_on_subset_samples:
             call_mask = call_mask[:, self.samples_selection]
         return variants_selection, call_mask
 

@@ -10,7 +10,6 @@ from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
-    open_zarr,
 )
 
 
@@ -206,6 +205,11 @@ class VczReader:
 
     Parameters
     ----------
+    root
+        An already-opened :class:`zarr.Group` pointing at the VCZ
+        dataset. Use :func:`vcztools.utils.open_zarr` to open a path
+        (local, remote, or zip) with the desired backend before
+        constructing the reader.
     regions, targets
         Regions/targets to restrict iteration to. May be a single region
         string, a list of region strings, or a pandas DataFrame with
@@ -239,7 +243,7 @@ class VczReader:
 
     def __init__(
         self,
-        vcz,
+        root,
         *,
         regions=None,
         targets=None,
@@ -250,13 +254,12 @@ class VczReader:
         drop_genotypes: bool = False,
         variant_filter: variant_filter_mod.VariantFilter | None = None,
         filter_after_samples: bool = False,
-        zarr_backend_storage: str | None = None,
     ):
         regions_df = _regions_input_to_df(regions, arg_name="regions")
         targets_df = _regions_input_to_df(targets, arg_name="targets")
         _validate_samples_input(samples)
 
-        self.root = open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
+        self.root = root
 
         all_samples = self.root["sample_id"][:]
 

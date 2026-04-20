@@ -7,6 +7,7 @@ from numpy.testing import assert_array_equal
 
 from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.retrieval import VczReader
+from vcztools.utils import open_zarr
 from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
 
 from .utils import assert_vcfs_close, make_reader, to_vcz_icechunk
@@ -36,7 +37,9 @@ def test_write_vcf(
     vcz = fx_sample_vcz.directory_path
     output = tmp_path.joinpath("output.vcf")
 
-    reader = VczReader(vcz, zarr_backend_storage=zarr_backend_storage)
+    reader = VczReader(
+        open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
+    )
     if output_is_path:
         write_vcf(reader, output, no_version=True)
     else:
@@ -76,7 +79,9 @@ def test_write_vcf__icechunk(tmp_path, fx_sample_vcz):
     vcz_icechunk = to_vcz_icechunk(fx_sample_vcz.directory_path, tmp_path)
     output = tmp_path.joinpath("output.vcf")
 
-    reader = VczReader(vcz_icechunk, zarr_backend_storage="icechunk")
+    reader = VczReader(
+        open_zarr(vcz_icechunk, mode="r", zarr_backend_storage="icechunk")
+    )
     write_vcf(reader, output, no_version=True)
 
     v = VCF(output)

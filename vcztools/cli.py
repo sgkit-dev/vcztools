@@ -171,14 +171,14 @@ def make_reader(
             samples_complement = True
             samples = samples[1:]
         samples = samples.split(",")
+    root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
     variant_filter = None
     if include is not None or exclude is not None:
-        root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
         variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=set(root), include=include, exclude=exclude
         )
     return retrieval.VczReader(
-        path,
+        root,
         regions=regions,
         targets=targets,
         targets_complement=targets_complement,
@@ -188,7 +188,6 @@ def make_reader(
         drop_genotypes=drop_genotypes,
         variant_filter=variant_filter,
         filter_after_samples=filter_after_samples,
-        zarr_backend_storage=zarr_backend_storage,
     )
 
 
@@ -225,14 +224,14 @@ def index(path, nrecords, stats, zarr_backend_storage):
     """
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
-    if nrecords:
-        reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
-        stats_module.nrecords(reader, sys.stdout)
-    elif stats:
-        reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
-        stats_module.stats(reader, sys.stdout)
-    else:
+    if not nrecords and not stats:
         raise click.UsageError("Building region indexes is not supported")
+    root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+    reader = retrieval.VczReader(root)
+    if nrecords:
+        stats_module.nrecords(reader, sys.stdout)
+    else:
+        stats_module.stats(reader, sys.stdout)
 
 
 @click.command
@@ -298,7 +297,8 @@ def query(
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
-        reader = retrieval.VczReader(path, zarr_backend_storage=zarr_backend_storage)
+        root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+        reader = retrieval.VczReader(root)
         with handle_broken_pipe(output):
             query_module.list_samples(reader, output)
         return

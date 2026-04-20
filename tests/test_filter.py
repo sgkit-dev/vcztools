@@ -53,11 +53,34 @@ class TestFilterExpressionParser:
             ("fisher(FMT/ADF,FMT/ADR)", filter_mod.UnsupportedFunctionsError),
             ("N_PASS(GQ>90)", filter_mod.UnsupportedFunctionsError),
             ('TYPE="bnd"', filter_mod.UnsupportedTypeFieldError),
+            # GT is rejected by Identifier.__init__ before the mapper
+            # runs, so it fires under ``map_vcf_identifiers=False`` too.
+            ("GT==0", filter_mod.UnsupportedGenotypeValuesError),
         ],
     )
     def test_unsupported_syntax(self, fx_parser, expression, exception_class):
         with pytest.raises(exception_class):
             fx_parser.parse_string(expression, parse_all=True)
+
+
+class TestIdentifierResolutionErrors:
+    """``Identifier.__init__`` raises two ``ValueError`` variants
+    after consulting the name mapper — neither reachable with the
+    identity mapper used by ``TestFilterExpressionParser``."""
+
+    def test_undefined_tag(self):
+        parser = filter_mod.make_bcftools_filter_parser(
+            all_fields=set(), map_vcf_identifiers=True
+        )
+        with pytest.raises(ValueError, match='the tag "BLAH" is not defined'):
+            parser.parse_string("BLAH>0", parse_all=True)
+
+    def test_ambiguous_identifier(self):
+        parser = filter_mod.make_bcftools_filter_parser(
+            all_fields={"variant_DP", "call_DP"}, map_vcf_identifiers=True
+        )
+        with pytest.raises(ValueError, match="ambiguous filtering expression"):
+            parser.parse_string("DP>0", parse_all=True)
 
 
 class TestFilterExpressionSample:
@@ -476,3 +499,15 @@ class TestAPIErrors:
     def test_include_and_exclude(self):
         with pytest.raises(ValueError, match="Cannot handle both an include "):
             filter_mod.BcftoolsFilter(include="x", exclude="y")
+
+    def test_undefined_filter_name(self):
+        flt = filter_mod.BcftoolsFilter(
+            field_names={"filter_id", "variant_filter"},
+            include='FILTER="NOPE"',
+        )
+        data = {
+            "filter_id": np.array(["PASS", "q10"]),
+            "variant_filter": np.array([[True, False], [False, True]]),
+        }
+        with pytest.raises(ValueError, match='The filter "NOPE" is not present'):
+            flt.evaluate(data)

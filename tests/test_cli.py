@@ -94,6 +94,61 @@ def test_samples_and_drop_genotypes(fx_vcz_path):
     assert "Cannot select samples and drop genotypes" in vcztools_error
 
 
+class TestFilterErrors:
+    """Pins the user-visible contract for filter expression errors:
+    exit code 1 plus a specific error-message substring in stderr.
+    Covers every raise site in :mod:`vcztools.bcftools_filter`
+    reachable from the CLI, and confirms both ``view`` and ``query``
+    route errors through the same ``handle_exception`` decorator
+    (``vcztools/cli.py:35-49``) that converts ``ValueError`` into a
+    ``click.ClickException``.
+    """
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            # Parse-grammar failure (pyparsing → ParseError).
+            ('view -i "| |"', "parse error"),
+            # Unknown identifier (bare name not in VCZ store).
+            ("view -i 'BLAH>0'", 'the tag "BLAH" is not defined'),
+            # Ambiguous bare identifier — sample.vcf has both
+            # INFO/DP and FORMAT/DP.
+            ("view -i 'DP>0'", "ambiguous filtering expression"),
+            # Include + exclude both set.
+            ("view -i 'POS>0' -e 'POS<1000'", "both an include"),
+            # Filter value not present in header.
+            ("""view -i 'FILTER="NOPE"'""",
+             'The filter "NOPE" is not present'),
+            # Each UnsupportedFilteringFeatureError subclass reachable
+            # at parse time. The identifiers here are all real fields
+            # in sample.vcz so the error we hit is the intended one
+            # rather than "tag not defined".
+            ("view -i 'GT==0'", "Genotype values"),
+            ("""view -i 'ID="."'""", "Missing data"),
+            ("""view -i 'TYPE="bnd"'""", "TYPE field"),
+            ("view -i 'INFO/AC[0]==1'", "Array subscripts"),
+            ("view -i 'POS~0'", "Regular expressions"),
+            ("view -i 'ID!=@file'", "File references"),
+            ("view -i 'binom(POS)'", "Function evaluation"),
+            # Cross-command: ``query`` must surface the same error
+            # through the same handler.
+            ("query -f '%POS\\n' -i 'BLAH>0'",
+             'the tag "BLAH" is not defined'),
+        ],
+    )
+    # fmt: on
+    def test_filter_error(self, fx_vcz_path, args, expected):
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"{args} {fx_vcz_path}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 1
+        assert expected in result.stderr
+
+
 class TestMakeReader:
     """Translation of bcftools-style ``^`` prefixes into ``targets_complement``."""
 

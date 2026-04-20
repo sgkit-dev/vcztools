@@ -4,7 +4,6 @@ import pyparsing as pp
 import pytest
 
 from vcztools import bcftools_filter as filter_mod
-from vcztools import filter as legacy_filter_mod
 
 
 class TestFilterExpressionParser:
@@ -477,14 +476,3 @@ class TestAPIErrors:
     def test_include_and_exclude(self):
         with pytest.raises(ValueError, match="Cannot handle both an include "):
             filter_mod.BcftoolsFilter(include="x", exclude="y")
-
-
-class TestLegacyShim:
-    """The ``vcztools.filter`` module is kept as a compatibility shim
-    exposing ``FilterExpression`` as an alias for ``BcftoolsFilter``.
-    Drop this test when the shim is removed.
-    """
-
-    def test_alias_is_bcftools_filter(self):
-        assert legacy_filter_mod.FilterExpression is filter_mod.BcftoolsFilter
-        assert legacy_filter_mod.ParseError is filter_mod.ParseError

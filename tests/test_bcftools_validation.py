@@ -436,17 +436,43 @@ class TestRegionTargetSemantics:
 
 
 class TestSampleSubsetFilterSemantics:
-    """Filter expressions are evaluated on the original record, before
-    ``-s``/``-S`` sample subsetting is applied. Each case below is
-    chosen so pre-subset and post-subset evaluation give different
-    results — a regression in ordering would fail the assertion.
+    """Sample subset vs filter-evaluation ordering.
 
-    Uses ``query -f '%CHROM %POS\\n'`` to compare only the selected
-    variants without noise from FORMAT fields or VCF headers. Note
-    that for INFO-scoped filters ``bcftools query`` matches
-    ``bcftools view``, but for FMT-scoped filters ``query`` applies
-    subsetting first — so ``-i 'FMT/DP>7'`` is exercised with a
-    selection where that distinction does not alter the outcome.
+    bcftools applies ``-i``/``-e`` filter expressions at different
+    stages depending on the subcommand:
+
+    - ``bcftools view``: filters evaluate on the ORIGINAL record,
+      before ``-s``/``-S`` subsetting (and before INFO/AC,AN
+      recompute). Both INFO-scope and FMT-scope filters see the full
+      sample set.
+    - ``bcftools query``: INFO-scope filters evaluate on the original
+      record too (matching ``view``). FMT-scope filters, however,
+      evaluate on the SUBSET record — sample subsetting happens first.
+
+    vcztools uniformly uses the pre-subset (``view``-style) ordering
+    for both subcommands. It therefore matches ``bcftools view`` but
+    diverges from ``bcftools query`` whenever an FMT-scope filter
+    gives a different answer pre- vs post-subset.
+
+    The three methods below cover:
+
+    - ``test_query_variant_selection``: ``query`` cases where pre/post
+      agree (INFO-scope, and a mixed case chosen so the FMT leg does
+      not alter the outcome), so vcztools and bcftools match.
+    - ``test_query_fmt_post_subset_divergence``: ``xfail(strict=True)``
+      — pins the cases where vcztools's ``query`` does not match
+      ``bcftools query`` for FMT-scope filters under ``-s``. If
+      vcztools is ever changed to post-subset FMT evaluation these
+      will flip to XPASS and the failure prompts a follow-up.
+    - ``test_view_fmt_pre_subset``: ``view`` cases exercising
+      pre-subset FMT semantics, with selections where pre- and
+      post-subset would give different answers. vcztools must match
+      bcftools view's pre-subset answer.
+
+    The ``query`` methods use ``query -f '%CHROM %POS\\n'`` to compare
+    selected variants without FORMAT/header noise; the ``view`` method
+    uses :func:`assert_vcfs_close` to compare full VCF output without
+    tripping on header/INFO/FORMAT field ordering differences.
     """
 
     FMT = r"query -f '%CHROM %POS\n'"
@@ -478,15 +504,86 @@ class TestSampleSubsetFilterSemantics:
             "-r '20' -s NA00001 -i 'INFO/AN>0'",
 
             # Mixed variant-scope and sample-scope filters under -s.
+            # Selection chosen so the FMT leg gives the same answer
+            # pre- and post-subset (both empty), side-stepping the
+            # query-vs-view divergence — see class docstring.
             "-s NA00001 -i 'INFO/AN>0 && FMT/DP>5'",
         ],
     )
     # fmt: on
-    def test_variant_selection(self, fx_sample_vcz, args):
+    def test_query_variant_selection(self, fx_sample_vcz, args):
         cmd = f"{self.FMT} {args}"
         bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
         vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
         assert vcztools_output == bcftools_output
+
+    # fmt: off
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "bcftools query evaluates FMT-scope filters AFTER sample "
+            "subsetting; vcztools evaluates pre-subset uniformly for "
+            "view and query. See TestSampleSubsetFilterSemantics "
+            "docstring."
+        ),
+    )
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # -s NA00001 & FMT/DP>5: DP per sample at 20:14370 is
+            # (1, 8, 5). bcftools view picks 20:14370 + 20:1110696;
+            # bcftools query (NA00001=1 only) picks only 20:1110696.
+            "-s NA00001 -i 'FMT/DP>5'",
+
+            # -s NA00002 & FMT/DP>5: at 20:1110696 NA00002=0 so
+            # bcftools query drops it; view keeps it.
+            "-s NA00002 -i 'FMT/DP>5'",
+
+            # File-based subset (NA00001, NA00003).
+            "-S tests/data/txt/samples.txt -i 'FMT/DP>5'",
+
+            # Complement + FMT filter: ^NA00002 = {NA00001, NA00003};
+            # at 20:14370 max DP in subset is 5, fails DP>5 in query;
+            # view sees NA00002=8, passes.
+            "-s ^NA00002 -i 'FMT/DP>5'",
+
+            # Per-sample conjunction: at 20:14370 no single sample
+            # satisfies GQ<45 && DP>=5 in subset {NA00001 alone}; but
+            # view sees NA00003 with GQ=43, DP=5 and keeps it.
+            "-s NA00001 -i 'FMT/GQ<45 && FMT/DP>=5'",
+        ],
+    )
+    # fmt: on
+    def test_query_fmt_post_subset_divergence(self, fx_sample_vcz, args):
+        cmd = f"{self.FMT} {args}"
+        bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
+        assert vcztools_output == bcftools_output
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # Same selections as the divergence cases above, but via
+            # `view` — locks in vcztools's pre-subset FMT semantics.
+            "-s NA00001 -i 'FMT/DP>5'",
+            "-s NA00002 -i 'FMT/DP>5'",
+            "-s NA00003 -i 'FMT/DP>=5'",
+            "-s ^NA00002 -i 'FMT/DP>5'",
+            "-S tests/data/txt/samples.txt -i 'FMT/DP>5'",
+            "-s NA00001 -i 'FMT/GQ<45 && FMT/DP>=5'",
+        ],
+    )
+    # fmt: on
+    def test_view_fmt_pre_subset(self, tmp_path, fx_sample_vcz, args):
+        cmd = f"view --no-version {args}"
+        bcftools_output, _ = run_bcftools(f"{cmd} {fx_sample_vcz.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{cmd} {fx_sample_vcz.zip_path}")
+        bcftools_out_file = tmp_path / "bcftools_out.vcf"
+        bcftools_out_file.write_text(bcftools_output)
+        vcztools_out_file = tmp_path / "vcztools_out.vcf"
+        vcztools_out_file.write_text(vcztools_output)
+        assert_vcfs_close(bcftools_out_file, vcztools_out_file)
 
 
 # fmt: off

@@ -174,11 +174,9 @@ def make_reader(
     variant_filter = None
     if include is not None or exclude is not None:
         root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
-        candidate = bcftools_filter.BcftoolsFilter(
+        variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=set(root), include=include, exclude=exclude
         )
-        if candidate.parse_result is not None:
-            variant_filter = candidate
     return retrieval.VczReader(
         path,
         regions=regions,

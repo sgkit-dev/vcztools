@@ -5,6 +5,7 @@ import pytest
 
 from tests import vcz_builder
 from tests.utils import make_reader
+from vcztools import regions as regions_mod
 from vcztools.bcftools_filter import BcftoolsFilter
 from vcztools.retrieval import VariantChunkReader, VczReader
 
@@ -153,11 +154,17 @@ class TestFilterMultiChunk:
 
 
 class TestVczReaderRegions:
-    """Cover the three accepted region/target input shapes plus error paths."""
+    """Cover the three accepted region/target input shapes plus error paths.
+
+    Region/target parsing now lives in
+    :func:`vcztools.regions.build_chunk_plan`; these tests exercise it
+    directly for validation and round-trip the happy paths through
+    :class:`VczReader` via the ``make_reader`` helper.
+    """
 
     @staticmethod
     def _vcz():
-        # 10 variants on chr1 at positions 1..10, alternating AC values.
+        # 10 variants on chr1 at positions 1..10.
         return vcz_builder.make_vcz(
             variant_contig=[0] * 10,
             variant_position=list(range(1, 11)),
@@ -173,11 +180,11 @@ class TestVczReaderRegions:
         return np.concatenate([c["variant_position"] for c in chunks])
 
     def test_regions_string(self):
-        reader = VczReader(self._vcz(), regions="chr1:3-5")
+        reader = make_reader(self._vcz(), regions="chr1:3-5")
         nt.assert_array_equal(self._positions(reader), [3, 4, 5])
 
     def test_regions_list_of_strings(self):
-        reader = VczReader(self._vcz(), regions=["chr1:3-5", "chr1:8-9"])
+        reader = make_reader(self._vcz(), regions=["chr1:3-5", "chr1:8-9"])
         nt.assert_array_equal(self._positions(reader), [3, 4, 5, 8, 9])
 
     def test_regions_dataframe(self):
@@ -188,7 +195,7 @@ class TestVczReaderRegions:
                 "end": pd.array([5], dtype="Int64"),
             }
         )
-        reader = VczReader(self._vcz(), regions=df)
+        reader = make_reader(self._vcz(), regions=df)
         nt.assert_array_equal(self._positions(reader), [3, 4, 5])
 
     def test_regions_dataframe_with_na_end(self):
@@ -199,41 +206,46 @@ class TestVczReaderRegions:
                 "end": pd.array([pd.NA], dtype="Int64"),
             }
         )
-        reader = VczReader(self._vcz(), regions=df)
+        reader = make_reader(self._vcz(), regions=df)
         nt.assert_array_equal(self._positions(reader), [8, 9, 10])
 
     def test_targets_complement_flag(self):
-        reader = VczReader(self._vcz(), targets="chr1:3-5", targets_complement=True)
+        reader = make_reader(self._vcz(), targets="chr1:3-5", targets_complement=True)
         nt.assert_array_equal(self._positions(reader), [1, 2, 6, 7, 8, 9, 10])
 
     def test_regions_rejects_caret_prefix(self):
         with pytest.raises(ValueError, match="targets_complement=True"):
-            VczReader(self._vcz(), regions="^chr1:1-3")
+            regions_mod.build_chunk_plan(self._vcz(), regions="^chr1:1-3")
 
     def test_targets_rejects_caret_prefix(self):
         with pytest.raises(ValueError, match="targets_complement=True"):
-            VczReader(self._vcz(), targets="^chr1:1-3")
+            regions_mod.build_chunk_plan(self._vcz(), targets="^chr1:1-3")
 
     def test_regions_rejects_comma(self):
         with pytest.raises(ValueError, match=r"regions string .* contains ','"):
-            VczReader(self._vcz(), regions="chr1:1-3,chr1:5-7")
+            regions_mod.build_chunk_plan(self._vcz(), regions="chr1:1-3,chr1:5-7")
 
     def test_targets_rejects_comma(self):
         with pytest.raises(ValueError, match=r"targets string .* contains ','"):
-            VczReader(self._vcz(), targets="chr1:1-3,chr1:5-7")
+            regions_mod.build_chunk_plan(self._vcz(), targets="chr1:1-3,chr1:5-7")
 
     def test_regions_invalid_type(self):
         with pytest.raises(TypeError, match="regions must be"):
-            VczReader(self._vcz(), regions=42)
+            regions_mod.build_chunk_plan(self._vcz(), regions=42)
 
     def test_targets_invalid_type(self):
         with pytest.raises(TypeError, match="targets must be"):
-            VczReader(self._vcz(), targets=42)
+            regions_mod.build_chunk_plan(self._vcz(), targets=42)
 
     def test_regions_dataframe_missing_columns(self):
         df = pd.DataFrame({"contig": ["chr1"], "start": pd.array([1], dtype="Int64")})
         with pytest.raises(ValueError, match="missing required columns.*end"):
-            VczReader(self._vcz(), regions=df)
+            regions_mod.build_chunk_plan(self._vcz(), regions=df)
+
+    def test_flat_index_array_accepted(self):
+        """``VczReader(variants=np.ndarray)`` buckets indexes into a plan."""
+        reader = VczReader(self._vcz(), variants=np.array([2, 4, 7], dtype=np.int64))
+        nt.assert_array_equal(self._positions(reader), [3, 5, 8])
 
 
 class TestVczReaderSamples:
@@ -509,7 +521,9 @@ class TestVariantChunksFilterPlusSamples:
         )
         reader = VczReader(
             fx_sample_vcz.group,
-            regions="20:1230236-",
+            variants=regions_mod.build_chunk_plan(
+                fx_sample_vcz.group, regions="20:1230236-"
+            ),
             samples=[1, 2],
             variant_filter=variant_filter,
             filter_on_subset_samples=True,
@@ -528,7 +542,7 @@ class TestVariantChunksFilterPlusSamples:
         def build(filter_on_subset_samples):
             return VczReader(
                 root,
-                regions="20:1230236-",
+                variants=regions_mod.build_chunk_plan(root, regions="20:1230236-"),
                 variant_filter=BcftoolsFilter(
                     field_names=field_names, include="FMT/DP>3"
                 ),

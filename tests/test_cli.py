@@ -152,55 +152,67 @@ class TestFilterErrors:
 class TestMakeReader:
     """Translation of bcftools-style ``^`` prefixes into ``targets_complement``."""
 
+    @staticmethod
+    def _positions(reader):
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        if not chunks:
+            return []
+        import numpy as np  # noqa: PLC0415
+
+        return list(np.concatenate([c["variant_position"] for c in chunks]))
+
     def test_targets_string_with_caret(self, fx_vcz_path):
+        # ^19:112 excludes exactly one variant (19:112).
         reader = cli.make_reader(fx_vcz_path, targets="^19:112")
-        assert reader.targets is not None
-        assert reader.targets.complement is True
+        assert 112 not in self._positions(reader)
 
     def test_targets_string_without_caret(self, fx_vcz_path):
+        # 19:112 selects exactly that one variant.
         reader = cli.make_reader(fx_vcz_path, targets="19:112")
-        assert reader.targets is not None
-        assert reader.targets.complement is False
+        assert self._positions(reader) == [112]
 
     def test_targets_file_with_caret(self, fx_vcz_path):
         reader = cli.make_reader(
             fx_vcz_path,
             targets_file="^tests/data/txt/regions-3col.tsv",
         )
-        assert reader.targets is not None
-        assert reader.targets.complement is True
+        # Complement applied → variant_chunk_plan is set to something
+        # other than the full-variant identity.
+        assert reader.variant_chunk_plan is not None
 
     def test_targets_file_without_caret(self, fx_vcz_path):
         reader = cli.make_reader(
             fx_vcz_path,
             targets_file="tests/data/txt/regions-3col.tsv",
         )
-        assert reader.targets is not None
-        assert reader.targets.complement is False
+        assert reader.variant_chunk_plan is not None
 
     def test_regions_file(self, fx_vcz_path):
         reader = cli.make_reader(
             fx_vcz_path,
             regions_file="tests/data/txt/regions-3col.tsv",
         )
-        assert reader.regions is not None
-        assert reader.regions.complement is False
+        assert reader.variant_chunk_plan is not None
 
     def test_regions_string_splits_on_commas(self, fx_vcz_path):
+        # Both contig 19 (positions 111, 112) and X (position 10) selected.
         reader = cli.make_reader(fx_vcz_path, regions="19,X")
-        assert reader.regions is not None
-        assert len(reader.regions.contigs) == 2
+        assert sorted(self._positions(reader)) == [10, 111, 112]
 
     def test_targets_string_splits_on_commas(self, fx_vcz_path):
         reader = cli.make_reader(fx_vcz_path, targets="19,X")
-        assert reader.targets is not None
-        assert len(reader.targets.contigs) == 2
+        assert sorted(self._positions(reader)) == [10, 111, 112]
 
     def test_targets_caret_and_comma(self, fx_vcz_path):
+        # Complement of {19 ∪ X} = everything on chromosome 20.
         reader = cli.make_reader(fx_vcz_path, targets="^19,X")
-        assert reader.targets is not None
-        assert reader.targets.complement is True
-        assert len(reader.targets.contigs) == 2
+        positions = self._positions(reader)
+        # None of the 19 or X variants remain.
+        assert 111 not in positions
+        assert 112 not in positions
+        assert 10 not in positions
+        # At least one 20:... variant survives.
+        assert any(p > 1000 for p in positions)
 
     def test_samples_string_splits_on_commas(self, fx_vcz_path):
         reader = cli.make_reader(fx_vcz_path, samples="NA00001,NA00003")

@@ -1,7 +1,6 @@
 import functools
 
 import numpy as np
-import pandas as pd
 
 from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
@@ -9,7 +8,6 @@ from vcztools import utils
 from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
-    _as_fixed_length_unicode,
 )
 
 
@@ -33,24 +31,44 @@ class VariantChunkReader:
 
     For variant-only and static fields the two are equivalent — there
     is no samples axis to prune.
+
+    When ``variant_chunk_plan`` is set, :meth:`set_chunk` looks up the
+    per-chunk row selection and every field read (variant-axis and
+    ``call_*``) is pre-sliced along axis 0 to that selection.
     """
 
-    def __init__(self, root, *, sample_chunk_plan=None):
+    def __init__(self, root, *, sample_chunk_plan=None, variant_chunk_plan=None):
         self.root = root
         self.sample_chunk_plan = sample_chunk_plan
+        self.variant_chunk_plan = variant_chunk_plan
         self._static = {}
         self._variant_blocks = {}
         self._call_blocks = {}
         self._chunk_idx = None
+        self._current_variant_selection = None
 
     def set_chunk(self, chunk_idx):
         """Advance to a new variant chunk and evict the previous chunk's
-        per-chunk cache entries."""
+        per-chunk cache entries. When a ``variant_chunk_plan`` is set,
+        resolve that chunk's local row selection and apply it to every
+        subsequent field read."""
         if chunk_idx == self._chunk_idx:
             return
         self._chunk_idx = chunk_idx
         self._variant_blocks.clear()
         self._call_blocks.clear()
+        self._current_variant_selection = self._lookup_variant_selection(chunk_idx)
+
+    def _lookup_variant_selection(self, chunk_idx):
+        plan = self.variant_chunk_plan
+        if plan is None:
+            return None
+        pos = int(np.searchsorted(plan.chunk_indexes, chunk_idx))
+        if pos >= len(plan.chunk_indexes) or plan.chunk_indexes[pos] != chunk_idx:
+            raise ValueError(
+                f"chunk_idx={chunk_idx} not in variant_chunk_plan.chunk_indexes"
+            )
+        return plan.per_chunk_selection[pos]
 
     def get(self, field):
         """Return ``field`` from the current chunk, with
@@ -82,11 +100,17 @@ class VariantChunkReader:
             self._static[field] = arr[:]
             return self._static[field]
         if not field.startswith("call_"):
-            return self._load_variant_block(field, arr)
+            return self._slice_variants(self._load_variant_block(field, arr))
         plan = self.sample_chunk_plan
         if plan is None or not prune:
-            return self._load_call_full(field, arr)
-        return self._load_call_pruned(field, arr, plan)
+            return self._slice_variants(self._load_call_full(field, arr))
+        return self._slice_variants(self._load_call_pruned(field, arr, plan))
+
+    def _slice_variants(self, block):
+        sel = self._current_variant_selection
+        if sel is None:
+            return block
+        return block[sel]
 
     def _load_variant_block(self, field, arr):
         key = (self._chunk_idx, field)
@@ -122,16 +146,6 @@ class VariantChunkReader:
         return np.ascontiguousarray(raw[:, plan.local_selection])
 
 
-def _combine_masks(v_mask, filter_mask):
-    """Combine a region mask with a filter mask. Broadcasts a 1-D region
-    mask against a 2-D filter mask when the filter is sample-scoped."""
-    if v_mask is None:
-        return filter_mask
-    if filter_mask.ndim == 2:
-        v_mask = np.expand_dims(v_mask, axis=1)
-    return np.logical_and(v_mask, filter_mask)
-
-
 def get_filter_ids(root):
     """
     Returns the filter IDs from the specified Zarr store. If the array
@@ -142,47 +156,6 @@ def get_filter_ids(root):
     else:
         filters = np.array(["PASS"], dtype="S")
     return filters
-
-
-_REGION_DF_COLUMNS = ("contig", "start", "end")
-
-
-def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
-    """Normalise a regions/targets input into the DataFrame schema used by
-    :mod:`vcztools.regions`.
-
-    Accepts ``None``, a single region string, a list of region strings, or a
-    DataFrame with ``contig``, ``start`` and ``end`` columns. A leading ``^``
-    on a string input is rejected with a ``ValueError`` pointing users at the
-    ``targets_complement`` flag.
-    """
-    if value is None:
-        return None
-    if isinstance(value, pd.DataFrame):
-        missing = set(_REGION_DF_COLUMNS) - set(value.columns)
-        if missing:
-            raise ValueError(
-                f"{arg_name} DataFrame is missing required columns: {sorted(missing)}"
-            )
-        return value
-    if isinstance(value, str):
-        if value.startswith("^"):
-            raise ValueError(
-                f"{arg_name} does not accept a '^' prefix in the Python API; "
-                f"use targets_complement=True for complement"
-            )
-        if "," in value:
-            raise ValueError(
-                f"{arg_name} string '{value}' contains ','. "
-                f"Pass a list[str] for multiple regions."
-            )
-        return regions_mod.region_strings_to_dataframe([value])
-    if isinstance(value, list):
-        return regions_mod.region_strings_to_dataframe(value)
-    raise TypeError(
-        f"{arg_name} must be str, list[str], pandas.DataFrame, or None; "
-        f"got {type(value).__name__}"
-    )
 
 
 def _validate_samples_input(value) -> None:
@@ -231,16 +204,13 @@ class VczReader:
         dataset. Use :func:`vcztools.utils.open_zarr` to open a path
         (local, remote, or zip) with the desired backend before
         constructing the reader.
-    regions, targets
-        Regions/targets to restrict iteration to. May be a single region
-        string, a list of region strings, or a pandas DataFrame with
-        columns ``contig`` (str), ``start`` and ``end`` (nullable ``Int64``,
-        ``pd.NA`` for unbounded). ``None`` disables the filter.
-        ``regions`` uses overlap semantics; ``targets`` uses exact-position
-        semantics and additionally accepts ``targets_complement``.
-    targets_complement
-        If ``True``, the targets selection is inverted (matches everything
-        *outside* the listed intervals).
+    variants
+        Variant selection. Accepts either a
+        :class:`~vcztools.regions.VariantChunkPlan` (use
+        :func:`vcztools.regions.build_chunk_plan` to build one from
+        region/target strings and a root), or a sorted 1-D array of
+        global variant indexes (which will be bucketed into a plan
+        internally). ``None`` iterates every variant.
     samples
         Integer indexes into the VCZ ``sample_id`` array, in the
         order the caller wants. ``None`` selects every real sample
@@ -268,16 +238,12 @@ class VczReader:
         self,
         root,
         *,
-        regions=None,
-        targets=None,
-        targets_complement: bool = False,
+        variants: np.ndarray | regions_mod.VariantChunkPlan | None = None,
         samples=None,
         drop_genotypes: bool = False,
         variant_filter: variant_filter_mod.VariantFilter | None = None,
         filter_on_subset_samples: bool = False,
     ):
-        regions_df = _regions_input_to_df(regions, arg_name="regions")
-        targets_df = _regions_input_to_df(targets, arg_name="targets")
         _validate_samples_input(samples)
 
         self.root = root
@@ -317,11 +283,16 @@ class VczReader:
         else:
             self.sample_chunk_plan = None
 
-        contigs_u = _as_fixed_length_unicode(self.root["contig_id"][:]).tolist()
-        self.regions = regions_mod.dataframe_to_ranges(regions_df, contigs_u)
-        self.targets = regions_mod.dataframe_to_ranges(
-            targets_df, contigs_u, complement=targets_complement
-        )
+        if variants is None:
+            self.variant_chunk_plan = None
+        elif isinstance(variants, regions_mod.VariantChunkPlan):
+            self.variant_chunk_plan = variants
+        else:
+            self.variant_chunk_plan = regions_mod.VariantChunkPlan.from_indexes(
+                np.asarray(variants),
+                num_variants=int(self.root["variant_position"].shape[0]),
+                variants_chunk_size=int(self.root["variant_position"].chunks[0]),
+            )
 
         if (
             variant_filter is not None
@@ -360,13 +331,16 @@ class VczReader:
         fields: list[str] | None = None,
     ):
         """Yield dict[str, np.ndarray] per variant chunk that passes the
-        current regions/targets/samples/variant-filter selection.
+        current variants/samples/variant-filter selection.
 
         The per-chunk computation runs in stages:
 
-        1. ``_chunk_indexes`` — which chunks to visit (region-index pruning).
-        2. ``_chunk_region_mask`` / filter evaluation — build a per-variant
-           (or per-variant-per-sample) boolean mask.
+        1. Iterate the ``variant_chunk_plan`` (or every chunk if the plan
+           is ``None``). The reader pre-slices each chunk's variant axis
+           to the plan's per-chunk selection, so by the time we see the
+           data the region/target filter has already been applied.
+        2. Filter evaluation builds a per-variant (or per-variant-per-
+           sample) boolean mask on top of the pre-sliced rows.
         3. ``_reduce_chunk_mask`` — split that mask into a
            ``variants_selection`` and an optional ``call_mask``.
         4. ``_collect_output`` — load the query fields, applying the
@@ -379,7 +353,11 @@ class VczReader:
         if fields is not None and len(fields) == 0:
             return
 
-        reader = VariantChunkReader(self.root, sample_chunk_plan=self.sample_chunk_plan)
+        reader = VariantChunkReader(
+            self.root,
+            sample_chunk_plan=self.sample_chunk_plan,
+            variant_chunk_plan=self.variant_chunk_plan,
+        )
         query_fields = self._resolve_query_fields(fields)
         filter_getter = (
             reader.get if self.filter_on_subset_samples else reader.get_with_all_samples
@@ -387,13 +365,12 @@ class VczReader:
 
         for chunk_idx in self._chunk_indexes():
             reader.set_chunk(chunk_idx)
-            v_mask = self._chunk_region_mask(reader)
+            v_mask = None
             if self.variant_filter is not None:
                 filter_data = {
                     f: filter_getter(f) for f in self.variant_filter.referenced_fields
                 }
-                filter_mask = self.variant_filter.evaluate(filter_data)
-                v_mask = _combine_masks(v_mask, filter_mask)
+                v_mask = self.variant_filter.evaluate(filter_data)
             if v_mask is not None and not np.any(v_mask):
                 continue
             variants_selection, call_mask = self._reduce_chunk_mask(v_mask)
@@ -421,32 +398,12 @@ class VczReader:
         return data
 
     def _chunk_indexes(self):
-        """Variant-chunk indexes that may contain matching rows.
-
-        With ``self.regions`` set we prune via the region index; otherwise
-        we visit every chunk.
-        """
-        if self.regions is None:
-            num_chunks = self.root["variant_position"].cdata_shape[0]
-            return range(num_chunks)
-        region_index = self.root["region_index"][:]
-        return regions_mod.regions_to_chunk_indexes(self.regions, region_index)
-
-    def _chunk_region_mask(self, reader):
-        """1-D boolean per-variant mask from regions/targets for the
-        reader's current chunk, or ``None`` when neither ``self.regions``
-        nor ``self.targets`` is set."""
-        if self.regions is None and self.targets is None:
-            return None
-        contig = reader.get("variant_contig")
-        position = reader.get("variant_position")
-        length = reader.get("variant_length")
-        selection = regions_mod.regions_to_selection(
-            self.regions, self.targets, contig, position, length
-        )
-        mask = np.zeros(position.shape[0], dtype=bool)
-        mask[selection] = True
-        return mask
+        """Variant-chunk indexes to visit. With a ``variant_chunk_plan``
+        we visit exactly its ``chunk_indexes``; otherwise every chunk."""
+        if self.variant_chunk_plan is not None:
+            return [int(i) for i in self.variant_chunk_plan.chunk_indexes]
+        num_chunks = self.root["variant_position"].cdata_shape[0]
+        return range(num_chunks)
 
     def _reduce_chunk_mask(self, v_mask):
         """Reduce a chunk mask into ``(variants_selection, call_mask)``.

@@ -10,18 +10,31 @@ import xarray as xr
 import zarr
 
 from vcztools import bcftools_filter, retrieval
+from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
 
 
-def make_reader(root, *, include=None, exclude=None, samples=None, **kwargs):
+def make_reader(
+    root,
+    *,
+    include=None,
+    exclude=None,
+    samples=None,
+    regions=None,
+    targets=None,
+    targets_complement=False,
+    **kwargs,
+):
     """Build a :class:`VczReader` with an optional
-    :class:`BcftoolsFilter` from ``include``/``exclude`` strings.
+    :class:`BcftoolsFilter` from ``include``/``exclude`` strings and a
+    :class:`VariantChunkPlan` from ``regions``/``targets`` inputs.
 
     ``root`` must be an opened :class:`zarr.Group`. ``samples`` may be
     a ``list[str]`` of sample names (resolved to indexes via
     :func:`vcztools.samples.resolve_sample_selection`) or already an
-    integer-index list. Non-filter/sample keyword arguments are
-    forwarded to :class:`VczReader`.
+    integer-index list. ``regions`` / ``targets`` accept the same
+    shapes as :func:`vcztools.regions.build_chunk_plan`. Any other
+    keyword arguments are forwarded to :class:`VczReader`.
     """
     variant_filter = None
     if include is not None or exclude is not None:
@@ -30,8 +43,18 @@ def make_reader(root, *, include=None, exclude=None, samples=None, **kwargs):
         )
     if samples is not None and samples and isinstance(samples[0], str):
         samples = samples_mod.resolve_sample_selection(samples, root["sample_id"][:])
+    variant_chunk_plan = regions_mod.build_chunk_plan(
+        root,
+        regions=regions,
+        targets=targets,
+        targets_complement=targets_complement,
+    )
     return retrieval.VczReader(
-        root, variant_filter=variant_filter, samples=samples, **kwargs
+        root,
+        variants=variant_chunk_plan,
+        variant_filter=variant_filter,
+        samples=samples,
+        **kwargs,
     )
 
 

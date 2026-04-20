@@ -22,11 +22,9 @@ def make_reader(source, *, include=None, exclude=None, **kwargs):
     """
     reader = retrieval.VczReader(source, **kwargs)
     if include is not None or exclude is not None:
-        candidate = bcftools_filter.BcftoolsFilter(
+        reader.variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=set(reader.root), include=include, exclude=exclude
         )
-        if candidate.parse_result is not None:
-            reader.variant_filter = candidate
     return reader
 
 

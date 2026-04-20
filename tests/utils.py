@@ -12,15 +12,15 @@ import zarr
 from vcztools import bcftools_filter, retrieval
 
 
-def make_reader(source, *, include=None, exclude=None, **kwargs):
+def make_reader(root, *, include=None, exclude=None, **kwargs):
     """Build a :class:`VczReader` with an optional
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings.
 
-    ``source`` accepts the same inputs as :class:`VczReader` — a path,
-    store, or opened Group. All non-filter keyword arguments are
-    forwarded to :class:`VczReader`.
+    ``root`` must be an opened :class:`zarr.Group` (as
+    :class:`VczReader` itself now requires). All non-filter keyword
+    arguments are forwarded to :class:`VczReader`.
     """
-    reader = retrieval.VczReader(source, **kwargs)
+    reader = retrieval.VczReader(root, **kwargs)
     if include is not None or exclude is not None:
         reader.variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=set(reader.root), include=include, exclude=exclude

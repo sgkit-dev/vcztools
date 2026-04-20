@@ -1,8 +1,11 @@
+import dataclasses
 import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from vcztools.utils import _as_fixed_length_unicode
 
 try:
     # Use ruranges if installed
@@ -266,3 +269,145 @@ def regions_to_selection(
         overlap = targets_overlap
 
     return overlap
+
+
+_REGION_DF_COLUMNS = ("contig", "start", "end")
+
+
+def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
+    """Normalise a regions/targets input into the documented DataFrame
+    schema used internally by :func:`build_chunk_plan`.
+
+    Accepts ``None``, a single region string, a list of region strings,
+    or a DataFrame with ``contig``, ``start`` and ``end`` columns. A
+    leading ``^`` on a string input is rejected with a ``ValueError``
+    pointing users at the ``targets_complement`` flag.
+    """
+    if value is None:
+        return None
+    if isinstance(value, pd.DataFrame):
+        missing = set(_REGION_DF_COLUMNS) - set(value.columns)
+        if missing:
+            raise ValueError(
+                f"{arg_name} DataFrame is missing required columns: {sorted(missing)}"
+            )
+        return value
+    if isinstance(value, str):
+        if value.startswith("^"):
+            raise ValueError(
+                f"{arg_name} does not accept a '^' prefix in the Python API; "
+                f"use targets_complement=True for complement"
+            )
+        if "," in value:
+            raise ValueError(
+                f"{arg_name} string '{value}' contains ','. "
+                f"Pass a list[str] for multiple regions."
+            )
+        return region_strings_to_dataframe([value])
+    if isinstance(value, list):
+        return region_strings_to_dataframe(value)
+    raise TypeError(
+        f"{arg_name} must be str, list[str], pandas.DataFrame, or None; "
+        f"got {type(value).__name__}"
+    )
+
+
+@dataclasses.dataclass
+class VariantChunkPlan:
+    """Variant-axis analogue of :class:`samples.SampleChunkPlan`.
+
+    ``chunk_indexes`` is the sorted array of variant chunks to visit.
+    ``per_chunk_selection[i]`` is the local row index (into that chunk)
+    of every row to emit, in the order they should be emitted.
+    """
+
+    chunk_indexes: np.ndarray
+    per_chunk_selection: list[np.ndarray]
+
+    @classmethod
+    def from_indexes(
+        cls,
+        variant_indexes: np.ndarray,
+        *,
+        num_variants: int,
+        variants_chunk_size: int,
+    ) -> "VariantChunkPlan":
+        """Build a plan from a sorted flat array of global variant
+        indexes. Buckets into chunks, producing one per-chunk selection
+        array per visited chunk."""
+        variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
+        chunk_of_each = variant_indexes // variants_chunk_size
+        chunk_indexes = np.unique(chunk_of_each)
+        per_chunk_selection = [
+            variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size)
+            for ci in chunk_indexes
+        ]
+        return cls(
+            chunk_indexes=chunk_indexes,
+            per_chunk_selection=per_chunk_selection,
+        )
+
+
+def build_chunk_plan(
+    root,
+    *,
+    regions=None,
+    targets=None,
+    targets_complement: bool = False,
+) -> VariantChunkPlan | None:
+    """Build a :class:`VariantChunkPlan` from region/target inputs and
+    the Zarr root. Returns ``None`` when neither ``regions`` nor
+    ``targets`` is specified (callers treat that as "all variants":
+    iterate every chunk with no row slicing).
+
+    Uses the ``region_index`` array to prune candidate chunks (only
+    when ``regions`` is set — ``targets`` alone doesn't prune), then
+    scans each candidate chunk once to compute a local row selection.
+    Only non-empty chunks end up in the plan.
+    """
+    if regions is None and targets is None:
+        return None
+
+    regions_df = _regions_input_to_df(regions, arg_name="regions")
+    targets_df = _regions_input_to_df(targets, arg_name="targets")
+
+    contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
+    regions_gr = dataframe_to_ranges(regions_df, contigs_u)
+    targets_gr = dataframe_to_ranges(
+        targets_df, contigs_u, complement=targets_complement
+    )
+
+    if regions_gr is None and targets_gr is None:
+        return None
+
+    position_arr = root["variant_position"]
+    contig_arr = root["variant_contig"]
+    length_arr = root["variant_length"]
+    num_chunks = int(position_arr.cdata_shape[0])
+
+    if regions_gr is not None:
+        region_index = root["region_index"][:]
+        candidate_chunks = regions_to_chunk_indexes(regions_gr, region_index)
+    else:
+        candidate_chunks = np.arange(num_chunks, dtype=np.int64)
+
+    chunk_indexes_list = []
+    per_chunk_selection = []
+    for chunk_idx in candidate_chunks:
+        chunk_idx = int(chunk_idx)
+        vc = contig_arr.blocks[chunk_idx]
+        vp = position_arr.blocks[chunk_idx]
+        vl = length_arr.blocks[chunk_idx]
+        local_sel = regions_to_selection(regions_gr, targets_gr, vc, vp, vl)
+        if local_sel is None:
+            continue
+        local_sel = np.asarray(local_sel, dtype=np.int64)
+        if local_sel.size == 0:
+            continue
+        chunk_indexes_list.append(chunk_idx)
+        per_chunk_selection.append(local_sel)
+
+    return VariantChunkPlan(
+        chunk_indexes=np.asarray(chunk_indexes_list, dtype=np.int64),
+        per_chunk_selection=per_chunk_selection,
+    )

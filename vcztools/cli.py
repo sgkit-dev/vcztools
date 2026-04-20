@@ -184,11 +184,15 @@ def make_reader(
         variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=set(root), include=include, exclude=exclude
         )
-    return retrieval.VczReader(
+    variant_chunk_plan = regions_mod.build_chunk_plan(
         root,
         regions=regions,
         targets=targets,
         targets_complement=targets_complement,
+    )
+    return retrieval.VczReader(
+        root,
+        variants=variant_chunk_plan,
         samples=samples,
         drop_genotypes=drop_genotypes,
         variant_filter=variant_filter,

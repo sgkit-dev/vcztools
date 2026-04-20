@@ -203,7 +203,7 @@ def test_write_vcf__regions(
         regions = regions.split(",")
     if targets is not None and "," in targets:
         targets = targets.split(",")
-    reader = VczReader(
+    reader = make_reader(
         vcz,
         regions=regions,
         targets=targets,
@@ -258,7 +258,7 @@ class TestSmallChunks:
     def test_region_filter(self, tmp_path, variants_chunk_size):
         vcz = self._build(variants_chunk_size)
         output = tmp_path / "out.vcf"
-        reader = VczReader(vcz, regions="chr1:5-12")
+        reader = make_reader(vcz, regions="chr1:5-12")
         write_vcf(reader, output, no_version=True)
 
         v = VCF(str(output))
@@ -311,7 +311,7 @@ def test_write_vcf__regions_split_alleles(
         fx_sample_split_alleles_vcz.group, variants_chunk_size=variants_chunk_size
     )
     output = tmp_path.joinpath("output.vcf")
-    reader = VczReader(vcz, regions="20:1234567")
+    reader = make_reader(vcz, regions="20:1234567")
     write_vcf(reader, output)
 
     v = VCF(output)

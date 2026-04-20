@@ -272,3 +272,104 @@ class TestVczReaderSamples:
             fx_sample_vcz.group, samples=["NO_SAMPLE"], ignore_missing_samples=True
         )
         nt.assert_array_equal(reader.sample_ids, [])
+
+
+class TestVczReaderSampleChunks:
+    """End-to-end sample-chunk pruning.
+
+    Builds a VCZ whose sample axis spans multiple chunks and verifies
+    that selecting subsets yields correct ``call_*`` data regardless of
+    whether the selection hits one chunk, several chunks, or the
+    last (possibly partial) chunk.
+    """
+
+    @staticmethod
+    def _vcz(num_samples=6, samples_chunk_size=2):
+        sample_ids = [f"s{i}" for i in range(num_samples)]
+        # call_DP[i, j] = i * 10 + j — unique per (variant, sample) so
+        # mis-indexing is caught immediately.
+        call_dp = np.array(
+            [[i * 10 + j for j in range(num_samples)] for i in range(3)],
+            dtype=np.int32,
+        )
+        return vcz_builder.make_vcz(
+            variant_contig=[0, 0, 0],
+            variant_position=[1, 2, 3],
+            alleles=[("A", "T")] * 3,
+            num_samples=num_samples,
+            sample_id=sample_ids,
+            samples_chunk_size=samples_chunk_size,
+            call_fields={"DP": call_dp},
+        )
+
+    def _call_dp(self, reader):
+        chunks = list(reader.variant_chunks(fields=["call_DP"]))
+        return np.concatenate([c["call_DP"] for c in chunks], axis=0)
+
+    def test_single_chunk_selection(self):
+        # s2, s3 both live in sample chunk 1 (indexes 2, 3).
+        reader = VczReader(self._vcz(), samples=["s2", "s3"])
+        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [1])
+        nt.assert_array_equal(reader.sample_chunk_plan.local_selection, [0, 1])
+        dp = self._call_dp(reader)
+        nt.assert_array_equal(dp, [[2, 3], [12, 13], [22, 23]])
+
+    def test_multi_chunk_selection(self):
+        # s1 is in chunk 0; s4 is in chunk 2; chunk 1 is skipped.
+        reader = VczReader(self._vcz(), samples=["s1", "s4"])
+        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 2])
+        dp = self._call_dp(reader)
+        nt.assert_array_equal(dp, [[1, 4], [11, 14], [21, 24]])
+
+    def test_preserves_user_order(self):
+        # Same chunks as the multi-chunk test, but the user order is
+        # reversed — the output must follow the input list.
+        reader = VczReader(self._vcz(), samples=["s4", "s1"])
+        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 2])
+        dp = self._call_dp(reader)
+        nt.assert_array_equal(dp, [[4, 1], [14, 11], [24, 21]])
+
+    def test_partial_final_chunk(self):
+        # 5 samples with chunk size 2 → chunks sized [2, 2, 1]. s4 sits
+        # alone in the final chunk.
+        reader = VczReader(
+            self._vcz(num_samples=5, samples_chunk_size=2), samples=["s4"]
+        )
+        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [2])
+        nt.assert_array_equal(reader.sample_chunk_plan.local_selection, [0])
+        dp = self._call_dp(reader)
+        nt.assert_array_equal(dp, [[4], [14], [24]])
+
+    def test_samples_none_plan_is_identity(self):
+        # samples=None plans a read over every sample chunk with an
+        # identity local selection — same shape and values as a full read.
+        reader = VczReader(self._vcz())
+        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 1, 2])
+        nt.assert_array_equal(
+            reader.sample_chunk_plan.local_selection, [0, 1, 2, 3, 4, 5]
+        )
+        dp = self._call_dp(reader)
+        nt.assert_array_equal(dp.shape, (3, 6))
+        nt.assert_array_equal(dp[0], [0, 1, 2, 3, 4, 5])
+
+    def test_samples_none_missing_header_reduces(self):
+        # samples=None with masked "" entries in sample_id: the plan
+        # drops the masked indices, matching the old post-filter path.
+        root = self._vcz()
+        root["sample_id"][:2] = ""
+        reader = VczReader(root)
+        nt.assert_array_equal(reader.sample_ids, ["s2", "s3", "s4", "s5"])
+        dp = self._call_dp(reader)
+        nt.assert_array_equal(dp, [[2, 3, 4, 5], [12, 13, 14, 15], [22, 23, 24, 25]])
+
+    def test_drop_genotypes_has_no_plan(self):
+        reader = VczReader(self._vcz(), drop_genotypes=True)
+        assert reader.sample_chunk_plan is None
+
+    def test_force_samples_empty_has_no_plan(self):
+        # --force-samples eliminates every requested sample → plan=None,
+        # read full call arrays so AC/AN can still be recomputed.
+        reader = VczReader(
+            self._vcz(), samples=["UNKNOWN"], ignore_missing_samples=True
+        )
+        assert reader.sample_chunk_plan is None

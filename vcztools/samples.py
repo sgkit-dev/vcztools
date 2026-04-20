@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 
 import numpy as np
@@ -5,6 +6,47 @@ import numpy as np
 from vcztools.utils import _as_fixed_length_unicode, search
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class SampleChunkPlan:
+    """Plan for reading a subset of sample chunks.
+
+    ``chunk_indexes`` are the sorted unique sample chunks that together
+    cover the requested selection. ``local_selection`` is an index into
+    the concatenation of those chunks along the samples axis — applying
+    it yields samples in the caller's requested order.
+    """
+
+    chunk_indexes: np.ndarray
+    local_selection: np.ndarray
+
+
+def build_chunk_plan(
+    samples_selection: np.ndarray,
+    num_samples: int,
+    samples_chunk_size: int,
+) -> SampleChunkPlan:
+    """Translate a global sample selection into a sample-chunk read plan.
+
+    Given integer indices into the full samples axis plus the axis's
+    chunk layout, return the set of sample chunks that must be read and
+    the indices into their concatenation that recover the original
+    selection (in input order).
+    """
+    samples_selection = np.asarray(samples_selection)
+    chunk_of_each = samples_selection // samples_chunk_size
+    chunk_indexes = np.unique(chunk_of_each)
+
+    chunk_starts = chunk_indexes * samples_chunk_size
+    chunk_ends = np.minimum(chunk_starts + samples_chunk_size, num_samples)
+    chunk_sizes = chunk_ends - chunk_starts
+    offsets = np.concatenate(([0], np.cumsum(chunk_sizes[:-1])))
+
+    chunk_pos_of_each = np.searchsorted(chunk_indexes, chunk_of_each)
+    local_in_chunk = samples_selection - chunk_starts[chunk_pos_of_each]
+    local_selection = offsets[chunk_pos_of_each] + local_in_chunk
+    return SampleChunkPlan(chunk_indexes=chunk_indexes, local_selection=local_selection)
 
 
 def parse_samples(

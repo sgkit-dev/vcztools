@@ -1,4 +1,3 @@
-import collections.abc
 import functools
 
 import numpy as np
@@ -15,67 +14,116 @@ from vcztools.utils import (
 )
 
 
-# NOTE:  this class is just a skeleton for now. The idea is that this
-# will provide readahead, caching etc, and will be the central location
-# for fetching bulk Zarr data.
-class VariantChunkReader(collections.abc.Sequence):
-    """
-    Retrieve data from a Zarr store and return chunk-by-chunk in the
-    variants dimension.
+class VariantChunkReader:
+    """Zarr I/O with block-level per-chunk caching.
+
+    Sole I/O path for a ``variant_chunks`` walk: each array block needed
+    for a chunk visit is fetched at most once. Readahead/caching will
+    be added here later; callers should not go around it.
+
+    Two access modes for ``call_*`` fields:
+
+    - :meth:`get_for_filter` returns the full sample dimension (filter
+      evaluation must see every sample, even those not in the user's
+      selection).
+    - :meth:`get_for_output` applies ``sample_chunk_plan`` (reads only
+      the sample chunks that contain selected samples and indexes into
+      their concatenation).
+
+    For variant-only and static fields the two modes are equivalent —
+    there is no samples axis to prune.
     """
 
-    def __init__(self, root, *, fields=None, sample_chunk_plan=None):
+    def __init__(self, root, *, sample_chunk_plan=None):
         self.root = root
-        if fields is None:
-            fields = [
-                key
-                for key in root.keys()
-                if key.startswith("variant_") or key.startswith("call_")
-            ]
-        all_arrays = {key: self.root[key] for key in fields}
-        # Partition into variant-chunked arrays and static (non-variant-axis)
-        # arrays. Static arrays like filter_id are read once in full and
-        # returned unchanged for every chunk.
-        self.arrays = {}
-        self.static_data = {}
-        for key, arr in all_arrays.items():
-            dim_names = utils.array_dims(arr)
-            if dim_names is not None and dim_names[0] == "variants":
-                self.arrays[key] = arr
-            else:
-                self.static_data[key] = arr[:]
-        self.num_chunks = next(iter(self.arrays.values())).cdata_shape[0]
         self.sample_chunk_plan = sample_chunk_plan
+        self._static = {}
+        self._variant_blocks = {}
+        self._call_blocks = {}
+        self._chunk_idx = None
 
-    def __len__(self):
-        return self.num_chunks
+    def set_chunk(self, chunk_idx):
+        """Advance to a new variant chunk and evict the previous chunk's
+        per-chunk cache entries."""
+        if chunk_idx == self._chunk_idx:
+            return
+        self._chunk_idx = chunk_idx
+        self._variant_blocks.clear()
+        self._call_blocks.clear()
 
-    def __getitem__(self, chunk):
-        data = {key: array.blocks[chunk] for key, array in self.arrays.items()}
-        data.update(self.static_data)
-        return data
+    def get_for_filter(self, field):
+        """Return the field at the full sample dimension."""
+        return self._get(field, prune=False)
 
-    def get_chunk_data(self, chunk, mask):
+    def get_for_output(self, field):
+        """Return the field with ``sample_chunk_plan`` applied to the
+        samples axis of ``call_*`` fields."""
+        return self._get(field, prune=True)
+
+    def has_variants_axis(self, field):
+        """Whether ``field``'s first dimension is ``variants``. Static
+        fields (``filter_id`` etc.) return ``False`` and are not sliced
+        by the variants selection."""
+        arr = self.root[field]
+        dims = utils.array_dims(arr)
+        return dims is not None and len(dims) > 0 and dims[0] == "variants"
+
+    def _get(self, field, *, prune):
+        if field in self._static:
+            return self._static[field]
+        arr = self.root[field]
+        if not self.has_variants_axis(field):
+            self._static[field] = arr[:]
+            return self._static[field]
+        if not field.startswith("call_"):
+            return self._load_variant_block(field, arr)
         plan = self.sample_chunk_plan
-        data = {}
-        for key, array in self.arrays.items():
-            if key.startswith("call_") and plan is not None:
-                parts = [
-                    array.blocks[(chunk, sci) + (slice(None),) * (array.ndim - 2)]
-                    for sci in plan.chunk_indexes
-                ]
-                raw = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
-                # Advanced indexing along a non-first axis of a 3-D array
-                # yields a non-C-contiguous view; ascontiguousarray produces
-                # the fresh contiguous buffer that the C encoder requires.
-                result = np.ascontiguousarray(raw[:, plan.local_selection])
-            else:
-                result = array.blocks[chunk]
-            if mask is not None:
-                result = result[mask]
-            data[key] = result
-        data.update(self.static_data)
-        return data
+        if plan is None or not prune:
+            return self._load_call_full(field, arr)
+        return self._load_call_pruned(field, arr, plan)
+
+    def _load_variant_block(self, field, arr):
+        key = (self._chunk_idx, field)
+        block = self._variant_blocks.get(key)
+        if block is None:
+            block = arr.blocks[self._chunk_idx]
+            self._variant_blocks[key] = block
+        return block
+
+    def _load_call_block(self, field, arr, sci):
+        key = (self._chunk_idx, field, sci)
+        block = self._call_blocks.get(key)
+        if block is None:
+            index = (self._chunk_idx, sci) + (slice(None),) * (arr.ndim - 2)
+            block = arr.blocks[index]
+            self._call_blocks[key] = block
+        return block
+
+    def _load_call_full(self, field, arr):
+        num_s_chunks = int(arr.cdata_shape[1])
+        parts = [self._load_call_block(field, arr, sci) for sci in range(num_s_chunks)]
+        return np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+
+    def _load_call_pruned(self, field, arr, plan):
+        # Invariant: the concatenation must span exactly plan.chunk_indexes
+        # (in that order) because plan.local_selection indexes into that
+        # specific layout — not into the superset the cache might hold.
+        parts = [self._load_call_block(field, arr, sci) for sci in plan.chunk_indexes]
+        raw = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+        # Advanced indexing along a non-first axis of a 3-D array yields a
+        # non-C-contiguous view; ascontiguousarray produces the fresh
+        # contiguous buffer that the C encoder requires.
+        return np.ascontiguousarray(raw[:, plan.local_selection])
+
+
+def _combine_masks(v_mask, filter_mask):
+    """Combine a region mask with a filter mask. Broadcasts a 1-D region
+    mask against a 2-D filter mask when the filter is sample-scoped."""
+    if v_mask is None:
+        return filter_mask
+    if filter_mask.ndim == 2:
+        v_mask = np.expand_dims(v_mask, axis=1)
+    return np.logical_and(v_mask, filter_mask)
 
 
 def get_filter_ids(root):
@@ -261,35 +309,58 @@ class VczReader:
         The per-chunk computation runs in stages:
 
         1. ``_chunk_indexes`` — which chunks to visit (region-index pruning).
-        2. ``_chunk_mask`` — build a per-variant (or per-variant-per-sample)
-           boolean mask combining regions/targets and filter expression.
+        2. ``_chunk_region_mask`` / filter evaluation — build a per-variant
+           (or per-variant-per-sample) boolean mask.
         3. ``_reduce_chunk_mask`` — split that mask into a
            ``variants_selection`` and an optional ``call_mask``.
-        4. ``VariantChunkReader.get_chunk_data`` — load the query fields,
-           applying the variant and sample selections.
+        4. ``_collect_output`` — load the query fields, applying the
+           variant and sample selections.
+
+        A single :class:`VariantChunkReader` is the only Zarr I/O path;
+        each block needed for a chunk visit is fetched at most once,
+        even if a field is referenced by both the filter and the query.
         """
         if fields is not None and len(fields) == 0:
             return
 
         filter_expr = self._make_filter_expression(include, exclude)
-        query_reader = VariantChunkReader(
-            self.root, fields=fields, sample_chunk_plan=self.sample_chunk_plan
-        )
-        filter_reader = (
-            VariantChunkReader(self.root, fields=list(filter_expr.referenced_fields))
-            if filter_expr is not None
-            else None
-        )
+        reader = VariantChunkReader(self.root, sample_chunk_plan=self.sample_chunk_plan)
+        query_fields = self._resolve_query_fields(fields)
 
         for chunk_idx in self._chunk_indexes():
-            v_mask = self._chunk_mask(chunk_idx, filter_expr, filter_reader)
+            reader.set_chunk(chunk_idx)
+            v_mask = self._chunk_region_mask(reader)
+            if filter_expr is not None:
+                filter_data = {
+                    f: reader.get_for_filter(f) for f in filter_expr.referenced_fields
+                }
+                filter_mask = filter_expr.evaluate(filter_data)
+                v_mask = _combine_masks(v_mask, filter_mask)
             if v_mask is not None and not np.any(v_mask):
                 continue
             variants_selection, call_mask = self._reduce_chunk_mask(v_mask)
-            chunk_data = query_reader.get_chunk_data(chunk_idx, variants_selection)
+            chunk_data = self._collect_output(reader, query_fields, variants_selection)
             if call_mask is not None:
                 chunk_data["call_mask"] = call_mask
             yield chunk_data
+
+    def _resolve_query_fields(self, fields):
+        if fields is not None:
+            return list(fields)
+        return [
+            key
+            for key in self.root.keys()
+            if key.startswith("variant_") or key.startswith("call_")
+        ]
+
+    def _collect_output(self, reader, fields, variants_selection):
+        data = {}
+        for field in fields:
+            value = reader.get_for_output(field)
+            if variants_selection is not None and reader.has_variants_axis(field):
+                value = value[variants_selection]
+            data[field] = value
+        return data
 
     def _make_filter_expression(self, include, exclude):
         """Return a :class:`FilterExpression` for ``include``/``exclude`` or
@@ -311,37 +382,21 @@ class VczReader:
         region_index = self.root["region_index"][:]
         return regions_mod.regions_to_chunk_indexes(self.regions, region_index)
 
-    def _chunk_region_mask(self, chunk_idx):
-        """1-D boolean per-variant mask from regions/targets for one chunk,
-        or ``None`` when neither ``self.regions`` nor ``self.targets`` is set.
-        """
+    def _chunk_region_mask(self, reader):
+        """1-D boolean per-variant mask from regions/targets for the
+        reader's current chunk, or ``None`` when neither ``self.regions``
+        nor ``self.targets`` is set."""
         if self.regions is None and self.targets is None:
             return None
-        contig = self.root["variant_contig"].blocks[chunk_idx][:]
-        position = self.root["variant_position"].blocks[chunk_idx][:]
-        length = self.root["variant_length"].blocks[chunk_idx][:]
+        contig = reader.get_for_output("variant_contig")
+        position = reader.get_for_output("variant_position")
+        length = reader.get_for_output("variant_length")
         selection = regions_mod.regions_to_selection(
             self.regions, self.targets, contig, position, length
         )
         mask = np.zeros(position.shape[0], dtype=bool)
         mask[selection] = True
         return mask
-
-    def _chunk_mask(self, chunk_idx, filter_expr, filter_reader):
-        """Combined region + filter mask for a chunk.
-
-        Returns ``None`` when no subsetting applies, a 1-D mask for variant-
-        scoped filters, or a 2-D mask for sample-scoped filters.
-        """
-        v_mask = self._chunk_region_mask(chunk_idx)
-        if filter_expr is None:
-            return v_mask
-        filter_mask = filter_expr.evaluate(filter_reader[chunk_idx])
-        if v_mask is None:
-            return filter_mask
-        if filter_mask.ndim == 2:
-            v_mask = np.expand_dims(v_mask, axis=1)
-        return np.logical_and(v_mask, filter_mask)
 
     def _reduce_chunk_mask(self, v_mask):
         """Reduce a chunk mask into ``(variants_selection, call_mask)``.

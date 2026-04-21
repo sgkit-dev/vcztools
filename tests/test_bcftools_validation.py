@@ -720,50 +720,18 @@ class TestFilterExpressionLanguage:
     def test_known_divergences(self, fx_sample_vcz, expr):
         self._check(fx_sample_vcz, "-i", expr)
 
-    # ---- BUG 3: arithmetic on a float field with missing values ----
-    #
-    # Any arithmetic that touches ``QUAL`` on sample.vcf.gz — which
-    # has ``QUAL=.`` at 20:1235237, encoded as float NaN — causes
-    # numpy to emit a ``RuntimeWarning: invalid value encountered in
-    # {multiply,add,subtract,...}``. Both the unary-minus path and
-    # the binary-arithmetic path suffer from this. Output values are
-    # correct in both cases; only stderr is noisy.
-    #
-    # Observed locations:
-    #
-    #   vcztools/bcftools_filter.py:183 (UnaryMinus.eval, ``-1*value``)
-    #   vcztools/bcftools_filter.py:271 (BinaryOperator.eval,
-    #                                    ``arith_fn(ret, operand.eval(data))``)
-    #
-    # Root cause: evaluation doesn't mask out missing operands before
-    # arithmetic. For unary minus specifically, ``-1 * NaN`` warns
-    # even though ``-NaN`` would not. For binary arithmetic, any op
-    # on NaN warns.
-    #
-    # Fix directions:
-    #  - Replace ``-1 * value`` with ``np.negative(value)`` or
-    #    ``-value`` in ``UnaryMinus.eval`` (NaN-safe and shorter).
-    #  - For binary arithmetic, either (a) propagate a missingness
-    #    mask so arithmetic on missing short-circuits to missing, or
-    #    (b) wrap the eval in ``np.errstate(invalid="ignore")``.
-    #    Option (a) is more honest; (b) is the one-liner.
+    # Regression check: arithmetic on NaN-encoded missing QUAL
+    # (sample.vcf.gz has ``QUAL=.`` at 20:1235237) must not emit
+    # ``RuntimeWarning: invalid value encountered in ...`` from either
+    # the unary-minus or binary-arithmetic path.
     @pytest.mark.parametrize(
         "expr",
         [
-            # UnaryMinus path (bcftools_filter.py:183).
+            # UnaryMinus path.
             "-QUAL>-20",
-            # BinaryOperator path (bcftools_filter.py:271).
+            # BinaryOperator path.
             "QUAL + 1 > 11",
         ],
-    )
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Arithmetic on NaN-valued QUAL emits numpy "
-            "RuntimeWarning; bug covers both UnaryMinus and "
-            "BinaryOperator. Output values match bcftools; only "
-            "stderr is noisy."
-        ),
     )
     def test_nan_arithmetic_warning(self, fx_sample_vcz, expr):
         # Run vcztools in a subprocess rather than through the in-

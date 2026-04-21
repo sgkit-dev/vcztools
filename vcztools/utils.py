@@ -1,3 +1,4 @@
+import dataclasses
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -7,6 +8,21 @@ import zarr
 
 from vcztools import constants
 from vcztools.constants import RESERVED_VCF_FIELDS
+
+
+@dataclasses.dataclass
+class ChunkRead:
+    """A single chunk read: which chunk, and which local entries.
+
+    Axis-agnostic: used for both the variants axis (by
+    :mod:`vcztools.regions`) and the samples axis (by
+    :mod:`vcztools.samples`). ``selection=None`` means "emit the full
+    chunk, no slicing"; otherwise ``selection`` is the local indices
+    into this chunk along the relevant axis, in emission order.
+    """
+
+    index: int
+    selection: np.ndarray | None = None
 
 
 def array_dims(arr):

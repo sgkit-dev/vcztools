@@ -3,7 +3,7 @@ import logging
 
 import numpy as np
 
-from vcztools import regions as regions_mod
+from vcztools import utils
 from vcztools.utils import search
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ class SampleChunkPlan:
     the concatenation is already in the caller's order.
     """
 
-    chunk_reads: list[regions_mod.ChunkRead]
+    chunk_reads: list[utils.ChunkRead]
     permutation: np.ndarray | None = None
 
 
@@ -49,7 +49,7 @@ def build_chunk_plan(
         local_sel = (
             sorted_samples[offset : offset + count] - int(ci) * samples_chunk_size
         )
-        chunk_reads.append(regions_mod.ChunkRead(index=int(ci), selection=local_sel))
+        chunk_reads.append(utils.ChunkRead(index=int(ci), selection=local_sel))
         offset += count
 
     permutation = np.argsort(sort_idx)

@@ -156,7 +156,7 @@ class TestMakeReader:
     @staticmethod
     def _positions(reader):
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
-        if not chunks:
+        if len(chunks) == 0:
             return []
 
         return list(np.concatenate([c["variant_position"] for c in chunks]))

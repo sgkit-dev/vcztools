@@ -91,10 +91,12 @@ def resolve_sample_selection(
     Masked (empty-string) entries in ``all_samples`` are never
     returned.
     """
+    real_samples_mask = all_samples != ""
+
     if samples is None:
         if not complement:
             return None
-        return [i for i, s in enumerate(all_samples.tolist()) if s != ""]
+        return np.flatnonzero(real_samples_mask).tolist()
 
     sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
     unknown_samples = np.setdiff1d(sample_ids, all_samples)
@@ -112,17 +114,23 @@ def resolve_sample_selection(
                 'Use "--force-samples" to ignore this error.'
             )
 
-    name_to_index = {s: i for i, s in enumerate(all_samples.tolist()) if s != ""}
-
     if not complement:
         unique_ids, counts = np.unique(sample_ids, return_counts=True)
         duplicates = unique_ids[counts > 1]
         if duplicates.size > 0:
             raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
-        return [name_to_index[s] for s in sample_ids.tolist() if s in name_to_index]
+        # Drop empty-string requests — they would otherwise map to a
+        # masked header position, and those are never returned.
+        sample_ids = sample_ids[sample_ids != ""]
+        # Match all_samples' dtype so searchsorted is a safe cast.
+        # Every remaining sample_id is a known entry in all_samples
+        # (per the unknown-check above), so this can't truncate.
+        return search(all_samples, sample_ids.astype(all_samples.dtype)).tolist()
 
-    excluded = set(sample_ids.tolist())
-    return [idx for name, idx in name_to_index.items() if name not in excluded]
+    mask = real_samples_mask & ~np.isin(
+        all_samples, sample_ids.astype(all_samples.dtype)
+    )
+    return np.flatnonzero(mask).tolist()
 
 
 def read_samples_file(path: str) -> list[str]:

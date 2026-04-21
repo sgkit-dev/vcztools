@@ -7,6 +7,7 @@ import pyparsing as pp
 
 from vcztools.calculate import SNP, calculate_variant_type
 
+from . import constants
 from .utils import vcf_name_to_vcz_names
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,17 @@ class UnsupportedHigherDimensionalFormatFieldsError(UnsupportedFilteringFeatureE
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
 
 
+def _missing_mask(value):
+    # Unlike ``utils.missing`` we also mask INT_FILL (trailing padding in
+    # Number=A arrays) and use np.isnan for floats so that -value still
+    # registers as missing (the bit-pattern check would miss sign-flipped NaN).
+    if value.dtype.kind == "i":
+        return (value == constants.INT_MISSING) | (value == constants.INT_FILL)
+    elif value.dtype.kind == "f":
+        return np.isnan(value)
+    return False
+
+
 class EvaluationNode:
     """
     Base class for all of the parsed nodes in the expression
@@ -95,6 +107,13 @@ class EvaluationNode:
         # node is variant-scoped (axis 1, if present, is alleles or
         # filters and collapses to a 1-D variant mask at the root).
         return "variant"
+
+    def missing(self, data):
+        # Per-element mask of "this slot is a missing/fill sentinel".
+        # Propagates through arithmetic so that ComparisonOperator can
+        # force the comparison result to False wherever either operand
+        # was missing. Default False means "never missing".
+        return False
 
 
 class Constant(EvaluationNode):
@@ -146,6 +165,9 @@ class Identifier(EvaluationNode):
             raise UnsupportedHigherDimensionalFormatFieldsError()
         return value
 
+    def missing(self, data):
+        return _missing_mask(np.asarray(data[self.field_name]))
+
     def __repr__(self):
         return self.field_name
 
@@ -184,6 +206,9 @@ class UnaryMinus(EvaluationNode):
         # "invalid value encountered in multiply" when value contains NaN
         # (e.g. missing QUAL). Sign-flip preserves NaN-ness silently.
         return -self.operand.eval(data)
+
+    def missing(self, data):
+        return self.operand.missing(data)
 
     def __repr__(self):
         return f"-({repr(self.operand)})"
@@ -259,6 +284,7 @@ class BinaryOperator(EvaluationNode):
         "&&": double_and,
         "||": double_or,
     }
+    _ARITHMETIC_OPS = frozenset({"*", "/", "+", "-"})
 
     def __init__(self, tokens):
         super().__init__(tokens)
@@ -276,6 +302,16 @@ class BinaryOperator(EvaluationNode):
             with np.errstate(invalid="ignore"):
                 ret = arith_fn(ret, operand.eval(data))
         return ret
+
+    def missing(self, data):
+        # Logical ops operate on boolean results that ComparisonOperator
+        # has already masked, so there's nothing to propagate.
+        if self.ops[0] not in self._ARITHMETIC_OPS:
+            return False
+        result = False
+        for operand in self.operands:
+            result = np.logical_or(result, operand.missing(data))
+        return result
 
     def __repr__(self):
         ret = f"({repr(self.operands[0])})"
@@ -313,7 +349,19 @@ class ComparisonOperator(EvaluationNode):
         self.comparison_fn = self.op_map[self.op]
 
     def eval(self, data):
-        return self.comparison_fn(self.op1.eval(data), self.op2.eval(data))
+        v1 = self.op1.eval(data)
+        v2 = self.op2.eval(data)
+        # Comparing sentinel-encoded missing values (e.g. INFO/AC=-1) as if
+        # they were real data gives wrong answers (-1 satisfies "<2"), so
+        # force the comparison result at those positions. bcftools treats
+        # `!=` as the logical negation of `==` — missing `!=` anything is
+        # True — while every other comparison is False on missing.
+        # errstate silences NaN comparison warnings on float missing.
+        with np.errstate(invalid="ignore"):
+            result = self.comparison_fn(v1, v2)
+        miss = np.logical_or(self.op1.missing(data), self.op2.missing(data))
+        missing_fill = self.op == "!="
+        return np.where(miss, missing_fill, result)
 
     def __repr__(self):
         return f"({repr(self.op1)}){self.op}({repr(self.op2)})"

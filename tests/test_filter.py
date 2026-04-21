@@ -372,7 +372,9 @@ class TestBcftoolsParser:
             ("(a - b) < (a + b)", {"a": 7.0, "b": 6.666}),
             ("a == a", {"a": 1}),
             ("-a == -a", {"a": 1}),
-            ("-a == b", {"a": 1, "b": -1}),
+            # Avoid -1 as a literal value: the filter evaluator treats it
+            # as the int-missing sentinel (vcztools.constants.INT_MISSING).
+            ("-a == b", {"a": 3, "b": -3}),
         ],
     )
     def test_python_arithmetic_expressions_data(self, expr, data):

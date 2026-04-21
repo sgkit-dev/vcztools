@@ -450,8 +450,7 @@ class TestFilterExpressionLanguage:
 
     Each method below groups cases by feature area and compares
     vcztools to bcftools via ``query -f '%CHROM %POS\\n'``. Known
-    divergences live in :meth:`test_known_divergences` and
-    :meth:`test_unary_minus_missing_qual_warning`, each marked
+    divergences live in :meth:`test_known_divergences`, marked
     ``xfail(strict=True)`` so they surface in CI as bugs to fix.
 
     Features that deliberately raise ``UnsupportedFilteringFeatureError``
@@ -645,42 +644,10 @@ class TestFilterExpressionLanguage:
     @pytest.mark.parametrize(
         "expr",
         [
-            # ---- BUG 1: missing Number=A INFO field + numeric < ----
-            #
-            # On ``sample.vcf.gz`` only 20:1234567 has source
-            # ``INFO/AC`` (=1,1); every other record has no AC at all.
-            #
-            #   bcftools query -i 'INFO/AC<2' sample.vcf.gz
-            #     → 20 1234567          (missing excludes)
-            #   vcztools query -i 'INFO/AC<2' sample.vcz.zip
-            #     → every record       (missing fills with min-int,
-            #                           which satisfies <2)
-            #
-            # Root cause: ``ComparisonOperator.eval`` in
-            # ``vcztools/bcftools_filter.py:309-310`` delegates
-            # straight to ``operator.lt`` on the raw zarr array. The
-            # int-sentinel fill value for a record that has no AC at
-            # all is not masked out, so the comparison treats it as
-            # a real value.
-            #
-            # Fix direction: track per-element missingness (min-int
-            # for ints, NaN for floats) and force the comparison
-            # result to False wherever the operand was missing. This
-            # is the numeric counterpart to the ``"."`` literal case
-            # (issue #163) — the two should probably be fixed
-            # together.
-            pytest.param(
-                "INFO/AC<2",
-                marks=pytest.mark.xfail(
-                    strict=True,
-                    reason=(
-                        "Missing INFO/AC treated as -INT_MAX; "
-                        "see TestFilterExpressionLanguage."
-                        "test_known_divergences "
-                        "comment for the bug-report text."
-                    ),
-                ),
-            ),
+            # Regression: INFO/AC is Number=A and is missing on every
+            # record except 20:1234567 in sample.vcf.gz. The integer
+            # missing/fill sentinels (-1/-2) must not satisfy ``<2``.
+            "INFO/AC<2",
 
             # ---- BUG 2: bare flag identifier as the whole predicate ----
             #
@@ -689,20 +656,16 @@ class TestFilterExpressionLanguage:
             #   vcztools query -i 'DB' sample.vcz.zip
             #     → 20 14370, 20 1110696   (the two DB=1 records)
             #
-            # Root cause: ``Identifier.eval`` in
-            # ``vcztools/bcftools_filter.py:143-147`` returns the raw
-            # int array; ``BcftoolsFilter.evaluate`` then uses it
-            # directly as the include-mask, so truthy (=1) records
-            # pass the filter.
+            # Root cause: ``Identifier.eval`` returns the raw int
+            # array; ``BcftoolsFilter.evaluate`` then uses it directly
+            # as the include-mask, so truthy (=1) records pass the
+            # filter.
             #
             # Fix direction: in ``BcftoolsFilter.__init__`` reject a
             # parse tree whose root is a plain ``Identifier`` (no
             # comparison / logical / filter-set operator wrapping
             # it). The correct bcftools form is ``DB=1`` — callers
-            # should be told so. Alternatively, if we want to be
-            # lenient, translate a bare flag into ``<flag>=1`` at
-            # parse time, but matching bcftools's behaviour is
-            # probably the safer default.
+            # should be told so.
             pytest.param(
                 "DB",
                 marks=pytest.mark.xfail(

@@ -480,9 +480,6 @@ class TestFilterExpressionLanguage:
             "POS > 100000 + 50000",
             "POS > 2 * 100000",
             "INFO/DP / 2 >= 5",
-            # Keep arithmetic operands off ``QUAL`` — records with
-            # ``QUAL=.`` encode as NaN and trigger a numpy warning;
-            # see ``test_nan_arithmetic_warning`` for that bug.
             "INFO/DP + 1 > 15",
             "POS - 10000 > 0",
         ],

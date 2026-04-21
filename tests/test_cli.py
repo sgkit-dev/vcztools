@@ -3,6 +3,7 @@ import sys
 from unittest import mock
 
 import click.testing as ct
+import numpy as np
 import pytest
 
 import vcztools.cli as cli
@@ -157,7 +158,6 @@ class TestMakeReader:
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         if not chunks:
             return []
-        import numpy as np  # noqa: PLC0415
 
         return list(np.concatenate([c["variant_position"] for c in chunks]))
 

@@ -15,6 +15,8 @@ Bug fixes:
 - VCF header emitted even when filter expression is invalid (#221)
 - Incorrect behaviour for bcftools query with FORMAT scoped filters
   and sample subsetting (#297)
+- Incorrect output for filtering with missing Number=A INFO field + numeric (#299)
+- Noise on stderr when performing arithmetic with missing values (#301)
 
 ## [0.1.1] - 2026-03-02
 

@@ -331,26 +331,37 @@ class TestVczReaderSampleChunks:
         chunks = list(reader.variant_chunks(fields=["call_DP"]))
         return np.concatenate([c["call_DP"] for c in chunks], axis=0)
 
+    @staticmethod
+    def _plan_chunk_indexes(plan):
+        return [cr.index for cr in plan.chunk_reads]
+
     def test_single_chunk_selection(self):
         # s2, s3 both live in sample chunk 1 (indexes 2, 3).
         reader = VczReader(self._vcz(), samples=[2, 3])
-        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [1])
-        nt.assert_array_equal(reader.sample_chunk_plan.local_selection, [0, 1])
+        plan = reader.sample_chunk_plan
+        assert self._plan_chunk_indexes(plan) == [1]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 1])
+        assert plan.permutation is None
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[2, 3], [12, 13], [22, 23]])
 
     def test_multi_chunk_selection(self):
         # s1 is in chunk 0; s4 is in chunk 2; chunk 1 is skipped.
         reader = VczReader(self._vcz(), samples=[1, 4])
-        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 2])
+        plan = reader.sample_chunk_plan
+        assert self._plan_chunk_indexes(plan) == [0, 2]
+        assert plan.permutation is None
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[1, 4], [11, 14], [21, 24]])
 
     def test_preserves_user_order(self):
         # Same chunks as the multi-chunk test, but the user order is
-        # reversed — the output must follow the input list.
+        # reversed — the output must follow the input list via the
+        # plan's permutation.
         reader = VczReader(self._vcz(), samples=[4, 1])
-        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 2])
+        plan = reader.sample_chunk_plan
+        assert self._plan_chunk_indexes(plan) == [0, 2]
+        nt.assert_array_equal(plan.permutation, [1, 0])
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[4, 1], [14, 11], [24, 21]])
 
@@ -358,19 +369,20 @@ class TestVczReaderSampleChunks:
         # 5 samples with chunk size 2 → chunks sized [2, 2, 1]. s4 sits
         # alone in the final chunk.
         reader = VczReader(self._vcz(num_samples=5, samples_chunk_size=2), samples=[4])
-        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [2])
-        nt.assert_array_equal(reader.sample_chunk_plan.local_selection, [0])
+        plan = reader.sample_chunk_plan
+        assert self._plan_chunk_indexes(plan) == [2]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0])
+        assert plan.permutation is None
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[4], [14], [24]])
 
     def test_samples_none_plan_is_identity(self):
-        # samples=None plans a read over every sample chunk with an
-        # identity local selection — same shape and values as a full read.
+        # samples=None plans a read over every sample chunk with each
+        # full-chunk selection — same shape and values as a full read.
         reader = VczReader(self._vcz())
-        nt.assert_array_equal(reader.sample_chunk_plan.chunk_indexes, [0, 1, 2])
-        nt.assert_array_equal(
-            reader.sample_chunk_plan.local_selection, [0, 1, 2, 3, 4, 5]
-        )
+        plan = reader.sample_chunk_plan
+        assert self._plan_chunk_indexes(plan) == [0, 1, 2]
+        assert plan.permutation is None
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp.shape, (3, 6))
         nt.assert_array_equal(dp[0], [0, 1, 2, 3, 4, 5])
@@ -435,9 +447,9 @@ class TestVariantChunkReaderCaching:
             assert reader._call_blocks[key] is block
 
     def test_pruned_then_full_reads_only_missing_blocks(self):
-        # Pruned first reads only plan.chunk_indexes; a subsequent full
-        # access fills the remaining s_chunks without re-reading the
-        # already-cached ones.
+        # Pruned first reads only the plan's chunk_reads; a subsequent
+        # full access fills the remaining s_chunks without re-reading
+        # the already-cached ones.
         root = self._vcz(num_samples=6, samples_chunk_size=2)
         # Plan selects sample 1 (chunk 0) and sample 5 (chunk 2);
         # chunk 1 is NOT in the plan.

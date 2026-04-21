@@ -123,15 +123,22 @@ class VariantChunkReader:
         return np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
 
     def _load_call_pruned(self, field, arr, plan):
-        # Invariant: the concatenation must span exactly plan.chunk_indexes
-        # (in that order) because plan.local_selection indexes into that
-        # specific layout — not into the superset the cache might hold.
-        parts = [self._load_call_block(field, arr, sci) for sci in plan.chunk_indexes]
+        # Subset per chunk before concatenating: for a handful of samples
+        # across many chunks the concat intermediate is O(num_selected)
+        # rather than O(sum of sample-chunk sizes).
+        parts = []
+        for cr in plan.chunk_reads:
+            block = self._load_call_block(field, arr, cr.index)
+            if cr.selection is not None:
+                block = block[:, cr.selection]
+            parts.append(block)
         raw = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+        if plan.permutation is not None:
+            raw = raw[:, plan.permutation]
         # Advanced indexing along a non-first axis of a 3-D array yields a
         # non-C-contiguous view; ascontiguousarray produces the fresh
         # contiguous buffer that the C encoder requires.
-        return np.ascontiguousarray(raw[:, plan.local_selection])
+        return np.ascontiguousarray(raw)
 
 
 def get_filter_ids(root):
@@ -264,7 +271,6 @@ class VczReader:
             # covers every sample in order, the plan is a no-op index.
             self.sample_chunk_plan = samples_mod.build_chunk_plan(
                 self.samples_selection,
-                num_samples=len(all_samples),
                 samples_chunk_size=int(self.root["sample_id"].chunks[0]),
             )
         else:

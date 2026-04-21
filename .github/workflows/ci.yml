@@ -188,3 +188,33 @@ jobs:
           ./cli-test/bin/vcztools --help
           cd tests
           ../cli-test/bin/python -m vcztools --help
+
+  test-azure-emulator:
+    name: Test Azure emulator
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv and set the python version
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Azurite
+        run: npm install -g azurite
+
+      - name: Install test dependencies
+        run: |
+          uv sync --locked --group test --no-default-groups
+
+      - name: Run Azure Icechunk test
+        run: |
+          uv run pytest -q tests/test_azure.py

@@ -180,7 +180,10 @@ class UnaryMinus(EvaluationNode):
         assert self.op == "-"
 
     def eval(self, data):
-        return -1 * self.operand.eval(data)
+        # Use numpy unary minus rather than ``-1 * value``: the latter emits
+        # "invalid value encountered in multiply" when value contains NaN
+        # (e.g. missing QUAL). Sign-flip preserves NaN-ness silently.
+        return -self.operand.eval(data)
 
     def __repr__(self):
         return f"-({repr(self.operand)})"
@@ -268,7 +271,10 @@ class BinaryOperator(EvaluationNode):
         ret = self.operands[0].eval(data)
         for op, operand in zip(self.ops, self.operands[1:]):
             arith_fn = self.op_map[op]
-            ret = arith_fn(ret, operand.eval(data))
+            # Suppress "invalid value encountered" warnings from arithmetic
+            # on NaN-encoded missing floats (e.g. QUAL=.).
+            with np.errstate(invalid="ignore"):
+                ret = arith_fn(ret, operand.eval(data))
         return ret
 
     def __repr__(self):

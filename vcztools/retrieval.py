@@ -241,12 +241,6 @@ class VczReader:
         self._sample_ids = None
         self.variant_filter = None
         self.filter_on_subset_samples = False
-        # True iff set_samples was called. Distinct from
-        # "samples_selection is not None" once defaults are resolved:
-        # the default resolve populates _samples_selection but
-        # leaves this False, so _reduce_chunk_mask can tell whether
-        # to subset call_mask to the user's requested samples.
-        self._subsetting_samples = False
 
     def _resolve_samples_if_needed(self) -> None:
         if self._samples_selection is not None:
@@ -256,7 +250,7 @@ class VczReader:
         self._sample_ids = all_samples[self._samples_selection]
         self._sample_chunk_plan = samples_mod.build_chunk_plan(
             self._samples_selection,
-            samples_chunk_size=int(self.root["sample_id"].chunks[0]),
+            samples_chunk_size=self.samples_chunk_size,
         )
 
     @property
@@ -316,7 +310,7 @@ class VczReader:
         if len(samples_selection) > 0:
             self._sample_chunk_plan = samples_mod.build_chunk_plan(
                 samples_selection,
-                samples_chunk_size=int(self.root["sample_id"].chunks[0]),
+                samples_chunk_size=self.samples_chunk_size,
             )
         else:
             # Empty selection: leaving plan as None sends call_*
@@ -325,7 +319,6 @@ class VczReader:
             # filter or AC/AN recompute still see the full genotype
             # matrix even though no samples will be emitted.
             self._sample_chunk_plan = None
-        self._subsetting_samples = True
 
     def set_variants(self, variants) -> None:
         """Configure the variant selection.
@@ -407,6 +400,11 @@ class VczReader:
     def num_samples(self) -> int:
         """Total samples in the store (including any masked entries)."""
         return int(self.root["sample_id"].shape[0])
+
+    @functools.cached_property
+    def samples_chunk_size(self) -> int:
+        """Chunk size along the samples axis."""
+        return int(self.root["sample_id"].chunks[0])
 
     @functools.cached_property
     def all_sample_ids(self) -> np.ndarray:
@@ -564,7 +562,10 @@ class VczReader:
             return v_mask, None
         variants_selection = np.any(v_mask, axis=1)
         call_mask = v_mask[variants_selection]
-        if self._subsetting_samples and not self.filter_on_subset_samples:
+        if not self.filter_on_subset_samples:
+            # Filter was evaluated on the full sample axis; reduce
+            # to the reader's sample selection. In the default case
+            # that drops masked-sample-ID entries.
             call_mask = call_mask[:, self.samples_selection]
         return variants_selection, call_mask
 

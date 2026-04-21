@@ -3,6 +3,7 @@ import logging
 
 import numpy as np
 
+from vcztools import regions as regions_mod
 from vcztools.utils import search
 
 logger = logging.getLogger(__name__)
@@ -12,41 +13,49 @@ logger = logging.getLogger(__name__)
 class SampleChunkPlan:
     """Plan for reading a subset of sample chunks.
 
-    ``chunk_indexes`` are the sorted unique sample chunks that together
-    cover the requested selection. ``local_selection`` is an index into
-    the concatenation of those chunks along the samples axis — applying
-    it yields samples in the caller's requested order.
+    ``chunk_reads`` lists the sample chunks to read, each with a
+    per-chunk local selection (``selection=None`` means "full chunk").
+    ``permutation`` reorders the concatenation of the per-chunk
+    subsets into the caller's requested sample order; ``None`` means
+    the concatenation is already in the caller's order.
     """
 
-    chunk_indexes: np.ndarray
-    local_selection: np.ndarray
+    chunk_reads: list[regions_mod.ChunkRead]
+    permutation: np.ndarray | None = None
 
 
 def build_chunk_plan(
     samples_selection: np.ndarray,
-    num_samples: int,
     samples_chunk_size: int,
 ) -> SampleChunkPlan:
     """Translate a global sample selection into a sample-chunk read plan.
 
-    Given integer indices into the full samples axis plus the axis's
-    chunk layout, return the set of sample chunks that must be read and
-    the indices into their concatenation that recover the original
-    selection (in input order).
+    Buckets global sample indexes into chunks, pre-subsets per chunk,
+    and computes an optional permutation that restores the caller's
+    input order after chunk-sorted concatenation. ``permutation is
+    None`` when the caller's order already matches the chunk-sorted
+    concatenation (the fast path).
     """
-    samples_selection = np.asarray(samples_selection)
+    samples_selection = np.asarray(samples_selection, dtype=np.int64)
     chunk_of_each = samples_selection // samples_chunk_size
-    chunk_indexes = np.unique(chunk_of_each)
+    sort_idx = np.argsort(chunk_of_each, kind="stable")
+    sorted_samples = samples_selection[sort_idx]
+    sorted_chunks = chunk_of_each[sort_idx]
+    chunk_indexes, counts = np.unique(sorted_chunks, return_counts=True)
 
-    chunk_starts = chunk_indexes * samples_chunk_size
-    chunk_ends = np.minimum(chunk_starts + samples_chunk_size, num_samples)
-    chunk_sizes = chunk_ends - chunk_starts
-    offsets = np.concatenate(([0], np.cumsum(chunk_sizes[:-1])))
+    chunk_reads = []
+    offset = 0
+    for ci, count in zip(chunk_indexes, counts):
+        local_sel = (
+            sorted_samples[offset : offset + count] - int(ci) * samples_chunk_size
+        )
+        chunk_reads.append(regions_mod.ChunkRead(index=int(ci), selection=local_sel))
+        offset += count
 
-    chunk_pos_of_each = np.searchsorted(chunk_indexes, chunk_of_each)
-    local_in_chunk = samples_selection - chunk_starts[chunk_pos_of_each]
-    local_selection = offsets[chunk_pos_of_each] + local_in_chunk
-    return SampleChunkPlan(chunk_indexes=chunk_indexes, local_selection=local_selection)
+    permutation = np.argsort(sort_idx)
+    if np.array_equal(permutation, np.arange(len(permutation))):
+        permutation = None
+    return SampleChunkPlan(chunk_reads=chunk_reads, permutation=permutation)
 
 
 def resolve_sample_selection(

@@ -345,56 +345,74 @@ class TestRoundTripEdgeCaseSamples:
 class TestBuildChunkPlan:
     """Translate a global sample selection into a sample-chunk read plan."""
 
+    @staticmethod
+    def _chunk_indexes(plan):
+        return [cr.index for cr in plan.chunk_reads]
+
     def test_single_sample_middle_chunk(self):
         # num_samples=10, chunks of 3: [0-2][3-5][6-8][9]. Sample 4 is in chunk 1.
-        plan = build_chunk_plan(np.array([4]), num_samples=10, samples_chunk_size=3)
-        nt.assert_array_equal(plan.chunk_indexes, [1])
-        nt.assert_array_equal(plan.local_selection, [1])
+        plan = build_chunk_plan(np.array([4]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [1]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [1])
+        assert plan.permutation is None
 
     def test_samples_spanning_two_chunks_with_gap(self):
         # Samples 1 and 7 sit in chunks 0 and 2; chunk 1 is skipped.
-        plan = build_chunk_plan(np.array([1, 7]), num_samples=10, samples_chunk_size=3)
-        nt.assert_array_equal(plan.chunk_indexes, [0, 2])
-        # Concat is (chunk0: size 3) + (chunk2: size 3) = 6 samples.
-        # Sample 1 → local 1; sample 7 → offset 3 + (7 % 3) = 4.
-        nt.assert_array_equal(plan.local_selection, [1, 4])
+        # Sorted input → no permutation needed.
+        plan = build_chunk_plan(np.array([1, 7]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [0, 2]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [1])
+        nt.assert_array_equal(plan.chunk_reads[1].selection, [1])
+        assert plan.permutation is None
 
     def test_partial_final_chunk(self):
-        # num_samples=10, chunk size 3 → last chunk has 1 sample (index 9).
-        plan = build_chunk_plan(np.array([9]), num_samples=10, samples_chunk_size=3)
-        nt.assert_array_equal(plan.chunk_indexes, [3])
-        nt.assert_array_equal(plan.local_selection, [0])
+        # num_samples=10, chunk size 3 → last chunk starts at 9.
+        plan = build_chunk_plan(np.array([9]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [3]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0])
+        assert plan.permutation is None
 
     def test_preserves_user_order(self):
         # selection order [7, 1] must round-trip through the plan.
-        plan = build_chunk_plan(np.array([7, 1]), num_samples=10, samples_chunk_size=3)
-        nt.assert_array_equal(plan.chunk_indexes, [0, 2])
-        # Sample 7 first → local 4; sample 1 second → local 1.
-        nt.assert_array_equal(plan.local_selection, [4, 1])
+        # Chunks 0 (sample 1) and 2 (sample 7); concat in chunk order
+        # gives [sample_1, sample_7]. Permutation [1, 0] flips back.
+        plan = build_chunk_plan(np.array([7, 1]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [0, 2]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [1])
+        nt.assert_array_equal(plan.chunk_reads[1].selection, [1])
+        nt.assert_array_equal(plan.permutation, [1, 0])
+
+    def test_within_chunk_user_order_uses_no_permutation(self):
+        # Reversed samples that live in the same chunk: per-chunk
+        # selection captures the order, permutation stays None.
+        plan = build_chunk_plan(np.array([2, 0]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [2, 0])
+        assert plan.permutation is None
 
     def test_chunk_size_one(self):
         # Each sample is its own chunk.
-        plan = build_chunk_plan(
-            np.array([0, 3, 5]), num_samples=6, samples_chunk_size=1
-        )
-        nt.assert_array_equal(plan.chunk_indexes, [0, 3, 5])
-        nt.assert_array_equal(plan.local_selection, [0, 1, 2])
+        plan = build_chunk_plan(np.array([0, 3, 5]), samples_chunk_size=1)
+        assert self._chunk_indexes(plan) == [0, 3, 5]
+        for cr in plan.chunk_reads:
+            nt.assert_array_equal(cr.selection, [0])
+        assert plan.permutation is None
 
     def test_single_chunk_covers_all_samples(self):
         # samples_chunk_size >= num_samples → one chunk.
-        plan = build_chunk_plan(np.array([0, 2]), num_samples=3, samples_chunk_size=3)
-        nt.assert_array_equal(plan.chunk_indexes, [0])
-        nt.assert_array_equal(plan.local_selection, [0, 2])
+        plan = build_chunk_plan(np.array([0, 2]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 2])
+        assert plan.permutation is None
 
     def test_empty_selection(self):
-        plan = build_chunk_plan(
-            np.array([], dtype=np.int64), num_samples=10, samples_chunk_size=3
-        )
-        assert plan.chunk_indexes.shape == (0,)
-        assert plan.local_selection.shape == (0,)
+        plan = build_chunk_plan(np.array([], dtype=np.int64), samples_chunk_size=3)
+        assert plan.chunk_reads == []
+        assert plan.permutation is None
 
     def test_duplicate_samples_preserved(self):
-        # Duplicate global indices are passed through to duplicate local indices.
-        plan = build_chunk_plan(np.array([1, 1]), num_samples=10, samples_chunk_size=3)
-        nt.assert_array_equal(plan.chunk_indexes, [0])
-        nt.assert_array_equal(plan.local_selection, [1, 1])
+        # Duplicate global indices are passed through as duplicate local indices.
+        plan = build_chunk_plan(np.array([1, 1]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [1, 1])
+        assert plan.permutation is None

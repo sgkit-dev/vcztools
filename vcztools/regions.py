@@ -313,39 +313,36 @@ def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
 
 
 @dataclasses.dataclass
-class VariantChunkPlan:
-    """Variant-axis analogue of :class:`samples.SampleChunkPlan`.
+class ChunkRead:
+    """A single variant-chunk read: which chunk, and which local rows.
 
-    ``chunk_indexes`` is the sorted array of variant chunks to visit.
-    ``per_chunk_selection[i]`` is the local row index (into that chunk)
-    of every row to emit, in the order they should be emitted.
+    ``selection=None`` means "emit the full chunk, no row slicing" —
+    used by the no-filter walk. Otherwise ``selection`` is the local
+    row indices into this chunk, in emission order.
     """
 
-    chunk_indexes: np.ndarray
-    per_chunk_selection: list[np.ndarray]
+    index: int
+    selection: np.ndarray | None = None
 
-    @classmethod
-    def from_indexes(
-        cls,
-        variant_indexes: np.ndarray,
-        *,
-        num_variants: int,
-        variants_chunk_size: int,
-    ) -> "VariantChunkPlan":
-        """Build a plan from a sorted flat array of global variant
-        indexes. Buckets into chunks, producing one per-chunk selection
-        array per visited chunk."""
-        variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
-        chunk_of_each = variant_indexes // variants_chunk_size
-        chunk_indexes = np.unique(chunk_of_each)
-        per_chunk_selection = [
-            variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size)
-            for ci in chunk_indexes
-        ]
-        return cls(
-            chunk_indexes=chunk_indexes,
-            per_chunk_selection=per_chunk_selection,
+
+def chunk_plan_from_indexes(
+    variant_indexes: np.ndarray,
+    *,
+    variants_chunk_size: int,
+) -> list[ChunkRead]:
+    """Build a plan from a sorted flat array of global variant indexes.
+    Buckets into chunks, producing one :class:`ChunkRead` per visited
+    chunk with a real (non-None) local selection."""
+    variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
+    chunk_of_each = variant_indexes // variants_chunk_size
+    chunk_indexes = np.unique(chunk_of_each)
+    return [
+        ChunkRead(
+            index=int(ci),
+            selection=variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size),
         )
+        for ci in chunk_indexes
+    ]
 
 
 def build_chunk_plan(
@@ -354,19 +351,19 @@ def build_chunk_plan(
     regions=None,
     targets=None,
     targets_complement: bool = False,
-) -> VariantChunkPlan | None:
-    """Build a :class:`VariantChunkPlan` from region/target inputs and
-    the Zarr root. Returns ``None`` when neither ``regions`` nor
-    ``targets`` is specified (callers treat that as "all variants":
-    iterate every chunk with no row slicing).
+) -> list[ChunkRead]:
+    """Build a list of :class:`ChunkRead` from region/target inputs and
+    the Zarr root. When neither ``regions`` nor ``targets`` applies a
+    filter, returns one ``ChunkRead(index=i, selection=None)`` per
+    chunk — meaning "read every chunk in full".
 
     Uses the ``region_index`` array to prune candidate chunks (only
     when ``regions`` is set — ``targets`` alone doesn't prune), then
     scans each candidate chunk once to compute a local row selection.
     Only non-empty chunks end up in the plan.
     """
-    if regions is None and targets is None:
-        return None
+    position_arr = root["variant_position"]
+    num_chunks = int(position_arr.cdata_shape[0])
 
     regions_df = _regions_input_to_df(regions, arg_name="regions")
     targets_df = _regions_input_to_df(targets, arg_name="targets")
@@ -378,12 +375,10 @@ def build_chunk_plan(
     )
 
     if regions_gr is None and targets_gr is None:
-        return None
+        return [ChunkRead(index=i) for i in range(num_chunks)]
 
-    position_arr = root["variant_position"]
     contig_arr = root["variant_contig"]
     length_arr = root["variant_length"]
-    num_chunks = int(position_arr.cdata_shape[0])
 
     if regions_gr is not None:
         region_index = root["region_index"][:]
@@ -391,8 +386,7 @@ def build_chunk_plan(
     else:
         candidate_chunks = np.arange(num_chunks, dtype=np.int64)
 
-    chunk_indexes_list = []
-    per_chunk_selection = []
+    plan = []
     for chunk_idx in candidate_chunks:
         chunk_idx = int(chunk_idx)
         vc = contig_arr.blocks[chunk_idx]
@@ -404,10 +398,6 @@ def build_chunk_plan(
         local_sel = np.asarray(local_sel, dtype=np.int64)
         if local_sel.size == 0:
             continue
-        chunk_indexes_list.append(chunk_idx)
-        per_chunk_selection.append(local_sel)
+        plan.append(ChunkRead(index=chunk_idx, selection=local_sel))
 
-    return VariantChunkPlan(
-        chunk_indexes=np.asarray(chunk_indexes_list, dtype=np.int64),
-        per_chunk_selection=per_chunk_selection,
-    )
+    return plan

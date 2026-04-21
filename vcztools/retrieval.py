@@ -32,43 +32,31 @@ class VariantChunkReader:
     For variant-only and static fields the two are equivalent — there
     is no samples axis to prune.
 
-    When ``variant_chunk_plan`` is set, :meth:`set_chunk` looks up the
-    per-chunk row selection and every field read (variant-axis and
-    ``call_*``) is pre-sliced along axis 0 to that selection.
+    :meth:`set_chunk` takes a :class:`~vcztools.regions.ChunkRead` and
+    its ``selection`` (which may be ``None`` meaning "full chunk") is
+    applied to every subsequent variant-axis or ``call_*`` field read.
     """
 
-    def __init__(self, root, *, sample_chunk_plan=None, variant_chunk_plan=None):
+    def __init__(self, root, *, sample_chunk_plan=None):
         self.root = root
         self.sample_chunk_plan = sample_chunk_plan
-        self.variant_chunk_plan = variant_chunk_plan
         self._static = {}
         self._variant_blocks = {}
         self._call_blocks = {}
         self._chunk_idx = None
         self._current_variant_selection = None
 
-    def set_chunk(self, chunk_idx):
-        """Advance to a new variant chunk and evict the previous chunk's
-        per-chunk cache entries. When a ``variant_chunk_plan`` is set,
-        resolve that chunk's local row selection and apply it to every
+    def set_chunk(self, chunk_read):
+        """Advance to the chunk described by ``chunk_read`` and evict
+        the previous chunk's per-chunk cache entries. The chunk's
+        ``selection`` (``None`` means "full chunk") is applied to every
         subsequent field read."""
-        if chunk_idx == self._chunk_idx:
+        if chunk_read.index == self._chunk_idx:
             return
-        self._chunk_idx = chunk_idx
+        self._chunk_idx = chunk_read.index
         self._variant_blocks.clear()
         self._call_blocks.clear()
-        self._current_variant_selection = self._lookup_variant_selection(chunk_idx)
-
-    def _lookup_variant_selection(self, chunk_idx):
-        plan = self.variant_chunk_plan
-        if plan is None:
-            return None
-        pos = int(np.searchsorted(plan.chunk_indexes, chunk_idx))
-        if pos >= len(plan.chunk_indexes) or plan.chunk_indexes[pos] != chunk_idx:
-            raise ValueError(
-                f"chunk_idx={chunk_idx} not in variant_chunk_plan.chunk_indexes"
-            )
-        return plan.per_chunk_selection[pos]
+        self._current_variant_selection = chunk_read.selection
 
     def get(self, field):
         """Return ``field`` from the current chunk, with
@@ -205,8 +193,7 @@ class VczReader:
         (local, remote, or zip) with the desired backend before
         constructing the reader.
     variants
-        Variant selection. Accepts either a
-        :class:`~vcztools.regions.VariantChunkPlan` (use
+        Variant selection. Accepts either a ``list[ChunkRead]`` (use
         :func:`vcztools.regions.build_chunk_plan` to build one from
         region/target strings and a root), or a sorted 1-D array of
         global variant indexes (which will be bucketed into a plan
@@ -238,7 +225,7 @@ class VczReader:
         self,
         root,
         *,
-        variants: np.ndarray | regions_mod.VariantChunkPlan | None = None,
+        variants: np.ndarray | list[regions_mod.ChunkRead] | None = None,
         samples=None,
         drop_genotypes: bool = False,
         variant_filter: variant_filter_mod.VariantFilter | None = None,
@@ -284,13 +271,15 @@ class VczReader:
             self.sample_chunk_plan = None
 
         if variants is None:
-            self.variant_chunk_plan = None
-        elif isinstance(variants, regions_mod.VariantChunkPlan):
+            num_chunks = int(self.root["variant_position"].cdata_shape[0])
+            self.variant_chunk_plan = [
+                regions_mod.ChunkRead(index=i) for i in range(num_chunks)
+            ]
+        elif isinstance(variants, list):
             self.variant_chunk_plan = variants
         else:
-            self.variant_chunk_plan = regions_mod.VariantChunkPlan.from_indexes(
+            self.variant_chunk_plan = regions_mod.chunk_plan_from_indexes(
                 np.asarray(variants),
-                num_variants=int(self.root["variant_position"].shape[0]),
                 variants_chunk_size=int(self.root["variant_position"].chunks[0]),
             )
 
@@ -335,10 +324,11 @@ class VczReader:
 
         The per-chunk computation runs in stages:
 
-        1. Iterate the ``variant_chunk_plan`` (or every chunk if the plan
-           is ``None``). The reader pre-slices each chunk's variant axis
-           to the plan's per-chunk selection, so by the time we see the
-           data the region/target filter has already been applied.
+        1. Iterate the ``variant_chunk_plan``. The reader pre-slices
+           each chunk's variant axis to the plan's per-chunk selection
+           (or returns the full chunk when ``selection`` is ``None``),
+           so by the time we see the data the region/target filter has
+           already been applied.
         2. Filter evaluation builds a per-variant (or per-variant-per-
            sample) boolean mask on top of the pre-sliced rows.
         3. ``_reduce_chunk_mask`` — split that mask into a
@@ -356,15 +346,14 @@ class VczReader:
         reader = VariantChunkReader(
             self.root,
             sample_chunk_plan=self.sample_chunk_plan,
-            variant_chunk_plan=self.variant_chunk_plan,
         )
         query_fields = self._resolve_query_fields(fields)
         filter_getter = (
             reader.get if self.filter_on_subset_samples else reader.get_with_all_samples
         )
 
-        for chunk_idx in self._chunk_indexes():
-            reader.set_chunk(chunk_idx)
+        for chunk_read in self.variant_chunk_plan:
+            reader.set_chunk(chunk_read)
             v_mask = None
             if self.variant_filter is not None:
                 filter_data = {
@@ -396,14 +385,6 @@ class VczReader:
                 value = value[variants_selection]
             data[field] = value
         return data
-
-    def _chunk_indexes(self):
-        """Variant-chunk indexes to visit. With a ``variant_chunk_plan``
-        we visit exactly its ``chunk_indexes``; otherwise every chunk."""
-        if self.variant_chunk_plan is not None:
-            return [int(i) for i in self.variant_chunk_plan.chunk_indexes]
-        num_chunks = self.root["variant_position"].cdata_shape[0]
-        return range(num_chunks)
 
     def _reduce_chunk_mask(self, v_mask):
         """Reduce a chunk mask into ``(variants_selection, call_mask)``.

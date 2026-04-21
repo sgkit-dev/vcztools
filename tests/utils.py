@@ -27,7 +27,7 @@ def make_reader(
 ):
     """Build a :class:`VczReader` with an optional
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings and a
-    :class:`VariantChunkPlan` from ``regions``/``targets`` inputs.
+    variant-chunk plan from ``regions``/``targets`` inputs.
 
     ``root`` must be an opened :class:`zarr.Group`. ``samples`` may be
     a ``list[str]`` of sample names (resolved to indexes via

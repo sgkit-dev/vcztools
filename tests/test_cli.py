@@ -176,23 +176,23 @@ class TestMakeReader:
             fx_vcz_path,
             targets_file="^tests/data/txt/regions-3col.tsv",
         )
-        # Complement applied → variant_chunk_plan is set to something
-        # other than the full-variant identity.
-        assert reader.variant_chunk_plan is not None
+        # Complement applied → at least one chunk has a real row
+        # selection rather than the full-chunk sentinel.
+        assert any(cr.selection is not None for cr in reader.variant_chunk_plan)
 
     def test_targets_file_without_caret(self, fx_vcz_path):
         reader = cli.make_reader(
             fx_vcz_path,
             targets_file="tests/data/txt/regions-3col.tsv",
         )
-        assert reader.variant_chunk_plan is not None
+        assert any(cr.selection is not None for cr in reader.variant_chunk_plan)
 
     def test_regions_file(self, fx_vcz_path):
         reader = cli.make_reader(
             fx_vcz_path,
             regions_file="tests/data/txt/regions-3col.tsv",
         )
-        assert reader.variant_chunk_plan is not None
+        assert any(cr.selection is not None for cr in reader.variant_chunk_plan)
 
     def test_regions_string_splits_on_commas(self, fx_vcz_path):
         # Both contig 19 (positions 111, 112) and X (position 10) selected.

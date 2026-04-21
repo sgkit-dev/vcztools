@@ -39,6 +39,23 @@ def test_search(a, v, expected_ind):
     assert_array_equal(search(a, v), expected_ind)
 
 
+class TestChunkRead:
+    """Axis-agnostic chunk-read descriptor used by both the variants
+    plan (:mod:`vcztools.regions`) and the samples plan
+    (:mod:`vcztools.samples`)."""
+
+    def test_defaults(self):
+        cr = utils.ChunkRead(index=3)
+        assert cr.index == 3
+        assert cr.selection is None
+
+    def test_with_selection(self):
+        sel = np.array([0, 2], dtype=np.int64)
+        cr = utils.ChunkRead(index=1, selection=sel)
+        assert cr.index == 1
+        assert_array_equal(cr.selection, [0, 2])
+
+
 @pytest.mark.parametrize(
     ("vczs", "vcf", "expected_vcz_names"),
     [

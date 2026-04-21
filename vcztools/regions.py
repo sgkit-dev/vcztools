@@ -1,10 +1,10 @@
-import dataclasses
 import re
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from vcztools import utils
 from vcztools.utils import _as_fixed_length_unicode
 
 try:
@@ -312,32 +312,19 @@ def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
     )
 
 
-@dataclasses.dataclass
-class ChunkRead:
-    """A single variant-chunk read: which chunk, and which local rows.
-
-    ``selection=None`` means "emit the full chunk, no row slicing" —
-    used by the no-filter walk. Otherwise ``selection`` is the local
-    row indices into this chunk, in emission order.
-    """
-
-    index: int
-    selection: np.ndarray | None = None
-
-
 def chunk_plan_from_indexes(
     variant_indexes: np.ndarray,
     *,
     variants_chunk_size: int,
-) -> list[ChunkRead]:
+) -> list[utils.ChunkRead]:
     """Build a plan from a sorted flat array of global variant indexes.
-    Buckets into chunks, producing one :class:`ChunkRead` per visited
-    chunk with a real (non-None) local selection."""
+    Buckets into chunks, producing one :class:`~vcztools.utils.ChunkRead`
+    per visited chunk with a real (non-None) local selection."""
     variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
     chunk_of_each = variant_indexes // variants_chunk_size
     chunk_indexes = np.unique(chunk_of_each)
     return [
-        ChunkRead(
+        utils.ChunkRead(
             index=int(ci),
             selection=variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size),
         )
@@ -351,11 +338,12 @@ def build_chunk_plan(
     regions=None,
     targets=None,
     targets_complement: bool = False,
-) -> list[ChunkRead]:
-    """Build a list of :class:`ChunkRead` from region/target inputs and
-    the Zarr root. When neither ``regions`` nor ``targets`` applies a
-    filter, returns one ``ChunkRead(index=i, selection=None)`` per
-    chunk — meaning "read every chunk in full".
+) -> list[utils.ChunkRead]:
+    """Build a list of :class:`~vcztools.utils.ChunkRead` from
+    region/target inputs and the Zarr root. When neither ``regions``
+    nor ``targets`` applies a filter, returns one
+    ``ChunkRead(index=i, selection=None)`` per chunk — meaning "read
+    every chunk in full".
 
     Uses the ``region_index`` array to prune candidate chunks (only
     when ``regions`` is set — ``targets`` alone doesn't prune), then
@@ -375,7 +363,7 @@ def build_chunk_plan(
     )
 
     if regions_gr is None and targets_gr is None:
-        return [ChunkRead(index=i) for i in range(num_chunks)]
+        return [utils.ChunkRead(index=i) for i in range(num_chunks)]
 
     contig_arr = root["variant_contig"]
     length_arr = root["variant_length"]
@@ -398,6 +386,6 @@ def build_chunk_plan(
         local_sel = np.asarray(local_sel, dtype=np.int64)
         if local_sel.size == 0:
             continue
-        plan.append(ChunkRead(index=chunk_idx, selection=local_sel))
+        plan.append(utils.ChunkRead(index=chunk_idx, selection=local_sel))
 
     return plan

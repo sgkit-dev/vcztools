@@ -32,7 +32,7 @@ class VariantChunkReader:
     For variant-only and static fields the two are equivalent — there
     is no samples axis to prune.
 
-    :meth:`set_chunk` takes a :class:`~vcztools.regions.ChunkRead` and
+    :meth:`set_chunk` takes a :class:`~vcztools.utils.ChunkRead` and
     its ``selection`` (which may be ``None`` meaning "full chunk") is
     applied to every subsequent variant-axis or ``call_*`` field read.
     """
@@ -232,7 +232,7 @@ class VczReader:
         self,
         root,
         *,
-        variants: np.ndarray | list[regions_mod.ChunkRead] | None = None,
+        variants: np.ndarray | list[utils.ChunkRead] | None = None,
         samples=None,
         drop_genotypes: bool = False,
         variant_filter: variant_filter_mod.VariantFilter | None = None,
@@ -279,7 +279,7 @@ class VczReader:
         if variants is None:
             num_chunks = int(self.root["variant_position"].cdata_shape[0])
             self.variant_chunk_plan = [
-                regions_mod.ChunkRead(index=i) for i in range(num_chunks)
+                utils.ChunkRead(index=i) for i in range(num_chunks)
             ]
         elif isinstance(variants, list):
             self.variant_chunk_plan = variants

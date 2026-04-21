@@ -342,19 +342,6 @@ class TestRegionsToChunkIndexes:
         assert len(result) == 0
 
 
-class TestChunkRead:
-    def test_defaults(self):
-        cr = regions.ChunkRead(index=3)
-        assert cr.index == 3
-        assert cr.selection is None
-
-    def test_with_selection(self):
-        sel = np.array([0, 2], dtype=np.int64)
-        cr = regions.ChunkRead(index=1, selection=sel)
-        assert cr.index == 1
-        assert_array_equal(cr.selection, [0, 2])
-
-
 class TestChunkPlanFromIndexes:
     def test_buckets_into_chunks(self):
         plan = regions.chunk_plan_from_indexes(

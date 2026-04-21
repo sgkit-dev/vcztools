@@ -6,6 +6,7 @@ import pytest
 from tests import vcz_builder
 from tests.utils import make_reader
 from vcztools import regions as regions_mod
+from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
 from vcztools.retrieval import VariantChunkReader, VczReader
 
@@ -149,7 +150,7 @@ class TestFilterMultiChunk:
         num_chunks = int(root["variant_filter"].cdata_shape[0])
         assert num_chunks == 3
         for chunk_idx in range(num_chunks):
-            reader.set_chunk(regions_mod.ChunkRead(index=chunk_idx))
+            reader.set_chunk(utils.ChunkRead(index=chunk_idx))
             nt.assert_array_equal(reader.get("filter_id"), ["PASS", "q10"])
 
 
@@ -437,7 +438,7 @@ class TestVariantChunkReaderCaching:
         # access (pruned) must find each block already cached — identity
         # check proves we did not re-fetch.
         reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(regions_mod.ChunkRead(index=0))
+        reader.set_chunk(utils.ChunkRead(index=0))
         reader.get_with_all_samples("call_DP")
         cached_after_full = dict(reader._call_blocks)
         # 2 sample chunks populated.
@@ -455,7 +456,7 @@ class TestVariantChunkReaderCaching:
         # chunk 1 is NOT in the plan.
         reader = VczReader(root, samples=[1, 5])
         inner = VariantChunkReader(root, sample_chunk_plan=reader.sample_chunk_plan)
-        inner.set_chunk(regions_mod.ChunkRead(index=0))
+        inner.set_chunk(utils.ChunkRead(index=0))
         inner.get("call_DP")
         # Only plan chunks (0 and 2) are cached so far.
         assert {key[2] for key in inner._call_blocks} == {0, 2}
@@ -468,33 +469,33 @@ class TestVariantChunkReaderCaching:
 
     def test_set_chunk_evicts_previous_chunk_blocks(self):
         reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(regions_mod.ChunkRead(index=0))
+        reader.set_chunk(utils.ChunkRead(index=0))
         reader.get_with_all_samples("call_DP")
         assert len(reader._call_blocks) == 2
-        reader.set_chunk(regions_mod.ChunkRead(index=1))
+        reader.set_chunk(utils.ChunkRead(index=1))
         assert reader._call_blocks == {}
         assert reader._variant_blocks == {}
 
     def test_set_chunk_same_idx_is_idempotent(self):
         reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(regions_mod.ChunkRead(index=0))
+        reader.set_chunk(utils.ChunkRead(index=0))
         reader.get_with_all_samples("call_DP")
         cached_len = len(reader._call_blocks)
-        reader.set_chunk(regions_mod.ChunkRead(index=0))
+        reader.set_chunk(utils.ChunkRead(index=0))
         assert len(reader._call_blocks) == cached_len
 
     def test_static_field_cached_across_chunks(self):
         # filter_id has no variants axis — it survives set_chunk.
         reader = VariantChunkReader(_make_filter_vcz())
-        reader.set_chunk(regions_mod.ChunkRead(index=0))
+        reader.set_chunk(utils.ChunkRead(index=0))
         filters_first = reader.get("filter_id")
-        reader.set_chunk(regions_mod.ChunkRead(index=1))
+        reader.set_chunk(utils.ChunkRead(index=1))
         filters_second = reader.get("filter_id")
         assert filters_first is filters_second
 
     def test_variant_field_cached_within_chunk(self):
         reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(regions_mod.ChunkRead(index=0))
+        reader.set_chunk(utils.ChunkRead(index=0))
         first = reader.get("variant_position")
         second = reader.get("variant_position")
         # Same object — second access hit the cache.

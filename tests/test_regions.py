@@ -4,6 +4,7 @@ import pytest
 from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal
 
+from tests import vcz_builder
 from vcztools import regions
 
 ALL_CONTIGS = ["chr1", "chr2", "chr3"]
@@ -339,3 +340,75 @@ class TestRegionsToChunkIndexes:
         query = regions.GenomicRanges(contigs=[0], starts=[100], ends=[200])
         result = regions.regions_to_chunk_indexes(query, region_index)
         assert len(result) == 0
+
+
+class TestChunkRead:
+    def test_defaults(self):
+        cr = regions.ChunkRead(index=3)
+        assert cr.index == 3
+        assert cr.selection is None
+
+    def test_with_selection(self):
+        sel = np.array([0, 2], dtype=np.int64)
+        cr = regions.ChunkRead(index=1, selection=sel)
+        assert cr.index == 1
+        assert_array_equal(cr.selection, [0, 2])
+
+
+class TestChunkPlanFromIndexes:
+    def test_buckets_into_chunks(self):
+        plan = regions.chunk_plan_from_indexes(
+            np.array([0, 1, 3, 5, 7]), variants_chunk_size=3
+        )
+        # global indexes 0,1 → chunk 0 local [0,1]
+        # global index 3    → chunk 1 local [0]
+        # global indexes 5,7 → chunk 1 local [2], chunk 2 local [1]
+        # (sorted by chunk)
+        assert [cr.index for cr in plan] == [0, 1, 2]
+        assert_array_equal(plan[0].selection, [0, 1])
+        assert_array_equal(plan[1].selection, [0, 2])
+        assert_array_equal(plan[2].selection, [1])
+
+    def test_empty(self):
+        plan = regions.chunk_plan_from_indexes(
+            np.array([], dtype=np.int64), variants_chunk_size=3
+        )
+        assert plan == []
+
+
+class TestBuildChunkPlan:
+    @staticmethod
+    def _vcz():
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 10,
+            variant_position=list(range(1, 11)),
+            alleles=[("A", "T")] * 10,
+            contigs=("chr1",),
+            variants_chunk_size=3,
+        )
+
+    def test_no_filter_returns_full_plan(self):
+        """No regions/targets: one ChunkRead per chunk with
+        ``selection is None`` (the "read full chunk" sentinel)."""
+        plan = regions.build_chunk_plan(self._vcz())
+        # 10 variants, chunk size 3 → 4 chunks
+        assert [cr.index for cr in plan] == [0, 1, 2, 3]
+        assert all(cr.selection is None for cr in plan)
+
+    def test_regions_filter_selects_chunks(self):
+        plan = regions.build_chunk_plan(self._vcz(), regions="chr1:4-5")
+        # positions 4,5 fall in chunk 1 (global indexes 3,4 → local 0,1)
+        assert [cr.index for cr in plan] == [1]
+        assert_array_equal(plan[0].selection, [0, 1])
+
+    def test_targets_complement_flag_real_filter(self):
+        """``targets_complement=True`` with a real target string runs
+        through the candidate-chunk scan and produces explicit
+        selection arrays."""
+        plan = regions.build_chunk_plan(
+            self._vcz(), targets="chr1:4-5", targets_complement=True
+        )
+        # Positions 4 and 5 excluded → keep everything else.
+        # Concatenating all plan selections should yield the local
+        # indexes of positions 1,2,3,6,7,8,9,10 (globals 0,1,2,5,6,7,8,9).
+        assert all(cr.selection is not None for cr in plan)

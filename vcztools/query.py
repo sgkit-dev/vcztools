@@ -12,7 +12,7 @@ from vcztools.utils import (
 
 
 def list_samples(reader, output):
-    sample_ids = reader.root["sample_id"][:]
+    sample_ids = reader.all_sample_ids
     # don't show missing samples
     print("\n".join(sample_ids[sample_ids != ""]), file=output)
 

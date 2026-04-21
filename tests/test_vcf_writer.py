@@ -375,7 +375,8 @@ def test_write_vcf__samples(
         complement=samples_complement,
         ignore_missing_samples=ignore_missing_samples,
     )
-    reader = VczReader(fx_sample_vcz.group, samples=resolved)
+    reader = VczReader(fx_sample_vcz.group)
+    reader.set_samples(resolved)
     write_vcf(reader, output)
 
     v = VCF(output)
@@ -412,7 +413,8 @@ def test_write_vcf__non_existent_sample(fx_sample_vcz):
 
 def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
-    reader = VczReader(fx_sample_vcz.group, drop_genotypes=True)
+    reader = VczReader(fx_sample_vcz.group)
+    reader.set_samples([])
     write_vcf(reader, output, drop_genotypes=True)
 
     v = VCF(output)

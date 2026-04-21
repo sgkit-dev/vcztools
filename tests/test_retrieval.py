@@ -244,58 +244,66 @@ class TestVczReaderRegions:
             regions_mod.build_chunk_plan(self._vcz(), regions=df)
 
     def test_flat_index_array_accepted(self):
-        """``VczReader(variants=np.ndarray)`` buckets indexes into a plan."""
-        reader = VczReader(self._vcz(), variants=np.array([2, 4, 7], dtype=np.int64))
+        """``set_variants(np.ndarray)`` buckets indexes into a plan."""
+        reader = VczReader(self._vcz())
+        reader.set_variants(np.array([2, 4, 7], dtype=np.int64))
         nt.assert_array_equal(self._positions(reader), [3, 5, 8])
 
 
 class TestVczReaderSamples:
-    """Cover VczReader sample input: None, integer-index list, error cases."""
+    """Cover VczReader sample input: default, integer-index list, error cases."""
 
-    def test_samples_none_selects_all(self, fx_sample_vcz):
+    def test_samples_default_selects_all(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00002", "NA00003"])
 
     def test_samples_list(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group, samples=[0, 2])
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples([0, 2])
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
         nt.assert_array_equal(reader.samples_selection, [0, 2])
 
     def test_samples_preserves_input_order(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group, samples=[2, 0])
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples([2, 0])
         nt.assert_array_equal(reader.sample_ids, ["NA00003", "NA00001"])
         nt.assert_array_equal(reader.samples_selection, [2, 0])
 
     def test_samples_rejects_string_input(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(TypeError, match="integer indexes"):
-            VczReader(fx_sample_vcz.group, samples=["NA00001"])
+            reader.set_samples(["NA00001"])
 
     def test_samples_rejects_string_scalar(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(TypeError, match="integer indexes"):
-            VczReader(fx_sample_vcz.group, samples="NA00001")
+            reader.set_samples("NA00001")
 
     def test_samples_rejects_non_integer_numpy_array(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(TypeError, match="integer indexes"):
-            VczReader(fx_sample_vcz.group, samples=np.array([0.0, 2.0]))
+            reader.set_samples(np.array([0.0, 2.0]))
 
     def test_samples_accepts_numpy_int_array(self, fx_sample_vcz):
-        reader = VczReader(
-            fx_sample_vcz.group, samples=np.array([0, 2], dtype=np.int64)
-        )
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples(np.array([0, 2], dtype=np.int64))
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
 
     def test_samples_out_of_range_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(ValueError, match="sample index out of range"):
-            VczReader(fx_sample_vcz.group, samples=[0, 99])
+            reader.set_samples([0, 99])
 
     def test_samples_negative_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(ValueError, match="sample index out of range"):
-            VczReader(fx_sample_vcz.group, samples=[-1])
+            reader.set_samples([-1])
 
     def test_samples_empty_list(self, fx_sample_vcz):
         # Post-resolve, an empty list means "no samples" (e.g. all
         # requested names were dropped by ignore_missing_samples).
-        reader = VczReader(fx_sample_vcz.group, samples=[])
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples([])
         nt.assert_array_equal(reader.sample_ids, [])
         assert reader.sample_chunk_plan is None
 
@@ -338,7 +346,8 @@ class TestVczReaderSampleChunks:
 
     def test_single_chunk_selection(self):
         # s2, s3 both live in sample chunk 1 (indexes 2, 3).
-        reader = VczReader(self._vcz(), samples=[2, 3])
+        reader = VczReader(self._vcz())
+        reader.set_samples([2, 3])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [1]
         nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 1])
@@ -348,7 +357,8 @@ class TestVczReaderSampleChunks:
 
     def test_multi_chunk_selection(self):
         # s1 is in chunk 0; s4 is in chunk 2; chunk 1 is skipped.
-        reader = VczReader(self._vcz(), samples=[1, 4])
+        reader = VczReader(self._vcz())
+        reader.set_samples([1, 4])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [0, 2]
         assert plan.permutation is None
@@ -359,7 +369,8 @@ class TestVczReaderSampleChunks:
         # Same chunks as the multi-chunk test, but the user order is
         # reversed — the output must follow the input list via the
         # plan's permutation.
-        reader = VczReader(self._vcz(), samples=[4, 1])
+        reader = VczReader(self._vcz())
+        reader.set_samples([4, 1])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [0, 2]
         nt.assert_array_equal(plan.permutation, [1, 0])
@@ -369,7 +380,8 @@ class TestVczReaderSampleChunks:
     def test_partial_final_chunk(self):
         # 5 samples with chunk size 2 → chunks sized [2, 2, 1]. s4 sits
         # alone in the final chunk.
-        reader = VczReader(self._vcz(num_samples=5, samples_chunk_size=2), samples=[4])
+        reader = VczReader(self._vcz(num_samples=5, samples_chunk_size=2))
+        reader.set_samples([4])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [2]
         nt.assert_array_equal(plan.chunk_reads[0].selection, [0])
@@ -377,9 +389,9 @@ class TestVczReaderSampleChunks:
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[4], [14], [24]])
 
-    def test_samples_none_plan_is_identity(self):
-        # samples=None plans a read over every sample chunk with each
-        # full-chunk selection — same shape and values as a full read.
+    def test_default_plan_is_identity(self):
+        # Default (no set_samples call) plans a read over every sample
+        # chunk with each full-chunk selection.
         reader = VczReader(self._vcz())
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [0, 1, 2]
@@ -388,9 +400,9 @@ class TestVczReaderSampleChunks:
         nt.assert_array_equal(dp.shape, (3, 6))
         nt.assert_array_equal(dp[0], [0, 1, 2, 3, 4, 5])
 
-    def test_samples_none_missing_header_reduces(self):
-        # samples=None with masked "" entries in sample_id: the plan
-        # drops the masked indices, matching the old post-filter path.
+    def test_default_masked_header_reduces(self):
+        # Default with masked "" entries in sample_id: the plan drops
+        # the masked indices, matching the old post-filter path.
         root = self._vcz()
         root["sample_id"][:2] = ""
         reader = VczReader(root)
@@ -398,15 +410,13 @@ class TestVczReaderSampleChunks:
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[2, 3, 4, 5], [12, 13, 14, 15], [22, 23, 24, 25]])
 
-    def test_drop_genotypes_has_no_plan(self):
-        reader = VczReader(self._vcz(), drop_genotypes=True)
-        assert reader.sample_chunk_plan is None
-
     def test_empty_samples_list_has_no_plan(self):
-        # An empty samples list (e.g. after --force-samples drops every
-        # requested unknown) means no sample-chunk plan — full call
-        # arrays are read so AC/AN can still be recomputed.
-        reader = VczReader(self._vcz(), samples=[])
+        # An empty samples list (via --force-samples dropping every
+        # requested unknown, or --drop-genotypes) means no sample-chunk
+        # plan — full call arrays are read so AC/AN can still be
+        # recomputed.
+        reader = VczReader(self._vcz())
+        reader.set_samples([])
         assert reader.sample_chunk_plan is None
 
 
@@ -454,7 +464,8 @@ class TestVariantChunkReaderCaching:
         root = self._vcz(num_samples=6, samples_chunk_size=2)
         # Plan selects sample 1 (chunk 0) and sample 5 (chunk 2);
         # chunk 1 is NOT in the plan.
-        reader = VczReader(root, samples=[1, 5])
+        reader = VczReader(root)
+        reader.set_samples([1, 5])
         inner = VariantChunkReader(root, sample_chunk_plan=reader.sample_chunk_plan)
         inner.set_chunk(utils.ChunkRead(index=0))
         inner.get("call_DP")
@@ -519,7 +530,8 @@ class TestVariantChunksFilterPlusSamples:
             def evaluate(self, chunk_data):
                 return chunk_data["variant_position"] > self._threshold
 
-        reader = VczReader(fx_sample_vcz.group, variant_filter=PositionGt(1000000))
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variant_filter(PositionGt(1000000))
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         positions = np.concatenate([c["variant_position"] for c in chunks])
         nt.assert_array_equal(positions, [1110696, 1230237, 1234567, 1235237])
@@ -528,17 +540,13 @@ class TestVariantChunksFilterPlusSamples:
         # bcftools-query-style post-subset evaluation: filter sees only
         # the selected samples, so position 1234567 (where NA00001 but
         # not NA00002/NA00003 matched FMT/DP>3) is DROPPED.
-        variant_filter = BcftoolsFilter(
-            field_names=set(VczReader(fx_sample_vcz.group).root),
-            include="FMT/DP>3",
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variants(
+            regions_mod.build_chunk_plan(fx_sample_vcz.group, regions="20:1230236-")
         )
-        reader = VczReader(
-            fx_sample_vcz.group,
-            variants=regions_mod.build_chunk_plan(
-                fx_sample_vcz.group, regions="20:1230236-"
-            ),
-            samples=[1, 2],
-            variant_filter=variant_filter,
+        reader.set_samples([1, 2])
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>3"),
             filter_on_subset_samples=True,
         )
         chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
@@ -550,17 +558,17 @@ class TestVariantChunksFilterPlusSamples:
         # With no sample subset, filter_on_subset_samples=True must return
         # identical results to the default mode.
         root = fx_sample_vcz.group
-        field_names = set(VczReader(root).root)
 
         def build(filter_on_subset_samples):
-            return VczReader(
-                root,
-                variants=regions_mod.build_chunk_plan(root, regions="20:1230236-"),
-                variant_filter=BcftoolsFilter(
-                    field_names=field_names, include="FMT/DP>3"
-                ),
+            reader = VczReader(root)
+            reader.set_variants(
+                regions_mod.build_chunk_plan(root, regions="20:1230236-")
+            )
+            reader.set_variant_filter(
+                BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>3"),
                 filter_on_subset_samples=filter_on_subset_samples,
             )
+            return reader
 
         pre = list(build(False).variant_chunks(fields=["variant_position"]))
         post = list(build(True).variant_chunks(fields=["variant_position"]))
@@ -573,17 +581,15 @@ class TestVariantChunksFilterPlusSamples:
         # Variant-scope filters touch no sample axis; the flag is a
         # no-op regardless of subset.
         root = fx_sample_vcz.group
-        field_names = set(VczReader(root).root)
 
         def build(filter_on_subset_samples):
-            return VczReader(
-                root,
-                samples=[0],
-                variant_filter=BcftoolsFilter(
-                    field_names=field_names, include="POS > 1000000"
-                ),
+            reader = VczReader(root)
+            reader.set_samples([0])
+            reader.set_variant_filter(
+                BcftoolsFilter(field_names=reader.field_names, include="POS > 1000000"),
                 filter_on_subset_samples=filter_on_subset_samples,
             )
+            return reader
 
         pre = list(build(False).variant_chunks(fields=["variant_position"]))
         post = list(build(True).variant_chunks(fields=["variant_position"]))
@@ -591,18 +597,6 @@ class TestVariantChunksFilterPlusSamples:
             np.concatenate([c["variant_position"] for c in pre]),
             np.concatenate([c["variant_position"] for c in post]),
         )
-
-    def test_drop_genotypes_rejects_sample_scope_filter(self, fx_sample_vcz):
-        field_names = set(VczReader(fx_sample_vcz.group).root)
-        variant_filter = BcftoolsFilter(field_names=field_names, include="FMT/DP>3")
-        with pytest.raises(
-            ValueError, match="sample-scope variant_filter is incompatible"
-        ):
-            VczReader(
-                fx_sample_vcz.group,
-                variant_filter=variant_filter,
-                drop_genotypes=True,
-            )
 
     def test_filter_sees_full_samples_output_is_pruned(self, fx_sample_vcz):
         # Locks in that variants can be included because non-selected

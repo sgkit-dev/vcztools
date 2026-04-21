@@ -70,15 +70,24 @@ def write_vcf(
     reader,
     output,
     *,
+    subsetting_samples: bool = False,
     header_only: bool = False,
     no_header: bool = False,
     no_version: bool = False,
     no_update=None,
     drop_genotypes: bool = False,
 ) -> None:
+    """Write a VCF to ``output`` from ``reader``.
+
+    ``subsetting_samples`` mirrors the bcftools distinction between
+    "default output" and "a subset was requested": when ``True``,
+    ``AC``/``AN`` are force-recomputed in the header and per-chunk
+    (matching ``bcftools view -s …`` semantics). Callers that already
+    configured ``reader.set_samples(...)`` should pass ``True``.
+    """
     with open_file_like(output) as output:
         if not no_header:
-            force_ac_an_header = not drop_genotypes and reader.subsetting_samples
+            force_ac_an_header = not drop_genotypes and subsetting_samples
             vcf_header = _generate_header(
                 reader,
                 no_version=no_version,
@@ -98,7 +107,7 @@ def write_vcf(
                 output,
                 drop_genotypes=drop_genotypes,
                 no_update=no_update,
-                subsetting_samples=reader.subsetting_samples,
+                subsetting_samples=subsetting_samples,
             )
 
 

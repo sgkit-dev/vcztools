@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 
 import numpy as np
@@ -9,6 +10,23 @@ from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class FieldInfo:
+    """Schema snapshot for a single store field.
+
+    Materialized once per field via :meth:`VczReader.get_field_info`
+    and cached on the reader. External callers (VCF header
+    generation, etc.) should never reach into the Zarr store for
+    metadata themselves — go through this dataclass instead.
+    """
+
+    name: str
+    dtype: np.dtype
+    shape: tuple[int, ...]
+    dims: tuple[str, ...]
+    attrs: dict
 
 
 class VariantChunkReader:
@@ -141,16 +159,13 @@ class VariantChunkReader:
         return np.ascontiguousarray(raw)
 
 
-def get_filter_ids(root):
-    """
-    Returns the filter IDs from the specified Zarr store. If the array
-    does not exist, return a single filter "PASS" by default.
-    """
+def _get_filter_ids(root):
+    """Return the filter IDs as fixed-length bytes, defaulting to a
+    single ``b"PASS"`` entry when the store has no ``filter_id``
+    field."""
     if "filter_id" in root:
-        filters = _as_fixed_length_string(root["filter_id"][:])
-    else:
-        filters = np.array(["PASS"], dtype="S")
-    return filters
+        return _as_fixed_length_string(root["filter_id"][:])
+    return np.array(["PASS"], dtype="S")
 
 
 def _validate_samples_input(value) -> None:
@@ -317,8 +332,94 @@ class VczReader:
 
     @functools.cached_property
     def filters(self):
-        """Filter IDs as fixed-length bytes (for VcfEncoder)."""
-        return get_filter_ids(self.root)
+        """Filter IDs as fixed-length bytes (for VcfEncoder).
+        Returns a single ``b"PASS"`` entry when the store has no
+        ``filter_id`` array."""
+        return _get_filter_ids(self.root)
+
+    @functools.cached_property
+    def num_variants(self) -> int:
+        """Total variants in the store (before any plan/filter)."""
+        return int(self.root["variant_position"].shape[0])
+
+    @functools.cached_property
+    def variants_chunk_size(self) -> int:
+        """Chunk size along the variants axis."""
+        return int(self.root["variant_position"].chunks[0])
+
+    @functools.cached_property
+    def num_samples(self) -> int:
+        """Total samples in the store (including any masked entries)."""
+        return int(self.root["sample_id"].shape[0])
+
+    @functools.cached_property
+    def all_sample_ids(self) -> np.ndarray:
+        """Full ``sample_id`` array from the store, including any
+        masked (empty-string) entries. For the post-subset order used
+        when encoding rows, see :attr:`sample_ids`."""
+        return self.root["sample_id"][:]
+
+    @functools.cached_property
+    def contig_lengths(self) -> np.ndarray | None:
+        """``contig_length`` array, or ``None`` if absent."""
+        if "contig_length" not in self.root:
+            return None
+        return self.root["contig_length"][:]
+
+    @functools.cached_property
+    def region_index(self) -> np.ndarray:
+        """``region_index`` table. Raises ``ValueError`` if absent —
+        callers that need it (e.g. :func:`vcztools.stats.stats`)
+        should surface that to the user."""
+        if "region_index" not in self.root:
+            raise ValueError(
+                "Could not load 'region_index' variable. "
+                "Use 'vcz2zarr' to create an index."
+            )
+        return self.root["region_index"][:]
+
+    @functools.cached_property
+    def filter_descriptions(self) -> np.ndarray | None:
+        """Per-filter descriptions, or ``None`` if absent."""
+        if "filter_description" not in self.root:
+            return None
+        return self.root["filter_description"][:]
+
+    @functools.cached_property
+    def source(self) -> str | None:
+        """Store-level ``source`` attribute, or ``None`` if not set."""
+        return self.root.attrs.get("source", None)
+
+    @functools.cached_property
+    def vcf_meta_information(self) -> list | None:
+        """Store-level ``vcf_meta_information`` attribute, or
+        ``None`` if not set."""
+        return self.root.attrs.get("vcf_meta_information", None)
+
+    @functools.cached_property
+    def field_names(self) -> frozenset[str]:
+        """Set of field names present in the store."""
+        return frozenset(self.root)
+
+    @functools.cached_property
+    def _field_info_cache(self) -> dict[str, FieldInfo]:
+        return {}
+
+    def get_field_info(self, name: str) -> FieldInfo:
+        """Return a :class:`FieldInfo` snapshot for the named field.
+        Reads Zarr metadata on first access, then memoizes per-field.
+        Raises ``KeyError`` if the field is absent."""
+        cache = self._field_info_cache
+        if name not in cache:
+            arr = self.root[name]
+            cache[name] = FieldInfo(
+                name=name,
+                dtype=arr.dtype,
+                shape=tuple(arr.shape),
+                dims=tuple(utils.array_dims(arr)),
+                attrs=dict(arr.attrs),
+            )
+        return cache[name]
 
     def variant_chunks(
         self,

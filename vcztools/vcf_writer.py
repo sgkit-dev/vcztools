@@ -5,14 +5,13 @@ from datetime import datetime
 
 import numpy as np
 
-from vcztools import utils
 from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     open_file_like,
 )
 
-from . import _vcztools, constants, retrieval
+from . import _vcztools, constants
 from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 
 logger = logging.getLogger(__name__)
@@ -81,8 +80,7 @@ def write_vcf(
         if not no_header:
             force_ac_an_header = not drop_genotypes and reader.subsetting_samples
             vcf_header = _generate_header(
-                reader.root,
-                reader.sample_ids,
+                reader,
                 no_version=no_version,
                 force_ac_an=force_ac_an_header,
             )
@@ -239,60 +237,61 @@ def c_chunk_to_vcf(
 
 
 def _generate_header(
-    ds,
-    sample_ids,
+    reader,
     *,
     no_version: bool = False,
     force_ac_an: bool = False,
 ):
     output = io.StringIO()
 
-    contigs = list(ds["contig_id"][:])
-    filters = list(_as_fixed_length_unicode(retrieval.get_filter_ids(ds)))
+    sample_ids = reader.sample_ids
+    contigs = list(reader.contig_ids)
+    filters = list(_as_fixed_length_unicode(reader.filters))
+    field_names = reader.field_names
     info_fields = []
     format_fields = []
 
-    if "call_genotype" in ds and len(sample_ids) > 0:
+    if "call_genotype" in field_names and len(sample_ids) > 0:
         # GT must be the first field if present, per the spec (section 1.6.2)
         format_fields.append("GT")
 
-    for var in sorted(ds.keys()):
-        arr = ds[var]
+    for name in sorted(field_names):
         if (
-            var.startswith("variant_")
-            and not var.endswith("_fill")
-            and not var.endswith("_mask")
-            and var not in RESERVED_VARIABLE_NAMES
-            and utils.array_dims(arr)[0] == "variants"
+            name.startswith("variant_")
+            and not name.endswith("_fill")
+            and not name.endswith("_mask")
+            and name not in RESERVED_VARIABLE_NAMES
+            and reader.get_field_info(name).dims[0] == "variants"
         ):
-            key = var[len("variant_") :]
-            info_fields.append(key)
+            info_fields.append(name[len("variant_") :])
         elif (
             len(sample_ids) > 0
-            and var.startswith("call_")
-            and not var.endswith("_fill")
-            and not var.endswith("_mask")
-            and utils.array_dims(arr)[0] == "variants"
-            and utils.array_dims(arr)[1] == "samples"
+            and name.startswith("call_")
+            and not name.endswith("_fill")
+            and not name.endswith("_mask")
         ):
-            key = var[len("call_") :]
-            if key in ("genotype", "genotype_phased"):
-                continue
-            format_fields.append(key)
+            info = reader.get_field_info(name)
+            if (
+                len(info.dims) >= 2
+                and info.dims[0] == "variants"
+                and info.dims[1] == "samples"
+            ):
+                key = name[len("call_") :]
+                if key not in ("genotype", "genotype_phased"):
+                    format_fields.append(key)
 
     # [1.4.1 File format]
     print("##fileformat=VCFv4.3", file=output)
 
-    if "source" in ds.attrs:
-        print(f"##source={ds.attrs['source']}", file=output)
+    if reader.source is not None:
+        print(f"##source={reader.source}", file=output)
 
     # [1.4.2 Information field format]
     for key in info_fields:
-        arr = ds[f"variant_{key}"]
-        category = "INFO"
-        vcf_number = _array_to_vcf_number(category, key, arr)
-        vcf_type = _array_to_vcf_type(arr)
-        vcf_description = arr.attrs.get(
+        info = reader.get_field_info(f"variant_{key}")
+        vcf_number = _array_to_vcf_number("INFO", key, info)
+        vcf_type = _array_to_vcf_type(info)
+        vcf_description = info.attrs.get(
             "description", RESERVED_INFO_KEY_DESCRIPTIONS.get(key, "")
         )
         print(
@@ -312,9 +311,7 @@ def _generate_header(
                 )
 
     # [1.4.3 Filter field format]
-    filter_descriptions = (
-        ds["filter_description"] if "filter_description" in ds else None
-    )
+    filter_descriptions = reader.filter_descriptions
     for i, filter in enumerate(filters):
         filter_description = (
             "" if filter_descriptions is None else filter_descriptions[i]
@@ -332,11 +329,10 @@ def _generate_header(
                 file=output,
             )
         else:
-            arr = ds[f"call_{key}"]
-            category = "FORMAT"
-            vcf_number = _array_to_vcf_number(category, key, arr)
-            vcf_type = _array_to_vcf_type(arr)
-            vcf_description = arr.attrs.get(
+            info = reader.get_field_info(f"call_{key}")
+            vcf_number = _array_to_vcf_number("FORMAT", key, info)
+            vcf_type = _array_to_vcf_type(info)
+            vcf_description = info.attrs.get(
                 "description", RESERVED_FORMAT_KEY_DESCRIPTIONS.get(key, "")
             )
             print(
@@ -345,7 +341,7 @@ def _generate_header(
             )
 
     # [1.4.7 Contig field format]
-    contig_lengths = ds["contig_length"] if "contig_length" in ds else None
+    contig_lengths = reader.contig_lengths
     for i, contig in enumerate(contigs):
         if contig_lengths is None:
             print(f"##contig=<ID={contig}>", file=output)
@@ -359,8 +355,8 @@ def _generate_header(
         )
 
     # Other meta information lines not covered above
-    if "vcf_meta_information" in ds.attrs:
-        for key, value in ds.attrs["vcf_meta_information"]:
+    if reader.vcf_meta_information is not None:
+        for key, value in reader.vcf_meta_information:
             if key not in ("fileformat", "source"):
                 print(f"##{key}={value}", file=output)
 
@@ -388,16 +384,16 @@ def _generate_header(
     return output.getvalue()
 
 
-def _array_to_vcf_number(category, key, a):
+def _array_to_vcf_number(category, key, info):
     # reverse of vcf_number_to_dimension_and_size
-    if a.dtype == bool:
+    if info.dtype == bool:
         return 0
-    elif category == "INFO" and len(utils.array_dims(a)) == 1:
+    elif category == "INFO" and len(info.dims) == 1:
         return 1
-    elif category == "FORMAT" and len(utils.array_dims(a)) == 2:
+    elif category == "FORMAT" and len(info.dims) == 2:
         return 1
 
-    last_dim = utils.array_dims(a)[-1]
+    last_dim = info.dims[-1]
     if last_dim == "alt_alleles":
         return "A"
     elif last_dim == "alleles":
@@ -405,26 +401,27 @@ def _array_to_vcf_number(category, key, a):
     elif last_dim == "genotypes":
         return "G"
     elif last_dim == f"{category}_{key}_dim":
-        return a.shape[-1]
+        return info.shape[-1]
     else:
         raise ValueError(
-            f"Cannot determine VCF Number for dimension name '{last_dim}' in {a}"
+            f"Cannot determine VCF Number for dimension name "
+            f"'{last_dim}' in field {info.name}"
         )
 
 
-def _array_to_vcf_type(a):
-    if a.dtype == bool:
+def _array_to_vcf_type(info):
+    if info.dtype == bool:
         return "Flag"
-    elif np.issubdtype(a.dtype, np.integer):
+    elif np.issubdtype(info.dtype, np.integer):
         return "Integer"
-    elif np.issubdtype(a.dtype, np.float32):
+    elif np.issubdtype(info.dtype, np.float32):
         return "Float"
-    elif a.dtype.str[1:] in ("S1", "U1"):
+    elif info.dtype.str[1:] in ("S1", "U1"):
         return "Character"
-    elif a.dtype.kind in ("O", "S", "U", "T"):
+    elif info.dtype.kind in ("O", "S", "U", "T"):
         return "String"
     else:
-        raise ValueError(f"Unsupported dtype: {a.dtype}")
+        raise ValueError(f"Unsupported dtype: {info.dtype}")
 
 
 def _compute_info_fields(gt: np.ndarray, alt: np.ndarray):

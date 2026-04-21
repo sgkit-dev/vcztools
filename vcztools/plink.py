@@ -23,9 +23,9 @@ def encode_genotypes(genotypes, a12_allele=None):
     return bytes(_vcztools.encode_plink(G, a12_allele).data)
 
 
-def generate_fam(root):
+def generate_fam(reader):
     # TODO generate an error if sample_id contains a space
-    sample_id = _as_fixed_length_unicode(root["sample_id"][:])
+    sample_id = _as_fixed_length_unicode(reader.all_sample_ids)
     zeros = np.zeros(sample_id.shape, dtype=int)
     df = pd.DataFrame(
         {
@@ -40,39 +40,60 @@ def generate_fam(root):
     return df.to_csv(sep="\t", header=False, index=False)
 
 
-def generate_bim(root, a12_allele):
-    select = a12_allele[:, 1] != -1
-    contig_id = _as_fixed_length_unicode(root["contig_id"][:])
-    alleles = _as_fixed_length_unicode(root["variant_allele"][:])[select]
-    a12_allele = a12_allele[select]
-    num_variants = np.sum(select)
-    allele_1 = alleles[np.arange(num_variants), a12_allele[:, 0]]
-    single_allele_sites = np.where(a12_allele[:, 0] == -1)
-    allele_1[single_allele_sites] = "0"
+def generate_bim(reader, a12_allele):
+    contig_id = _as_fixed_length_unicode(reader.contig_ids)
+    has_variant_id = "variant_id" in reader.field_names
 
-    num_variants = np.sum(select)
-    if "variant_id" in root:
-        variant_id = root["variant_id"][:][select]
-    else:
-        variant_id = np.array(["."] * num_variants, dtype="S")
+    fields = ["variant_allele", "variant_contig", "variant_position"]
+    if has_variant_id:
+        fields.append("variant_id")
 
-    df = pd.DataFrame(
-        {
-            "Chrom": contig_id[root["variant_contig"][:][select]],
-            "VariantId": variant_id,
-            "GeneticPosition": np.zeros(np.sum(select), dtype=int),
-            "Position": root["variant_position"][:][select],
-            "Allele1": allele_1,
-            "Allele2": alleles[np.arange(num_variants), a12_allele[:, 1]],
-        }
-    )
+    rows = []
+    offset = 0
+    for chunk in reader.variant_chunks(fields=fields):
+        n = len(chunk["variant_position"])
+        chunk_a12 = a12_allele[offset : offset + n]
+        offset += n
+
+        select = chunk_a12[:, 1] != -1
+        if not np.any(select):
+            continue
+
+        alleles = _as_fixed_length_unicode(chunk["variant_allele"])[select]
+        chunk_a12 = chunk_a12[select]
+        nsel = int(np.sum(select))
+
+        allele_1 = alleles[np.arange(nsel), chunk_a12[:, 0]]
+        single_allele_sites = np.where(chunk_a12[:, 0] == -1)
+        allele_1[single_allele_sites] = "0"
+
+        if has_variant_id:
+            variant_id = chunk["variant_id"][select]
+        else:
+            variant_id = np.array(["."] * nsel, dtype="S")
+
+        rows.append(
+            pd.DataFrame(
+                {
+                    "Chrom": contig_id[chunk["variant_contig"][select]],
+                    "VariantId": variant_id,
+                    "GeneticPosition": np.zeros(nsel, dtype=int),
+                    "Position": chunk["variant_position"][select],
+                    "Allele1": allele_1,
+                    "Allele2": alleles[np.arange(nsel), chunk_a12[:, 1]],
+                }
+            )
+        )
+
+    if len(rows) == 0:
+        return ""
+    df = pd.concat(rows, ignore_index=True)
     return df.to_csv(header=False, sep="\t", index=False)
 
 
 class Writer:
     def __init__(self, reader, bed_path, fam_path, bim_path):
         self.reader = reader
-        self.root = reader.root
 
         self.bim_path = bim_path
         self.fam_path = fam_path
@@ -115,22 +136,18 @@ class Writer:
             assert a12_allele[j, 0] != a12_allele[j, 1]
             if alleles[j][1] == "":
                 a12_allele[j, 0] = -1
-            # print(
-            #     self.root["variant_contig"][j],
-            #     self.root["variant_position"][j],
-            #     [j],
-            #     self.root["variant_allele"][j],
-            #     count,
-            #     argsort,
-            #     a12_allele[j],
-            # )
         return a12_allele
 
     def _write_genotypes(self):
         ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
-        call_genotype = self.root["call_genotype"]
+        # Scratch zarr array sized to the variants axis; blocks are
+        # written in-order as we consume variant_chunks. This is an
+        # in-process scratch store, not a read from the input — the
+        # one remaining direct-zarr touch in this module.
         a12_allele = zarr.zeros(
-            (call_genotype.shape[0], 2), chunks=call_genotype.chunks[0], dtype=int
+            (self.reader.num_variants, 2),
+            chunks=self.reader.variants_chunk_size,
+            dtype=int,
         )
         with open(self.bed_path, "wb") as bed_file:
             bed_file.write(bytes([0x6C, 0x1B, 0x01]))
@@ -147,10 +164,10 @@ class Writer:
         a12_allele = self._write_genotypes()
 
         with open(self.bim_path, "w") as f:
-            f.write(generate_bim(self.root, a12_allele))
+            f.write(generate_bim(self.reader, a12_allele))
 
         with open(self.fam_path, "w") as f:
-            f.write(generate_fam(self.root))
+            f.write(generate_fam(self.reader))
 
 
 def write_plink(reader, out):

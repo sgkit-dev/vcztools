@@ -5,26 +5,20 @@ from vcztools.utils import _as_fixed_length_unicode, open_file_like
 
 def nrecords(reader, output):
     with open_file_like(output) as output:
-        num_variants = reader.root["variant_position"].shape[0]
-        print(num_variants, file=output)
+        print(reader.num_variants, file=output)
 
 
 def stats(reader, output):
-    root = reader.root
-
-    if "region_index" not in root:
-        raise ValueError(
-            "Could not load 'region_index' variable. Use 'vcz2zarr' to create an index."
-        )
+    # reader.region_index raises with the user-facing message if absent.
+    region_index = reader.region_index
 
     with open_file_like(output) as output:
-        contigs = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
-        if "contig_length" in root:
-            contig_lengths = root["contig_length"][:]
-        else:
+        contigs = _as_fixed_length_unicode(reader.contig_ids).tolist()
+        reader_contig_lengths = reader.contig_lengths
+        if reader_contig_lengths is None:
             contig_lengths = ["."] * len(contigs)
-
-        region_index = root["region_index"][:]
+        else:
+            contig_lengths = reader_contig_lengths
 
         contig_indexes = region_index[:, 1]
         num_records = region_index[:, 5]

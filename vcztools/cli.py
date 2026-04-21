@@ -172,32 +172,47 @@ def make_reader(
             samples = samples[1:]
         samples = samples.split(",")
     root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
-    if not drop_genotypes:
-        samples = samples_mod.resolve_sample_selection(
-            samples,
-            root["sample_id"][:],
-            complement=samples_complement,
-            ignore_missing_samples=force_samples,
-        )
+    reader = retrieval.VczReader(root)
+
     variant_filter = None
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=set(root), include=include, exclude=exclude
+            field_names=reader.field_names, include=include, exclude=exclude
         )
-    variant_chunk_plan = regions_mod.build_chunk_plan(
-        root,
-        regions=regions,
-        targets=targets,
-        targets_complement=targets_complement,
-    )
-    return retrieval.VczReader(
-        root,
-        variants=variant_chunk_plan,
-        samples=samples,
-        drop_genotypes=drop_genotypes,
-        variant_filter=variant_filter,
-        filter_on_subset_samples=filter_on_subset_samples,
-    )
+
+    if drop_genotypes:
+        # --drop-genotypes can't coexist with a sample-scope filter:
+        # the filter needs per-sample genotype data, --drop-genotypes
+        # says you don't want any.
+        if variant_filter is not None and variant_filter.scope == "sample":
+            raise ValueError(
+                "sample-scope variant_filter is incompatible with drop_genotypes=True"
+            )
+        reader.set_samples([])
+    elif samples is not None:
+        samples = samples_mod.resolve_sample_selection(
+            samples,
+            reader.all_sample_ids,
+            complement=samples_complement,
+            ignore_missing_samples=force_samples,
+        )
+        reader.set_samples(samples)
+
+    if regions is not None or targets is not None:
+        variant_chunk_plan = regions_mod.build_chunk_plan(
+            root,
+            regions=regions,
+            targets=targets,
+            targets_complement=targets_complement,
+        )
+        reader.set_variants(variant_chunk_plan)
+
+    if variant_filter is not None:
+        reader.set_variant_filter(
+            variant_filter, filter_on_subset_samples=filter_on_subset_samples
+        )
+
+    return reader
 
 
 class NaturalOrderGroup(click.Group):
@@ -434,10 +449,14 @@ def view(
         drop_genotypes=drop_genotypes,
         zarr_backend_storage=zarr_backend_storage,
     )
+    subsetting_samples = (
+        samples is not None or samples_file is not None or drop_genotypes
+    )
     with handle_broken_pipe(output):
         vcf_writer.write_vcf(
             reader,
             output,
+            subsetting_samples=subsetting_samples,
             header_only=header_only,
             no_header=no_header,
             no_version=no_version,

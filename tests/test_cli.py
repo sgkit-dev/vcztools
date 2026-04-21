@@ -95,6 +95,18 @@ def test_samples_and_drop_genotypes(fx_vcz_path):
     assert "Cannot select samples and drop genotypes" in vcztools_error
 
 
+def test_drop_genotypes_rejects_sample_scope_filter(fx_vcz_path):
+    # --drop-genotypes with a sample-scope filter (FMT/DP) is
+    # incompatible: the filter needs per-sample genotype data which
+    # --drop-genotypes says we don't want.
+    with pytest.raises(ValueError, match="sample-scope variant_filter is incompatible"):
+        cli.make_reader(
+            fx_vcz_path,
+            include="FMT/DP>3",
+            drop_genotypes=True,
+        )
+
+
 class TestFilterErrors:
     """Pins the user-visible contract for filter expression errors:
     exit code 1 plus a specific error-message substring in stderr.

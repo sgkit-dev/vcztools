@@ -207,6 +207,23 @@ class VczReader:
     Owns the zarr root and provides metadata properties and
     variant iteration at both chunk and row granularity.
 
+    The reader starts with no configured selection or filter — plan
+    state is lazy and is filled in to sensible defaults (every real
+    sample; every variant chunk) on first iteration. Callers
+    customize via the one-shot setters **before** iterating:
+
+    - :meth:`set_samples` — sample selection (integer indexes).
+    - :meth:`set_variants` — variant selection (``list[ChunkRead]``
+      or a sorted 1-D index array).
+    - :meth:`set_variant_filter` — per-variant filter predicate.
+
+    Each setter can be called at most once; a second call raises
+    ``RuntimeError``. The state field itself is the "configured"
+    signal: e.g. ``samples_selection is None`` means "not set", so
+    ``set_samples`` refuses to run when ``samples_selection`` is
+    already populated (either by a prior ``set_samples`` or by
+    default resolution during iteration).
+
     Parameters
     ----------
     root
@@ -214,104 +231,143 @@ class VczReader:
         dataset. Use :func:`vcztools.utils.open_zarr` to open a path
         (local, remote, or zip) with the desired backend before
         constructing the reader.
-    variants
-        Variant selection. Accepts either a ``list[ChunkRead]`` (use
-        :func:`vcztools.regions.build_chunk_plan` to build one from
-        region/target strings and a root), or a sorted 1-D array of
-        global variant indexes (which will be bucketed into a plan
-        internally). ``None`` iterates every variant.
-    samples
-        Integer indexes into the VCZ ``sample_id`` array, in the
-        order the caller wants. ``None`` selects every real sample
-        (skipping any empty-string masked entries). Out-of-range
-        indexes raise ``ValueError``; duplicates are permitted.
-        See :func:`vcztools.samples.resolve_sample_selection` for
-        the bcftools-style name-to-index translation the CLI uses.
-    variant_filter
-        An object implementing the
-        :class:`~vcztools.variant_filter.VariantFilter` protocol, or
-        ``None`` for no filter. The CLI constructs a
-        :class:`~vcztools.bcftools_filter.BcftoolsFilter` from ``-i``/
-        ``-e`` flags; external callers can plug in any alternative
-        implementation.
-    filter_on_subset_samples
-        Which sample axis a sample-scope filter sees. ``False``
-        (default) evaluates on the full sample axis, matching
-        ``bcftools view`` semantics. ``True`` evaluates on the subset
-        sample axis, matching ``bcftools query``'s FMT-scope
-        post-subset semantics and avoiding reads of unselected sample
-        chunks. No-op for variant-scope filters.
     """
 
-    def __init__(
-        self,
-        root,
-        *,
-        variants: np.ndarray | list[utils.ChunkRead] | None = None,
-        samples=None,
-        drop_genotypes: bool = False,
-        variant_filter: variant_filter_mod.VariantFilter | None = None,
-        filter_on_subset_samples: bool = False,
-    ):
+    def __init__(self, root):
+        self.root = root
+        self._sample_chunk_plan = None
+        self._variant_chunk_plan = None
+        self._samples_selection = None
+        self._sample_ids = None
+        self.variant_filter = None
+        self.filter_on_subset_samples = False
+        # True iff set_samples was called. Distinct from
+        # "samples_selection is not None" once defaults are resolved:
+        # the default resolve populates _samples_selection but
+        # leaves this False, so _reduce_chunk_mask can tell whether
+        # to subset call_mask to the user's requested samples.
+        self._subsetting_samples = False
+
+    def _resolve_samples_if_needed(self) -> None:
+        if self._samples_selection is not None:
+            return
+        all_samples = self.all_sample_ids
+        self._samples_selection = np.flatnonzero(all_samples != "")
+        self._sample_ids = all_samples[self._samples_selection]
+        self._sample_chunk_plan = samples_mod.build_chunk_plan(
+            self._samples_selection,
+            samples_chunk_size=int(self.root["sample_id"].chunks[0]),
+        )
+
+    @property
+    def samples_selection(self):
+        self._resolve_samples_if_needed()
+        return self._samples_selection
+
+    @property
+    def sample_ids(self):
+        self._resolve_samples_if_needed()
+        return self._sample_ids
+
+    @property
+    def sample_chunk_plan(self):
+        self._resolve_samples_if_needed()
+        return self._sample_chunk_plan
+
+    @property
+    def variant_chunk_plan(self):
+        if self._variant_chunk_plan is None:
+            num_chunks = int(self.root["variant_position"].cdata_shape[0])
+            self._variant_chunk_plan = [
+                utils.ChunkRead(index=i) for i in range(num_chunks)
+            ]
+        return self._variant_chunk_plan
+
+    def set_samples(self, samples) -> None:
+        """Configure the sample selection.
+
+        Accepts a list or ndarray of integer indexes into the VCZ
+        ``sample_id`` array, in the order the caller wants. An empty
+        sequence is valid and means "no samples in output" (used by
+        e.g. ``bcftools view --drop-genotypes``).
+
+        Out-of-range indexes raise ``ValueError``; duplicates are
+        permitted. Raises ``RuntimeError`` if already configured
+        (including if the default was already resolved by reading
+        ``samples_selection`` / ``sample_ids`` / ``sample_chunk_plan``).
+        See :func:`vcztools.samples.resolve_sample_selection` for
+        the bcftools-style name-to-index translation the CLI uses.
+        """
+        if self._samples_selection is not None:
+            raise RuntimeError("samples already configured")
         _validate_samples_input(samples)
 
-        self.root = root
-
-        all_samples = self.root["sample_id"][:]
-
-        if drop_genotypes:
-            self.sample_ids = []
-            self.samples_selection = np.array([], dtype=np.int64)
-            self.subsetting_samples = False
-        elif samples is None:
-            self.samples_selection = np.flatnonzero(all_samples != "")
-            self.sample_ids = all_samples[self.samples_selection]
-            self.subsetting_samples = False
-        else:
-            self.samples_selection = np.asarray(samples, dtype=np.int64)
-            if self.samples_selection.size > 0:
-                lo = self.samples_selection.min()
-                hi = self.samples_selection.max()
-                if lo < 0 or hi >= all_samples.size:
-                    raise ValueError(
-                        f"sample index out of range: must be in [0, {all_samples.size})"
-                    )
-            self.sample_ids = all_samples[self.samples_selection]
-            self.subsetting_samples = True
-
-        if len(self.samples_selection) > 0:
-            # Plan covers the missing-header-samples case too (samples=None
-            # with empty-string entries): samples_selection excludes those
-            # indices, and the plan reduces accordingly. When the selection
-            # covers every sample in order, the plan is a no-op index.
-            self.sample_chunk_plan = samples_mod.build_chunk_plan(
-                self.samples_selection,
+        all_samples = self.all_sample_ids
+        samples_selection = np.asarray(samples, dtype=np.int64)
+        if samples_selection.size > 0:
+            lo = samples_selection.min()
+            hi = samples_selection.max()
+            if lo < 0 or hi >= all_samples.size:
+                raise ValueError(
+                    f"sample index out of range: must be in [0, {all_samples.size})"
+                )
+        self._samples_selection = samples_selection
+        self._sample_ids = all_samples[samples_selection]
+        if len(samples_selection) > 0:
+            self._sample_chunk_plan = samples_mod.build_chunk_plan(
+                samples_selection,
                 samples_chunk_size=int(self.root["sample_id"].chunks[0]),
             )
         else:
-            self.sample_chunk_plan = None
+            # Empty selection: leaving plan as None sends call_*
+            # reads through the _load_call_full path, which reads
+            # every sample chunk. That's what lets a sample-scope
+            # filter or AC/AN recompute still see the full genotype
+            # matrix even though no samples will be emitted.
+            self._sample_chunk_plan = None
+        self._subsetting_samples = True
 
-        if variants is None:
-            num_chunks = int(self.root["variant_position"].cdata_shape[0])
-            self.variant_chunk_plan = [
-                utils.ChunkRead(index=i) for i in range(num_chunks)
-            ]
-        elif isinstance(variants, list):
-            self.variant_chunk_plan = variants
+    def set_variants(self, variants) -> None:
+        """Configure the variant selection.
+
+        Accepts a list of :class:`~vcztools.utils.ChunkRead` (use
+        :func:`vcztools.regions.build_chunk_plan` to build one from
+        region/target strings and a root) or a sorted 1-D array of
+        global variant indexes (bucketed into a plan internally).
+        Raises ``RuntimeError`` if already configured (including if
+        the default was already resolved by reading
+        ``variant_chunk_plan``).
+        """
+        if self._variant_chunk_plan is not None:
+            raise RuntimeError("variants already configured")
+        if isinstance(variants, list):
+            self._variant_chunk_plan = variants
         else:
-            self.variant_chunk_plan = regions_mod.chunk_plan_from_indexes(
+            self._variant_chunk_plan = regions_mod.chunk_plan_from_indexes(
                 np.asarray(variants),
-                variants_chunk_size=int(self.root["variant_position"].chunks[0]),
+                variants_chunk_size=self.variants_chunk_size,
             )
 
-        if (
-            variant_filter is not None
-            and drop_genotypes
-            and variant_filter.scope == "sample"
-        ):
-            raise ValueError(
-                "sample-scope variant_filter is incompatible with drop_genotypes=True"
-            )
+    def set_variant_filter(
+        self,
+        variant_filter: variant_filter_mod.VariantFilter,
+        *,
+        filter_on_subset_samples: bool = False,
+    ) -> None:
+        """Configure the variant filter.
+
+        ``variant_filter`` is any object implementing the
+        :class:`~vcztools.variant_filter.VariantFilter` protocol.
+        ``filter_on_subset_samples`` controls which sample axis a
+        sample-scope filter sees: ``False`` (default) matches
+        ``bcftools view`` semantics (full sample axis);
+        ``True`` matches ``bcftools query`` FMT-scope post-subset
+        semantics. No-op for variant-scope filters.
+
+        Raises ``RuntimeError`` if already configured.
+        """
+        if self.variant_filter is not None:
+            raise RuntimeError("variant_filter already configured")
         self.variant_filter = variant_filter
         self.filter_on_subset_samples = filter_on_subset_samples
 
@@ -508,7 +564,7 @@ class VczReader:
             return v_mask, None
         variants_selection = np.any(v_mask, axis=1)
         call_mask = v_mask[variants_selection]
-        if self.subsetting_samples and not self.filter_on_subset_samples:
+        if self._subsetting_samples and not self.filter_on_subset_samples:
             call_mask = call_mask[:, self.samples_selection]
         return variants_selection, call_mask
 

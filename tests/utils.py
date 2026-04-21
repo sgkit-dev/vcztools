@@ -23,7 +23,7 @@ def make_reader(
     regions=None,
     targets=None,
     targets_complement=False,
-    **kwargs,
+    filter_on_subset_samples=False,
 ):
     """Build a :class:`VczReader` with an optional
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings and a
@@ -33,29 +33,35 @@ def make_reader(
     a ``list[str]`` of sample names (resolved to indexes via
     :func:`vcztools.samples.resolve_sample_selection`) or already an
     integer-index list. ``regions`` / ``targets`` accept the same
-    shapes as :func:`vcztools.regions.build_chunk_plan`. Any other
-    keyword arguments are forwarded to :class:`VczReader`.
+    shapes as :func:`vcztools.regions.build_chunk_plan`.
     """
-    variant_filter = None
+    reader = retrieval.VczReader(root)
+
+    if samples is not None:
+        if len(samples) > 0 and isinstance(samples[0], str):
+            samples = samples_mod.resolve_sample_selection(
+                samples, reader.all_sample_ids
+            )
+        reader.set_samples(samples)
+
+    if regions is not None or targets is not None:
+        variant_chunk_plan = regions_mod.build_chunk_plan(
+            root,
+            regions=regions,
+            targets=targets,
+            targets_complement=targets_complement,
+        )
+        reader.set_variants(variant_chunk_plan)
+
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=set(root), include=include, exclude=exclude
+            field_names=reader.field_names, include=include, exclude=exclude
         )
-    if samples is not None and samples and isinstance(samples[0], str):
-        samples = samples_mod.resolve_sample_selection(samples, root["sample_id"][:])
-    variant_chunk_plan = regions_mod.build_chunk_plan(
-        root,
-        regions=regions,
-        targets=targets,
-        targets_complement=targets_complement,
-    )
-    return retrieval.VczReader(
-        root,
-        variants=variant_chunk_plan,
-        variant_filter=variant_filter,
-        samples=samples,
-        **kwargs,
-    )
+        reader.set_variant_filter(
+            variant_filter, filter_on_subset_samples=filter_on_subset_samples
+        )
+
+    return reader
 
 
 def load_dataset(

@@ -798,15 +798,6 @@ class TestVczReaderMissingSamplesMultiChunk:
         expected_dp = v_range * 100 + np.array(subset_indexes)[None, :]
         nt.assert_array_equal(dp, expected_dp)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "bug: view-mode filter evaluates on get_with_all_samples, which "
-            "includes masked (sample_id=='') columns. Masked samples are a "
-            "VCZ extension with no bcftools analogue and must not influence "
-            "filter evaluation."
-        ),
-    )
     def test_sample_scope_filter_pre_subset_ignores_masked(self):
         root = self._vcz()
         reader = make_reader(
@@ -866,15 +857,6 @@ class TestVczReaderMissingSamplesMultiChunk:
         call_mask = np.concatenate([c["call_mask"] for c in chunks], axis=0)
         nt.assert_array_equal(call_mask[idx_13], [False, False, False, True, False])
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "bug: view-mode filter evaluates on get_with_all_samples, which "
-            "includes masked (sample_id=='') columns. Masked samples are a "
-            "VCZ extension with no bcftools analogue and must not influence "
-            "filter evaluation."
-        ),
-    )
     def test_default_masking_sample_scope_filter_ignores_masked(self):
         root = self._vcz()
         variant_filter = BcftoolsFilter(

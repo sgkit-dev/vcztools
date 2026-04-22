@@ -230,6 +230,6 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest --cov=vcztools --cov-report=term-missing
+          uv run pytest -vs --cov=vcztools --cov-report=term-missing
         env:
           BIO2ZARR_ZARR_FORMAT: ${{ matrix.zarr-format }}

@@ -617,3 +617,305 @@ class TestVariantChunksFilterPlusSamples:
         # selection) matched the filter — same lock-in as test_variant_chunks
         # but via the unified reader.
         nt.assert_array_equal(chunk["variant_position"], [1230237, 1234567])
+
+
+class TestVczReaderMissingSamplesMultiChunk:
+    """VczReader with a many-chunk sample axis and a large fraction of
+    masked (``sample_id == ""``) samples.
+
+    The store has 50 samples across 10 sample chunks with 30 masked
+    indices arranged to exercise a fully-masked chunk, a fully-real
+    chunk, mixed chunks, and masked indices on chunk boundaries.
+    ``call_DP[v, s] = v*100 + s`` gives every cell a unique value so
+    assertions are arithmetic; ``call_GQ`` is crafted per-row so
+    sample-scope filter tests have predictable match sets.
+
+    Bcftools has no notion of a missing sample — masked slots are a VCZ
+    extension. Correct behaviour is therefore that masked data never
+    influences filter evaluation, regardless of ``filter_on_subset_samples``.
+    Tests that exercise that invariant today fail and are marked xfail;
+    their xfail markers come off when the production path is fixed.
+    """
+
+    NUM_SAMPLES = 50
+    NUM_VARIANTS = 15
+    SAMPLES_CHUNK = 5
+    VARIANTS_CHUNK = 5
+
+    MASKED = np.array(
+        [
+            6,
+            7,
+            8,  # chunk 1: keep {5, 9}
+            11,
+            12,
+            13,
+            14,  # chunk 2: keep {10}
+            15,
+            16,
+            17,
+            18,
+            19,  # chunk 3: fully masked
+            21,
+            22,
+            23,  # chunk 4: keep {20, 24}
+            26,
+            27,
+            28,
+            29,  # chunk 5: keep {25}
+            34,  # chunk 6: boundary (last), keep 30-33
+            35,
+            36,  # chunk 7: boundary (first), keep 37-39
+            41,
+            42,
+            43,
+            44,  # chunk 8: keep {40}
+            45,
+            46,
+            47,
+            48,  # chunk 9: keep {49}
+        ]
+    )
+    REAL = np.setdiff1d(np.arange(NUM_SAMPLES), MASKED)
+
+    @classmethod
+    def _vcz(cls):
+        sample_ids = np.array([f"s{i}" for i in range(cls.NUM_SAMPLES)], dtype="<U16")
+        sample_ids[cls.MASKED] = ""
+
+        v_idx = np.arange(cls.NUM_VARIANTS, dtype=np.int32)[:, None]
+        s_idx = np.arange(cls.NUM_SAMPLES, dtype=np.int32)[None, :]
+        call_dp = v_idx * 100 + s_idx
+
+        call_gq = np.zeros((cls.NUM_VARIANTS, cls.NUM_SAMPLES), dtype=np.int32)
+        # Row 10 — only masked samples cross "FMT/GQ > 50".
+        call_gq[10, cls.MASKED] = 100
+        # Row 11 — every real sample matches.
+        call_gq[11, cls.REAL] = 100
+        # Row 12 — only real sample s25 matches (outside the test subset).
+        call_gq[12, 25] = 100
+        # Row 13 — only real sample s37 matches (inside the test subset).
+        call_gq[13, 37] = 100
+
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * cls.NUM_VARIANTS,
+            variant_position=list(range(1000, 1000 + cls.NUM_VARIANTS)),
+            alleles=[("A", "T")] * cls.NUM_VARIANTS,
+            num_samples=cls.NUM_SAMPLES,
+            sample_id=sample_ids,
+            samples_chunk_size=cls.SAMPLES_CHUNK,
+            variants_chunk_size=cls.VARIANTS_CHUNK,
+            call_fields={"DP": call_dp, "GQ": call_gq},
+        )
+
+    @staticmethod
+    def _plan_indexes(plan):
+        return [cr.index for cr in plan.chunk_reads]
+
+    def test_default_drops_all_masked_samples(self):
+        root = self._vcz()
+        reader = VczReader(root)
+        expected_ids = [f"s{i}" for i in self.REAL.tolist()]
+        nt.assert_array_equal(reader.sample_ids, expected_ids)
+        chunks = list(reader.variant_chunks(fields=["call_DP"]))
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        assert dp.shape == (self.NUM_VARIANTS, self.REAL.size)
+        v_idx = np.arange(self.NUM_VARIANTS)[:, None]
+        expected_dp = v_idx * 100 + self.REAL[None, :]
+        nt.assert_array_equal(dp, expected_dp)
+        # Fully-masked chunk 3 is absent from the plan; every other chunk
+        # appears exactly once.
+        assert self._plan_indexes(reader.sample_chunk_plan) == [
+            0,
+            1,
+            2,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+        ]
+
+    def test_subset_spanning_many_chunks_with_missing(self):
+        reader = VczReader(self._vcz())
+        subset = [0, 10, 20, 37, 49]
+        reader.set_samples(subset)
+        plan = reader.sample_chunk_plan
+        assert self._plan_indexes(plan) == [0, 2, 4, 7, 9]
+        assert plan.permutation is None
+        expected_local = [[0], [0], [0], [2], [4]]
+        for cr, local in zip(plan.chunk_reads, expected_local):
+            nt.assert_array_equal(cr.selection, local)
+        chunks = list(reader.variant_chunks(fields=["call_DP"]))
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        v_idx = np.arange(self.NUM_VARIANTS)[:, None]
+        expected_dp = v_idx * 100 + np.array(subset)[None, :]
+        nt.assert_array_equal(dp, expected_dp)
+
+    def test_subset_with_user_order_permutation(self):
+        reader = VczReader(self._vcz())
+        subset = [49, 37, 20, 10, 0]
+        reader.set_samples(subset)
+        plan = reader.sample_chunk_plan
+        assert self._plan_indexes(plan) == [0, 2, 4, 7, 9]
+        nt.assert_array_equal(plan.permutation, [4, 3, 2, 1, 0])
+        chunks = list(reader.variant_chunks(fields=["call_DP"]))
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        v_idx = np.arange(self.NUM_VARIANTS)[:, None]
+        expected_dp = v_idx * 100 + np.array(subset)[None, :]
+        nt.assert_array_equal(dp, expected_dp)
+
+    def test_subset_inside_partial_chunk(self):
+        reader = VczReader(self._vcz())
+        subset = [5, 9]
+        reader.set_samples(subset)
+        plan = reader.sample_chunk_plan
+        assert self._plan_indexes(plan) == [1]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 4])
+        assert plan.permutation is None
+        chunks = list(reader.variant_chunks(fields=["call_DP"]))
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        v_idx = np.arange(self.NUM_VARIANTS)[:, None]
+        expected_dp = v_idx * 100 + np.array(subset)[None, :]
+        nt.assert_array_equal(dp, expected_dp)
+
+    def test_variant_scope_filter_with_subset_and_missing(self):
+        root = self._vcz()
+        subset_names = ["s0", "s5", "s20", "s40"]
+        subset_indexes = [0, 5, 20, 40]
+        reader = make_reader(
+            root,
+            samples=subset_names,
+            include="POS > 1007",
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        nt.assert_array_equal(positions, list(range(1008, 1015)))
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        assert dp.shape == (7, 4)
+        v_range = np.arange(8, 15)[:, None]
+        expected_dp = v_range * 100 + np.array(subset_indexes)[None, :]
+        nt.assert_array_equal(dp, expected_dp)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "bug: view-mode filter evaluates on get_with_all_samples, which "
+            "includes masked (sample_id=='') columns. Masked samples are a "
+            "VCZ extension with no bcftools analogue and must not influence "
+            "filter evaluation."
+        ),
+    )
+    def test_sample_scope_filter_pre_subset_ignores_masked(self):
+        root = self._vcz()
+        reader = make_reader(
+            root,
+            samples=["s0", "s10", "s20", "s37", "s49"],
+            include="FMT/GQ > 50",
+            filter_on_subset_samples=False,
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        assert 1010 not in positions.tolist()
+
+    def test_sample_scope_filter_pre_subset_keeps_non_subset_real_match(self):
+        root = self._vcz()
+        subset_indexes = [0, 10, 20, 37, 49]
+        reader = make_reader(
+            root,
+            samples=[f"s{i}" for i in subset_indexes],
+            include="FMT/GQ > 50",
+            filter_on_subset_samples=False,
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        # Row 12's only match is real sample s25 (not in the subset); the
+        # filter's variant-inclusion decision sees every real sample, so
+        # the variant survives. call_* output is subset-pruned.
+        assert 1012 in positions.tolist()
+        idx = int(np.flatnonzero(positions == 1012)[0])
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        expected_row = 12 * 100 + np.array(subset_indexes)
+        nt.assert_array_equal(dp[idx], expected_row)
+        call_mask = np.concatenate([c["call_mask"] for c in chunks], axis=0)
+        nt.assert_array_equal(call_mask[idx], [False] * 5)
+
+    def test_sample_scope_filter_post_subset_sees_only_subset(self):
+        root = self._vcz()
+        subset_indexes = [0, 10, 20, 37, 49]
+        reader = make_reader(
+            root,
+            samples=[f"s{i}" for i in subset_indexes],
+            include="FMT/GQ > 50",
+            filter_on_subset_samples=True,
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        # Row 12 (only s25 matches — not in subset) is dropped; row 13
+        # (s37 matches — in subset) is kept; row 11 (all real match) is
+        # kept because subset samples are real. Row 10 (masked-only) is
+        # dropped in this mode already.
+        assert 1010 not in positions.tolist()
+        assert 1011 in positions.tolist()
+        assert 1012 not in positions.tolist()
+        assert 1013 in positions.tolist()
+        idx_13 = int(np.flatnonzero(positions == 1013)[0])
+        dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
+        nt.assert_array_equal(dp[idx_13], 13 * 100 + np.array(subset_indexes))
+        call_mask = np.concatenate([c["call_mask"] for c in chunks], axis=0)
+        nt.assert_array_equal(call_mask[idx_13], [False, False, False, True, False])
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "bug: view-mode filter evaluates on get_with_all_samples, which "
+            "includes masked (sample_id=='') columns. Masked samples are a "
+            "VCZ extension with no bcftools analogue and must not influence "
+            "filter evaluation."
+        ),
+    )
+    def test_default_masking_sample_scope_filter_ignores_masked(self):
+        root = self._vcz()
+        variant_filter = BcftoolsFilter(
+            field_names=frozenset(root.keys()), include="FMT/GQ > 50"
+        )
+        reader = VczReader(root)
+        reader.set_variant_filter(variant_filter)
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        # Correct behaviour: row 10 (masked-only match) is dropped; row
+        # 11 (all-real match) is kept.
+        assert 1010 not in positions.tolist()
+        assert 1011 in positions.tolist()
+
+    def test_both_modes_agree_when_filter_matches_only_subset(self):
+        root = self._vcz()
+        subset_indexes = [0, 10, 20, 37, 49]
+        subset_names = [f"s{i}" for i in subset_indexes]
+
+        reader_pre = make_reader(
+            root,
+            samples=subset_names,
+            include="FMT/DP>1400",
+            filter_on_subset_samples=False,
+        )
+        reader_post = make_reader(
+            root,
+            samples=subset_names,
+            include="FMT/DP>1400",
+            filter_on_subset_samples=True,
+        )
+        pre = list(reader_pre.variant_chunks(fields=["variant_position", "call_DP"]))
+        post = list(reader_post.variant_chunks(fields=["variant_position", "call_DP"]))
+        assert len(pre) == len(post)
+        for p, q in zip(pre, post):
+            nt.assert_array_equal(p["variant_position"], q["variant_position"])
+            nt.assert_array_equal(p["call_DP"], q["call_DP"])
+            nt.assert_array_equal(p["call_mask"], q["call_mask"])
+        positions = np.concatenate([c["variant_position"] for c in pre])
+        nt.assert_array_equal(positions, [1014])
+        dp = np.concatenate([c["call_DP"] for c in pre], axis=0)
+        nt.assert_array_equal(dp, [[1400, 1410, 1420, 1437, 1449]])
+        call_mask = np.concatenate([c["call_mask"] for c in pre], axis=0)
+        nt.assert_array_equal(call_mask, [[False, True, True, True, True]])

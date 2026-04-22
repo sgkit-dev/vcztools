@@ -6,9 +6,15 @@ import pytest
 from tests import vcz_builder
 from tests.utils import make_reader
 from vcztools import regions as regions_mod
+from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
-from vcztools.retrieval import VariantChunkReader, VczReader
+from vcztools.retrieval import (
+    CachedChunk,
+    FieldRead,
+    VariantChunkReadPlan,
+    VczReader,
+)
 
 
 def test_variant_chunks(fx_sample_vcz):
@@ -146,14 +152,20 @@ class TestFilterMultiChunk:
         nt.assert_array_equal(positions, [104, 106])
 
     def test_chunk_reader_static_fields_across_chunks(self):
-        """VariantChunkReader returns filter_id identically for every chunk."""
+        """Static fields read identically from every CachedChunk."""
         root = _make_filter_vcz()
-        reader = VariantChunkReader(root)
         num_chunks = int(root["variant_filter"].cdata_shape[0])
         assert num_chunks == 3
         for chunk_idx in range(num_chunks):
-            reader.set_chunk(utils.ChunkRead(index=chunk_idx))
-            nt.assert_array_equal(reader.get("filter_id"), ["PASS", "q10"])
+            chunk = CachedChunk(
+                root,
+                utils.ChunkRead(index=chunk_idx),
+                subset_plan=None,
+                real_plan=None,
+                real_to_subset=None,
+                filter_on_subset_samples=True,
+            )
+            nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
 
 
 class TestVczReaderRegions:
@@ -422,13 +434,141 @@ class TestVczReaderSampleChunks:
         assert reader.sample_chunk_plan is None
 
 
-class TestVariantChunkReaderCaching:
-    """The reader must read each (v_chunk, field, s_chunk) block at most
-    once per chunk visit, regardless of how many times it is queried."""
+def _vcz_for_cache_tests(
+    num_samples=4, samples_chunk_size=2, variants_chunk_size=2, num_variants=4
+):
+    call_dp = np.array(
+        [[v * 10 + s for s in range(num_samples)] for v in range(num_variants)],
+        dtype=np.int32,
+    )
+    return vcz_builder.make_vcz(
+        variant_contig=[0] * num_variants,
+        variant_position=list(range(1, num_variants + 1)),
+        alleles=[("A", "T")] * num_variants,
+        num_samples=num_samples,
+        sample_id=[f"s{i}" for i in range(num_samples)],
+        variants_chunk_size=variants_chunk_size,
+        samples_chunk_size=samples_chunk_size,
+        call_fields={"DP": call_dp},
+    )
+
+
+def _make_cached_chunk(
+    root,
+    *,
+    variant_chunk_idx=0,
+    variant_selection=None,
+    samples_selection=None,
+    filter_on_subset_samples=True,
+):
+    all_sample_ids = root["sample_id"][:]
+    real_indices = np.flatnonzero(all_sample_ids != "")
+    samples_chunk_size = int(root["sample_id"].chunks[0])
+    if samples_selection is None:
+        samples_selection = real_indices
+    samples_selection = np.asarray(samples_selection, dtype=np.int64)
+    subset_plan = (
+        samples_mod.build_chunk_plan(
+            samples_selection, samples_chunk_size=samples_chunk_size
+        )
+        if samples_selection.size > 0
+        else None
+    )
+    real_plan = (
+        samples_mod.build_chunk_plan(
+            real_indices, samples_chunk_size=samples_chunk_size
+        )
+        if real_indices.size > 0
+        else None
+    )
+    real_to_subset = np.searchsorted(real_indices, samples_selection)
+    return CachedChunk(
+        root,
+        utils.ChunkRead(index=variant_chunk_idx, selection=variant_selection),
+        subset_plan=subset_plan,
+        real_plan=real_plan,
+        real_to_subset=real_to_subset,
+        filter_on_subset_samples=filter_on_subset_samples,
+    )
+
+
+class TestCachedChunkCache:
+    """CachedChunk reads each (field, sample_chunk) block at most
+    once per variant-chunk visit across filter_view / output_view."""
+
+    def test_view_mode_shared_field_raw_blocks_not_refetched(self):
+        # View-mode: filter_view reads real-axis blocks; output_view
+        # then reads subset-axis blocks. Any (field, sci) needed by
+        # both comes from the raw cache (identity check).
+        root = _vcz_for_cache_tests(num_samples=6, samples_chunk_size=2)
+        chunk = _make_cached_chunk(
+            root,
+            samples_selection=np.array([1, 5]),
+            filter_on_subset_samples=False,
+        )
+        chunk.filter_view("call_DP")
+        # Real plan covers all three sample chunks.
+        raw_sci = {k[1] for k in chunk._raw if len(k) == 2 and k[0] == "call_DP"}
+        assert raw_sci == {0, 1, 2}
+        block_0 = chunk._raw[("call_DP", 0)]
+        block_2 = chunk._raw[("call_DP", 2)]
+        chunk.output_view("call_DP")  # subset plan: chunks 0 and 2
+        # No refetch; same underlying blocks.
+        assert chunk._raw[("call_DP", 0)] is block_0
+        assert chunk._raw[("call_DP", 2)] is block_2
+
+    def test_subset_mode_filter_and_output_view_share_assembled_array(self):
+        # Subset-mode: filter_view and output_view use the same plan
+        # object → they share a single assembled array in the view
+        # cache, not merely shared raw blocks.
+        root = _vcz_for_cache_tests()
+        chunk = _make_cached_chunk(root, filter_on_subset_samples=True)
+        fv = chunk.filter_view("call_DP")
+        ov = chunk.output_view("call_DP")
+        assert fv is ov
+
+    def test_variant_field_cached_within_chunk(self):
+        chunk = _make_cached_chunk(_vcz_for_cache_tests())
+        first = chunk.filter_view("variant_position")
+        second = chunk.output_view("variant_position")
+        assert first is second
+
+    def test_static_field_cached_within_chunk(self):
+        chunk = _make_cached_chunk(_make_filter_vcz())
+        first = chunk.filter_view("filter_id")
+        second = chunk.filter_view("filter_id")
+        assert first is second
+
+    def test_prefetch_warms_raw_cache(self):
+        root = _vcz_for_cache_tests()
+        chunk = _make_cached_chunk(root)
+        plan = VariantChunkReadPlan(
+            variant_chunk=utils.ChunkRead(index=0),
+            field_reads=[
+                FieldRead(field="variant_position"),
+                FieldRead(
+                    field="call_DP",
+                    sample_chunk_reads=[
+                        utils.ChunkRead(index=0),
+                        utils.ChunkRead(index=1),
+                    ],
+                ),
+            ],
+        )
+        chunk.prefetch(plan)
+        assert ("variant_position",) in chunk._raw
+        assert ("call_DP", 0) in chunk._raw
+        assert ("call_DP", 1) in chunk._raw
+
+
+class TestCachedChunkAxes:
+    """filter_view and output_view return data in the right sample axis."""
 
     @staticmethod
-    def _vcz(num_samples=4, samples_chunk_size=2, variants_chunk_size=2):
-        num_variants = 4
+    def _vcz():
+        # 4 samples, all real; variants_chunk covers both variants.
+        num_samples = 4
+        num_variants = 2
         call_dp = np.array(
             [[v * 10 + s for s in range(num_samples)] for v in range(num_variants)],
             dtype=np.int32,
@@ -439,80 +579,89 @@ class TestVariantChunkReaderCaching:
             alleles=[("A", "T")] * num_variants,
             num_samples=num_samples,
             sample_id=[f"s{i}" for i in range(num_samples)],
-            variants_chunk_size=variants_chunk_size,
-            samples_chunk_size=samples_chunk_size,
+            variants_chunk_size=num_variants,
+            samples_chunk_size=2,
             call_fields={"DP": call_dp},
         )
 
-    def test_field_in_filter_and_query_reuses_cached_blocks(self):
-        # Accessing a call_* field first as the filter sees it (full
-        # samples) populates every sample chunk. A later query-side
-        # access (pruned) must find each block already cached — identity
-        # check proves we did not re-fetch.
-        reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(utils.ChunkRead(index=0))
-        reader.get_with_all_samples("call_DP")
-        cached_after_full = dict(reader._call_blocks)
-        # 2 sample chunks populated.
-        assert len(cached_after_full) == 2
-        reader.get("call_DP")
-        for key, block in cached_after_full.items():
-            assert reader._call_blocks[key] is block
+    def test_subset_mode_filter_view_uses_subset_axis(self):
+        chunk = _make_cached_chunk(
+            self._vcz(),
+            samples_selection=np.array([0, 2]),
+            filter_on_subset_samples=True,
+        )
+        dp = chunk.filter_view("call_DP")
+        assert dp.shape == (2, 2)
+        nt.assert_array_equal(dp, [[0, 2], [10, 12]])
 
-    def test_pruned_then_full_reads_only_missing_blocks(self):
-        # Pruned first reads only the plan's chunk_reads; a subsequent
-        # full access fills the remaining s_chunks without re-reading
-        # the already-cached ones.
-        root = self._vcz(num_samples=6, samples_chunk_size=2)
-        # Plan selects sample 1 (chunk 0) and sample 5 (chunk 2);
-        # chunk 1 is NOT in the plan.
-        reader = VczReader(root)
-        reader.set_samples([1, 5])
-        inner = VariantChunkReader(root, sample_chunk_plan=reader.sample_chunk_plan)
-        inner.set_chunk(utils.ChunkRead(index=0))
-        inner.get("call_DP")
-        # Only plan chunks (0 and 2) are cached so far.
-        assert {key[2] for key in inner._call_blocks} == {0, 2}
-        pruned_block_0 = inner._call_blocks[(0, "call_DP", 0)]
-        inner.get_with_all_samples("call_DP")
-        # All 3 sample chunks now cached; chunk 0's block is the same
-        # object (proving it wasn't re-fetched).
-        assert {key[2] for key in inner._call_blocks} == {0, 1, 2}
-        assert inner._call_blocks[(0, "call_DP", 0)] is pruned_block_0
+    def test_view_mode_filter_view_uses_real_axis(self):
+        chunk = _make_cached_chunk(
+            self._vcz(),
+            samples_selection=np.array([0, 2]),
+            filter_on_subset_samples=False,
+        )
+        dp = chunk.filter_view("call_DP")
+        assert dp.shape == (2, 4)
+        nt.assert_array_equal(dp, [[0, 1, 2, 3], [10, 11, 12, 13]])
 
-    def test_set_chunk_evicts_previous_chunk_blocks(self):
-        reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(utils.ChunkRead(index=0))
-        reader.get_with_all_samples("call_DP")
-        assert len(reader._call_blocks) == 2
-        reader.set_chunk(utils.ChunkRead(index=1))
-        assert reader._call_blocks == {}
-        assert reader._variant_blocks == {}
+    def test_output_view_always_subset_axis(self):
+        for mode in [True, False]:
+            chunk = _make_cached_chunk(
+                self._vcz(),
+                samples_selection=np.array([0, 2]),
+                filter_on_subset_samples=mode,
+            )
+            dp = chunk.output_view("call_DP")
+            assert dp.shape == (2, 2)
+            nt.assert_array_equal(dp, [[0, 2], [10, 12]])
 
-    def test_set_chunk_same_idx_is_idempotent(self):
-        reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(utils.ChunkRead(index=0))
-        reader.get_with_all_samples("call_DP")
-        cached_len = len(reader._call_blocks)
-        reader.set_chunk(utils.ChunkRead(index=0))
-        assert len(reader._call_blocks) == cached_len
+    def test_reduce_mask_subset_mode_no_remap(self):
+        chunk = _make_cached_chunk(
+            self._vcz(),
+            samples_selection=np.array([0, 2]),
+            filter_on_subset_samples=True,
+        )
+        # v_mask is already in subset axis (2 columns).
+        v_mask = np.array([[True, False], [False, False]])
+        variants_selection, call_mask = chunk.reduce_mask(v_mask)
+        nt.assert_array_equal(variants_selection, [True, False])
+        nt.assert_array_equal(call_mask, [[True, False]])
 
-    def test_static_field_cached_across_chunks(self):
-        # filter_id has no variants axis — it survives set_chunk.
-        reader = VariantChunkReader(_make_filter_vcz())
-        reader.set_chunk(utils.ChunkRead(index=0))
-        filters_first = reader.get("filter_id")
-        reader.set_chunk(utils.ChunkRead(index=1))
-        filters_second = reader.get("filter_id")
-        assert filters_first is filters_second
+    def test_reduce_mask_view_mode_remaps_to_subset_axis(self):
+        chunk = _make_cached_chunk(
+            self._vcz(),
+            samples_selection=np.array([0, 2]),
+            filter_on_subset_samples=False,
+        )
+        # v_mask in real axis (4 samples); variant 0's matches are at
+        # global indices 1 (not in subset) and 2 (in subset).
+        v_mask = np.array(
+            [
+                [False, True, True, False],
+                [False, False, False, False],
+            ]
+        )
+        variants_selection, call_mask = chunk.reduce_mask(v_mask)
+        nt.assert_array_equal(variants_selection, [True, False])
+        # Remap to subset [0, 2]: position 0 → False, position 2 → True.
+        nt.assert_array_equal(call_mask, [[False, True]])
 
-    def test_variant_field_cached_within_chunk(self):
-        reader = VariantChunkReader(self._vcz())
-        reader.set_chunk(utils.ChunkRead(index=0))
-        first = reader.get("variant_position")
-        second = reader.get("variant_position")
-        # Same object — second access hit the cache.
-        assert first is second
+    def test_reduce_mask_variant_scope_passthrough(self):
+        chunk = _make_cached_chunk(
+            self._vcz(),
+            samples_selection=np.array([0, 2]),
+            filter_on_subset_samples=True,
+        )
+        v_mask = np.array([True, False])
+        variants_selection, call_mask = chunk.reduce_mask(v_mask)
+        nt.assert_array_equal(variants_selection, [True, False])
+        assert call_mask is None
+
+    def test_reduce_mask_none_passthrough(self):
+        chunk = _make_cached_chunk(self._vcz())
+        variants_selection, call_mask = chunk.reduce_mask(None)
+        assert variants_selection is None
+        assert call_mask is None
 
 
 class TestVariantChunksFilterPlusSamples:

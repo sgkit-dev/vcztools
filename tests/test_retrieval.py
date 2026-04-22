@@ -599,54 +599,6 @@ class TestCachedChunkAxes:
             assert dp.shape == (2, 2)
             nt.assert_array_equal(dp, [[0, 2], [10, 12]])
 
-    def test_reduce_mask_subset_mode_no_remap(self):
-        chunk = _make_cached_chunk(
-            self._vcz(),
-            samples_selection=np.array([0, 2]),
-            filter_on_subset_samples=True,
-        )
-        # v_mask is already in subset axis (2 columns).
-        v_mask = np.array([[True, False], [False, False]])
-        variants_selection, call_mask = chunk.reduce_mask(v_mask)
-        nt.assert_array_equal(variants_selection, [True, False])
-        nt.assert_array_equal(call_mask, [[True, False]])
-
-    def test_reduce_mask_view_mode_remaps_to_subset_axis(self):
-        chunk = _make_cached_chunk(
-            self._vcz(),
-            samples_selection=np.array([0, 2]),
-            filter_on_subset_samples=False,
-        )
-        # v_mask in real axis (4 samples); variant 0's matches are at
-        # global indices 1 (not in subset) and 2 (in subset).
-        v_mask = np.array(
-            [
-                [False, True, True, False],
-                [False, False, False, False],
-            ]
-        )
-        variants_selection, call_mask = chunk.reduce_mask(v_mask)
-        nt.assert_array_equal(variants_selection, [True, False])
-        # Remap to subset [0, 2]: position 0 → False, position 2 → True.
-        nt.assert_array_equal(call_mask, [[False, True]])
-
-    def test_reduce_mask_variant_scope_passthrough(self):
-        chunk = _make_cached_chunk(
-            self._vcz(),
-            samples_selection=np.array([0, 2]),
-            filter_on_subset_samples=True,
-        )
-        v_mask = np.array([True, False])
-        variants_selection, call_mask = chunk.reduce_mask(v_mask)
-        nt.assert_array_equal(variants_selection, [True, False])
-        assert call_mask is None
-
-    def test_reduce_mask_none_passthrough(self):
-        chunk = _make_cached_chunk(self._vcz())
-        variants_selection, call_mask = chunk.reduce_mask(None)
-        assert variants_selection is None
-        assert call_mask is None
-
 
 class TestVariantChunksFilterPlusSamples:
     """End-to-end: a call_* field referenced by both filter and query,

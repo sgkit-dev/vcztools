@@ -23,7 +23,7 @@ def make_reader(
     regions=None,
     targets=None,
     targets_complement=False,
-    filter_on_subset_samples=False,
+    filter_on_subset_samples=True,
 ):
     """Build a :class:`VczReader` with an optional
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings and a

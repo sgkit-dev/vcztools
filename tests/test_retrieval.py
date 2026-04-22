@@ -17,6 +17,7 @@ def test_variant_chunks(fx_sample_vcz):
         regions="20:1230236-",
         samples=["NA00002", "NA00003"],
         include="FMT/DP>3",
+        filter_on_subset_samples=False,
     )
     chunk_data = next(
         reader.variant_chunks(
@@ -52,6 +53,7 @@ def test_variant_iter(fx_sample_vcz, regions, samples):
         regions=regions,
         samples=samples,
         include="FMT/DP>3",
+        filter_on_subset_samples=False,
     )
     it = reader.variants(
         fields=["variant_contig", "variant_position", "call_DP", "call_GQ"],
@@ -608,6 +610,7 @@ class TestVariantChunksFilterPlusSamples:
             regions="20:1230236-",
             samples=["NA00002", "NA00003"],
             include="FMT/DP>3",
+            filter_on_subset_samples=False,
         )
         chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
         chunk = chunks[0]

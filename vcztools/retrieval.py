@@ -240,7 +240,7 @@ class VczReader:
         self._samples_selection = None
         self._sample_ids = None
         self.variant_filter = None
-        self.filter_on_subset_samples = False
+        self.filter_on_subset_samples = True
 
     def _resolve_samples_if_needed(self) -> None:
         if self._samples_selection is not None:
@@ -345,17 +345,19 @@ class VczReader:
         self,
         variant_filter: variant_filter_mod.VariantFilter,
         *,
-        filter_on_subset_samples: bool = False,
+        filter_on_subset_samples: bool = True,
     ) -> None:
         """Configure the variant filter.
 
         ``variant_filter`` is any object implementing the
         :class:`~vcztools.variant_filter.VariantFilter` protocol.
         ``filter_on_subset_samples`` controls which sample axis a
-        sample-scope filter sees: ``False`` (default) matches
-        ``bcftools view`` semantics (full sample axis);
-        ``True`` matches ``bcftools query`` FMT-scope post-subset
-        semantics. No-op for variant-scope filters.
+        sample-scope filter sees: ``True`` (default) matches
+        ``bcftools query`` FMT-scope post-subset semantics (filter
+        sees only the selected samples); ``False`` matches
+        ``bcftools view`` pre-subset semantics (filter evaluated over
+        every real sample, regardless of the user subset). No-op for
+        variant-scope filters.
 
         Raises ``RuntimeError`` if already configured.
         """

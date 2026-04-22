@@ -167,3 +167,4 @@ cython_debug/
 .vscode
 vcz_test_cache/
 **/.DS_Store
+performance/results/

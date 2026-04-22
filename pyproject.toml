@@ -83,6 +83,16 @@ docs = [
   "sphinx-click",
 ]
 
+benchmark = [
+  "bio2zarr",
+  "fsspec[http]",
+  "msprime",
+  "obstore",
+  "psutil",
+  "requests",
+  "tskit>=1",
+]
+
 dev = [
   {include-group = "test"},
   {include-group = "lint"},

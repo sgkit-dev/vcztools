@@ -414,6 +414,15 @@ class VczReader:
         return self.root["sample_id"][:]
 
     @functools.cached_property
+    def real_samples_mask(self) -> np.ndarray:
+        """Boolean per-sample mask for real (non-masked) entries.
+
+        Masked samples (``sample_id == ""``) are a VCZ extension with no
+        bcftools analogue; they must be invisible to filter evaluation.
+        Used by :meth:`_reduce_chunk_mask` in view-mode."""
+        return self.all_sample_ids != ""
+
+    @functools.cached_property
     def contig_lengths(self) -> np.ndarray | None:
         """``contig_length`` array, or ``None`` if absent."""
         if "contig_length" not in self.root:
@@ -560,12 +569,15 @@ class VczReader:
         """
         if v_mask is None or v_mask.ndim == 1:
             return v_mask, None
+        if not self.filter_on_subset_samples:
+            # Masked (sample_id == "") slots are a VCZ extension with no
+            # bcftools analogue and must not drive variant inclusion.
+            v_mask = v_mask & self.real_samples_mask
         variants_selection = np.any(v_mask, axis=1)
         call_mask = v_mask[variants_selection]
         if not self.filter_on_subset_samples:
             # Filter was evaluated on the full sample axis; reduce
-            # to the reader's sample selection. In the default case
-            # that drops masked-sample-ID entries.
+            # to the reader's sample selection.
             call_mask = call_mask[:, self.samples_selection]
         return variants_selection, call_mask
 

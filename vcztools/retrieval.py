@@ -35,64 +35,30 @@ def _has_variants_axis(arr) -> bool:
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
 
 
-@dataclasses.dataclass(frozen=True)
-class FieldRead:
-    """Per-field fetch spec for one variant chunk visit.
-
-    Used by :meth:`CachedChunk.prefetch` to describe which Zarr blocks
-    to warm into the cache. Not required at the caller interface; the
-    ``filter_view`` / ``output_view`` methods know which blocks to
-    fetch on demand. This data structure is the hook where future
-    async I/O and readahead will fan out reads concurrently.
-
-    - ``sample_chunk_reads is None`` → the field has no samples axis
-      (``variant_*`` or static).
-    - ``sample_chunk_reads`` is a list of :class:`~vcztools.utils.ChunkRead`
-      → a ``call_*`` field; each entry names a sample chunk and the
-      local selection to apply on read.
-    - ``sample_permutation`` (optional) reorders the concatenated sample
-      axis after per-chunk subsetting.
-    """
-
-    field: str
-    sample_chunk_reads: list[utils.ChunkRead] | None = None
-    sample_permutation: np.ndarray | None = None
-
-
-@dataclasses.dataclass(frozen=True)
-class VariantChunkReadPlan:
-    """Fetch spec for one variant chunk visit.
-
-    Only consumed by :meth:`CachedChunk.prefetch`; the main read
-    interface is :meth:`CachedChunk.filter_view` / :meth:`output_view`.
-    """
-
-    variant_chunk: utils.ChunkRead
-    field_reads: list[FieldRead]
-
-
 class CachedChunk:
     """I/O + cache + sample-axis views for one variant chunk visit.
 
-    Encapsulates the per-chunk read state that used to live across
-    :class:`VariantChunkReader` + :meth:`VczReader._reduce_chunk_mask`:
+    Two reads' worth of logic collapses to one read plan plus an
+    optional column slice:
 
-    - :meth:`filter_view` — returns ``field`` as the filter should see
-      it. In subset-mode (``filter_on_subset_samples=True``) that is
-      the subset sample axis. In view-mode (``False``) that is the
-      real-samples axis (masked-slot-free).
-    - :meth:`output_view` — returns ``field`` on the subset sample
-      axis. Output is always post-subset.
-    - :meth:`reduce_mask` — converts a 2-D filter-axis mask into
-      ``(variants_selection, subset-axis call_mask)``; applies the
-      real→subset axis remap internally for view-mode.
+    - ``read_plan`` — the sample chunks to fetch for every ``call_*``
+      field. In subset-mode this is the subset plan; in view-mode it
+      is the real-samples plan. Non-``call_*`` fields ignore it.
+    - ``output_columns`` — indices into the read-plan axis that
+      produce the subset axis. ``None`` when the read plan is already
+      the subset axis (subset-mode) — ``output_view`` returns the
+      assembled read untouched.
 
-    Non-``call_*`` fields (static, ``variant_*``) don't have a
-    differentiated sample axis; ``filter_view`` and ``output_view``
-    return the same array. Subset-mode call_\\* fields behave the
-    same way. Only view-mode ``call_*`` fields have two distinct
-    views, and even those share underlying raw Zarr blocks via the
-    cache.
+    Methods:
+
+    - :meth:`filter_view` — raw assembled read at the read-plan axis.
+    - :meth:`output_view` — subset-axis data. For ``call_*`` fields
+      with ``output_columns`` set, a column slice of the read.
+    - :meth:`reduce_mask` — ``(variants_selection, subset-axis call_mask)``,
+      applying the same ``output_columns`` remap for 2-D masks.
+
+    The raw-block cache is keyed by the underlying Zarr tuple; shared
+    fields between filter and output reuse blocks by identity.
     """
 
     def __init__(
@@ -100,38 +66,40 @@ class CachedChunk:
         root,
         variant_chunk: utils.ChunkRead,
         *,
-        subset_plan: samples_mod.SampleChunkPlan | None,
-        real_plan: samples_mod.SampleChunkPlan | None,
-        real_to_subset: np.ndarray | None,
-        filter_on_subset_samples: bool,
+        read_plan: samples_mod.SampleChunkPlan | None,
+        output_columns: np.ndarray | None,
     ):
         self.root = root
         self.variant_chunk = variant_chunk
-        self._subset_plan = subset_plan
-        self._real_plan = real_plan
-        self._real_to_subset = real_to_subset
-        self._filter_on_subset = filter_on_subset_samples
-        self._filter_plan = subset_plan if filter_on_subset_samples else real_plan
+        self._read_plan = read_plan
+        self._output_columns = output_columns
         # Raw Zarr data keyed by:
         #   (field,)         → static (full array) or variant-only block
         #   (field, sci)     → call_* raw sample-chunk block
         self._raw: dict[tuple, np.ndarray] = {}
-        # Assembled per-view arrays keyed by (field, view_kind) where
-        # view_kind is "shared" (non-call or subset-mode), "filter"
-        # (view-mode call_* on real axis), or "output" (view-mode
-        # call_* on subset axis).
-        self._views: dict[tuple[str, str], np.ndarray] = {}
+        # Assembled read-axis arrays keyed by field.
+        self._views: dict[str, np.ndarray] = {}
 
     def filter_view(self, field: str) -> np.ndarray:
-        """Field data in the filter's sample axis.
-
-        Subset-mode: subset axis. View-mode: real-samples axis.
-        """
-        return self._view(field, "filter")
+        """Field data in the filter's sample axis (the read-plan axis)."""
+        cached = self._views.get(field)
+        if cached is not None:
+            return cached
+        value = self._materialize(field)
+        self._views[field] = value
+        return value
 
     def output_view(self, field: str) -> np.ndarray:
-        """Field data in the output's sample axis (always subset)."""
-        return self._view(field, "output")
+        """Field data in the output (subset) sample axis.
+
+        For every field except view-mode ``call_*``, this is the same
+        object as :meth:`filter_view`. For view-mode ``call_*``, the
+        read-axis array is sliced down to the subset axis.
+        """
+        data = self.filter_view(field)
+        if self._output_columns is None or not field.startswith("call_"):
+            return data
+        return np.ascontiguousarray(data[:, self._output_columns])
 
     def reduce_mask(self, v_mask):
         """Convert a filter-scope mask into ``(variants_selection, call_mask)``.
@@ -140,60 +108,47 @@ class CachedChunk:
         ``call_mask`` is ``None``.
 
         2-D mask: ``np.any`` along the sample axis produces the variant
-        selection; the surviving rows become ``call_mask``. In view-mode,
-        ``call_mask`` is in the real-samples axis and is remapped to the
-        subset axis so consumers can use it against ``output_view``.
+        selection; the surviving rows become ``call_mask``. When
+        ``output_columns`` is set (view-mode), the call mask is
+        remapped to the subset axis to match ``output_view``.
         """
         if v_mask is None or v_mask.ndim == 1:
             return v_mask, None
         variants_selection = np.any(v_mask, axis=1)
         call_mask = v_mask[variants_selection]
-        if not self._filter_on_subset:
-            call_mask = call_mask[:, self._real_to_subset]
+        if self._output_columns is not None:
+            call_mask = call_mask[:, self._output_columns]
         return variants_selection, call_mask
 
-    def prefetch(self, plan: VariantChunkReadPlan) -> None:
-        """Warm the raw-block cache from an explicit plan.
+    def prefetch(self, fields: list[str]) -> None:
+        """Warm the raw-block cache for ``fields``.
 
         Today this is a synchronous eager load; future iterations will
-        fan out as concurrent async reads so that by the time
+        fan reads out as concurrent async tasks so that by the time
         ``filter_view`` / ``output_view`` are called, all blocks are
         already in memory. Callers that don't prefetch still get
         correct behaviour — views fetch on demand.
         """
-        for fr in plan.field_reads:
-            arr = self.root[fr.field]
-            if fr.sample_chunk_reads is None:
-                self._load_non_call_raw(fr.field, arr)
+        for field in fields:
+            arr = self.root[field]
+            if not _has_variants_axis(arr) or not field.startswith("call_"):
+                self._load_non_call_raw(field, arr)
+            elif self._read_plan is None:
+                num_s_chunks = int(arr.cdata_shape[1])
+                for sci in range(num_s_chunks):
+                    self._load_call_raw(field, arr, sci)
             else:
-                for cr in fr.sample_chunk_reads:
-                    self._load_call_raw(fr.field, arr, cr.index)
+                for cr in self._read_plan.chunk_reads:
+                    self._load_call_raw(field, arr, cr.index)
 
-    def _view(self, field: str, view_kind: str) -> np.ndarray:
-        actual_kind = self._effective_kind(field, view_kind)
-        key = (field, actual_kind)
-        cached = self._views.get(key)
-        if cached is not None:
-            return cached
-        value = self._materialize(field, actual_kind)
-        self._views[key] = value
-        return value
-
-    def _effective_kind(self, field: str, view_kind: str) -> str:
-        # Only view-mode call_* fields have distinct filter/output views.
-        if not field.startswith("call_") or self._filter_on_subset:
-            return "shared"
-        return view_kind
-
-    def _materialize(self, field: str, kind: str) -> np.ndarray:
+    def _materialize(self, field: str) -> np.ndarray:
         arr = self.root[field]
         if not _has_variants_axis(arr):
             return self._load_non_call_raw(field, arr)
         if not field.startswith("call_"):
             block = self._load_non_call_raw(field, arr)
             return self._slice_variants(block)
-        plan = self._filter_plan if kind == "filter" else self._subset_plan
-        return self._assemble_call(field, arr, plan)
+        return self._assemble_call(field, arr)
 
     def _slice_variants(self, block):
         sel = self.variant_chunk.selection
@@ -223,9 +178,8 @@ class CachedChunk:
         self._raw[key] = value
         return value
 
-    def _assemble_call(
-        self, field: str, arr, plan: samples_mod.SampleChunkPlan | None
-    ) -> np.ndarray:
+    def _assemble_call(self, field: str, arr) -> np.ndarray:
+        plan = self._read_plan
         if plan is None:
             # Empty subset (set_samples([])) legacy path: read the full
             # on-disk sample axis so sample-scope filters and legacy
@@ -629,15 +583,19 @@ class VczReader:
             if self.variant_filter is not None
             else ()
         )
+        if self.filter_on_subset_samples:
+            read_plan = self.sample_chunk_plan
+            output_columns = None
+        else:
+            read_plan = self.real_sample_chunk_plan
+            output_columns = self._real_to_subset_indices
 
         for chunk_read in self.variant_chunk_plan:
             chunk = CachedChunk(
                 self.root,
                 chunk_read,
-                subset_plan=self.sample_chunk_plan,
-                real_plan=self.real_sample_chunk_plan,
-                real_to_subset=self._real_to_subset_indices,
-                filter_on_subset_samples=self.filter_on_subset_samples,
+                read_plan=read_plan,
+                output_columns=output_columns,
             )
             v_mask = None
             if self.variant_filter is not None:

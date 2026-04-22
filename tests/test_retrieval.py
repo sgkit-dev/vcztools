@@ -9,12 +9,7 @@ from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
-from vcztools.retrieval import (
-    CachedChunk,
-    FieldRead,
-    VariantChunkReadPlan,
-    VczReader,
-)
+from vcztools.retrieval import CachedChunk, VczReader
 
 
 def test_variant_chunks(fx_sample_vcz):
@@ -160,10 +155,8 @@ class TestFilterMultiChunk:
             chunk = CachedChunk(
                 root,
                 utils.ChunkRead(index=chunk_idx),
-                subset_plan=None,
-                real_plan=None,
-                real_to_subset=None,
-                filter_on_subset_samples=True,
+                read_plan=None,
+                output_columns=None,
             )
             nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
 
@@ -481,14 +474,17 @@ def _make_cached_chunk(
         if real_indices.size > 0
         else None
     )
-    real_to_subset = np.searchsorted(real_indices, samples_selection)
+    if filter_on_subset_samples:
+        read_plan = subset_plan
+        output_columns = None
+    else:
+        read_plan = real_plan
+        output_columns = np.searchsorted(real_indices, samples_selection)
     return CachedChunk(
         root,
         utils.ChunkRead(index=variant_chunk_idx, selection=variant_selection),
-        subset_plan=subset_plan,
-        real_plan=real_plan,
-        real_to_subset=real_to_subset,
-        filter_on_subset_samples=filter_on_subset_samples,
+        read_plan=read_plan,
+        output_columns=output_columns,
     )
 
 
@@ -542,21 +538,9 @@ class TestCachedChunkCache:
     def test_prefetch_warms_raw_cache(self):
         root = _vcz_for_cache_tests()
         chunk = _make_cached_chunk(root)
-        plan = VariantChunkReadPlan(
-            variant_chunk=utils.ChunkRead(index=0),
-            field_reads=[
-                FieldRead(field="variant_position"),
-                FieldRead(
-                    field="call_DP",
-                    sample_chunk_reads=[
-                        utils.ChunkRead(index=0),
-                        utils.ChunkRead(index=1),
-                    ],
-                ),
-            ],
-        )
-        chunk.prefetch(plan)
+        chunk.prefetch(["variant_position", "call_DP"])
         assert ("variant_position",) in chunk._raw
+        # Subset-mode read_plan covers both sample chunks.
         assert ("call_DP", 0) in chunk._raw
         assert ("call_DP", 1) in chunk._raw
 

@@ -231,14 +231,14 @@ class QueryFormatter:
         def format_sample_loop(variant_data):
             sample_values = [f(variant_data) for f in formatters]
             zipped = zip(*sample_values)
-            if "call_mask" not in variant_data:
+            if "sample_filter_mask" not in variant_data:
                 parts = (str(part) for sample in zipped for part in sample)
             else:
-                call_mask = variant_data["call_mask"]
+                sample_filter_mask = variant_data["sample_filter_mask"]
                 parts = (
                     str(part)
                     for j, sample in enumerate(zipped)
-                    if call_mask[j]
+                    if sample_filter_mask[j]
                     for part in sample
                 )
             return "".join(parts)

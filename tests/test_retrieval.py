@@ -32,7 +32,9 @@ def test_variant_chunks(fx_sample_vcz):
     # note second site (at pos 1234567) is included even though both samples in mask
     # are False (NA00002 and NA00003), since sample NA00001 matched filter criteria,
     # but was then removed by samples_selection
-    nt.assert_array_equal(chunk_data["call_mask"], [[True, False], [False, False]])
+    nt.assert_array_equal(
+        chunk_data["sample_filter_mask"], [[True, False], [False, False]]
+    )
 
 
 def test_variant_chunks_empty_fields(fx_sample_vcz):
@@ -65,14 +67,14 @@ def test_variant_iter(fx_sample_vcz, regions, samples):
     assert variant1["variant_position"] == 1230237
     nt.assert_array_equal(variant1["call_DP"], [4, 2])
     nt.assert_array_equal(variant1["call_GQ"], [48, 61])
-    nt.assert_array_equal(variant1["call_mask"], [True, False])
+    nt.assert_array_equal(variant1["sample_filter_mask"], [True, False])
 
     variant2 = next(it)
     assert variant2["variant_contig"] == 1
     assert variant2["variant_position"] == 1234567
     nt.assert_array_equal(variant2["call_DP"], [2, 3])
     nt.assert_array_equal(variant2["call_GQ"], [17, 40])
-    nt.assert_array_equal(variant2["call_mask"], [False, False])
+    nt.assert_array_equal(variant2["sample_filter_mask"], [False, False])
 
     with pytest.raises(StopIteration):
         next(it)
@@ -917,8 +919,10 @@ class TestVczReaderMissingSamplesMultiChunk:
         dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
         expected_row = 12 * 100 + np.array(subset_indexes)
         nt.assert_array_equal(dp[idx], expected_row)
-        call_mask = np.concatenate([c["call_mask"] for c in chunks], axis=0)
-        nt.assert_array_equal(call_mask[idx], [False] * 5)
+        sample_filter_mask = np.concatenate(
+            [c["sample_filter_mask"] for c in chunks], axis=0
+        )
+        nt.assert_array_equal(sample_filter_mask[idx], [False] * 5)
 
     def test_sample_scope_filter_post_subset_sees_only_subset(self):
         root = self._vcz()
@@ -942,8 +946,12 @@ class TestVczReaderMissingSamplesMultiChunk:
         idx_13 = int(np.flatnonzero(positions == 1013)[0])
         dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
         nt.assert_array_equal(dp[idx_13], 13 * 100 + np.array(subset_indexes))
-        call_mask = np.concatenate([c["call_mask"] for c in chunks], axis=0)
-        nt.assert_array_equal(call_mask[idx_13], [False, False, False, True, False])
+        sample_filter_mask = np.concatenate(
+            [c["sample_filter_mask"] for c in chunks], axis=0
+        )
+        nt.assert_array_equal(
+            sample_filter_mask[idx_13], [False, False, False, True, False]
+        )
 
     def test_default_masking_sample_scope_filter_ignores_masked(self):
         root = self._vcz()
@@ -982,10 +990,12 @@ class TestVczReaderMissingSamplesMultiChunk:
         for p, q in zip(pre, post):
             nt.assert_array_equal(p["variant_position"], q["variant_position"])
             nt.assert_array_equal(p["call_DP"], q["call_DP"])
-            nt.assert_array_equal(p["call_mask"], q["call_mask"])
+            nt.assert_array_equal(p["sample_filter_mask"], q["sample_filter_mask"])
         positions = np.concatenate([c["variant_position"] for c in pre])
         nt.assert_array_equal(positions, [1014])
         dp = np.concatenate([c["call_DP"] for c in pre], axis=0)
         nt.assert_array_equal(dp, [[1400, 1410, 1420, 1437, 1449]])
-        call_mask = np.concatenate([c["call_mask"] for c in pre], axis=0)
-        nt.assert_array_equal(call_mask, [[False, True, True, True, True]])
+        sample_filter_mask = np.concatenate(
+            [c["sample_filter_mask"] for c in pre], axis=0
+        )
+        nt.assert_array_equal(sample_filter_mask, [[False, True, True, True, True]])

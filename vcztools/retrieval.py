@@ -54,8 +54,6 @@ class CachedChunk:
     - :meth:`filter_view` — raw assembled read at the read-plan axis.
     - :meth:`output_view` — subset-axis data. For ``call_*`` fields
       with ``output_columns`` set, a column slice of the read.
-    - :meth:`reduce_mask` — ``(variants_selection, subset-axis call_mask)``,
-      applying the same ``output_columns`` remap for 2-D masks.
 
     The raw-block cache is keyed by the underlying Zarr tuple; shared
     fields between filter and output reuse blocks by identity.
@@ -100,25 +98,6 @@ class CachedChunk:
         if self._output_columns is None or not field.startswith("call_"):
             return data
         return np.ascontiguousarray(data[:, self._output_columns])
-
-    def reduce_mask(self, v_mask):
-        """Convert a filter-scope mask into ``(variants_selection, call_mask)``.
-
-        ``v_mask is None`` or 1-D: the mask is the variant selection;
-        ``call_mask`` is ``None``.
-
-        2-D mask: ``np.any`` along the sample axis produces the variant
-        selection; the surviving rows become ``call_mask``. When
-        ``output_columns`` is set (view-mode), the call mask is
-        remapped to the subset axis to match ``output_view``.
-        """
-        if v_mask is None or v_mask.ndim == 1:
-            return v_mask, None
-        variants_selection = np.any(v_mask, axis=1)
-        call_mask = v_mask[variants_selection]
-        if self._output_columns is not None:
-            call_mask = call_mask[:, self._output_columns]
-        return variants_selection, call_mask
 
     def prefetch(self, fields: list[str]) -> None:
         """Warm the raw-block cache for ``fields``.
@@ -567,10 +546,10 @@ class VczReader:
            chunk. It owns the raw-block cache and the
            subset-vs-real-axis decision.
         3. Evaluate the filter against ``CachedChunk.filter_view`` for
-           each referenced field.
-        4. ``CachedChunk.reduce_mask`` turns the filter's mask into a
-           variant selection and an (optional) subset-axis ``call_mask``.
-        5. Assemble output from ``CachedChunk.output_view`` for each
+           each referenced field. Collapse a 2-D sample-scope mask
+           into a 1-D variant selection (with the surviving rows kept
+           as ``call_mask`` on the subset axis).
+        4. Assemble output from ``CachedChunk.output_view`` for each
            query field; apply the variant selection to variants-axis
            fields.
         """
@@ -598,19 +577,23 @@ class VczReader:
                 output_columns=output_columns,
             )
             v_mask = None
+            call_mask = None
             if self.variant_filter is not None:
                 filter_data = {f: chunk.filter_view(f) for f in filter_fields}
                 v_mask = self.variant_filter.evaluate(filter_data)
-            if v_mask is not None and not np.any(v_mask):
+            if v_mask is not None and v_mask.ndim == 2:
+                variants_selection = v_mask.any(axis=1)
+                call_mask = v_mask[variants_selection]
+                if output_columns is not None:
+                    call_mask = call_mask[:, output_columns]
+                v_mask = variants_selection
+            if v_mask is not None and not v_mask.any():
                 continue
-            variants_selection, call_mask = chunk.reduce_mask(v_mask)
             chunk_data = {}
             for field in query_fields:
                 value = chunk.output_view(field)
-                if variants_selection is not None and _has_variants_axis(
-                    self.root[field]
-                ):
-                    value = value[variants_selection]
+                if v_mask is not None and _has_variants_axis(self.root[field]):
+                    value = value[v_mask]
                 chunk_data[field] = value
             if call_mask is not None:
                 chunk_data["call_mask"] = call_mask

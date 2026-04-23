@@ -267,8 +267,8 @@ class VczReader:
         self._variant_chunk_plan = None
         self._samples_selection = None
         self._sample_ids = None
+        self._filter_samples = None
         self.variant_filter = None
-        self.filter_on_subset_samples = True
 
     def _resolve_samples_if_needed(self) -> None:
         if self._samples_selection is not None:
@@ -364,27 +364,76 @@ class VczReader:
     def set_variant_filter(
         self,
         variant_filter: variant_filter_mod.VariantFilter,
-        *,
-        filter_on_subset_samples: bool = True,
     ) -> None:
         """Configure the variant filter.
 
         ``variant_filter`` is any object implementing the
-        :class:`~vcztools.variant_filter.VariantFilter` protocol.
-        ``filter_on_subset_samples`` controls which sample axis a
-        sample-scope filter sees: ``True`` (default) matches
-        ``bcftools query`` FMT-scope post-subset semantics (filter
-        sees only the selected samples); ``False`` matches
-        ``bcftools view`` pre-subset semantics (filter evaluated over
-        every real sample, regardless of the user subset). No-op for
-        variant-scope filters.
+        :class:`~vcztools.variant_filter.VariantFilter` protocol. The
+        sample axis a sample-scope filter evaluates over is controlled
+        separately via :meth:`set_filter_samples`; the default axis is
+        the user's sample selection (``bcftools query`` FMT-scope
+        post-subset semantics). Call :meth:`set_filter_samples` with
+        :attr:`non_null_sample_indices` for ``bcftools view`` pre-subset
+        semantics.
 
         Raises ``RuntimeError`` if already configured.
         """
         if self.variant_filter is not None:
             raise RuntimeError("variant_filter already configured")
         self.variant_filter = variant_filter
-        self.filter_on_subset_samples = filter_on_subset_samples
+
+    def set_filter_samples(self, filter_samples) -> None:
+        """Configure the sample axis that a sample-scope variant filter
+        evaluates over.
+
+        Accepts a list or 1-D integer ndarray of sample indexes. Must
+        be **sorted ascending, unique, and in range**
+        ``[0, num_samples)``. Out-of-range, unsorted, or duplicate
+        indexes raise ``ValueError``. Raises ``RuntimeError`` if
+        already configured.
+
+        When not called, the filter axis defaults to
+        :attr:`samples_selection`. For ``bcftools view`` pre-subset
+        semantics, pass :attr:`non_null_sample_indices`.
+        """
+        if self._filter_samples is not None:
+            raise RuntimeError("filter_samples already configured")
+        _validate_samples_input(filter_samples)
+
+        filter_samples = np.asarray(filter_samples, dtype=np.int64)
+        if filter_samples.size > 0:
+            lo = filter_samples.min()
+            hi = filter_samples.max()
+            raw_size = self.raw_sample_ids.size
+            if lo < 0 or hi >= raw_size:
+                raise ValueError(
+                    f"filter_samples index out of range: must be in [0, {raw_size})"
+                )
+            if np.any(np.diff(filter_samples) <= 0):
+                raise ValueError("filter_samples must be sorted ascending and unique")
+        self._filter_samples = filter_samples
+
+    @property
+    def filter_samples(self) -> np.ndarray:
+        """Sample axis the variant filter evaluates over. Defaults to
+        :attr:`samples_selection` when :meth:`set_filter_samples` has
+        not been called."""
+        if self._filter_samples is None:
+            return self.samples_selection
+        return self._filter_samples
+
+    @property
+    def filter_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
+        """Chunk plan for reading the filter sample axis. When
+        :meth:`set_filter_samples` has not been called this is the
+        same as :attr:`sample_chunk_plan`; otherwise it is built
+        fresh from the configured filter samples."""
+        if self._filter_samples is None:
+            return self.sample_chunk_plan
+        return samples_mod.build_chunk_plan(
+            self._filter_samples,
+            samples_chunk_size=self.samples_chunk_size,
+        )
 
     @functools.cached_property
     def contig_ids(self):
@@ -450,17 +499,6 @@ class VczReader:
             self.non_null_sample_indices,
             samples_chunk_size=self.samples_chunk_size,
         )
-
-    @functools.cached_property
-    def _subset_positions_in_non_null(self) -> np.ndarray:
-        """For each entry in ``samples_selection``, its position in
-        :attr:`non_null_sample_indices`. Used to remap a view-mode 2-D
-        sample-filter array back onto the subset axis. Entries that
-        don't match (e.g. a null slot explicitly included in the
-        subset via ``set_samples``) are an edge case; the resulting
-        ``sample_filter_pass`` position is still indexed but the
-        guarantee is undefined."""
-        return np.searchsorted(self.non_null_sample_indices, self.samples_selection)
 
     @functools.cached_property
     def contig_lengths(self) -> np.ndarray | None:
@@ -556,20 +594,27 @@ class VczReader:
             if self.variant_filter is not None
             else ()
         )
-        if self.filter_on_subset_samples:
-            if len(self.samples_selection) > 0:
-                read_plan = self.sample_chunk_plan
-            else:
-                # Empty subset (e.g. ``view -s ^<all_samples>``): read
-                # the non-null axis so AC/AN recompute in vcf_writer
-                # sees the full non-null genotype matrix. The writer's
-                # ``num_samples == 0`` gate prevents per-sample output
-                # emission after the recompute.
-                read_plan = self.non_null_sample_chunk_plan
+        if self._filter_samples is None:
+            # Default: filter axis IS the subset axis. Covers non-empty
+            # subsets, the no-subset default, and ``--drop-genotypes``
+            # (empty subset collapses to an empty plan — no reads,
+            # zero-column call_* output via CachedChunk._empty_call_array).
+            read_plan = self.sample_chunk_plan
             output_columns = None
         else:
-            read_plan = self.non_null_sample_chunk_plan
-            output_columns = self._subset_positions_in_non_null
+            # Explicit view mode: filter axis differs from subset. Read
+            # on the filter axis; remap columns to produce the subset
+            # output. Assumes ``samples_selection`` ⊆ ``filter_samples``;
+            # an explicitly-included null slot (edge case) produces an
+            # undefined ``sample_filter_pass`` position. The CLI refuses
+            # empty view-mode subsets (``view -s ^<all>`` etc.), so the
+            # empty-subset AC/AN quirk cannot reach this branch via the
+            # CLI; Python-API callers opting into this shape will see
+            # zero-column output.
+            read_plan = self.filter_sample_chunk_plan
+            output_columns = np.searchsorted(
+                self._filter_samples, self.samples_selection
+            )
 
         for chunk_read in self.variant_chunk_plan:
             chunk = CachedChunk(

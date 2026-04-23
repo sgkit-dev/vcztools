@@ -16,10 +16,12 @@ class VariantFilter(Protocol):
 
     A ``"variant"``-scope filter MUST return a 1-D bool array of length
     ``n_variants``. A ``"sample"``-scope filter MUST return a 2-D bool
-    array of shape ``(n_variants, n_samples)``. When the reader is
-    configured with ``filter_on_subset_samples=True``, a sample-scope
-    filter sees (and must return a mask for) only the *subset* sample
-    axis; otherwise it sees the full sample axis.
+    array of shape ``(n_variants, n_samples)``. The sample axis the
+    filter sees is controlled by
+    :meth:`~vcztools.retrieval.VczReader.set_filter_samples`; by
+    default it is the user's sample selection (``bcftools query``
+    semantics). Callers that want ``bcftools view`` pre-subset
+    semantics pass :attr:`~vcztools.retrieval.VczReader.non_null_sample_indices`.
     """
 
     @property

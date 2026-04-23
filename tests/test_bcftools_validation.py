@@ -104,9 +104,6 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -s HG00096", "1kg_2020_chrM.vcf.gz"),
         ("view --no-version -s tsk_0,tsk_1", "msprime_diploid.vcf.gz"),
         ("view --no-version -s tsk_0,tsk_1,tsk_2", "msprime_diploid.vcf.gz"),
-        ("view --no-version -s ^tsk_0,tsk_1,tsk_2", "msprime_diploid.vcf.gz"),
-        ("view --no-version -s '' --force-samples", "sample.vcf.gz"),
-        ("view --no-version -s 'NO_SAMPLE' --force-samples", "sample.vcf.gz"),
         ("view --no-version -s 'NO_SAMPLE,NA00001' --force-samples", "sample.vcf.gz"),
         ("view --no-version -s ^NA00001", "sample.vcf.gz"),
         ("view --no-version -s ^NA00003,NA00002", "sample.vcf.gz"),
@@ -114,16 +111,10 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -S ^tests/data/txt/samples.txt", "sample.vcf.gz"),
         # Complement collapses duplicate excludes
         ("view --no-version -s ^NA00001,NA00001", "sample.vcf.gz"),
-        # Complement that excludes every sample (no sample columns)
-        ("view --no-version -s ^NA00001,NA00002,NA00003", "sample.vcf.gz"),
-        # All requested samples are unknown -> no sample columns
-        ("view --no-version -s FOO,BAR,BAZ --force-samples", "sample.vcf.gz"),
         # Complement with one unknown name -> the unknown is dropped
         ("view --no-version -s ^NA00001,NOPE --force-samples", "sample.vcf.gz"),
         # Complement with all-unknown excludes -> every sample retained
         ("view --no-version -s ^NOPE1,NOPE2 --force-samples", "sample.vcf.gz"),
-        # Empty samples file -> no sample columns
-        ("view --no-version -S tests/data/txt/samples_empty.txt", "sample.vcf.gz"),
         (
             "view --no-version -r '20:1230236-' -i 'FMT/DP>3' -s 'NA00002,NA00003'",
             "sample.vcf.gz"
@@ -388,6 +379,26 @@ def test_error(tmp_path, fx_all_vcz, args, vcf_name, bcftools_error_string):
 
     _, vcztools_error = run_vcztools(f"{args} {fx.zip_path}", expect_error=True)
     assert "Error:" in vcztools_error
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        # bcftools accepts each of these and emits header-only output;
+        # vcztools refuses because matching bcftools AC/AN semantics for
+        # an empty subset would require significant internal complexity.
+        "view --no-version -s '' --force-samples",
+        "view --no-version -s 'NO_SAMPLE' --force-samples",
+        "view --no-version -s FOO,BAR,BAZ --force-samples",
+        "view --no-version -s ^NA00001,NA00002,NA00003",
+        "view --no-version -S tests/data/txt/samples_empty.txt",
+    ],
+)
+def test_empty_sample_set_refused(fx_all_vcz, args):
+    fx = fx_all_vcz["sample.vcf.gz"]
+    _, vcztools_error = run_vcztools(f"{args} {fx.zip_path}", expect_error=True)
+    assert "Empty sample set is not supported" in vcztools_error
+    assert "github.com/sgkit-dev/vcztools/issues" in vcztools_error
 
 
 class TestRegionTargetSemantics:
@@ -734,11 +745,11 @@ class TestSampleSubsetFilterSemantics:
       record too (matching ``view``). FMT-scope filters, however,
       evaluate on the SUBSET record — sample subsetting happens first.
 
-    vcztools matches both: the ``view`` CLI uses the reader's default
-    pre-subset evaluation; the ``query`` CLI constructs the reader
-    with ``filter_on_subset_samples=True`` so FMT-scope filters see only
-    the subset. INFO-scope filters touch no sample dimension so the
-    flag is a no-op for them.
+    vcztools matches both: the ``view`` CLI sets the filter axis to
+    ``reader.non_null_sample_indices`` via ``set_filter_samples``
+    (pre-subset evaluation); the ``query`` CLI leaves the default,
+    which equals the sample subset (post-subset evaluation). INFO-scope
+    filters touch no sample dimension, so the setter is a no-op for them.
 
     The three methods below cover:
 

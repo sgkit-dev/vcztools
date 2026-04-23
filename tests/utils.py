@@ -23,7 +23,7 @@ def make_reader(
     regions=None,
     targets=None,
     targets_complement=False,
-    filter_on_subset_samples=True,
+    view_semantics=False,
 ):
     """Build a :class:`VczReader` with an optional
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings and a
@@ -53,13 +53,14 @@ def make_reader(
         )
         reader.set_variants(variant_chunk_plan)
 
+    if view_semantics:
+        reader.set_filter_samples(reader.non_null_sample_indices)
+
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=reader.field_names, include=include, exclude=exclude
         )
-        reader.set_variant_filter(
-            variant_filter, filter_on_subset_samples=filter_on_subset_samples
-        )
+        reader.set_variant_filter(variant_filter)
 
     return reader
 

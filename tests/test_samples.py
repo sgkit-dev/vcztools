@@ -19,87 +19,107 @@ ALL_SAMPLES = np.array(["NA00001", "NA00002", "NA00003"])
 
 class TestResolveSampleSelection:
     """Bcftools-layer helper: turns ``-s``/``-S``/``--force-samples``
-    into the integer-index list that VczReader consumes."""
+    into the integer-index array that VczReader consumes."""
 
     def test_none_and_no_complement_returns_none(self):
         assert resolve_sample_selection(None, ALL_SAMPLES) is None
 
     def test_none_and_complement_returns_all_non_null_samples(self):
-        assert resolve_sample_selection(None, ALL_SAMPLES, complement=True) == [
-            0,
-            1,
-            2,
-        ]
+        nt.assert_array_equal(
+            resolve_sample_selection(None, ALL_SAMPLES, complement=True),
+            [0, 1, 2],
+        )
 
     def test_none_and_complement_skips_masked(self):
         raw_sample_ids = np.array(["NA00001", "", "NA00003"])
-        assert resolve_sample_selection(None, raw_sample_ids, complement=True) == [0, 2]
+        nt.assert_array_equal(
+            resolve_sample_selection(None, raw_sample_ids, complement=True),
+            [0, 2],
+        )
 
     def test_single_sample(self):
-        assert resolve_sample_selection(["NA00002"], ALL_SAMPLES) == [1]
+        nt.assert_array_equal(resolve_sample_selection(["NA00002"], ALL_SAMPLES), [1])
 
     def test_subset_in_input_order(self):
-        assert resolve_sample_selection(["NA00003", "NA00001"], ALL_SAMPLES) == [2, 0]
+        nt.assert_array_equal(
+            resolve_sample_selection(["NA00003", "NA00001"], ALL_SAMPLES),
+            [2, 0],
+        )
 
     def test_full_list(self):
-        assert resolve_sample_selection(
-            ["NA00001", "NA00002", "NA00003"], ALL_SAMPLES
-        ) == [0, 1, 2]
+        nt.assert_array_equal(
+            resolve_sample_selection(["NA00001", "NA00002", "NA00003"], ALL_SAMPLES),
+            [0, 1, 2],
+        )
 
     def test_empty_list(self):
-        assert resolve_sample_selection([], ALL_SAMPLES) == []
+        nt.assert_array_equal(resolve_sample_selection([], ALL_SAMPLES), [])
 
     def test_empty_string_element_raises(self):
         with pytest.raises(ValueError, match=r"sample\(s\) not in header: "):
             resolve_sample_selection([""], ALL_SAMPLES)
 
     def test_complement_excludes_one(self):
-        assert resolve_sample_selection(["NA00002"], ALL_SAMPLES, complement=True) == [
-            0,
-            2,
-        ]
+        nt.assert_array_equal(
+            resolve_sample_selection(["NA00002"], ALL_SAMPLES, complement=True),
+            [0, 2],
+        )
 
     def test_complement_excludes_multiple(self):
-        assert resolve_sample_selection(
-            ["NA00001", "NA00003"], ALL_SAMPLES, complement=True
-        ) == [1]
+        nt.assert_array_equal(
+            resolve_sample_selection(
+                ["NA00001", "NA00003"], ALL_SAMPLES, complement=True
+            ),
+            [1],
+        )
 
     def test_complement_exclude_all_returns_empty(self):
-        assert (
+        nt.assert_array_equal(
             resolve_sample_selection(
                 ["NA00001", "NA00002", "NA00003"], ALL_SAMPLES, complement=True
-            )
-            == []
+            ),
+            [],
         )
 
     def test_complement_empty_list_returns_all(self):
-        assert resolve_sample_selection([], ALL_SAMPLES, complement=True) == [
-            0,
-            1,
-            2,
-        ]
+        nt.assert_array_equal(
+            resolve_sample_selection([], ALL_SAMPLES, complement=True),
+            [0, 1, 2],
+        )
 
     def test_complement_output_follows_header_order(self):
-        assert resolve_sample_selection(
-            ["NA00003", "NA00002"], ALL_SAMPLES, complement=True
-        ) == [0]
-        assert resolve_sample_selection(
-            ["NA00002", "NA00003"], ALL_SAMPLES, complement=True
-        ) == [0]
+        nt.assert_array_equal(
+            resolve_sample_selection(
+                ["NA00003", "NA00002"], ALL_SAMPLES, complement=True
+            ),
+            [0],
+        )
+        nt.assert_array_equal(
+            resolve_sample_selection(
+                ["NA00002", "NA00003"], ALL_SAMPLES, complement=True
+            ),
+            [0],
+        )
 
     def test_duplicates_raise_without_complement(self):
         with pytest.raises(ValueError, match=r'Duplicate sample name "NA00001"'):
             resolve_sample_selection(["NA00001", "NA00001"], ALL_SAMPLES)
 
     def test_duplicates_collapsed_under_complement(self):
-        assert resolve_sample_selection(
-            ["NA00002", "NA00002"], ALL_SAMPLES, complement=True
-        ) == [0, 2]
+        nt.assert_array_equal(
+            resolve_sample_selection(
+                ["NA00002", "NA00002"], ALL_SAMPLES, complement=True
+            ),
+            [0, 2],
+        )
 
     def test_many_duplicates_collapsed_under_complement(self):
-        assert resolve_sample_selection(
-            ["NA00002", "NA00002", "NA00002"], ALL_SAMPLES, complement=True
-        ) == [0, 2]
+        nt.assert_array_equal(
+            resolve_sample_selection(
+                ["NA00002", "NA00002", "NA00002"], ALL_SAMPLES, complement=True
+            ),
+            [0, 2],
+        )
 
     def test_unknown_raises(self):
         with pytest.raises(
@@ -123,7 +143,7 @@ class TestResolveSampleSelection:
                 ALL_SAMPLES,
                 ignore_missing_samples=True,
             )
-        assert result == [0, 2]
+        nt.assert_array_equal(result, [0, 2])
         assert "UNKNOWN" in caplog.text
 
     def test_ignore_missing_all_unknown(self, caplog):
@@ -133,7 +153,7 @@ class TestResolveSampleSelection:
                 ALL_SAMPLES,
                 ignore_missing_samples=True,
             )
-        assert result == []
+        nt.assert_array_equal(result, [])
 
     def test_duplicates_raise_even_with_ignore_missing(self):
         # Duplicates are a hard error regardless of force-samples.
@@ -149,18 +169,21 @@ class TestResolveSampleSelection:
         result = resolve_sample_selection(
             [""], ALL_SAMPLES, ignore_missing_samples=True
         )
-        assert result == []
+        nt.assert_array_equal(result, [])
 
     def test_complement_with_masked_header(self):
         # Masked "" entries never appear in the complement output.
         raw_sample_ids = np.array(["NA00001", "", "NA00003"])
-        assert resolve_sample_selection(
-            ["NA00001"], raw_sample_ids, complement=True
-        ) == [2]
+        nt.assert_array_equal(
+            resolve_sample_selection(["NA00001"], raw_sample_ids, complement=True),
+            [2],
+        )
 
     def test_explicit_list_with_masked_header(self):
         raw_sample_ids = np.array(["NA00001", "", "NA00003"])
-        assert resolve_sample_selection(["NA00003"], raw_sample_ids) == [2]
+        nt.assert_array_equal(
+            resolve_sample_selection(["NA00003"], raw_sample_ids), [2]
+        )
 
 
 class TestResolveSampleSelectionEdgeCases:
@@ -196,46 +219,55 @@ class TestResolveSampleSelectionEdgeCases:
 
     def test_embedded_space(self):
         raw_sample_ids = np.array(["a b", "c d", "e f"])
-        assert resolve_sample_selection(["a b"], raw_sample_ids) == [0]
+        nt.assert_array_equal(resolve_sample_selection(["a b"], raw_sample_ids), [0])
 
     def test_embedded_comma(self):
         # Commas are valid in the VCF file (bcftools view preserves them
         # byte-for-byte on #CHROM) but break CLI -s splitting. At the
         # resolver layer the comma is just another character.
         raw_sample_ids = np.array(["a,b", "c,d", "plain"])
-        assert resolve_sample_selection(["a,b"], raw_sample_ids) == [0]
+        nt.assert_array_equal(resolve_sample_selection(["a,b"], raw_sample_ids), [0])
 
     def test_dots_and_dashes(self):
         raw_sample_ids = np.array(["sample.1", "sample-1", "sample_1"])
-        assert resolve_sample_selection(["sample.1", "sample-1"], raw_sample_ids) == [
-            0,
-            1,
-        ]
+        nt.assert_array_equal(
+            resolve_sample_selection(["sample.1", "sample-1"], raw_sample_ids),
+            [0, 1],
+        )
 
     def test_slashes(self):
         raw_sample_ids = np.array(["s/1", "s\\2", "s|3"])
-        assert resolve_sample_selection(["s\\2"], raw_sample_ids) == [1]
+        nt.assert_array_equal(resolve_sample_selection(["s\\2"], raw_sample_ids), [1])
 
     def test_numeric_only(self):
         raw_sample_ids = np.array(["0", "1", "123"])
-        assert resolve_sample_selection(["123", "0"], raw_sample_ids) == [2, 0]
+        nt.assert_array_equal(
+            resolve_sample_selection(["123", "0"], raw_sample_ids), [2, 0]
+        )
 
     def test_single_character(self):
         raw_sample_ids = np.array(["A", "B", "C"])
-        assert resolve_sample_selection(["B"], raw_sample_ids) == [1]
+        nt.assert_array_equal(resolve_sample_selection(["B"], raw_sample_ids), [1])
 
     def test_unicode_accents(self):
         raw_sample_ids = np.array(["sampléé", "sample", "café"])
-        assert resolve_sample_selection(["sampléé", "café"], raw_sample_ids) == [0, 2]
+        nt.assert_array_equal(
+            resolve_sample_selection(["sampléé", "café"], raw_sample_ids),
+            [0, 2],
+        )
 
     def test_unicode_cjk(self):
         raw_sample_ids = np.array(["sample_中文", "sample_日本", "sample"])
-        assert resolve_sample_selection(["sample_日本"], raw_sample_ids) == [1]
+        nt.assert_array_equal(
+            resolve_sample_selection(["sample_日本"], raw_sample_ids), [1]
+        )
 
     def test_very_long_names(self):
         long_name = "x" * 300
         raw_sample_ids = np.array(["short", long_name, "other"])
-        assert resolve_sample_selection([long_name], raw_sample_ids) == [1]
+        nt.assert_array_equal(
+            resolve_sample_selection([long_name], raw_sample_ids), [1]
+        )
 
     def test_case_sensitive(self):
         raw_sample_ids = np.array(["X", "Y", "Z"])
@@ -246,12 +278,10 @@ class TestResolveSampleSelectionEdgeCases:
 
     def test_complement_with_unicode(self):
         raw_sample_ids = np.array(["sampléé", "sample_中文", "ascii"])
-        assert resolve_sample_selection(
-            ["sampléé"], raw_sample_ids, complement=True
-        ) == [
-            1,
-            2,
-        ]
+        nt.assert_array_equal(
+            resolve_sample_selection(["sampléé"], raw_sample_ids, complement=True),
+            [1, 2],
+        )
 
     def test_duplicate_detection_with_unicode(self):
         raw_sample_ids = np.array(["sampléé", "café"])
@@ -266,14 +296,16 @@ class TestResolveSampleSelectionEdgeCases:
                 raw_sample_ids,
                 ignore_missing_samples=True,
             )
-        assert result == [0]
+        nt.assert_array_equal(result, [0])
         assert "日本" in caplog.text
 
     def test_accepts_numpy_string_dtype(self):
         raw_sample_ids = np.array(
             ["NA00001", "NA00002", "NA00003"], dtype=np.dtypes.StringDType()
         )
-        assert resolve_sample_selection(["NA00002"], raw_sample_ids) == [1]
+        nt.assert_array_equal(
+            resolve_sample_selection(["NA00002"], raw_sample_ids), [1]
+        )
 
 
 class TestReadSamplesFile:
@@ -403,7 +435,7 @@ class TestBuildChunkPlan:
             nt.assert_array_equal(cr.selection, [0])
         assert plan.permutation is None
 
-    def test_single_chunk_covers_raw_sample_ids(self):
+    def test_single_chunk_covers_all_samples(self):
         # samples_chunk_size >= num_samples → one chunk.
         plan = build_chunk_plan(np.array([0, 2]), samples_chunk_size=3)
         assert self._chunk_indexes(plan) == [0]

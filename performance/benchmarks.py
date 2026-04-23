@@ -406,6 +406,11 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
     dp_gt_80 = _count_by_arange_modulo(num_variants, 101, 80)
     region_gq_gt_50 = _count_call_threshold(region_indices, num_samples, 100, 50)
 
+    variants_chunk = int(root["variant_position"].chunks[0])
+    first_variant_chunks_records = min(
+        FIRST_VARIANT_CHUNKS_COUNT * variants_chunk, num_variants
+    )
+
     return {
         "num_samples": num_samples,
         "num_variants": num_variants,
@@ -422,6 +427,7 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
             "iter_info_only": num_variants,
             "region_info_and_format": int(region_indices.size),
             "first_samples_chunk": num_variants,
+            "first_variant_chunks": first_variant_chunks_records,
             "region_variant_position": int(region_indices.size),
             "filter_info_dp_gt_80": dp_gt_80,
             "region_filter_format_gq_gt_50": region_gq_gt_50,
@@ -688,6 +694,26 @@ def _build_first_samples_chunk(root, meta):
     return reader
 
 
+FIRST_VARIANT_CHUNKS_COUNT = 5
+
+
+def _build_first_variant_chunks(root, meta):
+    """Read the first ``FIRST_VARIANT_CHUNKS_COUNT`` variant-chunks
+    across every sample. The chunk count is tuned so the returned
+    volume roughly matches ``first_samples_chunk`` at the default
+    dataset shape, giving two directly comparable data-rate readings
+    for different I/O patterns — contiguous variants region vs
+    contiguous samples column."""
+    reader = retrieval.VczReader(root)
+    num_variants = int(root["variant_position"].shape[0])
+    variants_chunk = int(root["variant_position"].chunks[0])
+    num_variant_chunks = math.ceil(num_variants / variants_chunk)
+    take = min(FIRST_VARIANT_CHUNKS_COUNT, num_variant_chunks)
+    plan = [vcz_utils.ChunkRead(index=i) for i in range(take)]
+    reader.set_variants(plan)
+    return reader
+
+
 def _build_region_variant_position(root, meta):
     reader = retrieval.VczReader(root)
     rs = meta["region_spec"]
@@ -762,6 +788,7 @@ TASKS: list[Task] = [
         ],
     ),
     Task("first_samples_chunk", _build_first_samples_chunk, ["call_genotype"]),
+    Task("first_variant_chunks", _build_first_variant_chunks, ["call_genotype"]),
     Task(
         "region_variant_position",
         _build_region_variant_position,

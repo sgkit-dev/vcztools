@@ -60,7 +60,7 @@ def build_chunk_plan(
 
 def resolve_sample_selection(
     samples: list[str] | None,
-    all_samples: np.ndarray,
+    raw_sample_ids: np.ndarray,
     *,
     complement: bool = False,
     ignore_missing_samples: bool = False,
@@ -73,33 +73,33 @@ def resolve_sample_selection(
     ``samples=``.
 
     - ``samples=None`` and ``complement=False`` → returns ``None``
-      (reader selects every real sample).
+      (reader selects every non-null sample).
     - ``samples=None`` and ``complement=True`` → returns an empty list
       (everything excluded).
     - ``samples=list[str]`` and ``complement=False`` → returns the
-      indexes of those names in ``all_samples``, in input order,
+      indexes of those names in ``raw_sample_ids``, in input order,
       after unknown-name handling.
     - ``samples=list[str]`` and ``complement=True`` → returns indexes
-      of every real sample NOT in the exclude set, in
-      ``all_samples`` order.
+      of every non-null sample NOT in the exclude set, in
+      ``raw_sample_ids`` order.
 
     Unknown names either raise ``ValueError`` or are dropped with a
     warning (``ignore_missing_samples=True``). Duplicates in the
     non-complement case raise; in the complement case they are
     deduped silently (matches ``bcftools view -s ^foo,foo``).
 
-    Masked (empty-string) entries in ``all_samples`` are never
+    Null (empty-string) entries in ``raw_sample_ids`` are never
     returned.
     """
-    real_samples_mask = all_samples != ""
+    non_null_select = raw_sample_ids != ""
 
     if samples is None:
         if not complement:
             return None
-        return np.flatnonzero(real_samples_mask).tolist()
+        return np.flatnonzero(non_null_select).tolist()
 
     sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
-    unknown_samples = np.setdiff1d(sample_ids, all_samples)
+    unknown_samples = np.setdiff1d(sample_ids, raw_sample_ids)
     if len(unknown_samples) > 0:
         if ignore_missing_samples:
             logger.warning(
@@ -120,17 +120,17 @@ def resolve_sample_selection(
         if duplicates.size > 0:
             raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
         # Drop empty-string requests — they would otherwise map to a
-        # masked header position, and those are never returned.
+        # null header position, and those are never returned.
         sample_ids = sample_ids[sample_ids != ""]
-        # Match all_samples' dtype so searchsorted is a safe cast.
-        # Every remaining sample_id is a known entry in all_samples
+        # Match raw_sample_ids' dtype so searchsorted is a safe cast.
+        # Every remaining sample_id is a known entry in raw_sample_ids
         # (per the unknown-check above), so this can't truncate.
-        return search(all_samples, sample_ids.astype(all_samples.dtype)).tolist()
+        return search(raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype)).tolist()
 
-    mask = real_samples_mask & ~np.isin(
-        all_samples, sample_ids.astype(all_samples.dtype)
+    select = non_null_select & ~np.isin(
+        raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype)
     )
-    return np.flatnonzero(mask).tolist()
+    return np.flatnonzero(select).tolist()
 
 
 def read_samples_file(path: str) -> list[str]:

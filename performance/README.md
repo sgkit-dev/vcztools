@@ -92,19 +92,36 @@ two runs disagree on:
 ## Task catalogue
 
 Tuned for the 100k-sample default so no task iterates the full
-genotype matrix.
+genotype matrix. The `--region-fraction` setting on `generate` /
+`prepare` (default 0.2%) sets the common region for all `region_*`
+tasks.
 
 | # | Task | Fields | Selection |
 |---|------|--------|-----------|
 | 1 | `iter_no_fields` | — | chunk scheduler only |
 | 2 | `iter_info_only` | INFO scalars | full |
-| 3 | `region_info_and_format` | INFO + FORMAT + genotypes | 1% region |
-| 4 | `subset_10_samples` | `call_genotype` | 10 samples |
-| 5 | `subset_1000_samples` | `call_genotype` | 1000 samples |
-| 6 | `region_1pct` | `variant_position` | 1% region |
-| 7 | `filter_info_dp_gt_80` | INFO | full (`INFO/DP>80`) |
-| 8 | `region_filter_format_gq_gt_50` | — | 1% region + `FMT/GQ>50` with filter seeing *all* samples |
-| 9 | `region_and_sample_subset` | `call_genotype` | 1% samples × 1% region |
+| 3 | `region_info_and_format` | INFO + FORMAT + genotypes | region |
+| 4 | `subset_10_samples` | `call_genotype` | 10 samples × all variants |
+| 5 | `region_variant_position` | `variant_position` | region |
+| 6 | `filter_info_dp_gt_80` | INFO | full (`INFO/DP>80`) |
+| 7 | `region_filter_format_gq_gt_50` | — | region + `FMT/GQ>50` with filter seeing *all* samples |
+| 8 | `region_and_sample_subset` | `call_genotype` | 1% samples × region |
+
+## Prepare from an existing zip
+
+If someone hands you a `bench.vcz.zip` produced elsewhere, you don't
+need to regenerate — compute `benchmark_meta.json` from it and run:
+
+```
+uv run python performance/benchmarks.py prepare \
+    --source performance/data/bench.vcz.zip
+uv run python performance/benchmarks.py run \
+    --backend local-zip --output performance/results/zip-only.jsonl
+```
+
+`prepare` only writes the meta file; it doesn't unzip or build the
+v3/icechunk mirrors. Restrict the run to `--backend local-zip` (or
+any single backend) to match what's actually on disk.
 
 ## Files
 

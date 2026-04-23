@@ -127,7 +127,7 @@ def make_reader(
     samples_file=None,
     include=None,
     exclude=None,
-    filter_on_subset_samples=True,
+    view_semantics=False,
     force_samples=False,
     drop_genotypes=False,
     zarr_backend_storage=None,
@@ -196,6 +196,15 @@ def make_reader(
             complement=samples_complement,
             ignore_missing_samples=force_samples,
         )
+        if samples is not None and len(samples) == 0:
+            raise ValueError(
+                "Empty sample set is not supported. The bcftools semantics "
+                "for this corner case (AC/AN recomputed over the full "
+                "non-null sample set while emitting zero sample columns) "
+                "would require significant internal complexity. "
+                "If you need this feature, please open an issue at "
+                "https://github.com/sgkit-dev/vcztools/issues."
+            )
         reader.set_samples(samples)
 
     if regions is not None or targets is not None:
@@ -207,10 +216,14 @@ def make_reader(
         )
         reader.set_variants(variant_chunk_plan)
 
+    if view_semantics:
+        # bcftools view evaluates sample-scope filters over the
+        # pre-subset (non-null) axis and exposes that axis for AC/AN
+        # recompute.
+        reader.set_filter_samples(reader.non_null_sample_indices)
+
     if variant_filter is not None:
-        reader.set_variant_filter(
-            variant_filter, filter_on_subset_samples=filter_on_subset_samples
-        )
+        reader.set_variant_filter(variant_filter)
 
     return reader
 
@@ -340,7 +353,6 @@ def query(
         samples_file=samples_file,
         include=include,
         exclude=exclude,
-        filter_on_subset_samples=True,
         force_samples=force_samples,
         zarr_backend_storage=zarr_backend_storage,
     )
@@ -445,7 +457,7 @@ def view(
         samples_file=samples_file,
         include=include,
         exclude=exclude,
-        filter_on_subset_samples=False,
+        view_semantics=True,
         force_samples=force_samples,
         drop_genotypes=drop_genotypes,
         zarr_backend_storage=zarr_backend_storage,

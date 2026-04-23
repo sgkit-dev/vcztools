@@ -461,7 +461,7 @@ def test_write_vcf__regions_samples_filtering(
         targets=targets,
         samples=sample_list,
         include=include,
-        filter_on_subset_samples=False,
+        view_semantics=True,
     )
     write_vcf(reader, output)
 

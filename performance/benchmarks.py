@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 import psutil
 import requests
+import tqdm
 import zarr
 from zarr.codecs import BloscCodec, BloscShuffle
 
@@ -109,6 +110,7 @@ def _build_vcz(
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
         worker_processes=worker_processes,
+        show_progress=True,
     )
 
 
@@ -173,7 +175,8 @@ def _add_chunked_call_array(
         dimension_names=["variants", "samples"],
     )
     arr = root[name]
-    for v0 in range(0, num_variants, variants_chunk):
+    starts = range(0, num_variants, variants_chunk)
+    for v0 in tqdm.tqdm(starts, desc=f"augment {name}", unit="chunk"):
         v1 = min(v0 + variants_chunk, num_variants)
         arr[v0:v1, :] = _call_slab(v0, v1, num_samples, modulo, dtype)
 
@@ -234,11 +237,12 @@ def _augment_vcz(root) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _copy_array_chunked(src, dst) -> None:
+def _copy_array_chunked(src, dst, *, desc: str) -> None:
     """Copy src into dst one variant-chunk (axis-0) slice at a time, keeping
     peak memory bounded to a single chunk row."""
     v_chunk = src.chunks[0]
-    for v0 in range(0, src.shape[0], v_chunk):
+    starts = range(0, src.shape[0], v_chunk)
+    for v0 in tqdm.tqdm(starts, desc=desc, unit="chunk", leave=False):
         v1 = min(v0 + v_chunk, src.shape[0])
         dst[v0:v1] = src[v0:v1]
 
@@ -276,7 +280,7 @@ def _v3_compressor_for(src) -> tuple:
     )
 
 
-def _mirror_group(src_root, dst_root) -> None:
+def _mirror_group(src_root, dst_root, *, label: str) -> None:
     """Copy every array and attr from ``src_root`` into ``dst_root``.
 
     The destination is always written as Zarr v3 (that's how the v3
@@ -285,11 +289,15 @@ def _mirror_group(src_root, dst_root) -> None:
     Filters are dropped on the way across: the only filter in a bio2zarr
     v2 VCZ is ``VLenUTF8`` on string arrays, which v3 handles natively
     via the ``StringDType``/``T`` dtype.
+
+    ``label`` is the outer-stage tag ("mirror_zv3" or "mirror_icechunk")
+    used as the tqdm description prefix for each array being copied.
     """
     for k, v in dict(src_root.attrs).items():
         dst_root.attrs[k] = v
 
-    for name, src in src_root.arrays():
+    arrays = list(src_root.arrays())
+    for name, src in tqdm.tqdm(arrays, desc=label, unit="array"):
         dim_names = vcz_utils.array_dims(src)
         dst = dst_root.create_array(
             name=name,
@@ -301,7 +309,7 @@ def _mirror_group(src_root, dst_root) -> None:
         )
         for k, v in dict(src.attrs).items():
             dst.attrs[k] = v
-        _copy_array_chunked(src, dst)
+        _copy_array_chunked(src, dst, desc=f"  {name}")
 
 
 def _mirror_to_v3_dir(src_root, dest_path: pathlib.Path) -> None:
@@ -309,7 +317,7 @@ def _mirror_to_v3_dir(src_root, dest_path: pathlib.Path) -> None:
         shutil.rmtree(dest_path)
     store = zarr.storage.LocalStore(dest_path)
     dst_root = zarr.create_group(store, zarr_format=3, overwrite=True)
-    _mirror_group(src_root, dst_root)
+    _mirror_group(src_root, dst_root, label="mirror_zv3")
 
 
 def _mirror_to_icechunk(src_root, dest_path: pathlib.Path) -> None:
@@ -320,7 +328,7 @@ def _mirror_to_icechunk(src_root, dest_path: pathlib.Path) -> None:
     repo = ic.Repository.create(storage)
     session = repo.writable_session("main")
     dst_root = zarr.create_group(session.store, zarr_format=3, overwrite=True)
-    _mirror_group(src_root, dst_root)
+    _mirror_group(src_root, dst_root, label="mirror_icechunk")
     session.commit("benchmark snapshot")
 
 

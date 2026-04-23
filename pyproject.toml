@@ -86,8 +86,10 @@ docs = [
 benchmark = [
   "bio2zarr",
   "fsspec[http]",
+  "icechunk",
   "msprime",
   "obstore",
+  "pandas",
   "psutil",
   "requests",
   "tskit>=1",

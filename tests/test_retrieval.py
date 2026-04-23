@@ -153,11 +153,12 @@ class TestFilterMultiChunk:
         root = _make_filter_vcz()
         num_chunks = int(root["variant_filter"].cdata_shape[0])
         assert num_chunks == 3
+        reader = VczReader(root)
         for chunk_idx in range(num_chunks):
             chunk = CachedChunk(
                 root,
                 utils.ChunkRead(index=chunk_idx),
-                read_plan=None,
+                read_plan=reader.non_null_sample_chunk_plan,
                 output_columns=None,
             )
             nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
@@ -314,7 +315,8 @@ class TestVczReaderSamples:
         reader = VczReader(fx_sample_vcz.group)
         reader.set_samples([])
         nt.assert_array_equal(reader.sample_ids, [])
-        assert reader.sample_chunk_plan is None
+        assert reader.sample_chunk_plan.chunk_reads == []
+        assert reader.sample_chunk_plan.permutation is None
 
 
 class TestVczReaderSampleChunks:
@@ -419,14 +421,15 @@ class TestVczReaderSampleChunks:
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[2, 3, 4, 5], [12, 13, 14, 15], [22, 23, 24, 25]])
 
-    def test_empty_samples_list_has_no_plan(self):
+    def test_empty_samples_list_produces_empty_plan(self):
         # An empty samples list (via --force-samples dropping every
-        # requested unknown, or --drop-genotypes) means no sample-chunk
-        # plan — full call arrays are read so AC/AN can still be
-        # recomputed.
+        # requested unknown, or --drop-genotypes) produces an empty
+        # sample chunk plan — no chunks to read, no sample columns
+        # in output.
         reader = VczReader(self._vcz())
         reader.set_samples([])
-        assert reader.sample_chunk_plan is None
+        assert reader.sample_chunk_plan.chunk_reads == []
+        assert reader.sample_chunk_plan.permutation is None
 
 
 def _vcz_for_cache_tests(
@@ -462,19 +465,11 @@ def _make_cached_chunk(
     if samples_selection is None:
         samples_selection = non_null_indices
     samples_selection = np.asarray(samples_selection, dtype=np.int64)
-    subset_plan = (
-        samples_mod.build_chunk_plan(
-            samples_selection, samples_chunk_size=samples_chunk_size
-        )
-        if samples_selection.size > 0
-        else None
+    subset_plan = samples_mod.build_chunk_plan(
+        samples_selection, samples_chunk_size=samples_chunk_size
     )
-    non_null_plan = (
-        samples_mod.build_chunk_plan(
-            non_null_indices, samples_chunk_size=samples_chunk_size
-        )
-        if non_null_indices.size > 0
-        else None
+    non_null_plan = samples_mod.build_chunk_plan(
+        non_null_indices, samples_chunk_size=samples_chunk_size
     )
     if filter_on_subset_samples:
         read_plan = subset_plan

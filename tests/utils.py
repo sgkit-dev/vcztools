@@ -40,7 +40,7 @@ def make_reader(
     if samples is not None:
         if len(samples) > 0 and isinstance(samples[0], str):
             samples = samples_mod.resolve_sample_selection(
-                samples, reader.all_sample_ids
+                samples, reader.raw_sample_ids
             )
         reader.set_samples(samples)
 

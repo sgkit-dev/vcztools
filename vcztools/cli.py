@@ -192,7 +192,7 @@ def make_reader(
     elif samples is not None:
         samples = samples_mod.resolve_sample_selection(
             samples,
-            reader.all_sample_ids,
+            reader.raw_sample_ids,
             complement=samples_complement,
             ignore_missing_samples=force_samples,
         )

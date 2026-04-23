@@ -456,11 +456,11 @@ def _make_cached_chunk(
     samples_selection=None,
     filter_on_subset_samples=True,
 ):
-    all_sample_ids = root["sample_id"][:]
-    real_indices = np.flatnonzero(all_sample_ids != "")
+    raw_sample_ids = root["sample_id"][:]
+    non_null_indices = np.flatnonzero(raw_sample_ids != "")
     samples_chunk_size = int(root["sample_id"].chunks[0])
     if samples_selection is None:
-        samples_selection = real_indices
+        samples_selection = non_null_indices
     samples_selection = np.asarray(samples_selection, dtype=np.int64)
     subset_plan = (
         samples_mod.build_chunk_plan(
@@ -469,19 +469,19 @@ def _make_cached_chunk(
         if samples_selection.size > 0
         else None
     )
-    real_plan = (
+    non_null_plan = (
         samples_mod.build_chunk_plan(
-            real_indices, samples_chunk_size=samples_chunk_size
+            non_null_indices, samples_chunk_size=samples_chunk_size
         )
-        if real_indices.size > 0
+        if non_null_indices.size > 0
         else None
     )
     if filter_on_subset_samples:
         read_plan = subset_plan
         output_columns = None
     else:
-        read_plan = real_plan
-        output_columns = np.searchsorted(real_indices, samples_selection)
+        read_plan = non_null_plan
+        output_columns = np.searchsorted(non_null_indices, samples_selection)
     return CachedChunk(
         root,
         utils.ChunkRead(index=variant_chunk_idx, selection=variant_selection),

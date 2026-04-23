@@ -24,7 +24,7 @@ class TestResolveSampleSelection:
     def test_none_and_no_complement_returns_none(self):
         assert resolve_sample_selection(None, ALL_SAMPLES) is None
 
-    def test_none_and_complement_returns_all_real_samples(self):
+    def test_none_and_complement_returns_all_non_null_samples(self):
         assert resolve_sample_selection(None, ALL_SAMPLES, complement=True) == [
             0,
             1,
@@ -32,8 +32,8 @@ class TestResolveSampleSelection:
         ]
 
     def test_none_and_complement_skips_masked(self):
-        all_samples = np.array(["NA00001", "", "NA00003"])
-        assert resolve_sample_selection(None, all_samples, complement=True) == [0, 2]
+        raw_sample_ids = np.array(["NA00001", "", "NA00003"])
+        assert resolve_sample_selection(None, raw_sample_ids, complement=True) == [0, 2]
 
     def test_single_sample(self):
         assert resolve_sample_selection(["NA00002"], ALL_SAMPLES) == [1]
@@ -153,14 +153,14 @@ class TestResolveSampleSelection:
 
     def test_complement_with_masked_header(self):
         # Masked "" entries never appear in the complement output.
-        all_samples = np.array(["NA00001", "", "NA00003"])
-        assert resolve_sample_selection(["NA00001"], all_samples, complement=True) == [
-            2
-        ]
+        raw_sample_ids = np.array(["NA00001", "", "NA00003"])
+        assert resolve_sample_selection(
+            ["NA00001"], raw_sample_ids, complement=True
+        ) == [2]
 
     def test_explicit_list_with_masked_header(self):
-        all_samples = np.array(["NA00001", "", "NA00003"])
-        assert resolve_sample_selection(["NA00003"], all_samples) == [2]
+        raw_sample_ids = np.array(["NA00001", "", "NA00003"])
+        assert resolve_sample_selection(["NA00003"], raw_sample_ids) == [2]
 
 
 class TestResolveSampleSelectionEdgeCases:
@@ -195,80 +195,85 @@ class TestResolveSampleSelectionEdgeCases:
     """
 
     def test_embedded_space(self):
-        all_samples = np.array(["a b", "c d", "e f"])
-        assert resolve_sample_selection(["a b"], all_samples) == [0]
+        raw_sample_ids = np.array(["a b", "c d", "e f"])
+        assert resolve_sample_selection(["a b"], raw_sample_ids) == [0]
 
     def test_embedded_comma(self):
         # Commas are valid in the VCF file (bcftools view preserves them
         # byte-for-byte on #CHROM) but break CLI -s splitting. At the
         # resolver layer the comma is just another character.
-        all_samples = np.array(["a,b", "c,d", "plain"])
-        assert resolve_sample_selection(["a,b"], all_samples) == [0]
+        raw_sample_ids = np.array(["a,b", "c,d", "plain"])
+        assert resolve_sample_selection(["a,b"], raw_sample_ids) == [0]
 
     def test_dots_and_dashes(self):
-        all_samples = np.array(["sample.1", "sample-1", "sample_1"])
-        assert resolve_sample_selection(["sample.1", "sample-1"], all_samples) == [0, 1]
+        raw_sample_ids = np.array(["sample.1", "sample-1", "sample_1"])
+        assert resolve_sample_selection(["sample.1", "sample-1"], raw_sample_ids) == [
+            0,
+            1,
+        ]
 
     def test_slashes(self):
-        all_samples = np.array(["s/1", "s\\2", "s|3"])
-        assert resolve_sample_selection(["s\\2"], all_samples) == [1]
+        raw_sample_ids = np.array(["s/1", "s\\2", "s|3"])
+        assert resolve_sample_selection(["s\\2"], raw_sample_ids) == [1]
 
     def test_numeric_only(self):
-        all_samples = np.array(["0", "1", "123"])
-        assert resolve_sample_selection(["123", "0"], all_samples) == [2, 0]
+        raw_sample_ids = np.array(["0", "1", "123"])
+        assert resolve_sample_selection(["123", "0"], raw_sample_ids) == [2, 0]
 
     def test_single_character(self):
-        all_samples = np.array(["A", "B", "C"])
-        assert resolve_sample_selection(["B"], all_samples) == [1]
+        raw_sample_ids = np.array(["A", "B", "C"])
+        assert resolve_sample_selection(["B"], raw_sample_ids) == [1]
 
     def test_unicode_accents(self):
-        all_samples = np.array(["sampléé", "sample", "café"])
-        assert resolve_sample_selection(["sampléé", "café"], all_samples) == [0, 2]
+        raw_sample_ids = np.array(["sampléé", "sample", "café"])
+        assert resolve_sample_selection(["sampléé", "café"], raw_sample_ids) == [0, 2]
 
     def test_unicode_cjk(self):
-        all_samples = np.array(["sample_中文", "sample_日本", "sample"])
-        assert resolve_sample_selection(["sample_日本"], all_samples) == [1]
+        raw_sample_ids = np.array(["sample_中文", "sample_日本", "sample"])
+        assert resolve_sample_selection(["sample_日本"], raw_sample_ids) == [1]
 
     def test_very_long_names(self):
         long_name = "x" * 300
-        all_samples = np.array(["short", long_name, "other"])
-        assert resolve_sample_selection([long_name], all_samples) == [1]
+        raw_sample_ids = np.array(["short", long_name, "other"])
+        assert resolve_sample_selection([long_name], raw_sample_ids) == [1]
 
     def test_case_sensitive(self):
-        all_samples = np.array(["X", "Y", "Z"])
+        raw_sample_ids = np.array(["X", "Y", "Z"])
         with pytest.raises(
             ValueError, match=r"subset called for sample\(s\) not in header: x"
         ):
-            resolve_sample_selection(["x"], all_samples)
+            resolve_sample_selection(["x"], raw_sample_ids)
 
     def test_complement_with_unicode(self):
-        all_samples = np.array(["sampléé", "sample_中文", "ascii"])
-        assert resolve_sample_selection(["sampléé"], all_samples, complement=True) == [
+        raw_sample_ids = np.array(["sampléé", "sample_中文", "ascii"])
+        assert resolve_sample_selection(
+            ["sampléé"], raw_sample_ids, complement=True
+        ) == [
             1,
             2,
         ]
 
     def test_duplicate_detection_with_unicode(self):
-        all_samples = np.array(["sampléé", "café"])
+        raw_sample_ids = np.array(["sampléé", "café"])
         with pytest.raises(ValueError, match=r'Duplicate sample name "sampléé"'):
-            resolve_sample_selection(["sampléé", "sampléé"], all_samples)
+            resolve_sample_selection(["sampléé", "sampléé"], raw_sample_ids)
 
     def test_ignore_missing_with_unicode_unknown(self, caplog):
-        all_samples = np.array(["sampléé", "café"])
+        raw_sample_ids = np.array(["sampléé", "café"])
         with caplog.at_level(logging.WARNING, logger="vcztools.samples"):
             result = resolve_sample_selection(
                 ["sampléé", "日本"],
-                all_samples,
+                raw_sample_ids,
                 ignore_missing_samples=True,
             )
         assert result == [0]
         assert "日本" in caplog.text
 
     def test_accepts_numpy_string_dtype(self):
-        all_samples = np.array(
+        raw_sample_ids = np.array(
             ["NA00001", "NA00002", "NA00003"], dtype=np.dtypes.StringDType()
         )
-        assert resolve_sample_selection(["NA00002"], all_samples) == [1]
+        assert resolve_sample_selection(["NA00002"], raw_sample_ids) == [1]
 
 
 class TestReadSamplesFile:
@@ -398,7 +403,7 @@ class TestBuildChunkPlan:
             nt.assert_array_equal(cr.selection, [0])
         assert plan.permutation is None
 
-    def test_single_chunk_covers_all_samples(self):
+    def test_single_chunk_covers_raw_sample_ids(self):
         # samples_chunk_size >= num_samples → one chunk.
         plan = build_chunk_plan(np.array([0, 2]), samples_chunk_size=3)
         assert self._chunk_indexes(plan) == [0]

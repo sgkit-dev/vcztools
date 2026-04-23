@@ -25,7 +25,7 @@ def encode_genotypes(genotypes, a12_allele=None):
 
 def generate_fam(reader):
     # TODO generate an error if sample_id contains a space
-    sample_id = _as_fixed_length_unicode(reader.all_sample_ids)
+    sample_id = _as_fixed_length_unicode(reader.raw_sample_ids)
     zeros = np.zeros(sample_id.shape, dtype=int)
     df = pd.DataFrame(
         {

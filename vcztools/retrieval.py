@@ -270,9 +270,9 @@ class VczReader:
     def _resolve_samples_if_needed(self) -> None:
         if self._samples_selection is not None:
             return
-        all_samples = self.all_sample_ids
-        self._samples_selection = np.flatnonzero(all_samples != "")
-        self._sample_ids = all_samples[self._samples_selection]
+        raw_sample_ids = self.raw_sample_ids
+        self._samples_selection = np.flatnonzero(raw_sample_ids != "")
+        self._sample_ids = raw_sample_ids[self._samples_selection]
         self._sample_chunk_plan = samples_mod.build_chunk_plan(
             self._samples_selection,
             samples_chunk_size=self.samples_chunk_size,
@@ -321,17 +321,17 @@ class VczReader:
             raise RuntimeError("samples already configured")
         _validate_samples_input(samples)
 
-        all_samples = self.all_sample_ids
+        raw_sample_ids = self.raw_sample_ids
         samples_selection = np.asarray(samples, dtype=np.int64)
         if samples_selection.size > 0:
             lo = samples_selection.min()
             hi = samples_selection.max()
-            if lo < 0 or hi >= all_samples.size:
+            if lo < 0 or hi >= raw_sample_ids.size:
                 raise ValueError(
-                    f"sample index out of range: must be in [0, {all_samples.size})"
+                    f"sample index out of range: must be in [0, {raw_sample_ids.size})"
                 )
         self._samples_selection = samples_selection
-        self._sample_ids = all_samples[samples_selection]
+        self._sample_ids = raw_sample_ids[samples_selection]
         if len(samples_selection) > 0:
             self._sample_chunk_plan = samples_mod.build_chunk_plan(
                 samples_selection,
@@ -425,7 +425,7 @@ class VczReader:
 
     @functools.cached_property
     def num_samples(self) -> int:
-        """Total samples in the store (including any masked entries)."""
+        """Total samples in the store (including any null entries)."""
         return int(self.root["sample_id"].shape[0])
 
     @functools.cached_property
@@ -434,40 +434,41 @@ class VczReader:
         return int(self.root["sample_id"].chunks[0])
 
     @functools.cached_property
-    def all_sample_ids(self) -> np.ndarray:
+    def raw_sample_ids(self) -> np.ndarray:
         """Full ``sample_id`` array from the store, including any
-        masked (empty-string) entries. For the post-subset order used
-        when encoding rows, see :attr:`sample_ids`."""
+        null-string entries. For the post-subset order used when
+        encoding rows, see :attr:`sample_ids`."""
         return self.root["sample_id"][:]
 
     @functools.cached_property
-    def real_sample_indices(self) -> np.ndarray:
-        """Global indices of real (non-masked) samples in
-        ``sample_id``. Sorted; empty if every entry is masked."""
-        return np.flatnonzero(self.all_sample_ids != "")
+    def non_null_sample_indices(self) -> np.ndarray:
+        """Global indices of non-null samples in ``sample_id``. Sorted;
+        empty if every entry is null."""
+        return np.flatnonzero(self.raw_sample_ids != "")
 
     @functools.cached_property
-    def real_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan | None:
-        """:class:`~vcztools.samples.SampleChunkPlan` for every real
-        sample. Used by :class:`CachedChunk` to build view-mode filter
-        views. ``None`` when no real samples exist."""
-        if self.real_sample_indices.size == 0:
+    def non_null_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan | None:
+        """:class:`~vcztools.samples.SampleChunkPlan` for every
+        non-null sample. Used by :class:`CachedChunk` to build
+        view-mode filter views. ``None`` when no non-null samples
+        exist."""
+        if self.non_null_sample_indices.size == 0:
             return None
         return samples_mod.build_chunk_plan(
-            self.real_sample_indices,
+            self.non_null_sample_indices,
             samples_chunk_size=self.samples_chunk_size,
         )
 
     @functools.cached_property
-    def _real_to_subset_indices(self) -> np.ndarray:
+    def _subset_positions_in_non_null(self) -> np.ndarray:
         """For each entry in ``samples_selection``, its position in
-        :attr:`real_sample_indices`. Used to remap a view-mode 2-D
-        sample-filter mask back onto the subset axis. Entries that don't
-        match (e.g. a masked slot explicitly included in the subset via
-        ``set_samples``) are an edge case; the resulting
-        ``sample_filter_pass`` position is still indexed but the guarantee
-        is undefined."""
-        return np.searchsorted(self.real_sample_indices, self.samples_selection)
+        :attr:`non_null_sample_indices`. Used to remap a view-mode 2-D
+        sample-filter array back onto the subset axis. Entries that
+        don't match (e.g. a null slot explicitly included in the
+        subset via ``set_samples``) are an edge case; the resulting
+        ``sample_filter_pass`` position is still indexed but the
+        guarantee is undefined."""
+        return np.searchsorted(self.non_null_sample_indices, self.samples_selection)
 
     @functools.cached_property
     def contig_lengths(self) -> np.ndarray | None:
@@ -567,8 +568,8 @@ class VczReader:
             read_plan = self.sample_chunk_plan
             output_columns = None
         else:
-            read_plan = self.real_sample_chunk_plan
-            output_columns = self._real_to_subset_indices
+            read_plan = self.non_null_sample_chunk_plan
+            output_columns = self._subset_positions_in_non_null
 
         for chunk_read in self.variant_chunk_plan:
             chunk = CachedChunk(
@@ -577,24 +578,40 @@ class VczReader:
                 read_plan=read_plan,
                 output_columns=output_columns,
             )
-            v_mask = None
+            # variants_selection: 1-D bool over the chunk's variant axis, or
+            # None meaning "no filter, keep every variant".
+            # sample_filter_pass: 2-D bool over (surviving variants, output
+            # samples) for sample-scope filters only; published so query.py
+            # can emit only matching samples in FORMAT-loop queries.
+            variants_selection = None
             sample_filter_pass = None
             if self.variant_filter is not None:
                 filter_data = {f: chunk.filter_view(f) for f in filter_fields}
-                v_mask = self.variant_filter.evaluate(filter_data)
-            if v_mask is not None and v_mask.ndim == 2:
-                variants_selection = v_mask.any(axis=1)
-                sample_filter_pass = v_mask[variants_selection]
-                if output_columns is not None:
-                    sample_filter_pass = sample_filter_pass[:, output_columns]
-                v_mask = variants_selection
-            if v_mask is not None and not v_mask.any():
+                filter_result = self.variant_filter.evaluate(filter_data)
+                if filter_result.ndim == 1:
+                    # Variant-scope filter: one bool per variant.
+                    variants_selection = filter_result
+                else:
+                    # Sample-scope filter: a variant survives if at least one
+                    # sample matched; the surviving rows are kept so the query
+                    # layer can emit only matching samples.
+                    variants_selection = filter_result.any(axis=1)
+                    sample_filter_pass = filter_result[variants_selection]
+                    if output_columns is not None:
+                        # Filter ran on the real-sample axis but output is the
+                        # user's subset axis; reindex columns to match.
+                        sample_filter_pass = sample_filter_pass[:, output_columns]
+
+            if variants_selection is not None and not variants_selection.any():
                 continue
+
             chunk_data = {}
             for field in query_fields:
                 value = chunk.output_view(field)
-                if v_mask is not None and _has_variants_axis(self.root[field]):
-                    value = value[v_mask]
+                if variants_selection is not None and _has_variants_axis(
+                    self.root[field]
+                ):
+                    value = value[variants_selection]
                 chunk_data[field] = value
             if sample_filter_pass is not None:
                 chunk_data["sample_filter_pass"] = sample_filter_pass

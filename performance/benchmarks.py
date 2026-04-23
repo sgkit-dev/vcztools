@@ -397,15 +397,7 @@ def _region_variant_indices(root, region_spec) -> np.ndarray:
     return np.flatnonzero(mask)
 
 
-def _build_meta(root, region_spec, *, spec: DatasetSpec | None = None) -> dict:
-    """Build the benchmark metadata dict for ``root``.
-
-    ``spec`` carries the simulator parameters (seed, seq_length) when the
-    dataset was produced by ``generate``. When reconstituting meta from
-    an existing VCZ via ``prepare``, the simulator parameters are
-    unknown — pass ``spec=None`` and the corresponding fields are
-    recorded as ``null`` in the JSON.
-    """
+def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
     num_variants = int(root["variant_position"].shape[0])
     num_samples = int(root["sample_id"].shape[0])
     region_indices = _region_variant_indices(root, region_spec)
@@ -417,8 +409,8 @@ def _build_meta(root, region_spec, *, spec: DatasetSpec | None = None) -> dict:
     return {
         "num_samples": num_samples,
         "num_variants": num_variants,
-        "seed": spec.seed if spec is not None else None,
-        "seq_length": spec.seq_length if spec is not None else None,
+        "seed": spec.seed,
+        "seq_length": spec.seq_length,
         "region_spec": {
             "contig": region_spec[0],
             "start": region_spec[1],
@@ -521,7 +513,7 @@ def _generate(
         _mirror_to_icechunk(v3_root, _icechunk_path(output))
 
     region_spec = _default_region_spec(root, region_fraction)
-    meta = _build_meta(root, region_spec, spec=spec)
+    meta = _build_meta(root, spec, region_spec)
     _meta_path(output).write_text(json.dumps(meta, indent=2, sort_keys=True))
     logger.info("wrote %s", _meta_path(output))
     return meta
@@ -529,23 +521,6 @@ def _generate(
 
 def _load_meta(vcz_path: pathlib.Path) -> dict:
     return json.loads(_meta_path(vcz_path).read_text())
-
-
-def _prepare(
-    source: pathlib.Path, output: pathlib.Path, region_fraction: float
-) -> dict:
-    """Compute and write ``benchmark_meta.json`` from an existing VCZ at
-    ``source`` (zip or directory). No mirroring, no unzipping — the goal
-    is to unblock a benchmark run when a dataset has been produced
-    out-of-band (e.g. shipped as a zip)."""
-    root = vcz_utils.open_zarr(str(source))
-    region_spec = _default_region_spec(root, region_fraction)
-    meta = _build_meta(root, region_spec)
-    meta_path = _meta_path(output)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True))
-    logger.info("wrote %s", meta_path)
-    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -1093,42 +1068,6 @@ def generate_cmd(
     )
     click.echo(
         f"generated {meta['num_variants']} variants x {meta['num_samples']} samples"
-    )
-
-
-@cli.command("prepare")
-@click.option(
-    "--source",
-    type=click.Path(exists=True, path_type=pathlib.Path),
-    required=True,
-    help="Existing VCZ to read (a .zip or directory store).",
-)
-@click.option(
-    "--output",
-    type=click.Path(path_type=pathlib.Path),
-    default=DEFAULT_DATASET,
-    show_default=True,
-    help="Base path used to locate sibling artefacts; the meta JSON "
-    "is written as '<output>.benchmark_meta.json'.",
-)
-@click.option(
-    "--region-fraction",
-    type=float,
-    default=0.002,
-    show_default=True,
-)
-def prepare_cmd(source, output, region_fraction):
-    """Compute benchmark_meta.json from an existing VCZ (no mirroring).
-
-    Use this when you already have a VCZ on disk (for example a zip
-    produced elsewhere) and just want to get to a ``run``-able state
-    without regenerating anything.
-    """
-    meta = _prepare(source, output, region_fraction)
-    click.echo(
-        f"prepared meta for {meta['num_variants']} variants "
-        f"x {meta['num_samples']} samples "
-        f"(region covers {meta['region_variant_count']} variants)"
     )
 
 

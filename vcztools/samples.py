@@ -64,18 +64,18 @@ def resolve_sample_selection(
     *,
     complement: bool = False,
     ignore_missing_samples: bool = False,
-) -> list[int] | None:
+) -> np.ndarray | None:
     """Resolve a bcftools-style sample selection into integer indexes.
 
     This is the CLI-layer helper for ``-s``/``-S``/``--force-samples``.
-    The returned list of indexes (or ``None``) is what
+    The returned integer ndarray (or ``None``) is what
     :class:`~vcztools.retrieval.VczReader` consumes directly as
     ``samples=``.
 
     - ``samples=None`` and ``complement=False`` → returns ``None``
       (reader selects every non-null sample).
-    - ``samples=None`` and ``complement=True`` → returns an empty list
-      (everything excluded).
+    - ``samples=None`` and ``complement=True`` → returns every
+      non-null sample index (complement of an empty exclude set).
     - ``samples=list[str]`` and ``complement=False`` → returns the
       indexes of those names in ``raw_sample_ids``, in input order,
       after unknown-name handling.
@@ -96,7 +96,7 @@ def resolve_sample_selection(
     if samples is None:
         if not complement:
             return None
-        return np.flatnonzero(non_null_select).tolist()
+        return np.flatnonzero(non_null_select)
 
     sample_ids = np.asarray(samples, dtype=np.dtypes.StringDType())
     unknown_samples = np.setdiff1d(sample_ids, raw_sample_ids)
@@ -125,12 +125,12 @@ def resolve_sample_selection(
         # Match raw_sample_ids' dtype so searchsorted is a safe cast.
         # Every remaining sample_id is a known entry in raw_sample_ids
         # (per the unknown-check above), so this can't truncate.
-        return search(raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype)).tolist()
+        return search(raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype))
 
     select = non_null_select & ~np.isin(
         raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype)
     )
-    return np.flatnonzero(select).tolist()
+    return np.flatnonzero(select)
 
 
 def read_samples_file(path: str) -> list[str]:

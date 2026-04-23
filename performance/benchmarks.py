@@ -795,12 +795,21 @@ class Result:
     num_variants: int
     repeat_index: int
     elapsed_s: float
+    cpu_s: float
     records: int
+    bytes_retrieved: int
+    data_rate_mib_s: float
     peak_rss_mb: float
     profile: str
     git_sha: str
     timestamp: str
     hostname: str
+
+
+@dataclasses.dataclass
+class ReadStats:
+    records: int
+    bytes_retrieved: int
 
 
 class PeakRssSampler:
@@ -834,27 +843,42 @@ class PeakRssSampler:
         return self._peak_bytes / (1024 * 1024)
 
 
-def _count_variants(reader: retrieval.VczReader, fields: list[str] | None) -> int:
-    """Iterate the reader and count rows.
+def _iterate_reader(reader: retrieval.VczReader, fields: list[str] | None) -> ReadStats:
+    """Iterate the reader's variant chunks, counting records and summing
+    the byte volume of every returned array.
 
     ``fields=[]`` is the chunk-scheduler-only probe: ``variant_chunks``
     short-circuits to an empty generator, so we walk the plan directly
-    and count per-chunk variants — no array reads, but the count still
-    matches ``num_variants``.
+    and count per-chunk variants — no array reads, zero bytes retrieved,
+    but the count still matches ``num_variants``.
+
+    For non-empty ``fields`` we iterate ``variant_chunks`` and sum
+    ``arr.nbytes`` over every key. A sample-scope filter can add a
+    ``sample_filter_pass`` entry (see ``retrieval.py:614-616``); it's a
+    real materialised array, so its bytes are part of the retrieved
+    volume.
     """
     if fields is not None and len(fields) == 0:
         chunk_size = reader.variants_chunk_size
         num_variants = reader.num_variants
-        total = 0
+        records = 0
         for cr in reader.variant_chunk_plan:
             if cr.selection is not None:
-                total += int(cr.selection.size)
+                records += int(cr.selection.size)
                 continue
             start = cr.index * chunk_size
             stop = min(start + chunk_size, num_variants)
-            total += stop - start
-        return total
-    return sum(1 for _ in reader.variants(fields=fields))
+            records += stop - start
+        return ReadStats(records=records, bytes_retrieved=0)
+
+    records = 0
+    total_bytes = 0
+    for chunk in reader.variant_chunks(fields=fields):
+        first = next(iter(chunk.values()))
+        records += int(first.shape[0])
+        for arr in chunk.values():
+            total_bytes += int(arr.nbytes)
+    return ReadStats(records=records, bytes_retrieved=total_bytes)
 
 
 def _run_task(
@@ -871,18 +895,24 @@ def _run_task(
     try:
         reader = task.build_reader(opened.root, meta)
         with PeakRssSampler() as sampler:
-            t0 = time.perf_counter()
-            records = _count_variants(reader, task.fields)
-            elapsed = time.perf_counter() - t0
+            wall_t0 = time.perf_counter()
+            cpu_t0 = time.process_time()
+            stats = _iterate_reader(reader, task.fields)
+            elapsed = time.perf_counter() - wall_t0
+            cpu = time.process_time() - cpu_t0
     finally:
         opened.cleanup()
 
     expected = int(meta["expected_records"][task.name])
-    if records != expected:
+    if stats.records != expected:
         raise AssertionError(
             f"task {task.name!r} on backend {backend.name!r} emitted "
-            f"{records} records, expected exactly {expected}"
+            f"{stats.records} records, expected exactly {expected}"
         )
+
+    data_rate_mib_s = (
+        stats.bytes_retrieved / (1024 * 1024) / elapsed if elapsed > 0 else 0.0
+    )
 
     return Result(
         task=task.name,
@@ -891,7 +921,10 @@ def _run_task(
         num_variants=int(meta["num_variants"]),
         repeat_index=repeat_index,
         elapsed_s=elapsed,
-        records=records,
+        cpu_s=cpu,
+        records=stats.records,
+        bytes_retrieved=stats.bytes_retrieved,
+        data_rate_mib_s=data_rate_mib_s,
         peak_rss_mb=sampler.peak_mb,
         profile=profile,
         git_sha=git_sha,

@@ -590,16 +590,16 @@ class TestCachedChunkAxes:
         assert dp.shape == (2, 4)
         nt.assert_array_equal(dp, [[0, 1, 2, 3], [10, 11, 12, 13]])
 
-    def test_output_view_always_subset_axis(self):
-        for mode in [True, False]:
-            chunk = _make_cached_chunk(
-                self._vcz(),
-                samples_selection=np.array([0, 2]),
-                filter_on_subset_samples=mode,
-            )
-            dp = chunk.output_view("call_DP")
-            assert dp.shape == (2, 2)
-            nt.assert_array_equal(dp, [[0, 2], [10, 12]])
+    @pytest.mark.parametrize("mode", [True, False])
+    def test_output_view_always_subset_axis(self, mode):
+        chunk = _make_cached_chunk(
+            self._vcz(),
+            samples_selection=np.array([0, 2]),
+            filter_on_subset_samples=mode,
+        )
+        dp = chunk.output_view("call_DP")
+        assert dp.shape == (2, 2)
+        nt.assert_array_equal(dp, [[0, 2], [10, 12]])
 
 
 class TestVariantChunksFilterPlusSamples:

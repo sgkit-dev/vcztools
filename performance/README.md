@@ -107,22 +107,6 @@ tasks.
 | 7 | `region_filter_format_gq_gt_50` | — | region + `FMT/GQ>50` with filter seeing *all* samples |
 | 8 | `region_and_sample_subset` | `call_genotype` | 1% samples × region |
 
-## Prepare from an existing zip
-
-If someone hands you a `bench.vcz.zip` produced elsewhere, you don't
-need to regenerate — compute `benchmark_meta.json` from it and run:
-
-```
-uv run python performance/benchmarks.py prepare \
-    --source performance/data/bench.vcz.zip
-uv run python performance/benchmarks.py run \
-    --backend local-zip --output performance/results/zip-only.jsonl
-```
-
-`prepare` only writes the meta file; it doesn't unzip or build the
-v3/icechunk mirrors. Restrict the run to `--backend local-zip` (or
-any single backend) to match what's actually on disk.
-
 ## Files
 
 - `benchmarks.py` — everything above.

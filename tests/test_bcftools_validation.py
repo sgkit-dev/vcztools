@@ -384,7 +384,7 @@ def test_error(tmp_path, fx_all_vcz, args, vcf_name, bcftools_error_string):
 @pytest.mark.parametrize(
     "args",
     [
-        # bcftools accepts each of these and emits header-only output;
+        # bcftools accepts each of these and emits variant-only output.
         # vcztools refuses because matching bcftools AC/AN semantics for
         # an empty subset would require significant internal complexity.
         "view --no-version -s '' --force-samples",

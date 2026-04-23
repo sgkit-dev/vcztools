@@ -322,19 +322,9 @@ class VczReader:
         """
         if self._samples_selection is not None:
             raise RuntimeError("samples already configured")
-        _validate_samples_input(samples)
-
-        raw_sample_ids = self.raw_sample_ids
-        samples_selection = np.asarray(samples, dtype=np.int64)
-        if samples_selection.size > 0:
-            lo = samples_selection.min()
-            hi = samples_selection.max()
-            if lo < 0 or hi >= raw_sample_ids.size:
-                raise ValueError(
-                    f"sample index out of range: must be in [0, {raw_sample_ids.size})"
-                )
+        samples_selection = self._normalize_sample_indexes(samples, label="sample")
         self._samples_selection = samples_selection
-        self._sample_ids = raw_sample_ids[samples_selection]
+        self._sample_ids = self.raw_sample_ids[samples_selection]
         self._sample_chunk_plan = samples_mod.build_chunk_plan(
             samples_selection,
             samples_chunk_size=self.samples_chunk_size,
@@ -398,20 +388,33 @@ class VczReader:
         """
         if self._filter_samples is not None:
             raise RuntimeError("filter_samples already configured")
-        _validate_samples_input(filter_samples)
+        self._filter_samples = self._normalize_sample_indexes(
+            filter_samples, label="filter_samples", sorted_unique=True
+        )
 
-        filter_samples = np.asarray(filter_samples, dtype=np.int64)
-        if filter_samples.size > 0:
-            lo = filter_samples.min()
-            hi = filter_samples.max()
+    def _normalize_sample_indexes(
+        self, value, *, label: str, sorted_unique: bool = False
+    ) -> np.ndarray:
+        """Validate and convert a sample-index input to a 1-D int64 ndarray.
+
+        Checks input type (via :func:`_validate_samples_input`) and that
+        every index is in ``[0, num_samples)``. When ``sorted_unique=True``,
+        also requires strictly ascending order. ``label`` is interpolated
+        into error messages.
+        """
+        _validate_samples_input(value)
+        arr = np.asarray(value, dtype=np.int64)
+        if arr.size > 0:
+            lo = arr.min()
+            hi = arr.max()
             raw_size = self.raw_sample_ids.size
             if lo < 0 or hi >= raw_size:
                 raise ValueError(
-                    f"filter_samples index out of range: must be in [0, {raw_size})"
+                    f"{label} index out of range: must be in [0, {raw_size})"
                 )
-            if np.any(np.diff(filter_samples) <= 0):
-                raise ValueError("filter_samples must be sorted ascending and unique")
-        self._filter_samples = filter_samples
+            if sorted_unique and np.any(np.diff(arr) <= 0):
+                raise ValueError(f"{label} must be sorted ascending and unique")
+        return arr
 
     @property
     def filter_samples(self) -> np.ndarray:

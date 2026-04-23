@@ -465,7 +465,7 @@ class VczReader:
         sample-filter mask back onto the subset axis. Entries that don't
         match (e.g. a masked slot explicitly included in the subset via
         ``set_samples``) are an edge case; the resulting
-        ``sample_filter_mask`` position is still indexed but the guarantee
+        ``sample_filter_pass`` position is still indexed but the guarantee
         is undefined."""
         return np.searchsorted(self.real_sample_indices, self.samples_selection)
 
@@ -549,7 +549,7 @@ class VczReader:
         3. Evaluate the filter against ``CachedChunk.filter_view`` for
            each referenced field. Collapse a 2-D sample-scope mask
            into a 1-D variant selection (with the surviving rows kept
-           as ``sample_filter_mask`` on the subset axis).
+           as ``sample_filter_pass`` on the subset axis).
         4. Assemble output from ``CachedChunk.output_view`` for each
            query field; apply the variant selection to variants-axis
            fields.
@@ -578,15 +578,15 @@ class VczReader:
                 output_columns=output_columns,
             )
             v_mask = None
-            sample_filter_mask = None
+            sample_filter_pass = None
             if self.variant_filter is not None:
                 filter_data = {f: chunk.filter_view(f) for f in filter_fields}
                 v_mask = self.variant_filter.evaluate(filter_data)
             if v_mask is not None and v_mask.ndim == 2:
                 variants_selection = v_mask.any(axis=1)
-                sample_filter_mask = v_mask[variants_selection]
+                sample_filter_pass = v_mask[variants_selection]
                 if output_columns is not None:
-                    sample_filter_mask = sample_filter_mask[:, output_columns]
+                    sample_filter_pass = sample_filter_pass[:, output_columns]
                 v_mask = variants_selection
             if v_mask is not None and not v_mask.any():
                 continue
@@ -596,8 +596,8 @@ class VczReader:
                 if v_mask is not None and _has_variants_axis(self.root[field]):
                     value = value[v_mask]
                 chunk_data[field] = value
-            if sample_filter_mask is not None:
-                chunk_data["sample_filter_mask"] = sample_filter_mask
+            if sample_filter_pass is not None:
+                chunk_data["sample_filter_pass"] = sample_filter_pass
             yield chunk_data
 
     def _resolve_query_fields(self, fields):

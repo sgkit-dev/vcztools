@@ -102,10 +102,11 @@ tasks.
 | 2 | `iter_info_only` | INFO scalars | full |
 | 3 | `region_info_and_format` | INFO + FORMAT + genotypes | region |
 | 4 | `first_samples_chunk` | `call_genotype` | first 1000 samples × all variants (one samples-chunk) |
-| 5 | `region_variant_position` | `variant_position` | region |
-| 6 | `filter_info_dp_gt_80` | INFO | full (`INFO/DP>80`) |
-| 7 | `region_filter_format_gq_gt_50` | — | region + `FMT/GQ>50` with filter seeing *all* samples |
-| 8 | `region_and_sample_subset` | `call_genotype` | 1% samples × region |
+| 5 | `first_variant_chunks` | `call_genotype` | first 5 variant-chunks × all samples |
+| 6 | `region_variant_position` | `variant_position` | region |
+| 7 | `filter_info_dp_gt_80` | INFO | full (`INFO/DP>80`) |
+| 8 | `region_filter_format_gq_gt_50` | — | region + `FMT/GQ>50` with filter seeing *all* samples |
+| 9 | `region_and_sample_subset` | `call_genotype` | 1% samples × region |
 
 ## Files
 

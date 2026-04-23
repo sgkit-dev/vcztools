@@ -95,7 +95,12 @@ def _simulate(spec: DatasetSpec):
 
 
 def _build_vcz(
-    ts, vcz_path: pathlib.Path, *, variants_chunk_size=None, samples_chunk_size=None
+    ts,
+    vcz_path: pathlib.Path,
+    *,
+    variants_chunk_size=None,
+    samples_chunk_size=None,
+    worker_processes: int = 0,
 ):
     return bio2zarr.tskit.convert(
         ts,
@@ -103,6 +108,7 @@ def _build_vcz(
         mode="r+",
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
+        worker_processes=worker_processes,
     )
 
 
@@ -457,6 +463,7 @@ def _generate(
     variants_chunk_size: int | None,
     samples_chunk_size: int | None,
     region_fraction: float,
+    worker_processes: int,
 ) -> dict:
     spec = DatasetSpec(num_samples=num_samples, seq_length=seq_length, seed=seed)
 
@@ -478,6 +485,7 @@ def _generate(
             output,
             variants_chunk_size=variants_chunk_size,
             samples_chunk_size=samples_chunk_size,
+            worker_processes=worker_processes,
         )
     with _stage("augment"):
         _augment_vcz(root)
@@ -1023,6 +1031,16 @@ def cli():
     help="Fraction of the first contig's variants covered by the region "
     "task's region_spec (centred on the median).",
 )
+@click.option(
+    "--worker-processes",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Worker processes for bio2zarr.tskit.convert. "
+    "0 uses the main process only. Parallel workers speed up the "
+    "convert stage but each pickles the tree sequence, so memory "
+    "scales with the worker count.",
+)
 def generate_cmd(
     num_samples,
     seq_length,
@@ -1031,6 +1049,7 @@ def generate_cmd(
     variants_chunk_size,
     samples_chunk_size,
     region_fraction,
+    worker_processes,
 ):
     """Simulate and write the benchmark dataset (v2 dir, v3 dir, zip, icechunk)."""
     meta = _generate(
@@ -1041,6 +1060,7 @@ def generate_cmd(
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
         region_fraction=region_fraction,
+        worker_processes=worker_processes,
     )
     click.echo(
         f"generated {meta['num_variants']} variants x {meta['num_samples']} samples"

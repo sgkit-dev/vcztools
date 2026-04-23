@@ -397,7 +397,15 @@ def _region_variant_indices(root, region_spec) -> np.ndarray:
     return np.flatnonzero(mask)
 
 
-def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
+def _build_meta(root, region_spec, *, spec: DatasetSpec | None = None) -> dict:
+    """Build the benchmark metadata dict for ``root``.
+
+    ``spec`` carries the simulator parameters (seed, seq_length) when the
+    dataset was produced by ``generate``. When reconstituting meta from
+    an existing VCZ via ``prepare``, the simulator parameters are
+    unknown — pass ``spec=None`` and the corresponding fields are
+    recorded as ``null`` in the JSON.
+    """
     num_variants = int(root["variant_position"].shape[0])
     num_samples = int(root["sample_id"].shape[0])
     region_indices = _region_variant_indices(root, region_spec)
@@ -409,8 +417,8 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
     return {
         "num_samples": num_samples,
         "num_variants": num_variants,
-        "seed": spec.seed,
-        "seq_length": spec.seq_length,
+        "seed": spec.seed if spec is not None else None,
+        "seq_length": spec.seq_length if spec is not None else None,
         "region_spec": {
             "contig": region_spec[0],
             "start": region_spec[1],
@@ -422,8 +430,7 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
             "iter_info_only": num_variants,
             "region_info_and_format": int(region_indices.size),
             "subset_10_samples": num_variants,
-            "subset_1000_samples": num_variants,
-            "region_1pct": int(region_indices.size),
+            "region_variant_position": int(region_indices.size),
             "filter_info_dp_gt_80": dp_gt_80,
             "region_filter_format_gq_gt_50": region_gq_gt_50,
             "region_and_sample_subset": int(region_indices.size),
@@ -514,7 +521,7 @@ def _generate(
         _mirror_to_icechunk(v3_root, _icechunk_path(output))
 
     region_spec = _default_region_spec(root, region_fraction)
-    meta = _build_meta(root, spec, region_spec)
+    meta = _build_meta(root, region_spec, spec=spec)
     _meta_path(output).write_text(json.dumps(meta, indent=2, sort_keys=True))
     logger.info("wrote %s", _meta_path(output))
     return meta
@@ -522,6 +529,23 @@ def _generate(
 
 def _load_meta(vcz_path: pathlib.Path) -> dict:
     return json.loads(_meta_path(vcz_path).read_text())
+
+
+def _prepare(
+    source: pathlib.Path, output: pathlib.Path, region_fraction: float
+) -> dict:
+    """Compute and write ``benchmark_meta.json`` from an existing VCZ at
+    ``source`` (zip or directory). No mirroring, no unzipping — the goal
+    is to unblock a benchmark run when a dataset has been produced
+    out-of-band (e.g. shipped as a zip)."""
+    root = vcz_utils.open_zarr(str(source))
+    region_spec = _default_region_spec(root, region_fraction)
+    meta = _build_meta(root, region_spec)
+    meta_path = _meta_path(output)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True))
+    logger.info("wrote %s", meta_path)
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -686,15 +710,7 @@ def _build_subset_10_samples(root, meta):
     return reader
 
 
-def _build_subset_1000_samples(root, meta):
-    reader = retrieval.VczReader(root)
-    num_samples = int(root["sample_id"].shape[0])
-    take = min(1000, num_samples)
-    reader.set_samples(list(range(take)))
-    return reader
-
-
-def _build_region_1pct(root, meta):
+def _build_region_variant_position(root, meta):
     reader = retrieval.VczReader(root)
     rs = meta["region_spec"]
     region = f"{rs['contig']}:{rs['start']}-{rs['end']}"
@@ -768,8 +784,11 @@ TASKS: list[Task] = [
         ],
     ),
     Task("subset_10_samples", _build_subset_10_samples, ["call_genotype"]),
-    Task("subset_1000_samples", _build_subset_1000_samples, ["call_genotype"]),
-    Task("region_1pct", _build_region_1pct, ["variant_position"]),
+    Task(
+        "region_variant_position",
+        _build_region_variant_position,
+        ["variant_position"],
+    ),
     Task(
         "filter_info_dp_gt_80",
         _build_filter_info_dp_gt_80,
@@ -1034,10 +1053,12 @@ def cli():
 @click.option(
     "--region-fraction",
     type=float,
-    default=0.01,
+    default=0.002,
     show_default=True,
     help="Fraction of the first contig's variants covered by the region "
-    "task's region_spec (centred on the median).",
+    "task's region_spec (centred on the median). Default 0.2% is tuned "
+    "so region_info_and_format lands inside the target band on a "
+    "100k-sample dataset.",
 )
 @click.option(
     "--worker-processes",
@@ -1075,12 +1096,53 @@ def generate_cmd(
     )
 
 
+@cli.command("prepare")
+@click.option(
+    "--source",
+    type=click.Path(exists=True, path_type=pathlib.Path),
+    required=True,
+    help="Existing VCZ to read (a .zip or directory store).",
+)
+@click.option(
+    "--output",
+    type=click.Path(path_type=pathlib.Path),
+    default=DEFAULT_DATASET,
+    show_default=True,
+    help="Base path used to locate sibling artefacts; the meta JSON "
+    "is written as '<output>.benchmark_meta.json'.",
+)
+@click.option(
+    "--region-fraction",
+    type=float,
+    default=0.002,
+    show_default=True,
+)
+def prepare_cmd(source, output, region_fraction):
+    """Compute benchmark_meta.json from an existing VCZ (no mirroring).
+
+    Use this when you already have a VCZ on disk (for example a zip
+    produced elsewhere) and just want to get to a ``run``-able state
+    without regenerating anything.
+    """
+    meta = _prepare(source, output, region_fraction)
+    click.echo(
+        f"prepared meta for {meta['num_variants']} variants "
+        f"x {meta['num_samples']} samples "
+        f"(region covers {meta['region_variant_count']} variants)"
+    )
+
+
 @cli.command("run")
 @click.option(
     "--dataset",
-    type=click.Path(exists=True, path_type=pathlib.Path),
+    type=click.Path(path_type=pathlib.Path),
     default=DEFAULT_DATASET,
     show_default=True,
+    help="Base path used to locate per-backend siblings "
+    "(<dataset>.zip, <dataset>3/, <dataset>.icechunk/, "
+    "<dataset>.benchmark_meta.json). The directory itself does not "
+    "need to exist as long as the backends you request are satisfied "
+    "by the sibling files.",
 )
 @click.option(
     "--output",

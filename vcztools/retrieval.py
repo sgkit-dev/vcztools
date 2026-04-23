@@ -43,7 +43,9 @@ class CachedChunk:
 
     - ``read_plan`` — the sample chunks to fetch for every ``call_*``
       field. In subset-mode this is the subset plan; in view-mode it
-      is the real-samples plan. Non-``call_*`` fields ignore it.
+      is the non-null-samples plan. An empty plan (no ``chunk_reads``)
+      is valid and produces zero-sample-column arrays without any
+      I/O. Non-``call_*`` fields ignore it.
     - ``output_columns`` — indices into the read-plan axis that
       produce the subset axis. ``None`` when the read plan is already
       the subset axis (subset-mode) — ``output_view`` returns the
@@ -64,7 +66,7 @@ class CachedChunk:
         root,
         variant_chunk: utils.ChunkRead,
         *,
-        read_plan: samples_mod.SampleChunkPlan | None,
+        read_plan: samples_mod.SampleChunkPlan,
         output_columns: np.ndarray | None,
     ):
         self.root = root
@@ -112,10 +114,6 @@ class CachedChunk:
             arr = self.root[field]
             if not _has_variants_axis(arr) or not field.startswith("call_"):
                 self._load_non_call_raw(field, arr)
-            elif self._read_plan is None:
-                num_s_chunks = int(arr.cdata_shape[1])
-                for sci in range(num_s_chunks):
-                    self._load_call_raw(field, arr, sci)
             else:
                 for cr in self._read_plan.chunk_reads:
                     self._load_call_raw(field, arr, cr.index)
@@ -159,29 +157,34 @@ class CachedChunk:
 
     def _assemble_call(self, field: str, arr) -> np.ndarray:
         plan = self._read_plan
-        if plan is None:
-            # Empty subset (set_samples([])) legacy path: read the full
-            # on-disk sample axis so sample-scope filters and legacy
-            # call_* output can still see every sample.
-            num_s_chunks = int(arr.cdata_shape[1])
-            parts = [
-                self._load_call_raw(field, arr, sci) for sci in range(num_s_chunks)
-            ]
-        else:
-            parts = []
-            for cr in plan.chunk_reads:
-                raw = self._load_call_raw(field, arr, cr.index)
-                if cr.selection is not None:
-                    raw = raw[:, cr.selection]
-                parts.append(raw)
+        parts = []
+        for cr in plan.chunk_reads:
+            raw = self._load_call_raw(field, arr, cr.index)
+            if cr.selection is not None:
+                raw = raw[:, cr.selection]
+            parts.append(raw)
+        if len(parts) == 0:
+            return self._empty_call_array(arr)
         data = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
-        if plan is not None and plan.permutation is not None:
+        if plan.permutation is not None:
             data = data[:, plan.permutation]
         data = self._slice_variants(data)
         # Advanced indexing along a non-first axis of a 3-D array yields a
         # non-C-contiguous view; ascontiguousarray gives the C encoder the
         # contiguous buffer it requires.
         return np.ascontiguousarray(data)
+
+    def _empty_call_array(self, arr) -> np.ndarray:
+        """Zero-sample-column array for a call_* field, without I/O.
+        Used when the read plan is empty (e.g. set_samples([]))."""
+        sel = self.variant_chunk.selection
+        if sel is not None:
+            n_variants = int(sel.size)
+        else:
+            chunk_size_v = int(arr.chunks[0])
+            chunk_start = self.variant_chunk.index * chunk_size_v
+            n_variants = min(chunk_size_v, int(arr.shape[0]) - chunk_start)
+        return np.empty((n_variants, 0) + tuple(arr.shape[2:]), dtype=arr.dtype)
 
 
 def _get_filter_ids(root):
@@ -332,18 +335,10 @@ class VczReader:
                 )
         self._samples_selection = samples_selection
         self._sample_ids = raw_sample_ids[samples_selection]
-        if len(samples_selection) > 0:
-            self._sample_chunk_plan = samples_mod.build_chunk_plan(
-                samples_selection,
-                samples_chunk_size=self.samples_chunk_size,
-            )
-        else:
-            # Empty selection: leaving plan as None sends call_*
-            # reads through the _load_call_full path, which reads
-            # every sample chunk. That's what lets a sample-scope
-            # filter or AC/AN recompute still see the full genotype
-            # matrix even though no samples will be emitted.
-            self._sample_chunk_plan = None
+        self._sample_chunk_plan = samples_mod.build_chunk_plan(
+            samples_selection,
+            samples_chunk_size=self.samples_chunk_size,
+        )
 
     def set_variants(self, variants) -> None:
         """Configure the variant selection.
@@ -447,13 +442,10 @@ class VczReader:
         return np.flatnonzero(self.raw_sample_ids != "")
 
     @functools.cached_property
-    def non_null_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan | None:
+    def non_null_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
         """:class:`~vcztools.samples.SampleChunkPlan` for every
         non-null sample. Used by :class:`CachedChunk` to build
-        view-mode filter views. ``None`` when no non-null samples
-        exist."""
-        if self.non_null_sample_indices.size == 0:
-            return None
+        view-mode filter views. Empty when no non-null samples exist."""
         return samples_mod.build_chunk_plan(
             self.non_null_sample_indices,
             samples_chunk_size=self.samples_chunk_size,
@@ -565,7 +557,15 @@ class VczReader:
             else ()
         )
         if self.filter_on_subset_samples:
-            read_plan = self.sample_chunk_plan
+            if len(self.samples_selection) > 0:
+                read_plan = self.sample_chunk_plan
+            else:
+                # Empty subset (e.g. ``view -s ^<all_samples>``): read
+                # the non-null axis so AC/AN recompute in vcf_writer
+                # sees the full non-null genotype matrix. The writer's
+                # ``num_samples == 0`` gate prevents per-sample output
+                # emission after the recompute.
+                read_plan = self.non_null_sample_chunk_plan
             output_columns = None
         else:
             read_plan = self.non_null_sample_chunk_plan

@@ -46,6 +46,11 @@ holding the same logical data:
 
 For a tiny smoke run: `generate --num-samples 1000 --seq-length 200000`.
 
+Pass `--worker-processes N` to parallelise the `bio2zarr.tskit.convert`
+stage. It defaults to 0 (main process only) because bio2zarr currently
+pickles the tree sequence to each worker, so peak memory scales with
+the worker count.
+
 ## Run the matrix
 
 ```

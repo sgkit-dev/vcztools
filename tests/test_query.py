@@ -157,7 +157,7 @@ class TestQueryFormatEvaluator:
 
     # fmt: off
     @pytest.mark.parametrize(
-        ("query_format", "sample_filter_mask", "expected_result"),
+        ("query_format", "sample_filter_pass", "expected_result"),
         [
             (
                 r"[%DP ]\n",
@@ -184,14 +184,14 @@ class TestQueryFormatEvaluator:
         ],
     )
     # fmt: on
-    def test_sample_filter_mask(
-        self, fx_reader, query_format, sample_filter_mask, expected_result
+    def test_sample_filter_pass(
+        self, fx_reader, query_format, sample_filter_pass, expected_result
     ):
         formatter = QueryFormatter(query_format, fx_reader)
         result = ""
         for i, variant in enumerate(fx_reader.variants()):
-            if sample_filter_mask is not None:
-                variant["sample_filter_mask"] = sample_filter_mask[i]
+            if sample_filter_pass is not None:
+                variant["sample_filter_pass"] = sample_filter_pass[i]
             result += formatter.format_variant(variant)
         assert result == expected_result
 

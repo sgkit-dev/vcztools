@@ -421,7 +421,7 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
             "iter_no_fields": num_variants,
             "iter_info_only": num_variants,
             "region_info_and_format": int(region_indices.size),
-            "subset_10_samples": num_variants,
+            "first_samples_chunk": num_variants,
             "region_variant_position": int(region_indices.size),
             "filter_info_dp_gt_80": dp_gt_80,
             "region_filter_format_gq_gt_50": region_gq_gt_50,
@@ -676,12 +676,15 @@ def _build_region_info_and_format(root, meta):
     return reader
 
 
-def _build_subset_10_samples(root, meta):
+def _build_first_samples_chunk(root, meta):
+    """Read the first 1000 samples across every variant. At the default
+    ``samples_chunk_size=10000`` this lands entirely inside one
+    samples-chunk, so the task measures the backend's throughput for
+    pulling a complete samples-chunk across the full variants axis."""
     reader = retrieval.VczReader(root)
-    rng = np.random.default_rng(12345)
     num_samples = int(root["sample_id"].shape[0])
-    indexes = rng.choice(num_samples, size=min(10, num_samples), replace=False)
-    reader.set_samples(sorted(int(i) for i in indexes))
+    take = min(1000, num_samples)
+    reader.set_samples(list(range(take)))
     return reader
 
 
@@ -758,7 +761,7 @@ TASKS: list[Task] = [
             "call_genotype",
         ],
     ),
-    Task("subset_10_samples", _build_subset_10_samples, ["call_genotype"]),
+    Task("first_samples_chunk", _build_first_samples_chunk, ["call_genotype"]),
     Task(
         "region_variant_position",
         _build_region_variant_position,

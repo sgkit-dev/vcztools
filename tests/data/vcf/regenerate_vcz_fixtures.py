@@ -64,12 +64,12 @@ def main():
         stem = src
         while stem.suffix:
             stem = stem.with_suffix("")
-        fmt_suffix = "_zv3" if fx.zarr_format == 3 else ""
-        dst = FIXTURE_DIR / f"{stem.name}{fmt_suffix}.vcz.zip"
+        vcz_suffix = ".vcz3" if fx.zarr_format == 3 else ".vcz"
+        dst = FIXTURE_DIR / f"{stem.name}{vcz_suffix}.zip"
         before = dst.stat().st_size if dst.exists() else 0
 
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_vcz = pathlib.Path(tmp) / f"{stem.name}.vcz"
+            tmp_vcz = pathlib.Path(tmp) / f"{stem.name}{vcz_suffix}"
             print(f"Converting {src.name} -> {dst.name}")
             vcf.convert(
                 [src],

@@ -50,12 +50,15 @@ class VczFixture:
         raise ValueError(f"unknown backend: {backend!r}")
 
 
-def _load(name: str, vcf_filename: str, tmp_path_factory) -> VczFixture:
+def _load(
+    name: str, vcf_filename: str, tmp_path_factory, zarr_format=None
+) -> VczFixture:
     vcf_path = _VCF_DIR / vcf_filename
-    zip_path = _VCF_DIR / f"{name}.vcz.zip"
+    vcz_suffix = ".vcz3" if zarr_format == 3 else ".vcz"
+    zip_path = _VCF_DIR / f"{name}{vcz_suffix}.zip"
     store = zarr.storage.ZipStore(zip_path, mode="r")
     group = zarr.open(store, mode="r")
-    directory_path = tmp_path_factory.mktemp(f"{name}_vcz_dir") / f"{name}.vcz"
+    directory_path = tmp_path_factory.mktemp(f"{name}_vcz_dir") / f"{name}{vcz_suffix}"
     directory_path.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, mode="r") as zf:
         zf.extractall(directory_path)
@@ -80,8 +83,8 @@ def fx_sample_vcz(tmp_path_factory) -> VczFixture:
 
 
 @pytest.fixture(scope="session")
-def fx_sample_zv3_vcz(tmp_path_factory) -> VczFixture:
-    return _load("sample_zv3", "sample.vcf.gz", tmp_path_factory)
+def fx_sample_vcz3(tmp_path_factory) -> VczFixture:
+    return _load("sample", "sample.vcf.gz", tmp_path_factory, zarr_format=3)
 
 
 @pytest.fixture(scope="session")

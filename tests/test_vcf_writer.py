@@ -74,10 +74,10 @@ def test_write_vcf(
     assert_vcfs_close(fx_sample_vcz.vcf_path, output)
 
 
-def test_write_vcf__icechunk(tmp_path, fx_sample_zv3_vcz):
+def test_write_vcf__icechunk(tmp_path, fx_sample_vcz3):
     pytest.importorskip("icechunk")
 
-    vcz_icechunk = to_vcz_icechunk(fx_sample_zv3_vcz.directory_path, tmp_path)
+    vcz_icechunk = to_vcz_icechunk(fx_sample_vcz3.directory_path, tmp_path)
     output = tmp_path.joinpath("output.vcf")
 
     reader = VczReader(
@@ -107,7 +107,7 @@ def test_write_vcf__icechunk(tmp_path, fx_sample_zv3_vcz):
     )
 
     # check headers are the same
-    assert_vcfs_close(fx_sample_zv3_vcz.vcf_path, output)
+    assert_vcfs_close(fx_sample_vcz3.vcf_path, output)
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,3 @@
-import os
-import pathlib
 import shutil
 import socket
 import subprocess
@@ -9,10 +7,10 @@ import uuid
 import numpy as np
 import pytest
 import zarr
-from vczstore.icechunk_utils import (
-    copy_store_to_icechunk,
-    make_icechunk_storage,
-)
+
+from vcztools.icechunk import make_icechunk_storage
+
+from .utils import copy_store_to_icechunk, to_vcz_icechunk
 
 icechunk = pytest.importorskip("icechunk")
 from icechunk import Repository  # noqa E402
@@ -47,29 +45,6 @@ def _assert_roots_equal(root1, root2):
     assert sorted(root1.keys()) == sorted(root2.keys())
     for key in root1.keys():
         np.testing.assert_array_equal(root1[key][:], root2[key][:], err_msg=key)
-
-
-def _convert_vcf_to_vcz_zarr3(vcf_name, tmp_path):
-    vcf_path = pathlib.Path("tests/data/vcf") / vcf_name
-    output = (tmp_path / vcf_path.name).with_suffix(".vcz")
-    env = dict(os.environ)
-    env["BIO2ZARR_ZARR_FORMAT"] = "3"
-    completed = subprocess.run(
-        [
-            "vcf2zarr",
-            "convert",
-            "--no-progress",
-            "--worker-processes=0",
-            str(vcf_path),
-            str(output),
-        ],
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stderr
-    return output
 
 
 @pytest.fixture
@@ -140,8 +115,8 @@ def azurite_env(tmp_path_factory, monkeypatch):
             process.wait()
 
 
-def test_copy_then_append_azure_icechunk(tmp_path, azurite_env):
-    vcz = _convert_vcf_to_vcz_zarr3("sample.vcf.gz", tmp_path)
+def test_copy_then_append_azure_icechunk(tmp_path, fx_sample_vcz3, azurite_env):
+    vcz = to_vcz_icechunk(fx_sample_vcz3.directory_path, tmp_path)
 
     azure_url = f"az://{azurite_env['account']}/{azurite_env['container']}/store.vcz"
 

@@ -303,3 +303,15 @@ def copy_store(source, dest):
     for source_key in sorted(s.list(), reverse=True):
         buffer = s.get(source_key, default_buffer_prototype())
         d.set(source_key, buffer)
+
+
+def copy_store_to_icechunk(source, dest):
+    """Copy a Zarr store to a new Icechunk store."""
+    from icechunk import Repository  # noqa PLC0415
+    from vcztools.icechunk import make_icechunk_storage  # noqa PLC0415
+
+    icechunk_storage = make_icechunk_storage(dest)
+    repo = Repository.create(icechunk_storage)
+
+    with repo.transaction("main", message="create") as dest:
+        copy_store(source, dest)

@@ -1039,6 +1039,18 @@ wheels = [
 ]
 
 [[package]]
+name = "hypothesis"
+version = "6.152.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sortedcontainers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b0/7f/67a06c5f19368e0fa04612bbc446c535bf45b0b51bc6aa56055b112f7604/hypothesis-6.152.2.tar.gz", hash = "sha256:11fd5725958fe75597d1b831f703fdf7e636b7cf1f249117f381ad5cee4d888f", size = 466358, upload-time = "2026-04-24T04:26:18.917Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/ed/77eed094bceae845a994f936721293afae40a346c0005d85208407fd40e8/hypothesis-6.152.2-py3-none-any.whl", hash = "sha256:1ad5b87f0e6c0ab7a9a35b1378cc4963d23eaf0cb1e47e94f1d574b41155907a", size = 532034, upload-time = "2026-04-24T04:26:16.394Z" },
+]
+
+[[package]]
 name = "icechunk"
 version = "1.1.21"
 source = { registry = "https://pypi.org/simple" }
@@ -2989,6 +3001,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6b/a4/bd8ad7d1cf66268219f282d4268b6ba73f8ff51c5fba2c9663adab103615/sorted_nearest-0.0.41.tar.gz", hash = "sha256:bd3ce6cbbc1df9a00e0a8afafe00556f4eaa2499a37fc5901227d0beb10b7298", size = 1568705, upload-time = "2025-10-06T13:16:47.155Z" }
 
 [[package]]
+name = "sortedcontainers"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
+]
+
+[[package]]
 name = "soupsieve"
 version = "2.8.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3523,6 +3544,13 @@ dependencies = [
     { name = "zarr" },
 ]
 
+[package.optional-dependencies]
+icechunk = [
+    { name = "hypothesis" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
 [package.dev-dependencies]
 benchmark = [
     { name = "bio2zarr" },
@@ -3587,6 +3615,8 @@ wheels = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
+    { name = "hypothesis", marker = "extra == 'icechunk'" },
+    { name = "icechunk", marker = "extra == 'icechunk'" },
     { name = "numpy", specifier = ">=2" },
     { name = "pandas" },
     { name = "pyparsing", specifier = ">=3.1.0" },
@@ -3594,6 +3624,7 @@ requires-dist = [
     { name = "ruranges-py", marker = "python_full_version >= '3.12'" },
     { name = "zarr", specifier = ">=3.1" },
 ]
+provides-extras = ["icechunk"]
 
 [package.metadata.requires-dev]
 benchmark = [

@@ -33,10 +33,12 @@ class Fixture:
     vcf_name: str
     variants_chunk_size: int | None = None
     samples_chunk_size: int | None = None
+    zarr_format: int | None = None
 
 
 FIXTURES = [
     Fixture("sample.vcf.gz", variants_chunk_size=4),
+    Fixture("sample.vcf.gz", variants_chunk_size=4, zarr_format=3),
     Fixture("sample-split-alleles.vcf.gz", variants_chunk_size=7),
     Fixture("msprime_diploid.vcf.gz", variants_chunk_size=3),
     Fixture("1kg_2020_chrM.vcf.gz", variants_chunk_size=10),
@@ -62,7 +64,8 @@ def main():
         stem = src
         while stem.suffix:
             stem = stem.with_suffix("")
-        dst = FIXTURE_DIR / f"{stem.name}.vcz.zip"
+        fmt_suffix = "_zv3" if fx.zarr_format == 3 else ""
+        dst = FIXTURE_DIR / f"{stem.name}{fmt_suffix}.vcz.zip"
         before = dst.stat().st_size if dst.exists() else 0
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -74,6 +77,7 @@ def main():
                 worker_processes=0,
                 variants_chunk_size=fx.variants_chunk_size,
                 samples_chunk_size=fx.samples_chunk_size,
+                zarr_format=fx.zarr_format,
             )
             _deflate_zip_directory(tmp_vcz, dst)
 

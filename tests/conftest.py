@@ -80,6 +80,11 @@ def fx_sample_vcz(tmp_path_factory) -> VczFixture:
 
 
 @pytest.fixture(scope="session")
+def fx_sample_zv3_vcz(tmp_path_factory) -> VczFixture:
+    return _load("sample_zv3", "sample.vcf.gz", tmp_path_factory)
+
+
+@pytest.fixture(scope="session")
 def fx_sample_split_alleles_vcz(tmp_path_factory) -> VczFixture:
     return _load(
         "sample-split-alleles", "sample-split-alleles.vcf.gz", tmp_path_factory

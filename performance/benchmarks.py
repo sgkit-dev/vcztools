@@ -410,6 +410,9 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
     first_variant_chunks_records = min(
         FIRST_VARIANT_CHUNKS_COUNT * variants_chunk, num_variants
     )
+    fmt_fields_records = min(
+        FMT_FIELDS_VARIANT_CHUNKS_COUNT * variants_chunk, num_variants
+    )
 
     return {
         "num_samples": num_samples,
@@ -427,9 +430,13 @@ def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
             "iter_info_only": num_variants,
             "region_info_and_format": int(region_indices.size),
             "first_samples_chunk": num_variants,
+            "fmt_fields": fmt_fields_records,
+            "fmt_fields_filtered": fmt_fields_records,
+            "first_samples_chunk_slice": num_variants,
             "first_variant_chunks": first_variant_chunks_records,
             "region_variant_position": int(region_indices.size),
             "filter_info_dp_gt_80": dp_gt_80,
+            "filter_info_dp_gt_80_genotypes": dp_gt_80,
             "region_filter_format_gq_gt_50": region_gq_gt_50,
             "region_and_sample_subset": int(region_indices.size),
             # Sanity check: the full-scan equivalents, computed once so a
@@ -683,14 +690,87 @@ def _build_region_info_and_format(root, meta):
 
 
 def _build_first_samples_chunk(root, meta):
-    """Read the first 1000 samples across every variant. At the default
-    ``samples_chunk_size=10000`` this lands entirely inside one
-    samples-chunk, so the task measures the backend's throughput for
-    pulling a complete samples-chunk across the full variants axis."""
+    """Read the full first samples-chunk across every variant. The
+    selection matches the on-disk sample chunk size, so
+    ``build_chunk_plan`` emits ``selection=None`` and no per-chunk
+    slice is applied — the task reports the reader's delivered
+    bandwidth on an intact sample chunk."""
     reader = retrieval.VczReader(root)
     num_samples = int(root["sample_id"].shape[0])
-    take = min(1000, num_samples)
+    samples_chunk_size = int(root["sample_id"].chunks[0])
+    take = min(samples_chunk_size, num_samples)
     reader.set_samples(list(range(take)))
+    return reader
+
+
+FMT_FIELDS_VARIANT_CHUNKS_COUNT = 60
+
+
+def _fmt_fields_reader(root):
+    """Shared setup for :func:`_build_fmt_fields` and
+    :func:`_build_fmt_fields_filtered`: the first samples-chunk wide
+    by the first ``FMT_FIELDS_VARIANT_CHUNKS_COUNT`` variant-chunks
+    tall. Sized so the filter variant lands in the ~10s band on the
+    slower local-zip backend (~0.17s per chunk from
+    ``performance/reports/bulk-filter.md``) — full-dataset coverage
+    isn't needed to capture the per-chunk filter-eval overhead, which
+    is linear in chunk count."""
+    reader = retrieval.VczReader(root)
+    num_samples = int(root["sample_id"].shape[0])
+    samples_chunk_size = int(root["sample_id"].chunks[0])
+    take_samples = min(samples_chunk_size, num_samples)
+    reader.set_samples(list(range(take_samples)))
+
+    num_variants = int(root["variant_position"].shape[0])
+    variants_chunk = int(root["variant_position"].chunks[0])
+    num_variant_chunks = math.ceil(num_variants / variants_chunk)
+    take_chunks = min(FMT_FIELDS_VARIANT_CHUNKS_COUNT, num_variant_chunks)
+    plan = [vcz_utils.ChunkRead(index=i) for i in range(take_chunks)]
+    reader.set_variants(plan)
+    return reader
+
+
+def _build_fmt_fields(root, meta):
+    """Read three FMT fields (``call_genotype``, ``call_GQ``,
+    ``call_DP``) on the shared fmt_fields slice. Apples-to-apples
+    baseline for :func:`_build_fmt_fields_filtered`: same fields,
+    same coverage, no filter — the wall-time delta between the two
+    is filter-eval overhead (plus the per-chunk
+    ``sample_filter_pass`` mask the filter path publishes into
+    ``chunk_data``)."""
+    return _fmt_fields_reader(root)
+
+
+def _build_fmt_fields_filtered(root, meta):
+    """Same slice as :func:`_build_fmt_fields` plus a FMT-scope filter
+    that evaluates to ``True`` on every cell of the bench dataset, so
+    every variant in scope survives and the output volume matches the
+    unfiltered baseline. Exercises the per-genotype filter-evaluation
+    path end-to-end: reads two extra call_* fields (``call_GQ``,
+    ``call_DP``), evaluates four element-wise predicates combined
+    with ``&&``, and materialises a per-chunk
+    ``(variants_chunk, num_samples)`` pass mask."""
+    reader = _fmt_fields_reader(root)
+    vf = bcftools_filter.BcftoolsFilter(
+        field_names=reader.field_names,
+        include="FMT/GQ >= 0 && FMT/GQ <= 100 && FMT/DP >= 0 && FMT/DP <= 101",
+    )
+    reader.set_variant_filter(vf)
+    return reader
+
+
+def _build_first_samples_chunk_slice(root, meta):
+    """Same coverage as :func:`_build_first_samples_chunk` but drops
+    the last sample of the chunk, routing the selection through
+    ``samples.build_chunk_plan``'s ``slice(0, N-1)`` path. Throughput
+    is expected within measurement noise of the full-chunk baseline;
+    a regression would mean the Phase 0.5 slice optimisation is
+    carrying a cost we haven't noticed."""
+    reader = retrieval.VczReader(root)
+    num_samples = int(root["sample_id"].shape[0])
+    samples_chunk_size = int(root["sample_id"].chunks[0])
+    take = min(samples_chunk_size, num_samples)
+    reader.set_samples(list(range(take - 1)))
     return reader
 
 
@@ -732,6 +812,22 @@ def _build_filter_info_dp_gt_80(root, meta):
     return reader
 
 
+def _build_filter_info_dp_gt_80_genotypes(root, meta):
+    """Filter on ``INFO/DP > 80`` and emit genotypes for the first 1000
+    samples. Tests the path where a variant filter gates a large
+    call_* output — the shape the readahead pipeline previously
+    opted out of."""
+    reader = retrieval.VczReader(root)
+    num_samples = int(root["sample_id"].shape[0])
+    take = min(1000, num_samples)
+    reader.set_samples(list(range(take)))
+    vf = bcftools_filter.BcftoolsFilter(
+        field_names=reader.field_names, include="INFO/DP>80"
+    )
+    reader.set_variant_filter(vf)
+    return reader
+
+
 def _build_region_filter_format_gq_gt_50(root, meta):
     reader = retrieval.VczReader(root)
     rs = meta["region_spec"]
@@ -741,9 +837,11 @@ def _build_region_filter_format_gq_gt_50(root, meta):
     vf = bcftools_filter.BcftoolsFilter(
         field_names=reader.field_names, include="FMT/GQ>50"
     )
-    # Force the filter to see every sample's GQ, even though we'll never
-    # emit them — this exercises the "full GQ scan, region only" path.
-    reader.set_variant_filter(vf, filter_on_subset_samples=False)
+    reader.set_variant_filter(vf)
+    # Force the filter to evaluate against every sample's GQ, even though
+    # we'll never emit them — this exercises the "full GQ scan, region
+    # only" path (bcftools-view pre-subset semantics).
+    reader.set_filter_samples(reader.non_null_sample_indices)
     return reader
 
 
@@ -788,6 +886,21 @@ TASKS: list[Task] = [
         ],
     ),
     Task("first_samples_chunk", _build_first_samples_chunk, ["call_genotype"]),
+    Task(
+        "fmt_fields",
+        _build_fmt_fields,
+        ["call_genotype", "call_GQ", "call_DP"],
+    ),
+    Task(
+        "fmt_fields_filtered",
+        _build_fmt_fields_filtered,
+        ["call_genotype"],
+    ),
+    Task(
+        "first_samples_chunk_slice",
+        _build_first_samples_chunk_slice,
+        ["call_genotype"],
+    ),
     Task("first_variant_chunks", _build_first_variant_chunks, ["call_genotype"]),
     Task(
         "region_variant_position",
@@ -798,6 +911,11 @@ TASKS: list[Task] = [
         "filter_info_dp_gt_80",
         _build_filter_info_dp_gt_80,
         ["variant_position", "variant_DP"],
+    ),
+    Task(
+        "filter_info_dp_gt_80_genotypes",
+        _build_filter_info_dp_gt_80_genotypes,
+        ["variant_position", "variant_DP", "call_genotype"],
     ),
     Task(
         "region_filter_format_gq_gt_50",

@@ -1,5 +1,8 @@
+import concurrent.futures as cf
 import dataclasses
 import functools
+import os
+import sys
 
 import numpy as np
 
@@ -10,6 +13,18 @@ from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
 )
+
+DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
+DEFAULT_READAHEAD_WORKERS = min(32, (os.cpu_count() or 4))
+
+
+def _read_block(arr, block_index: tuple) -> np.ndarray:
+    """Fetch one Zarr block by block-index tuple, or the whole array
+    when ``block_index`` is empty (used for static, non-chunked fields).
+    """
+    if len(block_index) == 0:
+        return arr[:]
+    return arr.blocks[block_index]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -33,6 +48,147 @@ def _has_variants_axis(arr) -> bool:
     """Whether ``arr``'s first dimension is the variants axis."""
     dims = utils.array_dims(arr)
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
+
+
+def _array_memory_bytes(arr: np.ndarray) -> int:
+    """Best-effort in-memory footprint of ``arr``, in bytes.
+
+    For fixed-size dtypes ``arr.nbytes`` is exact. For variable-length
+    string dtypes it only covers the per-element metadata cells; the
+    string content itself lives in Python heap (``object`` dtype) or
+    numpy's ``StringDType`` arena, both of which we have to walk.
+
+    - kind ``"O"`` (numpy ``object``): per-element ``sys.getsizeof``
+      captures each Python str's header + content.
+    - kind ``"T"`` (numpy ``StringDType``): ``arr.nbytes`` for the
+      metadata cells, plus the UTF-8 byte length of every element.
+    - everything else: ``arr.nbytes`` is exact.
+    """
+    if arr.dtype.kind == "O":
+        return sum(sys.getsizeof(x) for x in arr.flat)
+    if arr.dtype.kind == "T":
+        content = sum(len(s.encode("utf-8")) for s in arr.flat)
+        return int(arr.nbytes) + content
+    return int(arr.nbytes)
+
+
+class _ReadaheadPipeline:
+    """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
+
+    Iterates ``variant_chunk_plan``, constructing a :class:`CachedChunk`
+    per entry and submitting each of its block reads to a shared
+    thread pool so subsequent chunks' reads overlap with the current
+    chunk's processing in the consumer.
+
+    The window is sized by a byte budget rather than a chunk count:
+    one variant-chunk prefetch can vary from a few MB (single
+    sample-chunk read for a partial subset) to >1 GB (every
+    sample chunk for a wide call_* field), so a count-based depth
+    would either starve fan-out or blow RSS.
+
+    Per-chunk byte cost is *measured*, not predicted: the first chunk
+    is scheduled solo, and once its prefetched blocks land we sum
+    their :func:`_array_memory_bytes` and use that as the window-sizing
+    estimate for every later chunk. The estimate is approximate —
+
+    - The bootstrap chunk runs even when its prefetch alone exceeds
+      ``budget_bytes`` (the alternative is to never make progress).
+    - Chunks can drift in content size across the iteration, especially
+      when variable-length string fields are in the prefetch set, so
+      later chunks may over- or under-shoot the budget.
+
+    Callers that need a hard memory ceiling can pass
+    ``readahead_bytes=0`` to disable cross-chunk readahead entirely.
+    """
+
+    def __init__(
+        self,
+        root,
+        plan: list[utils.ChunkRead],
+        read_plan: "samples_mod.SampleChunkPlan",
+        output_columns: np.ndarray | None,
+        prefetch_fields: list[str],
+        *,
+        budget_bytes: int,
+        workers: int,
+    ):
+        self.root = root
+        self._plan_iter = iter(plan)
+        self._read_plan = read_plan
+        self._output_columns = output_columns
+        self._prefetch_fields = prefetch_fields
+        self._budget_bytes = budget_bytes
+        # Set on the first chunk's completion in __iter__.
+        self._per_chunk_bytes: int | None = None
+        self._executor = cf.ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="vcztools-readahead",
+        )
+        # in_flight: list of (CachedChunk, [(cache_key, Future), ...]).
+        # The futures list is empty when the chunk needed no prefetch.
+        self._in_flight: list = []
+
+    def _schedule_one(self) -> bool:
+        """Construct the next CachedChunk and submit its block reads
+        to the thread pool. Returns False once the plan is exhausted."""
+        try:
+            chunk_read = next(self._plan_iter)
+        except StopIteration:
+            return False
+        chunk = CachedChunk(
+            self.root,
+            chunk_read,
+            read_plan=self._read_plan,
+            output_columns=self._output_columns,
+        )
+        reads = chunk._build_read_plan(self._prefetch_fields)
+        futures = [
+            (key, self._executor.submit(_read_block, arr, block_index))
+            for key, arr, block_index in reads
+        ]
+        self._in_flight.append((chunk, futures))
+        return True
+
+    def _refill(self) -> None:
+        # Until the first chunk has been measured we can't size the
+        # window — schedule exactly one chunk and wait for its reads
+        # to land. Subsequent refills fall through to the budget loop.
+        if self._per_chunk_bytes is None:
+            if len(self._in_flight) == 0:
+                self._schedule_one()
+            return
+        # Always keep at least one chunk in flight; otherwise honour the
+        # byte budget (use an effective per-chunk cost of at least 1 to
+        # avoid an infinite loop when prefetch_fields is empty).
+        per_chunk = max(1, self._per_chunk_bytes)
+        while len(self._in_flight) == 0 or (
+            len(self._in_flight) * per_chunk < self._budget_bytes
+        ):
+            if not self._schedule_one():
+                return
+
+    def __iter__(self):
+        try:
+            self._refill()
+            while len(self._in_flight) > 0:
+                chunk, futures = self._in_flight.pop(0)
+                # as_completed surfaces an exception from any read at the
+                # moment it occurs, instead of after every preceding future
+                # has finished. Total wall time per chunk is unchanged —
+                # we still need every read before yielding.
+                future_to_key = {fut: key for key, fut in futures}
+                for fut in cf.as_completed(future_to_key):
+                    chunk._raw[future_to_key[fut]] = fut.result()
+                if self._per_chunk_bytes is None:
+                    self._per_chunk_bytes = sum(
+                        _array_memory_bytes(v) for v in chunk._raw.values()
+                    )
+                yield chunk
+                # After the consumer drops the previous chunk reference,
+                # top the pipeline back up.
+                self._refill()
+        finally:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 class CachedChunk:
@@ -95,28 +251,60 @@ class CachedChunk:
         For every field except view-mode ``call_*``, this is the same
         object as :meth:`filter_view`. For view-mode ``call_*``, the
         read-axis array is sliced down to the subset axis.
+
+        The returned array may be a strided view over another buffer
+        (e.g. when the view-mode slice uses fancy indexing). Callers
+        that need a C-contiguous buffer — primarily the VCF C encoder
+        — must convert at their boundary; everything else tolerates
+        strided views.
         """
         data = self.filter_view(field)
         if self._output_columns is None or not field.startswith("call_"):
             return data
-        return np.ascontiguousarray(data[:, self._output_columns])
+        return data[:, self._output_columns]
 
     def prefetch(self, fields: list[str]) -> None:
-        """Warm the raw-block cache for ``fields``.
+        """Warm the raw-block cache for ``fields`` sequentially.
 
-        Today this is a synchronous eager load; future iterations will
-        fan reads out as concurrent async tasks so that by the time
-        ``filter_view`` / ``output_view`` are called, all blocks are
-        already in memory. Callers that don't prefetch still get
-        correct behaviour — views fetch on demand.
+        Direct callers (tests, ad-hoc inspection) don't share the
+        :class:`_ReadaheadPipeline`'s executor; the parallel readahead
+        path doesn't go through this method. Callers that don't
+        prefetch still get correct behaviour — ``filter_view`` /
+        ``output_view`` fall back to synchronous on-demand fetches
+        via :meth:`_load_non_call_raw` / :meth:`_load_call_raw`.
         """
+        for key, arr, block_index in self._build_read_plan(fields):
+            self._raw[key] = _read_block(arr, block_index)
+
+    def _build_read_plan(self, fields: list[str]) -> list[tuple]:
+        """Return ``[(cache_key, arr, block_index), ...]`` for the
+        block reads needed to satisfy ``fields`` on this variant chunk,
+        skipping any blocks already cached.
+        """
+        reads = []
         for field in fields:
             arr = self.root[field]
-            if not _has_variants_axis(arr) or not field.startswith("call_"):
-                self._load_non_call_raw(field, arr)
+            if not _has_variants_axis(arr):
+                key = (field,)
+                if key in self._raw:
+                    continue
+                reads.append((key, arr, ()))
+            elif not field.startswith("call_"):
+                key = (field,)
+                if key in self._raw:
+                    continue
+                index = (self.variant_chunk.index,) + (slice(None),) * (arr.ndim - 1)
+                reads.append((key, arr, index))
             else:
                 for cr in self._read_plan.chunk_reads:
-                    self._load_call_raw(field, arr, cr.index)
+                    key = (field, cr.index)
+                    if key in self._raw:
+                        continue
+                    index = (self.variant_chunk.index, cr.index) + (slice(None),) * (
+                        arr.ndim - 2
+                    )
+                    reads.append((key, arr, index))
+        return reads
 
     def _materialize(self, field: str) -> np.ndarray:
         arr = self.root[field]
@@ -168,11 +356,12 @@ class CachedChunk:
         data = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
         if plan.permutation is not None:
             data = data[:, plan.permutation]
-        data = self._slice_variants(data)
-        # Advanced indexing along a non-first axis of a 3-D array yields a
-        # non-C-contiguous view; ascontiguousarray gives the C encoder the
-        # contiguous buffer it requires.
-        return np.ascontiguousarray(data)
+        # The returned array can be a strided view — e.g. when the sample
+        # selection was a prefix slice, or the permutation step gathered
+        # columns on axis 1. Callers that need C-contiguous buffers (the
+        # VCF C encoder) convert at their boundary; every other consumer
+        # tolerates strided views, so we avoid a full-chunk memcpy here.
+        return self._slice_variants(data)
 
     def _empty_call_array(self, arr) -> np.ndarray:
         """Zero-sample-column array for a call_* field, without I/O.
@@ -259,10 +448,26 @@ class VczReader:
         dataset. Use :func:`vcztools.utils.open_zarr` to open a path
         (local, remote, or zip) with the desired backend before
         constructing the reader.
+    readahead_threads
+        Worker count for the per-call readahead thread pool. ``None``
+        (default) uses :data:`DEFAULT_READAHEAD_WORKERS`
+        (``min(32, cpu_count)``).
+    readahead_bytes
+        Cap, in bytes, on the cross-chunk readahead window. ``None``
+        (default) uses :data:`DEFAULT_READAHEAD_BYTES` (256 MiB).
+        ``0`` disables cross-chunk readahead (pipeline depth becomes 1).
     """
 
-    def __init__(self, root):
+    def __init__(
+        self,
+        root,
+        *,
+        readahead_threads: int | None = None,
+        readahead_bytes: int | None = None,
+    ):
         self.root = root
+        self.readahead_threads = readahead_threads
+        self.readahead_bytes = readahead_bytes
         self._sample_chunk_plan = None
         self._variant_chunk_plan = None
         self._samples_selection = None
@@ -619,13 +824,35 @@ class VczReader:
                 self._filter_samples, self.samples_selection
             )
 
-        for chunk_read in self.variant_chunk_plan:
-            chunk = CachedChunk(
-                self.root,
-                chunk_read,
-                read_plan=read_plan,
-                output_columns=output_columns,
-            )
+        # Prefetch the union of filter + query fields in one pass per
+        # variant chunk. We used to split into two stages — filter
+        # fields first, short-circuit if none pass, then query fields
+        # — but the short-circuit only fires when a whole chunk has
+        # zero passing variants. For typical filters (INFO/DP>N,
+        # QUAL>N) and chunk sizes in the thousands that is
+        # vanishingly rare; it just forfeits cross-chunk readahead on
+        # every filtered query. Pay the rare chunk-rejection bandwidth
+        # waste and keep the pipeline uniform.
+        prefetch_union = list(dict.fromkeys([*filter_fields, *query_fields]))
+        budget_bytes = (
+            self.readahead_bytes
+            if self.readahead_bytes is not None
+            else DEFAULT_READAHEAD_BYTES
+        )
+        workers = (
+            self.readahead_threads
+            if self.readahead_threads is not None
+            else DEFAULT_READAHEAD_WORKERS
+        )
+        for chunk in _ReadaheadPipeline(
+            self.root,
+            self.variant_chunk_plan,
+            read_plan,
+            output_columns,
+            prefetch_union,
+            budget_bytes=budget_bytes,
+            workers=workers,
+        ):
             # variants_selection: 1-D bool over the chunk's variant axis, or
             # None meaning "no filter, keep every variant".
             # sample_filter_pass: 2-D bool over (surviving variants, output

@@ -17,12 +17,13 @@ class ChunkRead:
     Axis-agnostic: used for both the variants axis (by
     :mod:`vcztools.regions`) and the samples axis (by
     :mod:`vcztools.samples`). ``selection=None`` means "emit the full
-    chunk, no slicing"; otherwise ``selection`` is the local indices
-    into this chunk along the relevant axis, in emission order.
+    chunk, no slicing". ``selection`` may be a ``slice`` for a
+    contiguous range (basic indexing returns a view), or an ndarray of
+    local indices for arbitrary fancy-index gather/permutation.
     """
 
     index: int
-    selection: np.ndarray | None = None
+    selection: np.ndarray | slice | None = None
 
 
 def array_dims(arr):

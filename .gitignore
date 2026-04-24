@@ -168,3 +168,4 @@ cython_debug/
 vcz_test_cache/
 **/.DS_Store
 performance/results/
+performance/bench.vcz*

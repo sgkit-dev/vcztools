@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import numpy.testing as nt
 import pandas as pd
@@ -6,6 +8,7 @@ import pytest
 from tests import vcz_builder
 from tests.utils import make_reader
 from vcztools import regions as regions_mod
+from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
@@ -162,6 +165,100 @@ class TestFilterMultiChunk:
                 output_columns=None,
             )
             nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
+
+
+class TestArrayMemoryBytes:
+    """Direct unit tests for ``retrieval._array_memory_bytes``.
+
+    The readahead pipeline calls this on the first chunk's prefetched
+    blocks to size its window. For variable-length string arrays the
+    returned value must include heap-allocated string content, not
+    just ``arr.nbytes`` (which is metadata-only for ``object`` and
+    ``StringDType``). Drive the helper through both branches with
+    raw numpy arrays so a regression to the lower bound is caught
+    without going through Zarr.
+    """
+
+    def test_fixed_size_numeric_is_exact(self):
+        arr = np.zeros(100, dtype=np.int16)
+        assert retrieval_mod._array_memory_bytes(arr) == 200
+
+    def test_fixed_width_unicode_falls_through_to_nbytes(self):
+        arr = np.array(["abc"] * 4, dtype="<U8")
+        assert retrieval_mod._array_memory_bytes(arr) == arr.nbytes
+
+    def test_string_dtype_includes_utf8_content(self):
+        long = "a" * 250
+        arr = np.array([long] * 4, dtype=np.dtypes.StringDType())
+        result = retrieval_mod._array_memory_bytes(arr)
+        # Must include the 4 * 250 = 1000 bytes of content beyond
+        # the per-element metadata cells.
+        assert result >= int(arr.nbytes) + 1000
+
+    def test_string_dtype_uses_utf8_byte_length_not_codepoints(self):
+        # "αβγ" is 3 codepoints but 6 UTF-8 bytes.
+        arr = np.array(["αβγ"] * 4, dtype=np.dtypes.StringDType())
+        result = retrieval_mod._array_memory_bytes(arr)
+        assert result == int(arr.nbytes) + 4 * 6
+
+    def test_object_dtype_includes_python_string_overhead(self):
+        arr = np.array(["", "", "", "", ""], dtype=object)
+        result = retrieval_mod._array_memory_bytes(arr)
+        # Empty Python str is ~41 bytes on CPython 3.12; require the
+        # measurement to reflect the per-element header, not the
+        # 8-byte pointer-only lower bound that arr.nbytes reports.
+        assert result > 4 * arr.nbytes
+
+    def test_object_dtype_scales_with_content(self):
+        arr_short = np.array(["a"] * 4, dtype=object)
+        arr_long = np.array(["a" * 1000] * 4, dtype=object)
+        # Each long element exceeds the short element by ~1000 bytes
+        # (Python str storage is 1 byte per ASCII char).
+        delta = retrieval_mod._array_memory_bytes(
+            arr_long
+        ) - retrieval_mod._array_memory_bytes(arr_short)
+        assert delta >= 4 * 999
+
+    def test_object_dtype_matches_sys_getsizeof_sum(self):
+        elements = ["", "a", "bb", "ccc", "dddd" * 100]
+        arr = np.array(elements, dtype=object)
+        expected = sum(sys.getsizeof(s) for s in elements)
+        assert retrieval_mod._array_memory_bytes(arr) == expected
+
+
+class TestReadaheadStringField:
+    """Multi-chunk pipeline must handle a variable-length string
+    FORMAT field — the path where the prior static estimator
+    undershot, and where the first-chunk measurement provides a
+    realistic per-chunk budget.
+    """
+
+    def _make_vcz(self):
+        vlen = np.array(
+            [["a", "bb"], ["ccc", "dddd"], ["eeeee", "ffffff"]] * 3,
+            dtype=np.dtypes.StringDType(),
+        )
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 9,
+            variant_position=list(range(100, 109)),
+            alleles=[("A", "T")] * 9,
+            num_samples=2,
+            variants_chunk_size=3,
+            call_fields={"AB": vlen},
+        )
+
+    def test_iterates_string_format_field(self):
+        root = self._make_vcz()
+        reader = VczReader(root)
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_AB"]))
+        assert len(chunks) == 3
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        ab = np.concatenate([c["call_AB"] for c in chunks], axis=0)
+        nt.assert_array_equal(positions, list(range(100, 109)))
+        nt.assert_array_equal(
+            ab,
+            [["a", "bb"], ["ccc", "dddd"], ["eeeee", "ffffff"]] * 3,
+        )
 
 
 class TestVczReaderRegions:
@@ -356,12 +453,14 @@ class TestVczReaderSampleChunks:
         return [cr.index for cr in plan.chunk_reads]
 
     def test_single_chunk_selection(self):
-        # s2, s3 both live in sample chunk 1 (indexes 2, 3).
+        # s2, s3 both live in sample chunk 1 (indexes 2, 3) and
+        # cover the full chunk → selection collapses to None to skip
+        # a no-op fancy-index gather in CachedChunk.
         reader = VczReader(self._vcz())
         reader.set_samples([2, 3])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [1]
-        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 1])
+        assert plan.chunk_reads[0].selection is None
         assert plan.permutation is None
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[2, 3], [12, 13], [22, 23]])
@@ -390,12 +489,13 @@ class TestVczReaderSampleChunks:
 
     def test_partial_final_chunk(self):
         # 5 samples with chunk size 2 → chunks sized [2, 2, 1]. s4 sits
-        # alone in the final chunk.
+        # alone in the final chunk; the contiguous local index
+        # collapses to slice(0, 1) (basic indexing → view).
         reader = VczReader(self._vcz(num_samples=5, samples_chunk_size=2))
         reader.set_samples([4])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [2]
-        nt.assert_array_equal(plan.chunk_reads[0].selection, [0])
+        assert plan.chunk_reads[0].selection == slice(0, 1)
         assert plan.permutation is None
         dp = self._call_dp(reader)
         nt.assert_array_equal(dp, [[4], [14], [24]])
@@ -830,9 +930,17 @@ class TestVczReaderMissingSamplesMultiChunk:
         plan = reader.sample_chunk_plan
         assert self._plan_indexes(plan) == [0, 2, 4, 7, 9]
         assert plan.permutation is None
-        expected_local = [[0], [0], [0], [2], [4]]
-        for cr, local in zip(plan.chunk_reads, expected_local):
-            nt.assert_array_equal(cr.selection, local)
+        # Each per-chunk selection is a single contiguous index, so it
+        # collapses to a slice (basic indexing → view).
+        expected_slices = [
+            slice(0, 1),
+            slice(0, 1),
+            slice(0, 1),
+            slice(2, 3),
+            slice(4, 5),
+        ]
+        for cr, expected in zip(plan.chunk_reads, expected_slices):
+            assert cr.selection == expected
         chunks = list(reader.variant_chunks(fields=["call_DP"]))
         dp = np.concatenate([c["call_DP"] for c in chunks], axis=0)
         v_idx = np.arange(self.NUM_VARIANTS)[:, None]

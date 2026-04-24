@@ -12,7 +12,7 @@ from icechunk import Repository
 
 from vcztools.utils import make_icechunk_storage
 
-from .utils import copy_store_to_icechunk, to_vcz_icechunk
+from .utils import copy_store
 
 AZURITE_ACCOUNT = "devstoreaccount1"
 AZURITE_KEY = (
@@ -114,17 +114,18 @@ def azurite_env(tmp_path_factory, monkeypatch):
             process.wait()
 
 
-def test_copy_then_append_azure_icechunk(tmp_path, fx_sample_vcz3, azurite_env):
-    vcz = to_vcz_icechunk(fx_sample_vcz3.directory_path, tmp_path)
-
+def test_azure_icechunk(fx_sample_vcz3, azurite_env):
     azure_url = f"az://{azurite_env['account']}/{azurite_env['container']}/store.vcz"
+    icechunk_storage = make_icechunk_storage(azure_url)
+    repo = Repository.create(icechunk_storage)
 
-    copy_store_to_icechunk(vcz, azure_url)
+    with repo.transaction("main", message="create") as dest:
+        copy_store(fx_sample_vcz3.group, dest)
 
-    repo = Repository.open(make_icechunk_storage(azure_url))
+    repo = Repository.open(icechunk_storage)
     session = repo.readonly_session("main")
     actual_root = zarr.open_group(store=session.store, mode="r")
-    expected_root = zarr.open_group(store=vcz, mode="r")
+    expected_root = fx_sample_vcz3.group
 
     assert actual_root["sample_id"][:].tolist() == ["NA00001", "NA00002", "NA00003"]
     _assert_roots_equal(expected_root, actual_root)

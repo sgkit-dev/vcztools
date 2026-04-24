@@ -120,7 +120,8 @@ def test_azure_icechunk(fx_sample_vcz3, azurite_env):
     repo = Repository.create(icechunk_storage)
 
     with repo.transaction("main", message="create") as dest:
-        copy_store(fx_sample_vcz3.group, dest)
+        source = zarr.storage.LocalStore(fx_sample_vcz3.directory_path)
+        copy_store(source, dest)
 
     repo = Repository.open(icechunk_storage)
     session = repo.readonly_session("main")

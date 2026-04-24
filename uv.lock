@@ -3544,13 +3544,6 @@ dependencies = [
     { name = "zarr" },
 ]
 
-[package.optional-dependencies]
-icechunk = [
-    { name = "hypothesis" },
-    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
 [package.dev-dependencies]
 benchmark = [
     { name = "bio2zarr" },
@@ -3568,6 +3561,9 @@ dev = [
     { name = "bio2zarr" },
     { name = "clang-format" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
+    { name = "hypothesis" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "prek" },
@@ -3599,6 +3595,9 @@ packaging = [
 test = [
     { name = "bio2zarr" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
+    { name = "hypothesis" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pytest" },
@@ -3615,8 +3614,6 @@ wheels = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
-    { name = "hypothesis", marker = "extra == 'icechunk'" },
-    { name = "icechunk", marker = "extra == 'icechunk'" },
     { name = "numpy", specifier = ">=2" },
     { name = "pandas" },
     { name = "pyparsing", specifier = ">=3.1.0" },
@@ -3624,7 +3621,6 @@ requires-dist = [
     { name = "ruranges-py", marker = "python_full_version >= '3.12'" },
     { name = "zarr", specifier = ">=3.1" },
 ]
-provides-extras = ["icechunk"]
 
 [package.metadata.requires-dev]
 benchmark = [
@@ -3642,6 +3638,8 @@ dev = [
     { name = "bio2zarr" },
     { name = "clang-format", specifier = "==19.1.7" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
+    { name = "hypothesis" },
+    { name = "icechunk" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "prek", specifier = "==0.3.3" },
@@ -3673,6 +3671,8 @@ packaging = [
 test = [
     { name = "bio2zarr" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
+    { name = "hypothesis" },
+    { name = "icechunk" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pytest" },

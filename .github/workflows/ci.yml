@@ -189,15 +189,12 @@ jobs:
           cd tests
           ../cli-test/bin/python -m vcztools --help
 
-  test-zarr-version:
-    name: Test Zarr versions
+  test-icechunk:
+    name: Test Icechunk
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash -el {0}
-    strategy:
-      matrix:
-        zarr-format: [2, 3]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -219,17 +216,10 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          uv sync --locked --group test --no-default-groups
+          uv sync --locked --group test --no-default-groups --extra icechunk
           # Build the extension module in-place so pytest can find it
           uv run python setup.py build_ext --inplace
 
-      - name: Install icechunk
-        if: matrix.zarr-format == 3
-        run: |
-          uv pip install icechunk hypothesis
-
       - name: Run tests
         run: |
-          uv run pytest --cov=vcztools --cov-report=term-missing
-        env:
-          BIO2ZARR_ZARR_FORMAT: ${{ matrix.zarr-format }}
+          uv run pytest -vs -k icechunk

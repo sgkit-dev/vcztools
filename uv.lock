@@ -3598,13 +3598,6 @@ dependencies = [
     { name = "zarr" },
 ]
 
-[package.optional-dependencies]
-icechunk = [
-    { name = "hypothesis" },
-    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
 [package.dev-dependencies]
 benchmark = [
     { name = "bio2zarr" },
@@ -3677,8 +3670,6 @@ wheels = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
-    { name = "hypothesis", marker = "extra == 'icechunk'" },
-    { name = "icechunk", marker = "extra == 'icechunk'" },
     { name = "numpy", specifier = ">=2" },
     { name = "pandas" },
     { name = "pyparsing", specifier = ">=3.1.0" },
@@ -3686,7 +3677,6 @@ requires-dist = [
     { name = "ruranges-py", marker = "python_full_version >= '3.12'" },
     { name = "zarr", specifier = ">=3.1" },
 ]
-provides-extras = ["icechunk"]
 
 [package.metadata.requires-dev]
 benchmark = [

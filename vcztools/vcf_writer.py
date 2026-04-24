@@ -211,7 +211,15 @@ def c_chunk_to_vcf(
         filter=filter_,
     )
     # print(encoder.arrays)
+    # The C encoder validates NPY_ARRAY_IN_ARRAY on every field and reads
+    # raw buffers via PyArray_DATA, so every field handed to add_*_field
+    # must be C-contiguous. VczReader emits strided views for sample-axis
+    # slices and column gathers — wrap here at the boundary instead of
+    # per-chunk in CachedChunk, so non-VCF callers (benchmarks, query.py,
+    # Python API) avoid the memcpy.
     if gt is not None:
+        gt = np.ascontiguousarray(gt)
+        gt_phased = np.ascontiguousarray(gt_phased)
         encoder.add_gt_field(gt, gt_phased)
     for name, zarray in info_fields.items():
         # print(array.dtype.kind)
@@ -219,6 +227,7 @@ def c_chunk_to_vcf(
             zarray = _as_fixed_length_string(zarray)
         if len(zarray.shape) == 1:
             zarray = zarray.reshape((num_variants, 1))
+        zarray = np.ascontiguousarray(zarray)
         encoder.add_info_field(name, zarray)
 
     if num_samples != 0:
@@ -227,6 +236,7 @@ def c_chunk_to_vcf(
                 zarray = _as_fixed_length_string(zarray)
             if len(zarray.shape) == 2:
                 zarray = zarray.reshape((num_variants, num_samples, 1))
+            zarray = np.ascontiguousarray(zarray)
             encoder.add_format_field(name, zarray)
 
     # TODO: (1) make a guess at this based on number of fields and samples,

@@ -388,9 +388,11 @@ class TestBuildChunkPlan:
 
     def test_single_sample_middle_chunk(self):
         # num_samples=10, chunks of 3: [0-2][3-5][6-8][9]. Sample 4 is in chunk 1.
+        # A single contiguous index collapses to slice(start, stop) so the
+        # downstream block read uses basic indexing instead of a gather.
         plan = build_chunk_plan(np.array([4]), samples_chunk_size=3)
         assert self._chunk_indexes(plan) == [1]
-        nt.assert_array_equal(plan.chunk_reads[0].selection, [1])
+        assert plan.chunk_reads[0].selection == slice(1, 2)
         assert plan.permutation is None
 
     def test_samples_spanning_two_chunks_with_gap(self):
@@ -398,15 +400,15 @@ class TestBuildChunkPlan:
         # Sorted input → no permutation needed.
         plan = build_chunk_plan(np.array([1, 7]), samples_chunk_size=3)
         assert self._chunk_indexes(plan) == [0, 2]
-        nt.assert_array_equal(plan.chunk_reads[0].selection, [1])
-        nt.assert_array_equal(plan.chunk_reads[1].selection, [1])
+        assert plan.chunk_reads[0].selection == slice(1, 2)
+        assert plan.chunk_reads[1].selection == slice(1, 2)
         assert plan.permutation is None
 
     def test_partial_final_chunk(self):
         # num_samples=10, chunk size 3 → last chunk starts at 9.
         plan = build_chunk_plan(np.array([9]), samples_chunk_size=3)
         assert self._chunk_indexes(plan) == [3]
-        nt.assert_array_equal(plan.chunk_reads[0].selection, [0])
+        assert plan.chunk_reads[0].selection == slice(0, 1)
         assert plan.permutation is None
 
     def test_preserves_user_order(self):
@@ -415,8 +417,8 @@ class TestBuildChunkPlan:
         # gives [sample_1, sample_7]. Permutation [1, 0] flips back.
         plan = build_chunk_plan(np.array([7, 1]), samples_chunk_size=3)
         assert self._chunk_indexes(plan) == [0, 2]
-        nt.assert_array_equal(plan.chunk_reads[0].selection, [1])
-        nt.assert_array_equal(plan.chunk_reads[1].selection, [1])
+        assert plan.chunk_reads[0].selection == slice(1, 2)
+        assert plan.chunk_reads[1].selection == slice(1, 2)
         nt.assert_array_equal(plan.permutation, [1, 0])
 
     def test_within_chunk_user_order_uses_no_permutation(self):
@@ -428,11 +430,13 @@ class TestBuildChunkPlan:
         assert plan.permutation is None
 
     def test_chunk_size_one(self):
-        # Each sample is its own chunk.
+        # Each sample is its own chunk. selection=None signals
+        # "emit the full chunk" — the gather optimisation skips the
+        # no-op fancy index.
         plan = build_chunk_plan(np.array([0, 3, 5]), samples_chunk_size=1)
         assert self._chunk_indexes(plan) == [0, 3, 5]
         for cr in plan.chunk_reads:
-            nt.assert_array_equal(cr.selection, [0])
+            assert cr.selection is None
         assert plan.permutation is None
 
     def test_single_chunk_covers_all_samples(self):
@@ -446,6 +450,39 @@ class TestBuildChunkPlan:
         plan = build_chunk_plan(np.array([], dtype=np.int64), samples_chunk_size=3)
         assert plan.chunk_reads == []
         assert plan.permutation is None
+
+    def test_full_chunk_in_order_collapses_to_none(self):
+        # When a per-chunk selection covers every column in order,
+        # build_chunk_plan emits selection=None instead of arange(N).
+        # This avoids a no-op fancy-index gather in CachedChunk.
+        # 20 samples, chunks of 10: chunks 0 and 1 each get every column.
+        plan = build_chunk_plan(np.arange(20), samples_chunk_size=10)
+        assert self._chunk_indexes(plan) == [0, 1]
+        for cr in plan.chunk_reads:
+            assert cr.selection is None
+        assert plan.permutation is None
+
+    def test_partial_chunk_collapses_to_slice(self):
+        # 15 samples requested out of 20, chunks of 10: chunk 0 is full
+        # (→ None); chunk 1 has a contiguous prefix → slice(0, 5).
+        plan = build_chunk_plan(np.arange(15), samples_chunk_size=10)
+        assert self._chunk_indexes(plan) == [0, 1]
+        assert plan.chunk_reads[0].selection is None
+        assert plan.chunk_reads[1].selection == slice(0, 5)
+        assert plan.permutation is None
+
+    def test_non_contiguous_selection_keeps_fancy_index(self):
+        # Selection with a gap can't be a slice → falls back to ndarray.
+        plan = build_chunk_plan(np.array([0, 2, 4]), samples_chunk_size=10)
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 2, 4])
+
+    def test_within_chunk_reverse_keeps_fancy_index(self):
+        # [2, 0] is contiguous as a set but not in order — keep ndarray
+        # so the gather emits the user's order.
+        plan = build_chunk_plan(np.array([2, 0]), samples_chunk_size=3)
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [2, 0])
 
     def test_duplicate_samples_preserved(self):
         # Duplicate global indices are passed through as duplicate local indices.

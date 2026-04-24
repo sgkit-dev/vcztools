@@ -42,9 +42,6 @@ classifiers = [
 ]
 dynamic = ["version"]
 
-[project.optional-dependencies]
-icechunk = ["hypothesis", "icechunk"]
-
 [project.urls]
 repository = "https://github.com/sgkit-dev/vcztools"
 
@@ -55,6 +52,8 @@ vcztools = "vcztools.cli:vcztools_main"
 test = [
   "bio2zarr",
   "cyvcf2 ; sys_platform != 'win32'",
+  "hypothesis",
+  "icechunk",
   "obstore",
   "pytest",
   "pytest-cov",

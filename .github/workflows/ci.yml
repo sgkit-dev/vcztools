@@ -188,38 +188,3 @@ jobs:
           ./cli-test/bin/vcztools --help
           cd tests
           ../cli-test/bin/python -m vcztools --help
-
-  test-icechunk:
-    name: Test Icechunk
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash -el {0}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167  # v3.3.0
-        with:
-          auto-update-conda: true
-          python-version: "3.11"
-          channels: conda-forge,bioconda
-
-      - name: Install conda test tools
-        run: conda install bcftools plink
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
-
-      - name: Install test dependencies
-        run: |
-          uv sync --locked --group test --no-default-groups --extra icechunk
-          # Build the extension module in-place so pytest can find it
-          uv run python setup.py build_ext --inplace
-
-      - name: Run tests
-        run: |
-          uv run pytest -vs -k icechunk

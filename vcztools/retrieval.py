@@ -97,8 +97,11 @@ class _ReadaheadPipeline:
       when variable-length string fields are in the prefetch set, so
       later chunks may over- or under-shoot the budget.
 
-    Callers that need a hard memory ceiling can pass
-    ``readahead_bytes=0`` to disable cross-chunk readahead entirely.
+    ``budget_bytes=0`` pins pipeline depth at 1: the consumer's
+    current chunk plus exactly one prefetched ahead. The pipeline
+    never goes below depth 1 (the consumer would have to wait for
+    every chunk's I/O on the request thread), so this is the
+    smallest readahead the caller can ask for.
     """
 
     def __init__(
@@ -455,7 +458,8 @@ class VczReader:
     readahead_bytes
         Cap, in bytes, on the cross-chunk readahead window. ``None``
         (default) uses :data:`DEFAULT_READAHEAD_BYTES` (256 MiB).
-        ``0`` disables cross-chunk readahead (pipeline depth becomes 1).
+        ``0`` pins pipeline depth at 1 (one chunk prefetched ahead of
+        the consumer); the pipeline cannot go lower.
     """
 
     def __init__(

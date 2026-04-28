@@ -650,15 +650,6 @@ class TestCachedChunkCache:
         second = chunk.filter_view("filter_id")
         assert first is second
 
-    def test_prefetch_warms_raw_cache(self):
-        root = _vcz_for_cache_tests()
-        chunk = _make_cached_chunk(root)
-        chunk.prefetch(["variant_position", "call_DP"])
-        assert ("variant_position",) in chunk._raw
-        # Subset-mode read_plan covers both sample chunks.
-        assert ("call_DP", 0) in chunk._raw
-        assert ("call_DP", 1) in chunk._raw
-
 
 class TestCachedChunkAxes:
     """filter_view and output_view return data in the right sample axis."""

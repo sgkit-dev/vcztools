@@ -266,19 +266,6 @@ class CachedChunk:
             return data
         return data[:, self._output_columns]
 
-    def prefetch(self, fields: list[str]) -> None:
-        """Warm the raw-block cache for ``fields`` sequentially.
-
-        Direct callers (tests, ad-hoc inspection) don't share the
-        :class:`_ReadaheadPipeline`'s executor; the parallel readahead
-        path doesn't go through this method. Callers that don't
-        prefetch still get correct behaviour — ``filter_view`` /
-        ``output_view`` fall back to synchronous on-demand fetches
-        via :meth:`_load_non_call_raw` / :meth:`_load_call_raw`.
-        """
-        for key, arr, block_index in self._build_read_plan(fields):
-            self._raw[key] = _read_block(arr, block_index)
-
     def _build_read_plan(self, fields: list[str]) -> list[tuple]:
         """Return ``[(cache_key, arr, block_index), ...]`` for the
         block reads needed to satisfy ``fields`` on this variant chunk,

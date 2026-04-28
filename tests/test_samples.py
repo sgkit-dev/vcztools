@@ -454,7 +454,7 @@ class TestBuildChunkPlan:
     def test_full_chunk_in_order_collapses_to_none(self):
         # When a per-chunk selection covers every column in order,
         # build_chunk_plan emits selection=None instead of arange(N).
-        # This avoids a no-op fancy-index gather in CachedChunk.
+        # This avoids a no-op fancy-index gather in CachedVariantChunk.
         # 20 samples, chunks of 10: chunks 0 and 1 each get every column.
         plan = build_chunk_plan(np.arange(20), samples_chunk_size=10)
         assert self._chunk_indexes(plan) == [0, 1]

@@ -12,7 +12,7 @@ from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
-from vcztools.retrieval import CachedChunk, VczReader
+from vcztools.retrieval import CachedVariantChunk, VczReader
 
 
 def test_variant_chunks(fx_sample_vcz):
@@ -152,13 +152,13 @@ class TestFilterMultiChunk:
         nt.assert_array_equal(positions, [104, 106])
 
     def test_chunk_reader_static_fields_across_chunks(self):
-        """Static fields read identically from every CachedChunk."""
+        """Static fields read identically from every CachedVariantChunk."""
         root = _make_filter_vcz()
         num_chunks = int(root["variant_filter"].cdata_shape[0])
         assert num_chunks == 3
         reader = VczReader(root)
         for chunk_idx in range(num_chunks):
-            chunk = CachedChunk(
+            chunk = CachedVariantChunk(
                 root,
                 utils.ChunkRead(index=chunk_idx),
                 read_plan=reader.non_null_sample_chunk_plan,
@@ -473,7 +473,7 @@ class TestVczReaderSampleChunks:
     def test_single_chunk_selection(self):
         # s2, s3 both live in sample chunk 1 (indexes 2, 3) and
         # cover the full chunk → selection collapses to None to skip
-        # a no-op fancy-index gather in CachedChunk.
+        # a no-op fancy-index gather in CachedVariantChunk.
         reader = VczReader(self._vcz())
         reader.set_samples([2, 3])
         plan = reader.sample_chunk_plan
@@ -595,7 +595,7 @@ def _make_cached_chunk(
     else:
         read_plan = subset_plan
         output_columns = None
-    return CachedChunk(
+    return CachedVariantChunk(
         root,
         utils.ChunkRead(index=variant_chunk_idx, selection=variant_selection),
         read_plan=read_plan,
@@ -603,8 +603,8 @@ def _make_cached_chunk(
     )
 
 
-class TestCachedChunkCache:
-    """CachedChunk reads each (field, sample_chunk) block at most
+class TestCachedVariantChunkCache:
+    """CachedVariantChunk reads each (field, sample_chunk) block at most
     once per variant-chunk visit across filter_view / output_view."""
 
     def test_view_mode_shared_field_raw_blocks_not_refetched(self):
@@ -651,7 +651,7 @@ class TestCachedChunkCache:
         assert first is second
 
 
-class TestCachedChunkAxes:
+class TestCachedVariantChunkAxes:
     """filter_view and output_view return data in the right sample axis."""
 
     @staticmethod

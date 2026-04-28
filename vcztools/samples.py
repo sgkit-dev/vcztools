@@ -13,10 +13,10 @@ def _normalise_local_selection(
     local_sel: np.ndarray, samples_chunk_size: int
 ) -> np.ndarray | slice | None:
     """Collapse a contiguous, sorted, no-duplicate per-chunk selection
-    into a basic-indexing form so :class:`~vcztools.retrieval.CachedChunk`
+    into a basic-indexing form so :class:`~vcztools.retrieval.CachedVariantChunk`
     can skip a no-op fancy-index gather.
 
-    - Full chunk in order → ``None`` (CachedChunk emits the raw block).
+    - Full chunk in order → ``None`` (CachedVariantChunk emits the raw block).
     - Contiguous range in order → ``slice(start, stop)`` (basic
       indexing, returns a view; later concatenate copies once instead
       of twice).

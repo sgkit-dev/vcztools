@@ -199,6 +199,17 @@ class TestOpenZarr:
         assert not isinstance(root.store, zarr.storage.ZipStore)
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
+    def test_obstore(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        root = open_zarr(vcz, zarr_backend_storage="obstore")
+        assert isinstance(root.store, zarr.storage.ObjectStore)
+        assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
+        # open with store object
+        root = open_zarr(root.store, zarr_backend_storage="obstore")
+        assert isinstance(root.store, zarr.storage.ObjectStore)
+        assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
+
     def test_nonexistent_zip_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             open_zarr(tmp_path / "does-not-exist.vcz.zip")

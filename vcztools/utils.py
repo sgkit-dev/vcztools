@@ -83,14 +83,19 @@ def open_zarr(
         elif isinstance(file_or_url, Path):
             path = file_or_url.resolve()  # make absolute
             store = ObjectStore(obs.store.from_url(path.as_uri(), mkdir=True))
+        elif isinstance(file_or_url, ObjectStore):
+            store = file_or_url
         return zarr.open(store, mode=mode)
     elif zarr_backend_storage == "icechunk":
         import icechunk as ic  # noqa PLC0415
 
-        storage = make_icechunk_storage(file_or_url)
-        repo = ic.Repository.open(storage)
-        session = repo.readonly_session("main")
-        store = session.store
+        if isinstance(file_or_url, (str, Path)):
+            storage = make_icechunk_storage(file_or_url)
+            repo = ic.Repository.open(storage)
+            session = repo.readonly_session("main")
+            store = session.store
+        elif isinstance(file_or_url, ic.store.IcechunkStore):
+            store = file_or_url
         return zarr.open(store, mode=mode)
     else:
         raise ValueError(

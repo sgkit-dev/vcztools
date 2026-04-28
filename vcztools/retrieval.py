@@ -75,7 +75,7 @@ def _array_memory_bytes(arr: np.ndarray) -> int:
 class _ReadaheadPipeline:
     """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
 
-    Iterates ``variant_chunk_plan``, constructing a :class:`CachedChunk`
+    Iterates ``variant_chunk_plan``, constructing a :class:`CachedVariantChunk`
     per entry and submitting each of its block reads to a shared
     thread pool so subsequent chunks' reads overlap with the current
     chunk's processing in the consumer.
@@ -127,18 +127,18 @@ class _ReadaheadPipeline:
             max_workers=workers,
             thread_name_prefix="vcztools-readahead",
         )
-        # in_flight: list of (CachedChunk, [(cache_key, Future), ...]).
+        # in_flight: list of (CachedVariantChunk, [(cache_key, Future), ...]).
         # The futures list is empty when the chunk needed no prefetch.
         self._in_flight: list = []
 
     def _schedule_one(self) -> bool:
-        """Construct the next CachedChunk and submit its block reads
+        """Construct the next CachedVariantChunk and submit its block reads
         to the thread pool. Returns False once the plan is exhausted."""
         try:
             chunk_read = next(self._plan_iter)
         except StopIteration:
             return False
-        chunk = CachedChunk(
+        chunk = CachedVariantChunk(
             self.root,
             chunk_read,
             read_plan=self._read_plan,
@@ -194,7 +194,7 @@ class _ReadaheadPipeline:
             self._executor.shutdown(wait=False, cancel_futures=True)
 
 
-class CachedChunk:
+class CachedVariantChunk:
     """I/O + cache + sample-axis views for one variant chunk visit.
 
     Two reads' worth of logic collapses to one read plan plus an
@@ -692,7 +692,7 @@ class VczReader:
     @functools.cached_property
     def non_null_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
         """:class:`~vcztools.samples.SampleChunkPlan` for every
-        non-null sample. Used by :class:`CachedChunk` to build
+        non-null sample. Used by :class:`CachedVariantChunk` to build
         view-mode filter views. Empty when no non-null samples exist."""
         return samples_mod.build_chunk_plan(
             self.non_null_sample_indices,
@@ -773,14 +773,14 @@ class VczReader:
 
         1. Iterate ``variant_chunk_plan``; each entry's ``selection``
            pre-slices the chunk's variant axis.
-        2. Construct a :class:`CachedChunk` scoped to this variant
+        2. Construct a :class:`CachedVariantChunk` scoped to this variant
            chunk. It owns the raw-block cache and the
            subset-vs-real-axis decision.
-        3. Evaluate the filter against ``CachedChunk.filter_view`` for
+        3. Evaluate the filter against ``CachedVariantChunk.filter_view`` for
            each referenced field. Collapse a 2-D sample-scope mask
            into a 1-D variant selection (with the surviving rows kept
            as ``sample_filter_pass`` on the subset axis).
-        4. Assemble output from ``CachedChunk.output_view`` for each
+        4. Assemble output from ``CachedVariantChunk.output_view`` for each
            query field; apply the variant selection to variants-axis
            fields.
         """
@@ -797,7 +797,7 @@ class VczReader:
             # Default: filter axis IS the subset axis. Covers non-empty
             # subsets, the no-subset default, and ``--drop-genotypes``
             # (empty subset collapses to an empty plan — no reads,
-            # zero-column call_* output via CachedChunk._empty_call_array).
+            # zero-column call_* output via CachedVariantChunk._empty_call_array).
             read_plan = self.sample_chunk_plan
             output_columns = None
         else:

@@ -215,7 +215,7 @@ def c_chunk_to_vcf(
     # raw buffers via PyArray_DATA, so every field handed to add_*_field
     # must be C-contiguous. VczReader emits strided views for sample-axis
     # slices and column gathers — wrap here at the boundary instead of
-    # per-chunk in CachedChunk, so non-VCF callers (benchmarks, query.py,
+    # per-chunk in CachedVariantChunk, so non-VCF callers (benchmarks, query.py,
     # Python API) avoid the memcpy.
     if gt is not None:
         gt = np.ascontiguousarray(gt)

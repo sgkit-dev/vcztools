@@ -261,6 +261,24 @@ class TestReadaheadStringField:
         )
 
 
+class TestReadaheadBudgetZero:
+    """``readahead_bytes=0`` is the smallest budget the caller can ask
+    for: it pins pipeline depth at 1 (one chunk prefetched ahead of
+    the consumer). The pipeline cannot go lower because ``_refill``
+    always tops back up when ``in_flight`` is empty. Verify a
+    multi-chunk iteration still produces the full, correct sequence
+    in this configuration.
+    """
+
+    def test_iterates_full_sequence_at_budget_zero(self):
+        root = _make_filter_vcz(num_variants=9, variants_chunk_size=3)
+        reader = VczReader(root, readahead_bytes=0)
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        assert len(chunks) == 3
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        nt.assert_array_equal(positions, list(range(100, 109)))
+
+
 class TestVczReaderRegions:
     """Cover the three accepted region/target input shapes plus error paths.
 

@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import numpy.testing as nt
 import pandas as pd
@@ -1759,3 +1761,72 @@ class TestStaticFieldCache:
         assert "filter_id" not in seen_fields
         assert "variant_position" in seen_fields
         assert "variant_filter" in seen_fields
+
+
+class TestLogging:
+    """Lock in the contract that the read-path emits the expected
+    INFO / DEBUG log events. See vcztools/retrieval.py for the
+    full set of messages."""
+
+    def test_info_iteration_start_and_end(self, fx_sample_vcz, caplog):
+        reader = VczReader(fx_sample_vcz.group)
+        with caplog.at_level(logging.INFO, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        assert "variant_chunks: starting iteration" in caplog.text
+        assert "variant_chunks: iteration done" in caplog.text
+        assert "Per-chunk read size:" in caplog.text
+
+    def test_info_summary_includes_chunk_and_variant_counts(
+        self, fx_sample_vcz, caplog
+    ):
+        reader = VczReader(fx_sample_vcz.group)
+        with caplog.at_level(logging.INFO, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        done_lines = [r for r in caplog.records if "iteration done" in r.getMessage()]
+        assert len(done_lines) == 1
+        msg = done_lines[0].getMessage()
+        assert "chunks visited" in msg
+        assert "yielded" in msg
+        assert "variants" in msg
+
+    def test_debug_per_chunk_lines(self, fx_sample_vcz, caplog):
+        reader = VczReader(fx_sample_vcz.group)
+        with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        assert "ReadaheadPipeline init:" in caplog.text
+        assert "schedule chunk 0:" in caplog.text
+        assert "read complete in" in caplog.text
+        assert "yielded" in caplog.text
+        assert "executor shutdown" in caplog.text
+
+    def test_debug_static_field_load(self, fx_sample_vcz, caplog):
+        # filter_id is a static (no variants axis) field; referencing it
+        # via a FILTER expression triggers _load_static_field.
+        reader = make_reader(fx_sample_vcz.group, include='FILTER="PASS"')
+        with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        assert "Loaded static field: filter_id" in caplog.text
+
+    def test_debug_filter_pass_count(self, fx_sample_vcz, caplog):
+        reader = make_reader(fx_sample_vcz.group, include='FILTER="PASS"')
+        with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        assert "filter pass" in caplog.text
+
+    def test_debug_setters(self, fx_sample_vcz, caplog):
+        with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
+            reader = VczReader(fx_sample_vcz.group)
+            reader.set_samples([0, 1])
+        assert "VczReader init:" in caplog.text
+        assert "set_samples:" in caplog.text
+
+    def test_no_logging_at_warning_level(self, fx_sample_vcz, caplog):
+        # The read path is informational, not a warning source: nothing
+        # should fire above INFO during a normal iteration.
+        reader = VczReader(fx_sample_vcz.group)
+        with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        retrieval_records = [
+            r for r in caplog.records if r.name == "vcztools.retrieval"
+        ]
+        assert retrieval_records == []

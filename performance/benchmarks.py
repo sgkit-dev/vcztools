@@ -554,8 +554,8 @@ ALL_BACKENDS: dict[str, BackendOpener] = {
 # string path or URL the user supplies via Zarr's chosen storage backend.
 
 
-class FsspecOpener(BackendOpener):
-    name = "fsspec"
+class AutoOpener(BackendOpener):
+    name = "auto"
 
     def open(self, dataset):
         root = vcz_utils.open_zarr(str(dataset))
@@ -580,7 +580,7 @@ class IcechunkUrlOpener(BackendOpener):
 
 RUN_ONE_BACKENDS: dict[str, BackendOpener] = {
     opener.name: opener
-    for opener in (FsspecOpener(), ObstoreOpener(), IcechunkUrlOpener())
+    for opener in (AutoOpener(), ObstoreOpener(), IcechunkUrlOpener())
 }
 
 
@@ -1297,7 +1297,7 @@ _TASK_NAMES_HELP = ", ".join(t.name for t in TASKS)
 @click.option(
     "--backend",
     type=click.Choice(list(RUN_ONE_BACKENDS)),
-    default="fsspec",
+    default="auto",
     show_default=True,
     help="Storage layer Zarr uses to open the dataset.",
 )

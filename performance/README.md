@@ -8,7 +8,7 @@ filter tasks. Two entry points:
   HTTP, obstore over `file://`, icechunk) produced by `generate`. Designed
   for "diff this branch against that branch on my laptop".
 - `run-one` — runs one task against an arbitrary Zarr path on one storage
-  backend (`fsspec`, `obstore`, or `icechunk`). Useful for pointing the
+  backend (`auto`, `obstore`, or `icechunk`). Useful for pointing the
   suite at a real cohort, a remote bucket, or any store you didn't
   produce with `generate`.
 
@@ -93,7 +93,8 @@ local directory, a `.zip`, or any URL the chosen backend can open.
 `--backend` selects the *storage layer* Zarr uses to open the path
 (not the file format):
 
-- `fsspec` (default) — local directories, `.zip`, `http(s)://`.
+- `auto` (default) — Zarr's default fsspec-based opener; handles local
+  directories, `.zip`, and `http(s)://`.
 - `obstore` — opens via the obstore object store.
 - `icechunk` — opens an icechunk repo at the given path.
 

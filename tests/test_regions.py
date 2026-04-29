@@ -410,18 +410,41 @@ class TestBuildChunkPlan:
 
     def test_regions_filter_selects_chunks(self):
         plan = regions.build_chunk_plan(self._vcz(), regions="chr1:4-5")
-        # positions 4,5 fall in chunk 1 (global indexes 3,4 → local 0,1)
+        # positions 4,5 fall in chunk 1 (global indexes 3,4 → local 0,1).
+        # Local [0, 1] in a chunk of size 3 → slice(0, 2).
         assert [cr.index for cr in plan] == [1]
-        assert_array_equal(plan[0].selection, [0, 1])
+        assert plan[0].selection == slice(0, 2)
+
+    def test_full_chunk_collapses_to_none(self):
+        """Region covering every variant in a chunk → selection=None."""
+        # chr1:1-3 covers positions 1,2,3 = chunk 0 in full.
+        plan = regions.build_chunk_plan(self._vcz(), regions="chr1:1-3")
+        assert [cr.index for cr in plan] == [0]
+        assert plan[0].selection is None
+
+    def test_offset_contiguous_collapses_to_slice(self):
+        """Region matching a contiguous mid-chunk run → selection=slice."""
+        # chr1:5-6 covers positions 5,6 = locals [1, 2] of chunk 1.
+        plan = regions.build_chunk_plan(self._vcz(), regions="chr1:5-6")
+        assert [cr.index for cr in plan] == [1]
+        assert plan[0].selection == slice(1, 3)
 
     def test_targets_complement_flag_real_filter(self):
         """``targets_complement=True`` with a real target string runs
-        through the candidate-chunk scan and produces explicit
-        selection arrays."""
+        through the candidate-chunk scan and produces a mix of full
+        chunks (None), contiguous (slice), and sparse (ndarray)
+        selections per the normalise-local collapse."""
         plan = regions.build_chunk_plan(
             self._vcz(), targets="chr1:4-5", targets_complement=True
         )
-        # Positions 4 and 5 excluded → keep everything else.
-        # Concatenating all plan selections should yield the local
-        # indexes of positions 1,2,3,6,7,8,9,10 (globals 0,1,2,5,6,7,8,9).
-        assert all(cr.selection is not None for cr in plan)
+        # Positions 4 and 5 (globals 3,4) excluded → keep
+        # positions 1,2,3,6,7,8,9,10 (globals 0,1,2,5,6,7,8,9).
+        # chunk 0 globals 0,1,2 → full → None
+        # chunk 1 globals 5     → local [2]   → slice(2, 3)
+        # chunk 2 globals 6,7,8 → full → None
+        # chunk 3 global  9     → local [0]   → slice(0, 1)
+        assert [cr.index for cr in plan] == [0, 1, 2, 3]
+        assert plan[0].selection is None
+        assert plan[1].selection == slice(2, 3)
+        assert plan[2].selection is None
+        assert plan[3].selection == slice(0, 1)

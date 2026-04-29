@@ -359,10 +359,15 @@ def build_chunk_plan(
     Uses the ``region_index`` array to prune candidate chunks (only
     when ``regions`` is set — ``targets`` alone doesn't prune), then
     scans each candidate chunk once to compute a local row selection.
-    Only non-empty chunks end up in the plan.
+    Only non-empty chunks end up in the plan. Per-chunk local
+    selections are collapsed via
+    :func:`~vcztools.utils.normalise_local_selection` so a contiguous
+    range becomes a ``slice`` (basic-index view) and a full chunk
+    becomes ``None`` (raw block, no slicing).
     """
     position_arr = root["variant_position"]
     num_chunks = int(position_arr.cdata_shape[0])
+    variants_chunk_size = int(position_arr.chunks[0])
 
     regions_df = _regions_input_to_df(regions, arg_name="regions")
     targets_df = _regions_input_to_df(targets, arg_name="targets")
@@ -397,6 +402,13 @@ def build_chunk_plan(
         local_sel = np.asarray(local_sel, dtype=np.int64)
         if local_sel.size == 0:
             continue
-        plan.append(utils.ChunkRead(index=chunk_idx, selection=local_sel))
+        plan.append(
+            utils.ChunkRead(
+                index=chunk_idx,
+                selection=utils.normalise_local_selection(
+                    local_sel, variants_chunk_size
+                ),
+            )
+        )
 
     return plan

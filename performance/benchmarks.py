@@ -1126,9 +1126,16 @@ def _compare_runs(a_path: pathlib.Path, b_path: pathlib.Path) -> int:
 
 
 @click.group()
-def cli():
+@click.option(
+    "-v",
+    "--verbosity",
+    count=True,
+    help="Increase log verbosity (-v for INFO, -vv for DEBUG).",
+)
+def cli(verbosity):
     """vcztools benchmark suite."""
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+    logging.basicConfig(level=level, format="%(message)s")
 
 
 @cli.command("generate")

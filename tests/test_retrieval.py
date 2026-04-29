@@ -270,7 +270,7 @@ def _make_pipeline(
     root,
     *,
     readahead_bytes=10**9,
-    read_columns=None,
+    read_fields=None,
     n_chunks=None,
     workers=2,
 ):
@@ -279,8 +279,8 @@ def _make_pipeline(
     sample-chunk plan over non-null samples; one ``ChunkRead`` per
     variant chunk; no view-mode column remap).
     """
-    if read_columns is None:
-        read_columns = ["variant_position"]
+    if read_fields is None:
+        read_fields = ["variant_position"]
     samples_chunk_size = int(root["sample_id"].chunks[0])
     raw_sample_ids = root["sample_id"][:]
     samples_selection = np.flatnonzero(raw_sample_ids != "")
@@ -295,7 +295,7 @@ def _make_pipeline(
         variant_chunk_plan,
         sample_chunk_plan,
         None,
-        read_columns,
+        read_fields,
         readahead_bytes=readahead_bytes,
         workers=workers,
     )
@@ -413,13 +413,13 @@ class TestReadaheadPipeline:
         # 3, then drains.
         assert pipeline.depths == [1, 3, 2, 1, 0]
 
-    def test_empty_read_columns_does_not_infinite_loop(self):
+    def test_empty_read_fields_does_not_infinite_loop(self):
         # With no fields to prefetch the bootstrap measurement is 0
         # bytes; without the ``max(1, per_chunk_bytes)`` guard the
         # budget loop would never exit. List materialises the full
         # sequence.
         root = self._vcz(num_variants=6, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, read_columns=[], readahead_bytes=10**9)
+        pipeline = _make_pipeline(root, read_fields=[], readahead_bytes=10**9)
         chunks = list(pipeline)
         assert len(chunks) == 2
         for chunk in chunks:
@@ -431,7 +431,7 @@ class TestReadaheadPipeline:
         root = self._vcz(num_variants=6, variants_chunk_size=3, num_samples=2)
         pipeline = _make_pipeline(
             root,
-            read_columns=["variant_position", "variant_contig"],
+            read_fields=["variant_position", "variant_contig"],
             readahead_bytes=0,
         )
         for chunk in pipeline:

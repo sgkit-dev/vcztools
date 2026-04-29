@@ -23,7 +23,7 @@ VCF = cyvcf2.VCF
     [
         (True, None),
         (True, "obstore"),
-        (False, "fsspec"),
+        (False, None),
     ],
 )
 def test_write_vcf(

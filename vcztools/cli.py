@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import sys
 from functools import wraps
@@ -112,8 +113,45 @@ zarr_backend_storage = click.option(
     "--zarr-backend-storage",
     type=str,
     default=None,
-    help="Zarr backend storage to use; one of 'fsspec' (default) or 'obstore'.",
+    help=(
+        "Zarr backend storage: omit for local-only (default), 'fsspec', "
+        "'obstore', or 'icechunk'. The default supports .zip → ZipStore "
+        "and local directories → LocalStore; URLs require an explicit "
+        "backend."
+    ),
 )
+storage_option = click.option(
+    "--storage-option",
+    "storage_options",
+    multiple=True,
+    type=str,
+    help=(
+        "Backend storage option as KEY=VALUE (repeatable). VALUE is parsed "
+        "as JSON if possible, falling back to a string."
+    ),
+)
+
+
+def _parse_storage_options(pairs: tuple[str, ...]) -> dict | None:
+    """Convert a tuple of ``KEY=VALUE`` strings into a dict.
+
+    Each ``VALUE`` is decoded with :func:`json.loads` first; on
+    decode failure the raw string is kept. Returns ``None`` for an
+    empty input so callers can pass it straight through to
+    :func:`vcztools.utils.open_zarr`.
+    """
+    if len(pairs) == 0:
+        return None
+    options: dict = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise click.BadParameter(f"--storage-option must be KEY=VALUE: {pair!r}")
+        key, raw = pair.split("=", 1)
+        try:
+            options[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            options[key] = raw
+    return options
 
 
 def make_reader(
@@ -131,6 +169,7 @@ def make_reader(
     force_samples=False,
     drop_genotypes=False,
     zarr_backend_storage=None,
+    storage_options=None,
 ):
     """Resolve file arguments and create a VczReader."""
     if regions is not None and regions_file is not None:
@@ -171,7 +210,12 @@ def make_reader(
             samples_complement = True
             samples = samples[1:]
         samples = samples.split(",")
-    root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+    root = open_zarr(
+        path,
+        mode="r",
+        zarr_backend_storage=zarr_backend_storage,
+        storage_options=storage_options,
+    )
     reader = retrieval.VczReader(root)
 
     variant_filter = None
@@ -252,8 +296,9 @@ class NaturalOrderGroup(click.Group):
     help="Print per contig stats.",
 )
 @zarr_backend_storage
+@storage_option
 @handle_exception
-def index(path, nrecords, stats, zarr_backend_storage):
+def index(path, nrecords, stats, zarr_backend_storage, storage_options):
     """
     Query the number of records in a VCZ dataset. This subcommand only
     implements the --nrecords and --stats options and does not build any
@@ -263,7 +308,12 @@ def index(path, nrecords, stats, zarr_backend_storage):
         raise click.UsageError("Expected only one of --stats or --nrecords options")
     if not nrecords and not stats:
         raise click.UsageError("Building region indexes is not supported")
-    root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+    root = open_zarr(
+        path,
+        mode="r",
+        zarr_backend_storage=zarr_backend_storage,
+        storage_options=_parse_storage_options(storage_options),
+    )
     reader = retrieval.VczReader(root)
     if nrecords:
         stats_module.nrecords(reader, sys.stdout)
@@ -304,6 +354,7 @@ def index(path, nrecords, stats, zarr_backend_storage):
     "of the formatting expression.",
 )
 @zarr_backend_storage
+@storage_option
 @handle_exception
 def query(
     path,
@@ -321,6 +372,7 @@ def query(
     exclude,
     disable_automatic_newline,
     zarr_backend_storage,
+    storage_options,
 ):
     """
     Transform VCZ into user-defined formats with efficient subsetting and
@@ -331,10 +383,16 @@ def query(
     particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
+    parsed_storage_options = _parse_storage_options(storage_options)
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
-        root = open_zarr(path, mode="r", zarr_backend_storage=zarr_backend_storage)
+        root = open_zarr(
+            path,
+            mode="r",
+            zarr_backend_storage=zarr_backend_storage,
+            storage_options=parsed_storage_options,
+        )
         reader = retrieval.VczReader(root)
         with handle_broken_pipe(output):
             query_module.list_samples(reader, output)
@@ -355,6 +413,7 @@ def query(
         exclude=exclude,
         force_samples=force_samples,
         zarr_backend_storage=zarr_backend_storage,
+        storage_options=parsed_storage_options,
     )
     with handle_broken_pipe(output):
         query_module.write_query(
@@ -407,6 +466,7 @@ def query(
 @include
 @exclude
 @zarr_backend_storage
+@storage_option
 @handle_exception
 def view(
     path,
@@ -426,6 +486,7 @@ def view(
     include,
     exclude,
     zarr_backend_storage,
+    storage_options,
 ):
     """
     Convert VCZ dataset to VCF with efficient subsetting and filtering.
@@ -461,6 +522,7 @@ def view(
         force_samples=force_samples,
         drop_genotypes=drop_genotypes,
         zarr_backend_storage=zarr_backend_storage,
+        storage_options=_parse_storage_options(storage_options),
     )
     subsetting_samples = (
         samples is not None or samples_file is not None or drop_genotypes
@@ -484,7 +546,8 @@ def view(
 @exclude
 @click.option("--out", default="plink")
 @zarr_backend_storage
-def view_plink1(path, include, exclude, out, zarr_backend_storage):
+@storage_option
+def view_plink1(path, include, exclude, out, zarr_backend_storage, storage_options):
     """
     Generate a plink1 binary fileset compatible with plink1.9 --vcf.
     This command is equivalent to running ``vcztools view [filtering options]
@@ -496,6 +559,7 @@ def view_plink1(path, include, exclude, out, zarr_backend_storage):
         include=include,
         exclude=exclude,
         zarr_backend_storage=zarr_backend_storage,
+        storage_options=_parse_storage_options(storage_options),
     )
     plink.write_plink(reader, out)
 

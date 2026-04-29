@@ -85,62 +85,158 @@ def open_file_like(file):
         yield file
 
 
+def _is_zip_path(file_or_url) -> bool:
+    """Whether ``file_or_url`` should be opened as a ``ZipStore``.
+
+    The check is "ends in .zip" applied as a string suffix; remote
+    URLs whose final path segment ends in ``.zip`` (e.g.
+    ``s3://bucket/foo.vcz.zip``) are not currently supported.
+    """
+    if not isinstance(file_or_url, (str, Path)):
+        return False
+    return str(file_or_url).endswith(".zip")
+
+
+def _is_remote_url(file_or_url) -> bool:
+    """Whether ``file_or_url`` is a remote URL (string with ``://``).
+
+    ``file://`` URLs count as remote — Zarr 3 routes them through
+    fsspec, not LocalStore.
+    """
+    return isinstance(file_or_url, str) and "://" in file_or_url
+
+
 def open_zarr(
     file_or_url: str | Path,
     /,
     *,
     mode: str = "r",
     zarr_backend_storage: str | None = None,
+    storage_options: dict | None = None,
 ):
-    # Allow callers to pass an already-open zarr Group straight through.
-    # Used by tests that construct synthetic VCZs in memory.
-    if isinstance(file_or_url, zarr.Group):
-        return file_or_url
-    if zarr_backend_storage is None or zarr_backend_storage == "fsspec":
-        if isinstance(file_or_url, (str, Path)) and Path(file_or_url).suffix == ".zip":
-            store = zarr.storage.ZipStore(file_or_url, mode="r")
-            return zarr.open(store, mode=mode)
-        return zarr.open(file_or_url, mode=mode)
-    elif zarr_backend_storage == "obstore":
-        import obstore as obs  # noqa PLC0415
-        from zarr.storage import ObjectStore  # noqa PLC0415
+    """Open a VCZ store under a controllable Zarr backend.
 
-        if isinstance(file_or_url, str):
-            if "://" not in file_or_url:  # local path
-                path = Path(file_or_url).resolve()  # make absolute
-                store = ObjectStore(obs.store.from_url(path.as_uri(), mkdir=True))
-            else:  # remote path
-                store = ObjectStore(obs.store.from_url(file_or_url))
-        elif isinstance(file_or_url, Path):
-            path = file_or_url.resolve()  # make absolute
-            store = ObjectStore(obs.store.from_url(path.as_uri(), mkdir=True))
-        elif isinstance(file_or_url, ObjectStore):
-            store = file_or_url
-        return zarr.open(store, mode=mode)
-    elif zarr_backend_storage == "icechunk":
-        import icechunk as ic  # noqa PLC0415
+    An already-built :class:`zarr.Group` or :class:`zarr.abc.store.Store`
+    is passed through (wrapped in :func:`zarr.open` for the latter), so
+    callers that have constructed their own store don't need to know
+    which backend produced it.
 
-        if isinstance(file_or_url, (str, Path)):
-            storage = make_icechunk_storage(file_or_url)
-            repo = ic.Repository.open(storage)
-            session = repo.readonly_session("main")
-            store = session.store
-        elif isinstance(file_or_url, ic.store.IcechunkStore):
-            store = file_or_url
-        return zarr.open(store, mode=mode)
-    else:
+    Otherwise resolution depends on ``zarr_backend_storage``:
+
+    - ``None`` (default — local-only): ``.zip`` path →
+      :class:`zarr.storage.ZipStore`; local path →
+      :class:`zarr.storage.LocalStore`. URLs (str with ``://``) and
+      non-empty ``storage_options`` raise.
+    - ``"fsspec"``: explicit :class:`zarr.storage.FsspecStore` via
+      :meth:`~zarr.storage.FsspecStore.from_url`. Local paths are
+      auto-promoted to ``file://`` URIs. ``storage_options`` is
+      forwarded to fsspec.
+    - ``"obstore"``: :class:`zarr.storage.ObjectStore` over
+      ``obstore.store.from_url``. ``storage_options`` is unpacked as
+      kwargs to ``from_url`` (e.g. ``client_options``, ``retry_config``).
+    - ``"icechunk"``: an :mod:`icechunk` storage built by
+      :func:`make_icechunk_storage`. ``storage_options`` is forwarded
+      to the chosen storage constructor (S3 / Azure); for local
+      Icechunk paths non-empty options raise.
+    """
+    if zarr_backend_storage not in (None, "fsspec", "obstore", "icechunk"):
         raise ValueError(
             f"Unsupported Zarr backend storage: {zarr_backend_storage}. "
-            "Must be one of 'fsspec', 'obstore', or 'icechunk'"
+            "Must be None (local-only), 'fsspec', 'obstore', or 'icechunk'"
         )
 
+    if isinstance(file_or_url, zarr.Group):
+        return file_or_url
+    if isinstance(file_or_url, zarr.abc.store.Store):
+        return zarr.open(file_or_url, mode=mode)
 
-def make_icechunk_storage(file_or_url):
-    """Convert a file or URL to an Icechunk Storage object."""
+    storage_options = storage_options or {}
+
+    if zarr_backend_storage is None:
+        return _open_zarr_local(file_or_url, mode=mode, storage_options=storage_options)
+    if zarr_backend_storage == "fsspec":
+        return _open_zarr_fsspec(
+            file_or_url, mode=mode, storage_options=storage_options
+        )
+    if zarr_backend_storage == "obstore":
+        return _open_zarr_obstore(
+            file_or_url, mode=mode, storage_options=storage_options
+        )
+    return _open_zarr_icechunk(file_or_url, mode=mode, storage_options=storage_options)
+
+
+def _open_zarr_local(file_or_url, *, mode, storage_options):
+    if storage_options:
+        raise ValueError("storage_options not supported for local stores")
+    if _is_remote_url(file_or_url):
+        raise ValueError(
+            f"URL {file_or_url!r} requires zarr_backend_storage='fsspec', "
+            "'obstore', or 'icechunk'"
+        )
+    if _is_zip_path(file_or_url):
+        return zarr.open(zarr.storage.ZipStore(file_or_url, mode="r"), mode=mode)
+    return zarr.open(zarr.storage.LocalStore(file_or_url), mode=mode)
+
+
+def _open_zarr_fsspec(file_or_url, *, mode, storage_options):
+    if isinstance(file_or_url, Path):
+        url = file_or_url.resolve().as_uri()
+    elif isinstance(file_or_url, str):
+        if _is_remote_url(file_or_url):
+            url = file_or_url
+        else:
+            url = Path(file_or_url).resolve().as_uri()
+    else:
+        raise TypeError(f"Unsupported file_or_url type: {type(file_or_url)}")
+    store = zarr.storage.FsspecStore.from_url(
+        url, storage_options=storage_options or None
+    )
+    return zarr.open(store, mode=mode)
+
+
+def _open_zarr_obstore(file_or_url, *, mode, storage_options):
+    import obstore as obs  # noqa PLC0415
+    from zarr.storage import ObjectStore  # noqa PLC0415
+
+    if isinstance(file_or_url, Path):
+        url = file_or_url.resolve().as_uri()
+        backend = obs.store.from_url(url, mkdir=True, **storage_options)
+    elif isinstance(file_or_url, str):
+        if _is_remote_url(file_or_url):
+            backend = obs.store.from_url(file_or_url, **storage_options)
+        else:
+            url = Path(file_or_url).resolve().as_uri()
+            backend = obs.store.from_url(url, mkdir=True, **storage_options)
+    else:
+        raise TypeError(f"Unsupported file_or_url type: {type(file_or_url)}")
+    return zarr.open(ObjectStore(backend), mode=mode)
+
+
+def _open_zarr_icechunk(file_or_url, *, mode, storage_options):
+    import icechunk as ic  # noqa PLC0415
+
+    storage = make_icechunk_storage(file_or_url, storage_options=storage_options)
+    repo = ic.Repository.open(storage)
+    session = repo.readonly_session("main")
+    return zarr.open(session.store, mode=mode)
+
+
+def make_icechunk_storage(file_or_url, *, storage_options=None):
+    """Convert a file or URL to an Icechunk Storage object.
+
+    ``storage_options`` is forwarded as keyword arguments to the chosen
+    :mod:`icechunk` storage constructor (``s3_storage``, ``azure_storage``).
+    Local-filesystem storage rejects non-empty ``storage_options``.
+    """
     import icechunk as ic  # noqa: PLC0415
 
+    storage_options = storage_options or {}
     if isinstance(file_or_url, str):
         if "://" not in file_or_url:  # local path
+            if storage_options:
+                raise ValueError(
+                    "storage_options not supported for local icechunk storage"
+                )
             return ic.Storage.new_local_filesystem(file_or_url)
         elif file_or_url.startswith("s3://"):
             url_parsed = urlparse(file_or_url)
@@ -148,14 +244,17 @@ def make_icechunk_storage(file_or_url):
                 bucket=url_parsed.netloc,
                 prefix=url_parsed.path.lstrip("/"),
                 from_env=True,
+                **storage_options,
             )
         elif file_or_url.startswith(
             ("az://", "azure://", "abfs://", "abfss://", "https://")
         ):
-            return _make_azure_storage(ic, file_or_url)
+            return _make_azure_storage(ic, file_or_url, storage_options=storage_options)
         else:
             raise ValueError(f"Unsupported URL for icechunk: {file_or_url}")
     elif isinstance(file_or_url, Path):
+        if storage_options:
+            raise ValueError("storage_options not supported for local icechunk storage")
         path = file_or_url.resolve()  # make absolute
         return ic.Storage.new_local_filesystem(str(path))
     else:
@@ -171,7 +270,8 @@ def _split_azure_container_path(path, *, file_or_url):
     return path_parts[0], "/".join(path_parts[1:])
 
 
-def _make_azure_storage(ic, file_or_url):
+def _make_azure_storage(ic, file_or_url, *, storage_options=None):
+    storage_options = storage_options or {}
     parsed = urlparse(file_or_url)
 
     if parsed.scheme in ("az", "azure"):
@@ -212,6 +312,7 @@ def _make_azure_storage(ic, file_or_url):
         container=container,
         prefix=prefix,
         from_env=True,
+        **storage_options,
     )
 
 

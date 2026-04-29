@@ -1,5 +1,3 @@
-import sys
-
 import numpy as np
 import numpy.testing as nt
 import pandas as pd
@@ -167,65 +165,6 @@ class TestFilterMultiChunk:
             nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
 
 
-class TestArrayMemoryBytes:
-    """Direct unit tests for ``retrieval._array_memory_bytes``.
-
-    The readahead pipeline calls this on the first chunk's prefetched
-    blocks to size its window. For variable-length string arrays the
-    returned value must include heap-allocated string content, not
-    just ``arr.nbytes`` (which is metadata-only for ``object`` and
-    ``StringDType``). Drive the helper through both branches with
-    raw numpy arrays so a regression to the lower bound is caught
-    without going through Zarr.
-    """
-
-    def test_fixed_size_numeric_is_exact(self):
-        arr = np.zeros(100, dtype=np.int16)
-        assert retrieval_mod._array_memory_bytes(arr) == 200
-
-    def test_fixed_width_unicode_falls_through_to_nbytes(self):
-        arr = np.array(["abc"] * 4, dtype="<U8")
-        assert retrieval_mod._array_memory_bytes(arr) == arr.nbytes
-
-    def test_string_dtype_includes_utf8_content(self):
-        long = "a" * 250
-        arr = np.array([long] * 4, dtype=np.dtypes.StringDType())
-        result = retrieval_mod._array_memory_bytes(arr)
-        # Must include the 4 * 250 = 1000 bytes of content beyond
-        # the per-element metadata cells.
-        assert result >= int(arr.nbytes) + 1000
-
-    def test_string_dtype_uses_utf8_byte_length_not_codepoints(self):
-        # "αβγ" is 3 codepoints but 6 UTF-8 bytes.
-        arr = np.array(["αβγ"] * 4, dtype=np.dtypes.StringDType())
-        result = retrieval_mod._array_memory_bytes(arr)
-        assert result == int(arr.nbytes) + 4 * 6
-
-    def test_object_dtype_includes_python_string_overhead(self):
-        arr = np.array(["", "", "", "", ""], dtype=object)
-        result = retrieval_mod._array_memory_bytes(arr)
-        # Empty Python str is ~41 bytes on CPython 3.12; require the
-        # measurement to reflect the per-element header, not the
-        # 8-byte pointer-only lower bound that arr.nbytes reports.
-        assert result > 4 * arr.nbytes
-
-    def test_object_dtype_scales_with_content(self):
-        arr_short = np.array(["a"] * 4, dtype=object)
-        arr_long = np.array(["a" * 1000] * 4, dtype=object)
-        # Each long element exceeds the short element by ~1000 bytes
-        # (Python str storage is 1 byte per ASCII char).
-        delta = retrieval_mod._array_memory_bytes(
-            arr_long
-        ) - retrieval_mod._array_memory_bytes(arr_short)
-        assert delta >= 4 * 999
-
-    def test_object_dtype_matches_sys_getsizeof_sum(self):
-        elements = ["", "a", "bb", "ccc", "dddd" * 100]
-        arr = np.array(elements, dtype=object)
-        expected = sum(sys.getsizeof(s) for s in elements)
-        assert retrieval_mod._array_memory_bytes(arr) == expected
-
-
 class TestReadaheadStringField:
     """Multi-chunk pipeline must handle a variable-length string
     FORMAT field — the path where the prior static estimator
@@ -312,7 +251,7 @@ class TestReadaheadBudgetSweep:
     @SWEEP
     def test_string_field(self, readahead_bytes):
         # Variable-length string FORMAT field — bootstrap measurement
-        # has to include the heap content via _array_memory_bytes, and
+        # has to include the heap content via utils.array_memory_bytes, and
         # later-chunk drift can over- or under-shoot the budget.
         root = _make_string_field_vcz()
         reader = VczReader(root, readahead_bytes=readahead_bytes)
@@ -430,9 +369,7 @@ class TestReadaheadPipeline:
         # raw cache content.
         assert isinstance(pipeline._per_chunk_bytes, int)
         assert pipeline._per_chunk_bytes > 0
-        expected = sum(
-            retrieval_mod._array_memory_bytes(v) for v in chunk._raw.values()
-        )
+        expected = sum(utils.array_memory_bytes(v) for v in chunk._raw.values())
         assert pipeline._per_chunk_bytes == expected
         gen.close()
 

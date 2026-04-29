@@ -14,6 +14,9 @@ from vcztools.utils import (
 )
 
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
+# TODO it's not clear that this is a good default. We're essentially
+# just using these threads to dispatch I/0 to the Zarr backend which
+# handles async etc, so a larger fixed number may be better.
 DEFAULT_READAHEAD_WORKERS = min(32, (os.cpu_count() or 4))
 
 
@@ -88,7 +91,7 @@ class _ReadaheadPipeline:
         variant_chunk_plan: list[utils.ChunkRead],
         sample_chunk_plan: "samples_mod.SampleChunkPlan",
         output_columns: np.ndarray | None,
-        read_columns: list[str],
+        read_fields: list[str],
         *,
         readahead_bytes: int,
         workers: int,
@@ -97,7 +100,7 @@ class _ReadaheadPipeline:
         self._variant_chunk_plan_iter = iter(variant_chunk_plan)
         self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
-        self._read_columns = read_columns
+        self._read_fields = read_fields
         self._readahead_bytes = readahead_bytes
         # Set on the first chunk's completion in __iter__.
         self._per_chunk_bytes: int | None = None
@@ -122,7 +125,7 @@ class _ReadaheadPipeline:
             read_plan=self._sample_chunk_plan,
             output_columns=self._output_columns,
         )
-        reads = chunk._build_read_plan(self._read_columns)
+        reads = chunk._build_read_plan(self._read_fields)
         futures = [
             (key, self._executor.submit(_read_block, arr, block_index))
             for key, arr, block_index in reads
@@ -140,7 +143,7 @@ class _ReadaheadPipeline:
             return
         # Always keep at least one chunk in flight; otherwise honour the
         # byte budget (use an effective per-chunk cost of at least 1 to
-        # avoid an infinite loop when read_columns is empty).
+        # avoid an infinite loop when read_fields is empty).
         per_chunk = max(1, self._per_chunk_bytes)
         while len(self._in_flight) == 0 or (
             len(self._in_flight) * per_chunk < self._readahead_bytes
@@ -153,10 +156,6 @@ class _ReadaheadPipeline:
             self._refill()
             while len(self._in_flight) > 0:
                 chunk, futures = self._in_flight.pop(0)
-                # as_completed surfaces an exception from any read at the
-                # moment it occurs, instead of after every preceding future
-                # has finished. Total wall time per chunk is unchanged —
-                # we still need every read before yielding.
                 future_to_key = {fut: key for key, fut in futures}
                 for fut in cf.as_completed(future_to_key):
                     chunk._raw[future_to_key[fut]] = fut.result()
@@ -235,9 +234,7 @@ class CachedVariantChunk:
 
         The returned array may be a strided view over another buffer
         (e.g. when the view-mode slice uses fancy indexing). Callers
-        that need a C-contiguous buffer — primarily the VCF C encoder
-        — must convert at their boundary; everything else tolerates
-        strided views.
+        that need a C-contiguous buffer must convert at their boundary.
         """
         data = self.filter_view(field)
         if self._output_columns is None or not field.startswith("call_"):
@@ -324,11 +321,6 @@ class CachedVariantChunk:
         data = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
         if plan.permutation is not None:
             data = data[:, plan.permutation]
-        # The returned array can be a strided view — e.g. when the sample
-        # selection was a prefix slice, or the permutation step gathered
-        # columns on axis 1. Callers that need C-contiguous buffers (the
-        # VCF C encoder) convert at their boundary; every other consumer
-        # tolerates strided views, so we avoid a full-chunk memcpy here.
         return self._slice_variants(data)
 
     def _empty_call_array(self, arr) -> np.ndarray:
@@ -416,7 +408,7 @@ class VczReader:
         dataset. Use :func:`vcztools.utils.open_zarr` to open a path
         (local, remote, or zip) with the desired backend before
         constructing the reader.
-    readahead_threads
+    readahead_workers
         Worker count for the per-call readahead thread pool. ``None``
         (default) uses :data:`DEFAULT_READAHEAD_WORKERS`
         (``min(32, cpu_count)``).
@@ -431,11 +423,11 @@ class VczReader:
         self,
         root,
         *,
-        readahead_threads: int | None = None,
+        readahead_workers: int | None = None,
         readahead_bytes: int | None = None,
     ):
         self.root = root
-        self.readahead_threads = readahead_threads
+        self.readahead_workers = readahead_workers
         self.readahead_bytes = readahead_bytes
         self._sample_chunk_plan = None
         self._variant_chunk_plan = None
@@ -755,38 +747,24 @@ class VczReader:
             sample_chunk_plan = self.sample_chunk_plan
             output_columns = None
         else:
-            # Explicit view mode: filter axis differs from subset. Read
+            # "bcftools view" mode: filter axis differs from subset. Read
             # on the filter axis; remap columns to produce the subset
-            # output. Assumes ``samples_selection`` ⊆ ``filter_samples``;
-            # an explicitly-included null slot (edge case) produces an
-            # undefined ``sample_filter_pass`` position. The CLI refuses
-            # empty view-mode subsets (``view -s ^<all>`` etc.), so the
-            # empty-subset AC/AN quirk cannot reach this branch via the
-            # CLI; Python-API callers opting into this shape will see
-            # zero-column output.
+            # output. Assumes ``samples_selection`` ⊆ ``filter_samples``.
             sample_chunk_plan = self.filter_sample_chunk_plan
             output_columns = np.searchsorted(
                 self._filter_samples, self.samples_selection
             )
 
-        # Prefetch the union of filter + query fields in one pass per
-        # variant chunk. We used to split into two stages — filter
-        # fields first, short-circuit if none pass, then query fields
-        # — but the short-circuit only fires when a whole chunk has
-        # zero passing variants. For typical filters (INFO/DP>N,
-        # QUAL>N) and chunk sizes in the thousands that is
-        # vanishingly rare; it just forfeits cross-chunk readahead on
-        # every filtered query. Pay the rare chunk-rejection bandwidth
-        # waste and keep the pipeline uniform.
-        read_columns = list(dict.fromkeys([*filter_fields, *query_fields]))
+        # Fetch the union of filter + query fields
+        read_fields = set(filter_fields) | set(query_fields)
         readahead_bytes = (
             self.readahead_bytes
             if self.readahead_bytes is not None
             else DEFAULT_READAHEAD_BYTES
         )
         workers = (
-            self.readahead_threads
-            if self.readahead_threads is not None
+            self.readahead_workers
+            if self.readahead_workers is not None
             else DEFAULT_READAHEAD_WORKERS
         )
         for chunk in _ReadaheadPipeline(
@@ -794,7 +772,7 @@ class VczReader:
             self.variant_chunk_plan,
             sample_chunk_plan,
             output_columns,
-            read_columns,
+            read_fields,
             readahead_bytes=readahead_bytes,
             workers=workers,
         ):

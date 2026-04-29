@@ -1763,6 +1763,53 @@ class TestStaticFieldCache:
         assert "variant_filter" in seen_fields
 
 
+class TestFmtBytes:
+    @pytest.mark.parametrize(
+        ("n", "expected"),
+        [
+            (0, "0 bytes"),
+            (1, "1 bytes"),
+            (1023, "1023 bytes"),
+        ],
+    )
+    def test_bytes(self, n, expected):
+        assert retrieval_mod._fmt_bytes(n) == expected
+
+    @pytest.mark.parametrize(
+        ("n", "expected"),
+        [
+            (1024, "1.0 KiB"),
+            (1536, "1.5 KiB"),
+            (1024**2 - 1, "1024.0 KiB"),
+        ],
+    )
+    def test_kib(self, n, expected):
+        assert retrieval_mod._fmt_bytes(n) == expected
+
+    @pytest.mark.parametrize(
+        ("n", "expected"),
+        [
+            (1024**2, "1.0 MiB"),
+            (1024**2 + 512 * 1024, "1.5 MiB"),
+            (256 * 1024**2, "256.0 MiB"),
+            (1024**3 - 1, "1024.0 MiB"),
+        ],
+    )
+    def test_mib(self, n, expected):
+        assert retrieval_mod._fmt_bytes(n) == expected
+
+    @pytest.mark.parametrize(
+        ("n", "expected"),
+        [
+            (1024**3, "1.0 GiB"),
+            (1024**3 + 512 * 1024**2, "1.5 GiB"),
+            (10 * 1024**3, "10.0 GiB"),
+        ],
+    )
+    def test_gib(self, n, expected):
+        assert retrieval_mod._fmt_bytes(n) == expected
+
+
 class TestLogging:
     """Lock in the contract that the read-path emits the expected
     INFO / DEBUG log events. See vcztools/retrieval.py for the

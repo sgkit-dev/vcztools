@@ -149,19 +149,6 @@ class TestFilterMultiChunk:
         # Positions 104-107 intersected with PASS (even) → 104, 106
         nt.assert_array_equal(positions, [104, 106])
 
-    def test_chunk_reader_static_fields_across_chunks(self):
-        """Static fields read identically from every CachedVariantChunk."""
-        root = _make_filter_vcz()
-        num_chunks = int(root["variant_filter"].cdata_shape[0])
-        assert num_chunks == 3
-        for chunk_idx in range(num_chunks):
-            chunk = _make_cached_chunk(
-                root,
-                fields=["filter_id"],
-                variant_chunk_idx=chunk_idx,
-            )
-            nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
-
 
 class TestReadaheadStringField:
     """Multi-chunk pipeline must handle a variable-length string
@@ -354,16 +341,12 @@ class TestCreateChunkReadList:
             non_null, samples_chunk_size=samples_chunk_size
         )
 
-    def test_static_field_has_no_variants_axis_marker(self):
+    def test_static_field_rejected(self):
         root = _vcz_for_template_tests()
-        templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["sample_id"]
-        )
-        assert len(templates) == 1
-        t = templates[0]
-        assert t.key == ("sample_id",)
-        assert t.arr == root["sample_id"]
-        assert t.block_index_suffix is None
+        with pytest.raises(AssertionError, match="non-variants-axis"):
+            retrieval_mod.create_chunk_read_list(
+                root, self._sample_plan(root), ["sample_id"]
+            )
 
     def test_variant_axis_1d_field(self):
         root = _vcz_for_template_tests()
@@ -419,13 +402,13 @@ class TestCreateChunkReadList:
         root = _vcz_for_template_tests()
         plan = self._sample_plan(root)
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position", "call_DP", "sample_id"]
+            root, plan, ["variant_position", "call_DP", "variant_allele"]
         )
         assert [t.key for t in templates] == [
             ("variant_position",),
             ("call_DP", 0),
             ("call_DP", 1),
-            ("sample_id",),
+            ("variant_allele",),
         ]
 
 
@@ -434,20 +417,6 @@ class TestUpdateChunkReadList:
     into each template, leaving the templates unchanged so the same
     list is reusable across every chunk in a query.
     """
-
-    def test_static_template_yields_empty_block_index(self):
-        root = _vcz_for_template_tests()
-        plan = samples_mod.SampleChunkPlan(
-            chunk_reads=[utils.ChunkRead(index=0)], permutation=None
-        )
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["sample_id"])
-        reads = retrieval_mod.update_chunk_read_list(templates, 7)
-        assert len(reads) == 1
-        key, arr, block_index = reads[0]
-        assert key == ("sample_id",)
-        assert arr == root["sample_id"]
-        # Static field ignores the variant chunk index entirely.
-        assert block_index == ()
 
     def test_variant_non_call_template_prepends_variant_chunk_index(self):
         root = _vcz_for_template_tests()
@@ -996,12 +965,6 @@ class TestCachedVariantChunkCache:
         chunk = _make_cached_chunk(_vcz_for_cache_tests(), fields=["variant_position"])
         first = chunk.filter_view("variant_position")
         second = chunk.output_view("variant_position")
-        assert first is second
-
-    def test_static_field_cached_within_chunk(self):
-        chunk = _make_cached_chunk(_make_filter_vcz(), fields=["filter_id"])
-        first = chunk.filter_view("filter_id")
-        second = chunk.filter_view("filter_id")
         assert first is second
 
 
@@ -1744,3 +1707,51 @@ class TestResolveQueryFieldsAutoDiscover:
         chunk = next(reader.variant_chunks())
         assert "variant_position" in chunk
         assert "call_DP" in chunk
+
+
+class TestStaticFieldCache:
+    """``VczReader._load_static_field`` caches each static field once;
+    ``variant_chunks`` seeds chunk_data and filter_data from that cache
+    rather than going through the readahead pipeline."""
+
+    def test_load_static_field_caches_array(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        first = reader._load_static_field("filter_id")
+        second = reader._load_static_field("filter_id")
+        # Same object on repeat call → cached, not re-read.
+        assert first is second
+        assert list(reader._static_field_cache) == ["filter_id"]
+
+    def test_variant_chunks_with_static_query_field(self):
+        # A static field requested as a query field is supplied from
+        # the reader cache and is the same object across chunks.
+        root = _make_filter_vcz(num_variants=9, variants_chunk_size=3)
+        reader = VczReader(root)
+        chunks = list(reader.variant_chunks(fields=["variant_position", "filter_id"]))
+        assert len(chunks) == 3
+        first_filter_id = chunks[0]["filter_id"]
+        nt.assert_array_equal(first_filter_id, ["PASS", "q10"])
+        for chunk in chunks[1:]:
+            assert chunk["filter_id"] is first_filter_id
+
+    def test_filter_referenced_static_field_not_in_pipeline(self, monkeypatch):
+        # When a FILTER expression references filter_id the readahead
+        # pipeline must NOT submit a (filter_id,) read — the value
+        # comes from the reader's static cache.
+        seen_fields: list[str] = []
+        original = retrieval_mod._read_block
+
+        def capturing_read_block(arr, block_index):
+            seen_fields.append(arr.path.rsplit("/", 1)[-1])
+            return original(arr, block_index)
+
+        monkeypatch.setattr(retrieval_mod, "_read_block", capturing_read_block)
+
+        root = _make_filter_vcz(num_variants=9, variants_chunk_size=3)
+        reader = make_reader(root, include='FILTER="PASS"')
+        list(reader.variant_chunks(fields=["variant_position"]))
+        # filter_id is referenced by the FILTER expression but is read
+        # from the reader cache, never via _read_block.
+        assert "filter_id" not in seen_fields
+        assert "variant_position" in seen_fields
+        assert "variant_filter" in seen_fields

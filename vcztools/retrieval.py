@@ -1,7 +1,9 @@
 import concurrent.futures as cf
 import dataclasses
 import functools
+import logging
 import os
+import time
 
 import numpy as np
 
@@ -12,6 +14,19 @@ from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _fmt_bytes(n: int) -> str:
+    if n >= 1024**3:
+        return f"{n / 1024**3:.1f} GiB"
+    if n >= 1024**2:
+        return f"{n / 1024**2:.1f} MiB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KiB"
+    return f"{n} bytes"
+
 
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
 # TODO it's not clear that this is a good default. We're essentially
@@ -179,6 +194,10 @@ class ReadaheadPipeline:
         self._readahead_bytes = readahead_bytes
         # Set on the first chunk's completion in __iter__.
         self._per_chunk_bytes: int | None = None
+        # Wall-clock seconds spent on the most recent chunk's block reads;
+        # consumed by VczReader.variant_chunks to attribute per-chunk time
+        # into "read" vs. "assemble".
+        self.last_chunk_read_seconds: float | None = None
         self._executor = cf.ThreadPoolExecutor(
             max_workers=workers,
             thread_name_prefix="vcztools-readahead",
@@ -186,6 +205,11 @@ class ReadaheadPipeline:
         # in_flight: list of (variant_chunk, [(blocks_key, Future), ...]).
         # The futures list is empty when the chunk needs no prefetch.
         self._in_flight: list = []
+        logger.debug(
+            f"ReadaheadPipeline init: {len(read_fields)} read_fields, "
+            f"{len(self._read_templates)} templates, "
+            f"readahead_bytes={_fmt_bytes(readahead_bytes)}, workers={workers}"
+        )
 
     def _schedule_one(self) -> bool:
         """Plan the next variant chunk's reads and submit them to the
@@ -200,6 +224,9 @@ class ReadaheadPipeline:
             for key, arr, block_index in reads
         ]
         self._in_flight.append((variant_chunk, futures))
+        logger.debug(
+            f"schedule chunk {variant_chunk.index}: {len(futures)} blocks submitted"
+        )
         return True
 
     def _refill(self) -> None:
@@ -227,12 +254,31 @@ class ReadaheadPipeline:
                 variant_chunk, futures = self._in_flight.pop(0)
                 future_to_key = {fut: key for key, fut in futures}
                 blocks: dict[tuple, np.ndarray] = {}
+                read_start = time.perf_counter()
                 for fut in cf.as_completed(future_to_key):
                     blocks[future_to_key[fut]] = fut.result()
+                read_seconds = time.perf_counter() - read_start
+                self.last_chunk_read_seconds = read_seconds
+                chunk_bytes = sum(utils.array_memory_bytes(v) for v in blocks.values())
                 if self._per_chunk_bytes is None:
-                    self._per_chunk_bytes = sum(
-                        utils.array_memory_bytes(v) for v in blocks.values()
+                    self._per_chunk_bytes = chunk_bytes
+                    if self._readahead_bytes > 0 and chunk_bytes > 0:
+                        window_chunks = max(
+                            1, self._readahead_bytes // max(1, chunk_bytes)
+                        )
+                    else:
+                        window_chunks = 1
+                    logger.info(
+                        f"Per-chunk read size: {_fmt_bytes(chunk_bytes)} "
+                        f"(chunk {variant_chunk.index}); window will hold "
+                        f"~{window_chunks} chunks under budget "
+                        f"{_fmt_bytes(self._readahead_bytes)}"
                     )
+                logger.debug(
+                    f"chunk {variant_chunk.index} read complete in "
+                    f"{read_seconds:.2f}s ({len(blocks)} blocks, "
+                    f"{_fmt_bytes(chunk_bytes)})"
+                )
                 yield CachedVariantChunk(
                     self.root,
                     variant_chunk,
@@ -245,6 +291,7 @@ class ReadaheadPipeline:
                 self._refill()
         finally:
             self._executor.shutdown(wait=False, cancel_futures=True)
+            logger.debug("executor shutdown")
 
 
 class CachedVariantChunk:
@@ -464,6 +511,14 @@ class VczReader:
         self._filter_samples = None
         self.variant_filter = None
         self._static_field_cache: dict[str, np.ndarray] = {}
+        logger.debug(
+            f"VczReader init: store={getattr(root, 'store', None)!r}, "
+            f"num_variants={self.num_variants}, num_samples={self.num_samples}, "
+            f"variants_chunk_size={self.variants_chunk_size}, "
+            f"samples_chunk_size={self.samples_chunk_size}, "
+            f"readahead_workers={readahead_workers}, "
+            f"readahead_bytes={readahead_bytes}"
+        )
 
     def _load_static_field(self, name: str) -> np.ndarray:
         """Read a static (no variants axis) field once and cache it on
@@ -476,6 +531,10 @@ class VczReader:
             return cached
         value = self.root[name][:]
         self._static_field_cache[name] = value
+        logger.debug(
+            f"Loaded static field: {name} (shape={value.shape}, "
+            f"dtype={value.dtype}, {_fmt_bytes(utils.array_memory_bytes(value))})"
+        )
         return value
 
     def _resolve_samples_if_needed(self) -> None:
@@ -487,6 +546,10 @@ class VczReader:
         self._sample_chunk_plan = samples_mod.build_chunk_plan(
             self._samples_selection,
             samples_chunk_size=self.samples_chunk_size,
+        )
+        logger.debug(
+            f"Resolved default samples_selection: "
+            f"{self._samples_selection.size} non-null samples"
         )
 
     @property
@@ -511,6 +574,7 @@ class VczReader:
             self._variant_chunk_plan = [
                 utils.ChunkRead(index=i) for i in range(num_chunks)
             ]
+            logger.debug(f"Built default variant_chunk_plan: {num_chunks} chunks")
         return self._variant_chunk_plan
 
     def set_samples(self, samples) -> None:
@@ -537,6 +601,10 @@ class VczReader:
             samples_selection,
             samples_chunk_size=self.samples_chunk_size,
         )
+        logger.debug(
+            f"set_samples: {samples_selection.size} samples, "
+            f"{len(self._sample_chunk_plan.chunk_reads)} sample chunks"
+        )
 
     def set_variants(self, variants) -> None:
         """Configure the variant selection.
@@ -553,10 +621,19 @@ class VczReader:
             raise RuntimeError("variants already configured")
         if isinstance(variants, list):
             self._variant_chunk_plan = variants
+            logger.debug(
+                f"set_variants: {len(self._variant_chunk_plan)} variant chunks "
+                f"(from ChunkRead list)"
+            )
         else:
+            indexes = np.asarray(variants)
             self._variant_chunk_plan = regions_mod.chunk_plan_from_indexes(
-                np.asarray(variants),
+                indexes,
                 variants_chunk_size=self.variants_chunk_size,
+            )
+            logger.debug(
+                f"set_variants: {indexes.size} variant indexes -> "
+                f"{len(self._variant_chunk_plan)} variant chunks"
             )
 
     def set_variant_filter(
@@ -579,6 +656,10 @@ class VczReader:
         if self.variant_filter is not None:
             raise RuntimeError("variant_filter already configured")
         self.variant_filter = variant_filter
+        logger.debug(
+            f"set_variant_filter: referenced_fields="
+            f"{sorted(variant_filter.referenced_fields)}"
+        )
 
     def set_filter_samples(self, filter_samples) -> None:
         """Configure the sample axis that a sample-scope variant filter
@@ -599,6 +680,7 @@ class VczReader:
         self._filter_samples = self._normalize_sample_indexes(
             filter_samples, label="filter_samples", sorted_unique=True
         )
+        logger.debug(f"set_filter_samples: {self._filter_samples.size} samples")
 
     def _normalize_sample_indexes(
         self, value, *, label: str, sorted_unique: bool = False
@@ -824,7 +906,24 @@ class VczReader:
             if self.readahead_workers is not None
             else DEFAULT_READAHEAD_WORKERS
         )
-        for chunk in ReadaheadPipeline(
+
+        if self.variant_filter is None:
+            filter_mode = "no-filter"
+        elif self._filter_samples is None:
+            filter_mode = "subset"
+        else:
+            filter_mode = "view"
+        logger.info(
+            f"variant_chunks: starting iteration "
+            f"({len(query_fields)} query fields, {len(filter_fields)} filter fields, "
+            f"{len(referenced_static_fields)} static fields, "
+            f"{len(read_fields)} read fields, mode={filter_mode}, "
+            f"{len(self.variant_chunk_plan)} variant chunks, "
+            f"{len(sample_chunk_plan.chunk_reads)} sample chunks, "
+            f"readahead_bytes={_fmt_bytes(readahead_bytes)}, workers={workers})"
+        )
+
+        pipeline = ReadaheadPipeline(
             self.root,
             self.variant_chunk_plan,
             sample_chunk_plan,
@@ -832,51 +931,100 @@ class VczReader:
             read_fields,
             readahead_bytes=readahead_bytes,
             workers=workers,
-        ):
-            # variants_selection: 1-D bool over the chunk's variant axis, or
-            # None meaning "no filter, keep every variant".
-            # sample_filter_pass: 2-D bool over (surviving variants, output
-            # samples) for sample-scope filters only; published so query.py
-            # can emit only matching samples in FORMAT-loop queries.
-            variants_selection = None
-            sample_filter_pass = None
-            if self.variant_filter is not None:
-                filter_data = {
-                    f: referenced_static_fields[f]
-                    if f in referenced_static_fields
-                    else chunk.filter_view(f)
-                    for f in filter_fields
-                }
-                filter_result = self.variant_filter.evaluate(filter_data)
-                if filter_result.ndim == 1:
-                    # Variant-scope filter: one bool per variant.
-                    variants_selection = filter_result
-                else:
-                    # Sample-scope filter: a variant survives if at least one
-                    # sample matched; the surviving rows are kept so the query
-                    # layer can emit only matching samples.
-                    variants_selection = filter_result.any(axis=1)
-                    sample_filter_pass = filter_result[variants_selection]
-                    if output_columns is not None:
-                        # Filter ran on the real-sample axis but output is the
-                        # user's subset axis; reindex columns to match.
-                        sample_filter_pass = sample_filter_pass[:, output_columns]
+        )
+        chunks_visited = 0
+        chunks_yielded = 0
+        variants_yielded = 0
+        iter_start = time.perf_counter()
+        try:
+            for chunk in pipeline:
+                chunks_visited += 1
+                chunk_start = time.perf_counter()
+                read_seconds = pipeline.last_chunk_read_seconds or 0.0
+                # variants_selection: 1-D bool over the chunk's variant axis, or
+                # None meaning "no filter, keep every variant".
+                # sample_filter_pass: 2-D bool over (surviving variants, output
+                # samples) for sample-scope filters only; published so query.py
+                # can emit only matching samples in FORMAT-loop queries.
+                variants_selection = None
+                sample_filter_pass = None
+                if self.variant_filter is not None:
+                    filter_data = {
+                        f: referenced_static_fields[f]
+                        if f in referenced_static_fields
+                        else chunk.filter_view(f)
+                        for f in filter_fields
+                    }
+                    filter_result = self.variant_filter.evaluate(filter_data)
+                    if filter_result.ndim == 1:
+                        # Variant-scope filter: one bool per variant.
+                        variants_selection = filter_result
+                        logger.debug(
+                            f"chunk {chunk.variant_chunk.index}: filter pass "
+                            f"{int(filter_result.sum())}/{filter_result.size} variants"
+                        )
+                    else:
+                        # Sample-scope filter: a variant survives if at least one
+                        # sample matched; the surviving rows are kept so the query
+                        # layer can emit only matching samples.
+                        variants_selection = filter_result.any(axis=1)
+                        sample_filter_pass = filter_result[variants_selection]
+                        if output_columns is not None:
+                            # Filter ran on the real-sample axis but output is
+                            # the user's subset axis; reindex columns to match.
+                            sample_filter_pass = sample_filter_pass[:, output_columns]
+                        logger.debug(
+                            f"chunk {chunk.variant_chunk.index}: filter pass "
+                            f"{int(variants_selection.sum())}/"
+                            f"{variants_selection.size} variants, "
+                            f"{int(filter_result.sum())}/{filter_result.size} "
+                            f"sample cells"
+                        )
 
-            if variants_selection is not None and not variants_selection.any():
-                continue
-
-            chunk_data = {}
-            for field in query_fields:
-                if field in referenced_static_fields:
-                    chunk_data[field] = referenced_static_fields[field]
+                if variants_selection is not None and not variants_selection.any():
                     continue
-                value = chunk.output_view(field)
-                if variants_selection is not None:
-                    value = value[variants_selection]
-                chunk_data[field] = value
-            if sample_filter_pass is not None:
-                chunk_data["sample_filter_pass"] = sample_filter_pass
-            yield chunk_data
+
+                chunk_data = {}
+                for field in query_fields:
+                    if field in referenced_static_fields:
+                        chunk_data[field] = referenced_static_fields[field]
+                        continue
+                    value = chunk.output_view(field)
+                    if variants_selection is not None:
+                        value = value[variants_selection]
+                    chunk_data[field] = value
+                if sample_filter_pass is not None:
+                    chunk_data["sample_filter_pass"] = sample_filter_pass
+
+                # Count surviving variants from a dynamic (variants-axis)
+                # query field if there is one; static fields have the
+                # store-wide axis length, not the per-chunk variant count.
+                non_static_query = [
+                    f for f in query_fields if f not in referenced_static_fields
+                ]
+                if len(non_static_query) > 0:
+                    chunk_variants = len(chunk_data[non_static_query[0]])
+                elif variants_selection is not None:
+                    chunk_variants = int(variants_selection.sum())
+                else:
+                    chunk_variants = 0
+                variants_yielded += chunk_variants
+                chunks_yielded += 1
+                total_seconds = time.perf_counter() - chunk_start + read_seconds
+                assemble_seconds = max(0.0, total_seconds - read_seconds)
+                logger.debug(
+                    f"chunk {chunk.variant_chunk.index}: yielded {chunk_variants} "
+                    f"variants in {total_seconds:.2f}s "
+                    f"(read {read_seconds:.2f}s, assemble {assemble_seconds:.2f}s)"
+                )
+                yield chunk_data
+        finally:
+            elapsed = time.perf_counter() - iter_start
+            logger.info(
+                f"variant_chunks: iteration done in {elapsed:.2f}s "
+                f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
+                f"{variants_yielded} variants)"
+            )
 
     def _resolve_query_fields(self, fields):
         if fields is not None:

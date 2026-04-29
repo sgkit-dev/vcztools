@@ -1,6 +1,7 @@
 import pathlib
 import sys
 
+import icechunk as ic
 import numpy as np
 import obstore as obs
 import pytest
@@ -404,7 +405,6 @@ class TestOpenZarr:
         assert second["variant_position"][:].tolist() == [10, 20, 30, 40]
 
     def test_icechunk_local_path(self, tmp_path):
-        pytest.importorskip("icechunk")
         vcz_dir = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz_dir)
         ic_path = to_vcz_icechunk(vcz_dir, tmp_path)
@@ -468,7 +468,6 @@ class TestOpenZarr:
         assert captured["kwargs"]["client_options"] == {"timeout": "30s"}
 
     def test_storage_options_forwarded_to_icechunk_s3(self, monkeypatch):
-        ic = pytest.importorskip("icechunk")
 
         captured = {}
 
@@ -487,7 +486,6 @@ class TestOpenZarr:
         assert captured["kwargs"] == {"region_name": "us-east-1"}
 
     def test_storage_options_forwarded_to_icechunk_azure(self, monkeypatch):
-        ic = pytest.importorskip("icechunk")
 
         captured = {}
 
@@ -512,14 +510,12 @@ class TestOpenZarr:
         assert captured["kwargs"] == {"account_key": "secret"}
 
     def test_storage_options_rejected_for_icechunk_local_str(self, tmp_path):
-        pytest.importorskip("icechunk")
         with pytest.raises(
             ValueError, match="not supported for local icechunk storage"
         ):
             utils.make_icechunk_storage(str(tmp_path), storage_options={"foo": "bar"})
 
     def test_storage_options_rejected_for_icechunk_local_path(self, tmp_path):
-        pytest.importorskip("icechunk")
         with pytest.raises(
             ValueError, match="not supported for local icechunk storage"
         ):
@@ -550,7 +546,6 @@ class TestOpenZarr:
         assert captured["kwargs"] == {"region_name": "us-east-1"}
 
     def test_icechunk_store_passthrough(self, monkeypatch, tmp_path):
-        ic = pytest.importorskip("icechunk")
         vcz_dir = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz_dir)
         ic_path = to_vcz_icechunk(vcz_dir, tmp_path)
@@ -561,7 +556,6 @@ class TestOpenZarr:
         assert second.store is first.store
 
     def test_icechunk_local_str_returns_storage(self, monkeypatch, tmp_path):
-        ic = pytest.importorskip("icechunk")
 
         captured = {}
 
@@ -575,33 +569,27 @@ class TestOpenZarr:
         assert captured["path"] == str(tmp_path)
 
     def test_icechunk_unsupported_url_raises(self):
-        pytest.importorskip("icechunk")
         with pytest.raises(ValueError, match="Unsupported URL for icechunk"):
             utils.make_icechunk_storage("ftp://host/path")
 
     def test_icechunk_unsupported_type_raises(self):
-        pytest.importorskip("icechunk")
         with pytest.raises(TypeError, match="Unsupported URL type for icechunk"):
             utils.make_icechunk_storage(42)
 
     def test_azure_az_url_missing_container_raises(self):
-        pytest.importorskip("icechunk")
         # az://account/ has an account but no container path segment.
         with pytest.raises(ValueError, match="must include a container name"):
             utils.make_icechunk_storage("az://account/")
 
     def test_azure_az_url_no_account_raises(self):
-        pytest.importorskip("icechunk")
         with pytest.raises(ValueError, match="must use the form"):
             utils.make_icechunk_storage("az:///container/prefix")
 
     def test_azure_abfs_url_missing_at_raises(self):
-        pytest.importorskip("icechunk")
         with pytest.raises(ValueError, match="ABFS Icechunk URLs"):
             utils.make_icechunk_storage("abfs://container/prefix")
 
     def test_azure_unsupported_https_url_raises(self):
-        pytest.importorskip("icechunk")
         with pytest.raises(ValueError, match="Unsupported Azure URL"):
             # https:// must end in *.blob.core.windows.net or
             # *.dfs.core.windows.net — anything else is rejected.

@@ -340,11 +340,12 @@ def _mirror_to_icechunk(src_root, dest_path: pathlib.Path) -> None:
 
 def _default_region_spec(reader: retrieval.VczReader, fraction: float):
     """Return a ``(contig, start, end)`` tuple covering ``fraction`` of the
-    variants on the first contig, centred on the median."""
-    contig = reader.contig_ids[0]
+    variants on the contig of the first variant, centred on the median."""
     variant_contig = reader.root["variant_contig"][:]
     variant_position = reader.root["variant_position"][:]
-    positions = np.sort(variant_position[variant_contig == 0])
+    contig_idx = int(variant_contig[0])
+    contig = reader.contig_ids[contig_idx]
+    positions = np.sort(variant_position[variant_contig == contig_idx])
     half = fraction / 2.0
     lo_idx = int(len(positions) * (0.5 - half))
     hi_idx = max(lo_idx + 1, int(len(positions) * (0.5 + half)))

@@ -1,9 +1,11 @@
 """Benchmark suite for vcztools.
 
-One click entrypoint with three subcommands — ``generate`` (simulate a
-dataset), ``run`` (execute the task/backend matrix), and ``compare``
-(diff two JSONL runs). The dataset lives at ``performance/data/bench.vcz``
-by default so every subcommand can be run without arguments.
+One click entrypoint with four subcommands — ``generate`` (simulate a
+dataset), ``run`` (execute the task/backend matrix against the generated
+sibling layout), ``run-one`` (execute one task against an arbitrary Zarr
+path on a single storage backend), and ``compare`` (diff two JSONL runs).
+The dataset lives at ``performance/data/bench.vcz`` by default so
+``generate`` and ``run`` can be invoked without arguments.
 
 The generator produces several on-disk copies of the same logical data
 so we can benchmark different storage backends apples-to-apples:
@@ -12,7 +14,6 @@ so we can benchmark different storage backends apples-to-apples:
 - ``bench.vcz3/`` — Zarr v3 directory (mirrored from the v2 copy)
 - ``bench.vcz.zip`` — Zarr v2 zip
 - ``bench.vcz.icechunk/`` — icechunk repo mirrored from the v3 copy
-- ``bench.vcz.benchmark_meta.json`` — exact expected record counts
 
 Aiohttp / obstore / icechunk are assumed installed via the ``benchmark``
 dependency group.
@@ -333,38 +334,8 @@ def _mirror_to_icechunk(src_root, dest_path: pathlib.Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Exact expected-record-count helpers
+# Region selection
 # ---------------------------------------------------------------------------
-
-
-def _count_by_arange_modulo(num_variants: int, modulo: int, threshold: int) -> int:
-    full_cycles = num_variants // modulo
-    tail = num_variants % modulo
-    per_cycle = max(0, modulo - 1 - threshold)
-    tail_hits = max(0, tail - 1 - threshold)
-    return full_cycles * per_cycle + tail_hits
-
-
-def _count_call_threshold(
-    variant_indices, num_samples: int, modulo: int, threshold: int
-) -> int:
-    """Variant-level count for ``value = (v*num_samples + s) % modulo > threshold``
-    (bcftools semantics: variant kept if any sample passes).
-
-    Iterates over an explicit list of variant ordinals so the same helper
-    serves both full-scan filters and region-restricted filters.
-    """
-    if num_samples >= modulo:
-        return len(variant_indices)
-    count = 0
-    for v in variant_indices:
-        start = (int(v) * num_samples) % modulo
-        if start + num_samples <= modulo:
-            if start + num_samples - 1 > threshold:
-                count += 1
-        else:
-            count += 1
-    return count
 
 
 def _default_region_spec(root, fraction: float):
@@ -381,77 +352,6 @@ def _default_region_spec(root, fraction: float):
     start = int(positions[lo_idx])
     end = int(positions[min(hi_idx, len(positions)) - 1])
     return (contig, start, end)
-
-
-def _region_variant_indices(root, region_spec) -> np.ndarray:
-    contig_name, start, end = region_spec
-    contig_ids = root["contig_id"][:].tolist()
-    contig_idx = contig_ids.index(contig_name)
-    variant_contig = root["variant_contig"][:]
-    variant_position = root["variant_position"][:]
-    mask = (
-        (variant_contig == contig_idx)
-        & (variant_position >= start)
-        & (variant_position <= end)
-    )
-    return np.flatnonzero(mask)
-
-
-def _build_meta(root, spec: DatasetSpec, region_spec) -> dict:
-    num_variants = int(root["variant_position"].shape[0])
-    num_samples = int(root["sample_id"].shape[0])
-    region_indices = _region_variant_indices(root, region_spec)
-    full_indices = range(num_variants)
-
-    dp_gt_80 = _count_by_arange_modulo(num_variants, 101, 80)
-    region_gq_gt_50 = _count_call_threshold(region_indices, num_samples, 100, 50)
-
-    variants_chunk = int(root["variant_position"].chunks[0])
-    first_variant_chunks_records = min(
-        FIRST_VARIANT_CHUNKS_COUNT * variants_chunk, num_variants
-    )
-    fmt_fields_records = min(
-        FMT_FIELDS_VARIANT_CHUNKS_COUNT * variants_chunk, num_variants
-    )
-
-    return {
-        "num_samples": num_samples,
-        "num_variants": num_variants,
-        "seed": spec.seed,
-        "seq_length": spec.seq_length,
-        "region_spec": {
-            "contig": region_spec[0],
-            "start": region_spec[1],
-            "end": region_spec[2],
-        },
-        "region_variant_count": int(region_indices.size),
-        "expected_records": {
-            "iter_no_fields": num_variants,
-            "iter_info_only": num_variants,
-            "region_info_and_format": int(region_indices.size),
-            "first_samples_chunk": num_variants,
-            "fmt_fields": fmt_fields_records,
-            "fmt_fields_filtered": fmt_fields_records,
-            "first_samples_chunk_slice": num_variants,
-            "first_variant_chunks": first_variant_chunks_records,
-            "region_variant_position": int(region_indices.size),
-            "filter_info_dp_gt_80": dp_gt_80,
-            "filter_info_dp_gt_80_genotypes": dp_gt_80,
-            "region_filter_format_gq_gt_50": region_gq_gt_50,
-            "region_and_sample_subset": int(region_indices.size),
-            # Sanity check: the full-scan equivalents, computed once so a
-            # user curious about the "what if we did scan everything" cost
-            # can enable them manually via a task-list edit without
-            # regenerating the dataset.
-            "full_filter_format_gq_gt_50": _count_call_threshold(
-                full_indices, num_samples, 100, 50
-            ),
-        },
-    }
-
-
-def _meta_path(vcz_path: pathlib.Path) -> pathlib.Path:
-    return vcz_path.parent / (vcz_path.name + ".benchmark_meta.json")
 
 
 def _zip_path(vcz_path: pathlib.Path) -> pathlib.Path:
@@ -482,9 +382,8 @@ def _generate(
     output: pathlib.Path,
     variants_chunk_size: int | None,
     samples_chunk_size: int | None,
-    region_fraction: float,
     worker_processes: int,
-) -> dict:
+) -> zarr.Group:
     spec = DatasetSpec(num_samples=num_samples, seq_length=seq_length, seed=seed)
 
     with _stage("simulate"):
@@ -513,8 +412,6 @@ def _generate(
     with _stage("mirror_zv3"):
         _mirror_to_v3_dir(root, _v3_path(output))
 
-    # Reopen the v3 dir read-only as the source for the icechunk mirror
-    # so we're writing data that is byte-stable on disk.
     with _stage("zip"):
         zip_path = _zip_path(output)
         if zip_path.exists():
@@ -525,15 +422,7 @@ def _generate(
         v3_root = zarr.open(_v3_path(output), mode="r")
         _mirror_to_icechunk(v3_root, _icechunk_path(output))
 
-    region_spec = _default_region_spec(root, region_fraction)
-    meta = _build_meta(root, spec, region_spec)
-    _meta_path(output).write_text(json.dumps(meta, indent=2, sort_keys=True))
-    logger.info("wrote %s", _meta_path(output))
-    return meta
-
-
-def _load_meta(vcz_path: pathlib.Path) -> dict:
-    return json.loads(_meta_path(vcz_path).read_text())
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +433,7 @@ def _load_meta(vcz_path: pathlib.Path) -> dict:
 @dataclasses.dataclass
 class OpenedStore:
     root: zarr.Group
-    cleanup: object  # callable(); no-op for file backends, tears down HTTP
+    cleanup: object  # callable(); tears down any per-open resources
 
 
 class BackendOpener:
@@ -660,9 +549,57 @@ ALL_BACKENDS: dict[str, BackendOpener] = {
 }
 
 
+# Storage-layer openers consumed by ``run-one``. Unlike the matrix
+# openers above, these do not derive sibling paths — they open whatever
+# string path or URL the user supplies via Zarr's chosen storage backend.
+
+
+class FsspecOpener(BackendOpener):
+    name = "fsspec"
+
+    def open(self, dataset):
+        root = vcz_utils.open_zarr(str(dataset))
+        return OpenedStore(root, lambda: None)
+
+
+class ObstoreOpener(BackendOpener):
+    name = "obstore"
+
+    def open(self, dataset):
+        root = vcz_utils.open_zarr(str(dataset), zarr_backend_storage="obstore")
+        return OpenedStore(root, lambda: None)
+
+
+class IcechunkUrlOpener(BackendOpener):
+    name = "icechunk"
+
+    def open(self, dataset):
+        root = vcz_utils.open_zarr(str(dataset), zarr_backend_storage="icechunk")
+        return OpenedStore(root, lambda: None)
+
+
+RUN_ONE_BACKENDS: dict[str, BackendOpener] = {
+    opener.name: opener
+    for opener in (FsspecOpener(), ObstoreOpener(), IcechunkUrlOpener())
+}
+
+
 # ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class RunContext:
+    """Per-invocation context for a benchmark run.
+
+    Built once per ``run`` / ``run-one`` invocation by opening the dataset,
+    reading sample/variant counts, and computing a region spec from the
+    given fraction. Threaded through to every task builder."""
+
+    num_samples: int
+    num_variants: int
+    region_spec: tuple[str, int, int]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -672,24 +609,24 @@ class Task:
     fields: list[str] | None
 
 
-def _build_iter_no_fields(root, meta):
+def _build_iter_no_fields(root, ctx):
     return retrieval.VczReader(root)
 
 
-def _build_iter_info_only(root, meta):
+def _build_iter_info_only(root, ctx):
     return retrieval.VczReader(root)
 
 
-def _build_region_info_and_format(root, meta):
+def _build_region_info_and_format(root, ctx):
     reader = retrieval.VczReader(root)
-    rs = meta["region_spec"]
-    region = f"{rs['contig']}:{rs['start']}-{rs['end']}"
+    contig, start, end = ctx.region_spec
+    region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(root, regions=region)
     reader.set_variants(plan)
     return reader
 
 
-def _build_first_samples_chunk(root, meta):
+def _build_first_samples_chunk(root, ctx):
     """Read the full first samples-chunk across every variant. The
     selection matches the on-disk sample chunk size, so
     ``build_chunk_plan`` emits ``selection=None`` and no per-chunk
@@ -730,7 +667,7 @@ def _fmt_fields_reader(root):
     return reader
 
 
-def _build_fmt_fields(root, meta):
+def _build_fmt_fields(root, ctx):
     """Read three FMT fields (``call_genotype``, ``call_GQ``,
     ``call_DP``) on the shared fmt_fields slice. Apples-to-apples
     baseline for :func:`_build_fmt_fields_filtered`: same fields,
@@ -741,7 +678,7 @@ def _build_fmt_fields(root, meta):
     return _fmt_fields_reader(root)
 
 
-def _build_fmt_fields_filtered(root, meta):
+def _build_fmt_fields_filtered(root, ctx):
     """Same slice as :func:`_build_fmt_fields` plus a FMT-scope filter
     that evaluates to ``True`` on every cell of the bench dataset, so
     every variant in scope survives and the output volume matches the
@@ -759,7 +696,7 @@ def _build_fmt_fields_filtered(root, meta):
     return reader
 
 
-def _build_first_samples_chunk_slice(root, meta):
+def _build_first_samples_chunk_slice(root, ctx):
     """Same coverage as :func:`_build_first_samples_chunk` but drops
     the last sample of the chunk, routing the selection through
     ``samples.build_chunk_plan``'s ``slice(0, N-1)`` path. Throughput
@@ -777,7 +714,7 @@ def _build_first_samples_chunk_slice(root, meta):
 FIRST_VARIANT_CHUNKS_COUNT = 5
 
 
-def _build_first_variant_chunks(root, meta):
+def _build_first_variant_chunks(root, ctx):
     """Read the first ``FIRST_VARIANT_CHUNKS_COUNT`` variant-chunks
     across every sample. The chunk count is tuned so the returned
     volume roughly matches ``first_samples_chunk`` at the default
@@ -794,16 +731,16 @@ def _build_first_variant_chunks(root, meta):
     return reader
 
 
-def _build_region_variant_position(root, meta):
+def _build_region_variant_position(root, ctx):
     reader = retrieval.VczReader(root)
-    rs = meta["region_spec"]
-    region = f"{rs['contig']}:{rs['start']}-{rs['end']}"
+    contig, start, end = ctx.region_spec
+    region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(root, regions=region)
     reader.set_variants(plan)
     return reader
 
 
-def _build_filter_info_dp_gt_80(root, meta):
+def _build_filter_info_dp_gt_80(root, ctx):
     reader = retrieval.VczReader(root)
     vf = bcftools_filter.BcftoolsFilter(
         field_names=reader.field_names, include="INFO/DP>80"
@@ -812,7 +749,7 @@ def _build_filter_info_dp_gt_80(root, meta):
     return reader
 
 
-def _build_filter_info_dp_gt_80_genotypes(root, meta):
+def _build_filter_info_dp_gt_80_genotypes(root, ctx):
     """Filter on ``INFO/DP > 80`` and emit genotypes for the first 1000
     samples. Tests the path where a variant filter gates a large
     call_* output — the shape the readahead pipeline previously
@@ -828,10 +765,10 @@ def _build_filter_info_dp_gt_80_genotypes(root, meta):
     return reader
 
 
-def _build_region_filter_format_gq_gt_50(root, meta):
+def _build_region_filter_format_gq_gt_50(root, ctx):
     reader = retrieval.VczReader(root)
-    rs = meta["region_spec"]
-    region = f"{rs['contig']}:{rs['start']}-{rs['end']}"
+    contig, start, end = ctx.region_spec
+    region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(root, regions=region)
     reader.set_variants(plan)
     vf = bcftools_filter.BcftoolsFilter(
@@ -845,13 +782,13 @@ def _build_region_filter_format_gq_gt_50(root, meta):
     return reader
 
 
-def _build_region_and_sample_subset(root, meta):
+def _build_region_and_sample_subset(root, ctx):
     reader = retrieval.VczReader(root)
     num_samples = int(root["sample_id"].shape[0])
     take = max(1, num_samples // 100)
     reader.set_samples(list(range(take)))
-    rs = meta["region_spec"]
-    region = f"{rs['contig']}:{rs['start']}-{rs['end']}"
+    contig, start, end = ctx.region_spec
+    region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(root, regions=region)
     reader.set_variants(plan)
     return reader
@@ -1032,8 +969,8 @@ def _iterate_reader(reader: retrieval.VczReader, fields: list[str] | None) -> Re
 def _run_task(
     task: Task,
     backend: BackendOpener,
-    dataset: pathlib.Path,
-    meta: dict,
+    dataset,
+    ctx: RunContext,
     repeat_index: int,
     profile: str,
     git_sha: str,
@@ -1041,7 +978,7 @@ def _run_task(
 ) -> Result:
     opened = backend.open(dataset)
     try:
-        reader = task.build_reader(opened.root, meta)
+        reader = task.build_reader(opened.root, ctx)
         with PeakRssSampler() as sampler:
             wall_t0 = time.perf_counter()
             cpu_t0 = time.process_time()
@@ -1051,13 +988,6 @@ def _run_task(
     finally:
         opened.cleanup()
 
-    expected = int(meta["expected_records"][task.name])
-    if stats.records != expected:
-        raise AssertionError(
-            f"task {task.name!r} on backend {backend.name!r} emitted "
-            f"{stats.records} records, expected exactly {expected}"
-        )
-
     data_rate_mib_s = (
         stats.bytes_retrieved / (1024 * 1024) / elapsed if elapsed > 0 else 0.0
     )
@@ -1065,8 +995,8 @@ def _run_task(
     return Result(
         task=task.name,
         backend=backend.name,
-        num_samples=int(meta["num_samples"]),
-        num_variants=int(meta["num_variants"]),
+        num_samples=ctx.num_samples,
+        num_variants=ctx.num_variants,
         repeat_index=repeat_index,
         elapsed_s=elapsed,
         cpu_s=cpu,
@@ -1113,6 +1043,24 @@ def _select_backends(
             raise click.ClickException(f"unknown backend {n!r}")
     skip_set = set(skip)
     return [ALL_BACKENDS[n] for n in names if n not in skip_set]
+
+
+def _build_run_context(
+    dataset, opener: BackendOpener, region_fraction: float
+) -> RunContext:
+    """Open ``dataset`` with ``opener`` once to read sample/variant counts
+    and compute a region spec at the requested fraction. Returns a frozen
+    :class:`RunContext` that is then threaded through every per-(task,
+    repeat) reopen."""
+    opened = opener.open(dataset)
+    try:
+        return RunContext(
+            num_samples=int(opened.root["sample_id"].shape[0]),
+            num_variants=int(opened.root["variant_position"].shape[0]),
+            region_spec=_default_region_spec(opened.root, region_fraction),
+        )
+    finally:
+        opened.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -1207,16 +1155,6 @@ def cli():
 @click.option("--variants-chunk-size", type=int, default=None)
 @click.option("--samples-chunk-size", type=int, default=None)
 @click.option(
-    "--region-fraction",
-    type=float,
-    default=0.002,
-    show_default=True,
-    help="Fraction of the first contig's variants covered by the region "
-    "task's region_spec (centred on the median). Default 0.2% is tuned "
-    "so region_info_and_format lands inside the target band on a "
-    "100k-sample dataset.",
-)
-@click.option(
     "--worker-processes",
     type=int,
     default=0,
@@ -1233,23 +1171,21 @@ def generate_cmd(
     output,
     variants_chunk_size,
     samples_chunk_size,
-    region_fraction,
     worker_processes,
 ):
     """Simulate and write the benchmark dataset (v2 dir, v3 dir, zip, icechunk)."""
-    meta = _generate(
+    root = _generate(
         num_samples=num_samples,
         seq_length=seq_length,
         seed=seed,
         output=output,
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
-        region_fraction=region_fraction,
         worker_processes=worker_processes,
     )
-    click.echo(
-        f"generated {meta['num_variants']} variants x {meta['num_samples']} samples"
-    )
+    num_variants = int(root["variant_position"].shape[0])
+    num_samples = int(root["sample_id"].shape[0])
+    click.echo(f"generated {num_variants} variants x {num_samples} samples")
 
 
 @cli.command("run")
@@ -1259,10 +1195,9 @@ def generate_cmd(
     default=DEFAULT_DATASET,
     show_default=True,
     help="Base path used to locate per-backend siblings "
-    "(<dataset>.zip, <dataset>3/, <dataset>.icechunk/, "
-    "<dataset>.benchmark_meta.json). The directory itself does not "
-    "need to exist as long as the backends you request are satisfied "
-    "by the sibling files.",
+    "(<dataset>.zip, <dataset>3/, <dataset>.icechunk/). "
+    "The directory itself does not need to exist as long as the "
+    "backends you request are satisfied by the sibling files.",
 )
 @click.option(
     "--output",
@@ -1296,11 +1231,31 @@ def generate_cmd(
     show_default=True,
     help="Tag recorded in each JSONL row; does not affect task selection.",
 )
-def run_cmd(dataset, output, repeats, tasks, backends, skip_backends, profile):
+@click.option(
+    "--region-fraction",
+    type=float,
+    default=0.002,
+    show_default=True,
+    help="Fraction of the first contig's variants covered by the region "
+    "task's region_spec (centred on the median). Default 0.2% is tuned "
+    "so region_info_and_format lands inside the target band on a "
+    "100k-sample dataset.",
+)
+def run_cmd(
+    dataset,
+    output,
+    repeats,
+    tasks,
+    backends,
+    skip_backends,
+    profile,
+    region_fraction,
+):
     """Execute the task x backend matrix and write a JSONL row per run."""
-    meta = _load_meta(dataset)
     selected_tasks = _select_tasks(tasks)
     selected_backends = _select_backends(backends, skip_backends)
+
+    ctx = _build_run_context(dataset, ALL_BACKENDS["local-dir"], region_fraction)
 
     git_sha = _discover_git_sha()
     hostname = socket.gethostname()
@@ -1321,7 +1276,7 @@ def run_cmd(dataset, output, repeats, tasks, backends, skip_backends, profile):
                         task,
                         backend,
                         dataset,
-                        meta,
+                        ctx,
                         repeat_index,
                         profile,
                         git_sha,
@@ -1330,6 +1285,79 @@ def run_cmd(dataset, output, repeats, tasks, backends, skip_backends, profile):
                     fp.write(json.dumps(dataclasses.asdict(result), sort_keys=True))
                     fp.write("\n")
                     fp.flush()
+
+
+_TASK_NAMES_HELP = ", ".join(t.name for t in TASKS)
+
+
+@cli.command("run-one")
+@click.argument("dataset", type=click.Path(path_type=str))
+@click.option(
+    "--task",
+    "task_name",
+    required=True,
+    type=str,
+    help=f"Task to run. Available: {_TASK_NAMES_HELP}.",
+)
+@click.option(
+    "--output",
+    type=click.Path(path_type=pathlib.Path),
+    required=True,
+    help="JSONL output path; one row per repeat.",
+)
+@click.option(
+    "--backend",
+    type=click.Choice(list(RUN_ONE_BACKENDS)),
+    default="fsspec",
+    show_default=True,
+    help="Storage layer Zarr uses to open the dataset.",
+)
+@click.option("--repeats", type=int, default=3, show_default=True)
+@click.option(
+    "--region-fraction",
+    type=float,
+    default=0.002,
+    show_default=True,
+    help="Fraction of the first contig's variants used by region tasks.",
+)
+@click.option(
+    "--profile",
+    type=click.Choice(["small", "large"]),
+    default="large",
+    show_default=True,
+    help="Tag recorded in each JSONL row; does not affect task selection.",
+)
+def run_one_cmd(dataset, task_name, output, backend, repeats, region_fraction, profile):
+    """Run a single task against a single Zarr store on a single backend.
+
+    ``dataset`` may be a local path, a directory store, a ``.zip``, or any
+    URL the chosen backend can open (e.g. ``http://``, ``s3://``, an
+    icechunk repo path)."""
+    [task] = _select_tasks((task_name,))
+    opener = RUN_ONE_BACKENDS[backend]
+
+    ctx = _build_run_context(dataset, opener, region_fraction)
+
+    git_sha = _discover_git_sha()
+    hostname = socket.gethostname()
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w") as fp:
+        for repeat_index in range(repeats):
+            logger.info("%s [%d/%d]", task.name, repeat_index + 1, repeats)
+            result = _run_task(
+                task,
+                opener,
+                dataset,
+                ctx,
+                repeat_index,
+                profile,
+                git_sha,
+                hostname,
+            )
+            fp.write(json.dumps(dataclasses.asdict(result), sort_keys=True))
+            fp.write("\n")
+            fp.flush()
 
 
 @cli.command("compare")

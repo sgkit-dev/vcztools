@@ -338,13 +338,12 @@ def _mirror_to_icechunk(src_root, dest_path: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _default_region_spec(root, fraction: float):
+def _default_region_spec(reader: retrieval.VczReader, fraction: float):
     """Return a ``(contig, start, end)`` tuple covering ``fraction`` of the
     variants on the first contig, centred on the median."""
-    contig_ids = root["contig_id"][:].tolist()
-    contig = contig_ids[0]
-    variant_contig = root["variant_contig"][:]
-    variant_position = root["variant_position"][:]
+    contig = reader.contig_ids[0]
+    variant_contig = reader.root["variant_contig"][:]
+    variant_position = reader.root["variant_position"][:]
     positions = np.sort(variant_position[variant_contig == 0])
     half = fraction / 2.0
     lo_idx = int(len(positions) * (0.5 - half))
@@ -633,10 +632,8 @@ def _build_first_samples_chunk(root, ctx):
     slice is applied — the task reports the reader's delivered
     bandwidth on an intact sample chunk."""
     reader = retrieval.VczReader(root)
-    num_samples = int(root["sample_id"].shape[0])
-    samples_chunk_size = int(root["sample_id"].chunks[0])
-    take = min(samples_chunk_size, num_samples)
-    reader.set_samples(list(range(take)))
+    take = min(reader.samples_chunk_size, reader.num_samples)
+    reader.set_samples(np.arange(take))
     return reader
 
 
@@ -653,14 +650,10 @@ def _fmt_fields_reader(root):
     isn't needed to capture the per-chunk filter-eval overhead, which
     is linear in chunk count."""
     reader = retrieval.VczReader(root)
-    num_samples = int(root["sample_id"].shape[0])
-    samples_chunk_size = int(root["sample_id"].chunks[0])
-    take_samples = min(samples_chunk_size, num_samples)
-    reader.set_samples(list(range(take_samples)))
+    take_samples = min(reader.samples_chunk_size, reader.num_samples)
+    reader.set_samples(np.arange(take_samples))
 
-    num_variants = int(root["variant_position"].shape[0])
-    variants_chunk = int(root["variant_position"].chunks[0])
-    num_variant_chunks = math.ceil(num_variants / variants_chunk)
+    num_variant_chunks = math.ceil(reader.num_variants / reader.variants_chunk_size)
     take_chunks = min(FMT_FIELDS_VARIANT_CHUNKS_COUNT, num_variant_chunks)
     plan = [vcz_utils.ChunkRead(index=i) for i in range(take_chunks)]
     reader.set_variants(plan)
@@ -704,10 +697,8 @@ def _build_first_samples_chunk_slice(root, ctx):
     a regression would mean the Phase 0.5 slice optimisation is
     carrying a cost we haven't noticed."""
     reader = retrieval.VczReader(root)
-    num_samples = int(root["sample_id"].shape[0])
-    samples_chunk_size = int(root["sample_id"].chunks[0])
-    take = min(samples_chunk_size, num_samples)
-    reader.set_samples(list(range(take - 1)))
+    take = min(reader.samples_chunk_size, reader.num_samples)
+    reader.set_samples(np.arange(take - 1))
     return reader
 
 
@@ -722,9 +713,7 @@ def _build_first_variant_chunks(root, ctx):
     for different I/O patterns — contiguous variants region vs
     contiguous samples column."""
     reader = retrieval.VczReader(root)
-    num_variants = int(root["variant_position"].shape[0])
-    variants_chunk = int(root["variant_position"].chunks[0])
-    num_variant_chunks = math.ceil(num_variants / variants_chunk)
+    num_variant_chunks = math.ceil(reader.num_variants / reader.variants_chunk_size)
     take = min(FIRST_VARIANT_CHUNKS_COUNT, num_variant_chunks)
     plan = [vcz_utils.ChunkRead(index=i) for i in range(take)]
     reader.set_variants(plan)
@@ -755,9 +744,8 @@ def _build_filter_info_dp_gt_80_genotypes(root, ctx):
     call_* output — the shape the readahead pipeline previously
     opted out of."""
     reader = retrieval.VczReader(root)
-    num_samples = int(root["sample_id"].shape[0])
-    take = min(1000, num_samples)
-    reader.set_samples(list(range(take)))
+    take = min(1000, reader.num_samples)
+    reader.set_samples(np.arange(take))
     vf = bcftools_filter.BcftoolsFilter(
         field_names=reader.field_names, include="INFO/DP>80"
     )
@@ -784,9 +772,8 @@ def _build_region_filter_format_gq_gt_50(root, ctx):
 
 def _build_region_and_sample_subset(root, ctx):
     reader = retrieval.VczReader(root)
-    num_samples = int(root["sample_id"].shape[0])
-    take = max(1, num_samples // 100)
-    reader.set_samples(list(range(take)))
+    take = max(1, reader.num_samples // 100)
+    reader.set_samples(np.arange(take))
     contig, start, end = ctx.region_spec
     region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(root, regions=region)
@@ -1054,10 +1041,11 @@ def _build_run_context(
     repeat) reopen."""
     opened = opener.open(dataset)
     try:
+        reader = retrieval.VczReader(opened.root)
         return RunContext(
-            num_samples=int(opened.root["sample_id"].shape[0]),
-            num_variants=int(opened.root["variant_position"].shape[0]),
-            region_spec=_default_region_spec(opened.root, region_fraction),
+            num_samples=reader.num_samples,
+            num_variants=reader.num_variants,
+            region_spec=_default_region_spec(reader, region_fraction),
         )
     finally:
         opened.cleanup()

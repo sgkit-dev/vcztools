@@ -52,13 +52,46 @@ def _has_variants_axis(arr) -> bool:
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
 
 
-class _ReadaheadPipeline:
+def _chunk_read_list(
+    root,
+    variant_chunk: utils.ChunkRead,
+    sample_chunk_plan: "samples_mod.SampleChunkPlan",
+    fields,
+) -> list[tuple]:
+    """Return the block reads needed to materialize ``fields`` on a
+    single variant chunk: ``[(blocks_key, arr, block_index), ...]``.
+
+    ``blocks_key`` is the key under which the resulting ndarray will
+    sit in :attr:`CachedVariantChunk._blocks` — ``(field,)`` for
+    non-``call_*`` fields and static (non-variants-axis) fields,
+    ``(field, sci)`` for one ``call_*`` sample-chunk read.
+    """
+    reads = []
+    for field in fields:
+        arr = root[field]
+        if not _has_variants_axis(arr):
+            reads.append(((field,), arr, ()))
+        elif not field.startswith("call_"):
+            index = (variant_chunk.index,) + (slice(None),) * (arr.ndim - 1)
+            reads.append(((field,), arr, index))
+        else:
+            for cr in sample_chunk_plan.chunk_reads:
+                index = (variant_chunk.index, cr.index) + (slice(None),) * (
+                    arr.ndim - 2
+                )
+                reads.append(((field, cr.index), arr, index))
+    return reads
+
+
+class ReadaheadPipeline:
     """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
 
-    Iterates ``variant_chunk_plan``, constructing a :class:`CachedVariantChunk`
-    per entry and submitting each of its block reads to a shared
-    thread pool so subsequent chunks' reads overlap with the current
-    chunk's processing in the consumer.
+    For each entry in ``variant_chunk_plan``: compute the block reads
+    via :func:`_chunk_read_list`, submit them to a shared thread pool,
+    collect results into a ``blocks`` dict, then construct a
+    :class:`CachedVariantChunk` over those prefetched blocks and yield
+    it. Cross-chunk readahead overlaps later chunks' reads with the
+    current chunk's processing in the consumer.
 
     The window is sized by a byte budget rather than a chunk count:
     one variant-chunk prefetch can vary from a few MB (single
@@ -91,7 +124,7 @@ class _ReadaheadPipeline:
         variant_chunk_plan: list[utils.ChunkRead],
         sample_chunk_plan: "samples_mod.SampleChunkPlan",
         output_columns: np.ndarray | None,
-        read_fields: list[str],
+        read_fields,
         *,
         readahead_bytes: int,
         workers: int,
@@ -108,29 +141,25 @@ class _ReadaheadPipeline:
             max_workers=workers,
             thread_name_prefix="vcztools-readahead",
         )
-        # in_flight: list of (CachedVariantChunk, [(cache_key, Future), ...]).
-        # The futures list is empty when the chunk needed no prefetch.
+        # in_flight: list of (variant_chunk, [(blocks_key, Future), ...]).
+        # The futures list is empty when the chunk needs no prefetch.
         self._in_flight: list = []
 
     def _schedule_one(self) -> bool:
-        """Construct the next CachedVariantChunk and submit its block reads
-        to the thread pool. Returns False once the plan is exhausted."""
+        """Plan the next variant chunk's reads and submit them to the
+        thread pool. Returns False once the plan is exhausted."""
         try:
-            chunk_read = next(self._variant_chunk_plan_iter)
+            variant_chunk = next(self._variant_chunk_plan_iter)
         except StopIteration:
             return False
-        chunk = CachedVariantChunk(
-            self.root,
-            chunk_read,
-            read_plan=self._sample_chunk_plan,
-            output_columns=self._output_columns,
+        reads = _chunk_read_list(
+            self.root, variant_chunk, self._sample_chunk_plan, self._read_fields
         )
-        reads = chunk._build_read_plan(self._read_fields)
         futures = [
             (key, self._executor.submit(_read_block, arr, block_index))
             for key, arr, block_index in reads
         ]
-        self._in_flight.append((chunk, futures))
+        self._in_flight.append((variant_chunk, futures))
         return True
 
     def _refill(self) -> None:
@@ -155,15 +184,22 @@ class _ReadaheadPipeline:
         try:
             self._refill()
             while len(self._in_flight) > 0:
-                chunk, futures = self._in_flight.pop(0)
+                variant_chunk, futures = self._in_flight.pop(0)
                 future_to_key = {fut: key for key, fut in futures}
+                blocks: dict[tuple, np.ndarray] = {}
                 for fut in cf.as_completed(future_to_key):
-                    chunk._raw[future_to_key[fut]] = fut.result()
+                    blocks[future_to_key[fut]] = fut.result()
                 if self._per_chunk_bytes is None:
                     self._per_chunk_bytes = sum(
-                        utils.array_memory_bytes(v) for v in chunk._raw.values()
+                        utils.array_memory_bytes(v) for v in blocks.values()
                     )
-                yield chunk
+                yield CachedVariantChunk(
+                    self.root,
+                    variant_chunk,
+                    sample_chunk_plan=self._sample_chunk_plan,
+                    output_columns=self._output_columns,
+                    blocks=blocks,
+                )
                 # After the consumer drops the previous chunk reference,
                 # top the pipeline back up.
                 self._refill()
@@ -172,29 +208,35 @@ class _ReadaheadPipeline:
 
 
 class CachedVariantChunk:
-    """I/O + cache + sample-axis views for one variant chunk visit.
+    """View assembler over prefetched blocks for one variant chunk visit.
 
-    Two reads' worth of logic collapses to one read plan plus an
-    optional column slice:
+    Constructed by :class:`ReadaheadPipeline` once its block reads have
+    completed; performs no I/O itself. The constructor takes:
 
-    - ``read_plan`` — the sample chunks to fetch for every ``call_*``
-      field. In subset-mode this is the subset plan; in view-mode it
-      is the non-null-samples plan. An empty plan (no ``chunk_reads``)
-      is valid and produces zero-sample-column arrays without any
-      I/O. Non-``call_*`` fields ignore it.
-    - ``output_columns`` — indices into the read-plan axis that
-      produce the subset axis. ``None`` when the read plan is already
-      the subset axis (subset-mode) — ``output_view`` returns the
+    - ``blocks`` — ``{key: ndarray}`` of prefetched Zarr blocks keyed by
+      ``(field,)`` for static / variants-axis non-``call_*`` reads and
+      ``(field, sci)`` for one ``call_*`` sample-chunk read. Keys are
+      assigned by :func:`_chunk_read_list`.
+    - ``sample_chunk_plan`` — the sample chunks the prefetch covers for
+      every ``call_*`` field. In subset-mode this is the subset plan;
+      in view-mode it is the non-null-samples plan. An empty plan
+      (no ``chunk_reads``) is valid and produces zero-sample-column
+      arrays without any prefetched ``call_*`` blocks. Non-``call_*``
+      fields ignore it.
+    - ``output_columns`` — indices into the read-plan axis that produce
+      the subset axis. ``None`` when the read plan is already the
+      subset axis (subset-mode) — :meth:`output_view` returns the
       assembled read untouched.
 
     Methods:
 
-    - :meth:`filter_view` — raw assembled read at the read-plan axis.
+    - :meth:`filter_view` — assembled read at the read-plan axis.
     - :meth:`output_view` — subset-axis data. For ``call_*`` fields
       with ``output_columns`` set, a column slice of the read.
 
-    The raw-block cache is keyed by the underlying Zarr tuple; shared
-    fields between filter and output reuse blocks by identity.
+    Looking up a field that isn't in ``blocks`` raises ``KeyError``;
+    the consumer must call view methods only for fields that were in
+    the prefetch list.
     """
 
     def __init__(
@@ -202,17 +244,15 @@ class CachedVariantChunk:
         root,
         variant_chunk: utils.ChunkRead,
         *,
-        read_plan: samples_mod.SampleChunkPlan,
+        sample_chunk_plan: samples_mod.SampleChunkPlan,
         output_columns: np.ndarray | None,
+        blocks: dict[tuple, np.ndarray],
     ):
         self.root = root
         self.variant_chunk = variant_chunk
-        self._read_plan = read_plan
+        self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
-        # Raw Zarr data keyed by:
-        #   (field,)         → static (full array) or variant-only block
-        #   (field, sci)     → call_* raw sample-chunk block
-        self._raw: dict[tuple, np.ndarray] = {}
+        self._blocks = blocks
         # Assembled read-axis arrays keyed by field.
         self._views: dict[str, np.ndarray] = {}
 
@@ -241,44 +281,14 @@ class CachedVariantChunk:
             return data
         return data[:, self._output_columns]
 
-    def _build_read_plan(self, fields: list[str]) -> list[tuple]:
-        """Return ``[(cache_key, arr, block_index), ...]`` for the
-        block reads needed to satisfy ``fields`` on this variant chunk,
-        skipping any blocks already cached.
-        """
-        reads = []
-        for field in fields:
-            arr = self.root[field]
-            if not _has_variants_axis(arr):
-                key = (field,)
-                if key in self._raw:
-                    continue
-                reads.append((key, arr, ()))
-            elif not field.startswith("call_"):
-                key = (field,)
-                if key in self._raw:
-                    continue
-                index = (self.variant_chunk.index,) + (slice(None),) * (arr.ndim - 1)
-                reads.append((key, arr, index))
-            else:
-                for cr in self._read_plan.chunk_reads:
-                    key = (field, cr.index)
-                    if key in self._raw:
-                        continue
-                    index = (self.variant_chunk.index, cr.index) + (slice(None),) * (
-                        arr.ndim - 2
-                    )
-                    reads.append((key, arr, index))
-        return reads
-
     def _materialize(self, field: str) -> np.ndarray:
         arr = self.root[field]
-        if not _has_variants_axis(arr):
-            return self._load_non_call_raw(field, arr)
-        if not field.startswith("call_"):
-            block = self._load_non_call_raw(field, arr)
+        if field.startswith("call_") and _has_variants_axis(arr):
+            return self._assemble_call(field, arr)
+        block = self._blocks[(field,)]
+        if _has_variants_axis(arr):
             return self._slice_variants(block)
-        return self._assemble_call(field, arr)
+        return block
 
     def _slice_variants(self, block):
         sel = self.variant_chunk.selection
@@ -286,33 +296,11 @@ class CachedVariantChunk:
             return block
         return block[sel]
 
-    def _load_non_call_raw(self, field: str, arr) -> np.ndarray:
-        key = (field,)
-        cached = self._raw.get(key)
-        if cached is not None:
-            return cached
-        if _has_variants_axis(arr):
-            value = arr.blocks[self.variant_chunk.index]
-        else:
-            value = arr[:]
-        self._raw[key] = value
-        return value
-
-    def _load_call_raw(self, field: str, arr, sci: int) -> np.ndarray:
-        key = (field, sci)
-        cached = self._raw.get(key)
-        if cached is not None:
-            return cached
-        index = (self.variant_chunk.index, sci) + (slice(None),) * (arr.ndim - 2)
-        value = arr.blocks[index]
-        self._raw[key] = value
-        return value
-
     def _assemble_call(self, field: str, arr) -> np.ndarray:
-        plan = self._read_plan
+        plan = self._sample_chunk_plan
         parts = []
         for cr in plan.chunk_reads:
-            raw = self._load_call_raw(field, arr, cr.index)
+            raw = self._blocks[(field, cr.index)]
             if cr.selection is not None:
                 raw = raw[:, cr.selection]
             parts.append(raw)
@@ -325,7 +313,7 @@ class CachedVariantChunk:
 
     def _empty_call_array(self, arr) -> np.ndarray:
         """Zero-sample-column array for a call_* field, without I/O.
-        Used when the read plan is empty (e.g. set_samples([]))."""
+        Used when the sample chunk plan is empty (e.g. set_samples([]))."""
         sel = self.variant_chunk.selection
         if sel is not None:
             n_variants = int(sel.size)
@@ -767,7 +755,7 @@ class VczReader:
             if self.readahead_workers is not None
             else DEFAULT_READAHEAD_WORKERS
         )
-        for chunk in _ReadaheadPipeline(
+        for chunk in ReadaheadPipeline(
             self.root,
             self.variant_chunk_plan,
             sample_chunk_plan,

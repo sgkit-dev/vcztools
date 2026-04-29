@@ -154,13 +154,11 @@ class TestFilterMultiChunk:
         root = _make_filter_vcz()
         num_chunks = int(root["variant_filter"].cdata_shape[0])
         assert num_chunks == 3
-        reader = VczReader(root)
         for chunk_idx in range(num_chunks):
-            chunk = CachedVariantChunk(
+            chunk = _make_cached_chunk(
                 root,
-                utils.ChunkRead(index=chunk_idx),
-                read_plan=reader.sample_chunk_plan,
-                output_columns=None,
+                fields=["filter_id"],
+                variant_chunk_idx=chunk_idx,
             )
             nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])
 
@@ -274,7 +272,7 @@ def _make_pipeline(
     n_chunks=None,
     workers=2,
 ):
-    """Construct a ``_ReadaheadPipeline`` directly against ``root``,
+    """Construct a ``ReadaheadPipeline`` directly against ``root``,
     matching the wiring ``VczReader.variant_chunks`` does (default
     sample-chunk plan over non-null samples; one ``ChunkRead`` per
     variant chunk; no view-mode column remap).
@@ -290,7 +288,7 @@ def _make_pipeline(
     if n_chunks is None:
         n_chunks = int(root["variant_position"].cdata_shape[0])
     variant_chunk_plan = [utils.ChunkRead(index=i) for i in range(n_chunks)]
-    return retrieval_mod._ReadaheadPipeline(
+    return retrieval_mod.ReadaheadPipeline(
         root,
         variant_chunk_plan,
         sample_chunk_plan,
@@ -301,7 +299,7 @@ def _make_pipeline(
     )
 
 
-class _DepthTrackingPipeline(retrieval_mod._ReadaheadPipeline):
+class _DepthTrackingPipeline(retrieval_mod.ReadaheadPipeline):
     """Pipeline subclass that records ``len(_in_flight)`` after each
     ``_refill`` call. Used to assert depth-control behaviour under
     different ``readahead_bytes`` values without observing the executor
@@ -317,7 +315,7 @@ class _DepthTrackingPipeline(retrieval_mod._ReadaheadPipeline):
 
 
 class TestReadaheadPipeline:
-    """Direct unit tests for ``retrieval._ReadaheadPipeline``.
+    """Direct unit tests for ``retrieval.ReadaheadPipeline``.
 
     The end-to-end suites cover correctness; this class targets the
     pipeline's own state machine — bootstrap, budget-driven scheduling
@@ -366,10 +364,10 @@ class TestReadaheadPipeline:
         assert pipeline._per_chunk_bytes is None
         chunk = next(gen)
         # After bootstrap the measurement is recorded and matches the
-        # raw cache content.
+        # prefetched blocks' content.
         assert isinstance(pipeline._per_chunk_bytes, int)
         assert pipeline._per_chunk_bytes > 0
-        expected = sum(utils.array_memory_bytes(v) for v in chunk._raw.values())
+        expected = sum(utils.array_memory_bytes(v) for v in chunk._blocks.values())
         assert pipeline._per_chunk_bytes == expected
         gen.close()
 
@@ -423,11 +421,11 @@ class TestReadaheadPipeline:
         chunks = list(pipeline)
         assert len(chunks) == 2
         for chunk in chunks:
-            assert chunk._raw == {}
+            assert chunk._blocks == {}
 
-    def test_chunks_have_prefetched_blocks_in_raw_cache(self):
-        # Every (key, future) submitted lands in chunk._raw after the
-        # consumer receives the chunk.
+    def test_chunks_have_prefetched_blocks(self):
+        # Every (key, future) submitted lands in chunk._blocks before
+        # the consumer receives the chunk.
         root = self._vcz(num_variants=6, variants_chunk_size=3, num_samples=2)
         pipeline = _make_pipeline(
             root,
@@ -435,8 +433,8 @@ class TestReadaheadPipeline:
             readahead_bytes=0,
         )
         for chunk in pipeline:
-            assert ("variant_position",) in chunk._raw
-            assert ("variant_contig",) in chunk._raw
+            assert ("variant_position",) in chunk._blocks
+            assert ("variant_contig",) in chunk._blocks
 
     def test_executor_shutdown_on_full_iteration(self):
         root = self._vcz()
@@ -748,6 +746,7 @@ def _vcz_for_cache_tests(
 def _make_cached_chunk(
     root,
     *,
+    fields=(),
     variant_chunk_idx=0,
     variant_selection=None,
     samples_selection=None,
@@ -766,62 +765,65 @@ def _make_cached_chunk(
         non_null_indices, samples_chunk_size=samples_chunk_size
     )
     if view_semantics:
-        read_plan = non_null_plan
+        sample_chunk_plan = non_null_plan
         output_columns = np.searchsorted(non_null_indices, samples_selection)
     else:
-        read_plan = subset_plan
+        sample_chunk_plan = subset_plan
         output_columns = None
+    variant_chunk = utils.ChunkRead(
+        index=variant_chunk_idx, selection=variant_selection
+    )
+    reads = retrieval_mod._chunk_read_list(
+        root, variant_chunk, sample_chunk_plan, fields
+    )
+    blocks = {key: retrieval_mod._read_block(arr, idx) for key, arr, idx in reads}
     return CachedVariantChunk(
         root,
-        utils.ChunkRead(index=variant_chunk_idx, selection=variant_selection),
-        read_plan=read_plan,
+        variant_chunk,
+        sample_chunk_plan=sample_chunk_plan,
         output_columns=output_columns,
+        blocks=blocks,
     )
 
 
 class TestCachedVariantChunkCache:
-    """CachedVariantChunk reads each (field, sample_chunk) block at most
-    once per variant-chunk visit across filter_view / output_view."""
+    """CachedVariantChunk consumes prefetched blocks and caches
+    assembled views so a field reused across filter_view / output_view
+    is materialized once."""
 
-    def test_view_mode_shared_field_raw_blocks_not_refetched(self):
-        # View-mode: filter_view reads real-axis blocks; output_view
-        # then reads subset-axis blocks. Any (field, sci) needed by
-        # both comes from the raw cache (identity check).
+    def test_view_mode_prefetch_covers_every_real_sample_chunk(self):
+        # View-mode prefetch covers the whole real sample axis (so a
+        # sample-scope filter evaluating on the real axis has every
+        # block it needs). output_view's column slice never reaches
+        # back into ``_blocks`` — it slices the filter_view.
         root = _vcz_for_cache_tests(num_samples=6, samples_chunk_size=2)
         chunk = _make_cached_chunk(
             root,
+            fields=["call_DP"],
             samples_selection=np.array([1, 5]),
             view_semantics=True,
         )
-        chunk.filter_view("call_DP")
-        # Real plan covers all three sample chunks.
-        raw_sci = {k[1] for k in chunk._raw if len(k) == 2 and k[0] == "call_DP"}
-        assert raw_sci == {0, 1, 2}
-        block_0 = chunk._raw[("call_DP", 0)]
-        block_2 = chunk._raw[("call_DP", 2)]
-        chunk.output_view("call_DP")  # subset plan: chunks 0 and 2
-        # No refetch; same underlying blocks.
-        assert chunk._raw[("call_DP", 0)] is block_0
-        assert chunk._raw[("call_DP", 2)] is block_2
+        prefetched = {k[1] for k in chunk._blocks if k[0] == "call_DP"}
+        assert prefetched == {0, 1, 2}
 
     def test_subset_mode_filter_and_output_view_share_assembled_array(self):
         # Subset-mode: filter_view and output_view use the same plan
         # object → they share a single assembled array in the view
-        # cache, not merely shared raw blocks.
+        # cache, not merely shared prefetched blocks.
         root = _vcz_for_cache_tests()
-        chunk = _make_cached_chunk(root)
+        chunk = _make_cached_chunk(root, fields=["call_DP"])
         fv = chunk.filter_view("call_DP")
         ov = chunk.output_view("call_DP")
         assert fv is ov
 
     def test_variant_field_cached_within_chunk(self):
-        chunk = _make_cached_chunk(_vcz_for_cache_tests())
+        chunk = _make_cached_chunk(_vcz_for_cache_tests(), fields=["variant_position"])
         first = chunk.filter_view("variant_position")
         second = chunk.output_view("variant_position")
         assert first is second
 
     def test_static_field_cached_within_chunk(self):
-        chunk = _make_cached_chunk(_make_filter_vcz())
+        chunk = _make_cached_chunk(_make_filter_vcz(), fields=["filter_id"])
         first = chunk.filter_view("filter_id")
         second = chunk.filter_view("filter_id")
         assert first is second
@@ -853,6 +855,7 @@ class TestCachedVariantChunkAxes:
     def test_subset_mode_filter_view_uses_subset_axis(self):
         chunk = _make_cached_chunk(
             self._vcz(),
+            fields=["call_DP"],
             samples_selection=np.array([0, 2]),
         )
         dp = chunk.filter_view("call_DP")
@@ -862,6 +865,7 @@ class TestCachedVariantChunkAxes:
     def test_view_mode_filter_view_uses_real_axis(self):
         chunk = _make_cached_chunk(
             self._vcz(),
+            fields=["call_DP"],
             samples_selection=np.array([0, 2]),
             view_semantics=True,
         )
@@ -873,6 +877,7 @@ class TestCachedVariantChunkAxes:
     def test_output_view_always_subset_axis(self, view_semantics):
         chunk = _make_cached_chunk(
             self._vcz(),
+            fields=["call_DP"],
             samples_selection=np.array([0, 2]),
             view_semantics=view_semantics,
         )
@@ -1298,36 +1303,11 @@ def _basic_vcz(num_variants=3, num_samples=2, **kwargs):
     )
 
 
-class TestBuildReadPlanCacheHits:
-    """``CachedVariantChunk._build_read_plan`` skips block reads whose
-    cache key is already populated, regardless of which of the three
-    branches (static field, variants-axis non-call, ``call_*``) the
-    field falls into.
-    """
-
-    def test_static_field_cached_returns_empty(self):
-        chunk = _make_cached_chunk(_basic_vcz())
-        chunk._raw[("sample_id",)] = chunk.root["sample_id"][:]
-        assert chunk._build_read_plan(["sample_id"]) == []
-
-    def test_variant_axis_field_cached_returns_empty(self):
-        chunk = _make_cached_chunk(_basic_vcz())
-        chunk._raw[("variant_position",)] = chunk.root["variant_position"].blocks[0]
-        assert chunk._build_read_plan(["variant_position"]) == []
-
-    def test_call_field_all_chunks_cached_returns_empty(self):
-        root = _vcz_for_cache_tests()
-        chunk = _make_cached_chunk(root)
-        for cr in chunk._read_plan.chunk_reads:
-            chunk._raw[("call_DP", cr.index)] = root["call_DP"].blocks[0, cr.index]
-        assert chunk._build_read_plan(["call_DP"]) == []
-
-
 class TestEmptyCallArray:
     """``CachedVariantChunk._empty_call_array`` produces a zero-column
-    output for ``call_*`` fields when the read plan is empty (e.g.
-    ``set_samples([])``). Both the explicit-selection branch and the
-    full-chunk fallback need direct coverage.
+    output for ``call_*`` fields when the sample chunk plan is empty
+    (e.g. ``set_samples([])``). Both the explicit-selection branch and
+    the full-chunk fallback need direct coverage.
     """
 
     @staticmethod
@@ -1352,8 +1332,9 @@ class TestEmptyCallArray:
         return CachedVariantChunk(
             root,
             utils.ChunkRead(index=variant_chunk_idx, selection=selection),
-            read_plan=empty_plan,
+            sample_chunk_plan=empty_plan,
             output_columns=None,
+            blocks={},
         )
 
     def test_explicit_selection_uses_sel_size(self):

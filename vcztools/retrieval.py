@@ -665,6 +665,12 @@ class VczReader:
         return int(self.root["variant_position"].shape[0])
 
     @functools.cached_property
+    def num_samples(self) -> int:
+        """Total samples in the store (raw axis length, before any
+        sample selection or null-sample filtering)."""
+        return int(self.root["sample_id"].shape[0])
+
+    @functools.cached_property
     def variants_chunk_size(self) -> int:
         """Chunk size along the variants axis."""
         return int(self.root["variant_position"].chunks[0])

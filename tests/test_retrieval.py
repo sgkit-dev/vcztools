@@ -1606,6 +1606,10 @@ class TestVczReaderCachedProperties:
         n = VczReader(fx_sample_vcz.group).num_variants
         assert n == int(fx_sample_vcz.group["variant_position"].shape[0])
 
+    def test_num_samples(self, fx_sample_vcz):
+        n = VczReader(fx_sample_vcz.group).num_samples
+        assert n == int(fx_sample_vcz.group["sample_id"].shape[0])
+
     def test_source_present(self):
         root = _basic_vcz()
         root.attrs["source"] = "vcztools-test"

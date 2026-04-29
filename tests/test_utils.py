@@ -2,10 +2,12 @@ import pathlib
 import sys
 
 import numpy as np
+import obstore as obs
 import pytest
 import zarr
 from numpy.testing import assert_array_equal
 
+from tests.utils import to_vcz_icechunk
 from vcztools import utils
 from vcztools.constants import (
     FLOAT32_FILL,
@@ -289,10 +291,16 @@ class TestArrayDims:
 
 
 class TestOpenZarr:
+    """Matrix coverage of ``open_zarr`` across every (backend, path-type)
+    combination.
+    """
+
     def _write_minimal_group(self, path):
         root = zarr.open(path, mode="w")
         root.create_array("variant_position", shape=(4,), dtype="int32")
         root["variant_position"][:] = [10, 20, 30, 40]
+
+    # --- Path-type detection (auto backend) ---
 
     def test_zip_path(self):
         root = open_zarr(FIXTURE_VCZ_ZIP)
@@ -303,28 +311,298 @@ class TestOpenZarr:
         root = open_zarr(str(FIXTURE_VCZ_ZIP))
         assert isinstance(root.store, zarr.storage.ZipStore)
 
-    def test_zip_with_fsspec_backend(self):
-        root = open_zarr(FIXTURE_VCZ_ZIP, zarr_backend_storage="fsspec")
-        assert isinstance(root.store, zarr.storage.ZipStore)
-
-    def test_directory_path(self, tmp_path):
+    def test_local_dir_path_uses_local_store(self, tmp_path):
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
         root = open_zarr(vcz)
-        assert not isinstance(root.store, zarr.storage.ZipStore)
+        assert isinstance(root.store, zarr.storage.LocalStore)
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
-    def test_obstore(self, tmp_path):
+    def test_local_dir_str_uses_local_store(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        root = open_zarr(str(vcz))
+        assert isinstance(root.store, zarr.storage.LocalStore)
+
+    def test_url_with_default_backend_raises(self, tmp_path):
+        # The default backend is local-only; URLs require an explicit
+        # zarr_backend_storage value.
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        with pytest.raises(ValueError, match="requires zarr_backend_storage"):
+            open_zarr(vcz.as_uri())
+
+    def test_zarr_group_passthrough(self):
+        store = zarr.storage.MemoryStore()
+        group = zarr.group(store=store, zarr_format=3)
+        assert open_zarr(group) is group
+
+    def test_zarr_store_passthrough(self):
+        # An already-built store short-circuits the backend dispatch:
+        # the resulting Group reads from that store regardless of which
+        # backend produced it.
+        store = zarr.storage.MemoryStore()
+        group = zarr.group(store=store, zarr_format=3)
+        group.create_array("variant_position", shape=(3,), dtype="int32")
+        group["variant_position"][:] = [1, 2, 3]
+        root = open_zarr(store)
+        assert root["variant_position"][:].tolist() == [1, 2, 3]
+
+    # --- Backend selection ---
+
+    def test_fsspec_backend_uses_fsspec_store(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        root = open_zarr(vcz.as_uri(), zarr_backend_storage="fsspec")
+        assert isinstance(root.store, zarr.storage.FsspecStore)
+        assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
+
+    def test_local_path_with_fsspec_backend_promoted_to_file_url(self, tmp_path):
+        # Local Path/str inputs to the fsspec backend are auto-promoted
+        # to file:// URIs so FsspecStore.from_url accepts them.
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        root_path = open_zarr(vcz, zarr_backend_storage="fsspec")
+        assert isinstance(root_path.store, zarr.storage.FsspecStore)
+        root_str = open_zarr(str(vcz), zarr_backend_storage="fsspec")
+        assert isinstance(root_str.store, zarr.storage.FsspecStore)
+
+    def test_fsspec_backend_unsupported_type_raises(self):
+        with pytest.raises(TypeError, match="Unsupported file_or_url type"):
+            open_zarr(42, zarr_backend_storage="fsspec")
+
+    def test_invalid_backend_raises(self):
+        with pytest.raises(ValueError, match="Unsupported Zarr backend storage"):
+            open_zarr(FIXTURE_VCZ_ZIP, zarr_backend_storage="bogus")
+
+    def test_local_backend_unsupported_type_raises(self):
+        # The default (local) backend rejects anything that isn't a
+        # str/Path-like via the underlying LocalStore.
+        with pytest.raises((TypeError, ValueError)):
+            open_zarr(42)
+
+    def test_obstore_local_path(self, tmp_path):
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
         root = open_zarr(vcz, zarr_backend_storage="obstore")
         assert isinstance(root.store, zarr.storage.ObjectStore)
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
-        # open with store object
-        root = open_zarr(root.store, zarr_backend_storage="obstore")
+
+    def test_obstore_local_str(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        root = open_zarr(str(vcz), zarr_backend_storage="obstore")
         assert isinstance(root.store, zarr.storage.ObjectStore)
+        assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
+
+    def test_obstore_passthrough_store_object(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        first = open_zarr(vcz, zarr_backend_storage="obstore")
+        second = open_zarr(first.store, zarr_backend_storage="obstore")
+        assert isinstance(second.store, zarr.storage.ObjectStore)
+        assert second["variant_position"][:].tolist() == [10, 20, 30, 40]
+
+    def test_icechunk_local_path(self, tmp_path):
+        pytest.importorskip("icechunk")
+        vcz_dir = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz_dir)
+        ic_path = to_vcz_icechunk(vcz_dir, tmp_path)
+        root = open_zarr(ic_path, zarr_backend_storage="icechunk")
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
     def test_nonexistent_zip_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             open_zarr(tmp_path / "does-not-exist.vcz.zip")
+
+    # --- storage_options plumbing ---
+
+    def test_storage_options_rejected_for_local_zip(self):
+        # The default backend is local-only — neither LocalStore nor
+        # ZipStore takes resilience options. Both cases raise.
+        with pytest.raises(ValueError, match="not supported for local stores"):
+            open_zarr(FIXTURE_VCZ_ZIP, storage_options={"foo": "bar"})
+
+    def test_storage_options_rejected_for_local_dir(self, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        with pytest.raises(ValueError, match="not supported for local stores"):
+            open_zarr(vcz, storage_options={"foo": "bar"})
+
+    def test_fsspec_storage_options_forwarded(self, monkeypatch, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        captured = {}
+        original = zarr.storage.FsspecStore.from_url
+
+        def spy(url, *, storage_options=None, **kwargs):
+            captured["url"] = url
+            captured["storage_options"] = storage_options
+            return original(url)
+
+        monkeypatch.setattr(zarr.storage.FsspecStore, "from_url", spy)
+        open_zarr(
+            vcz.as_uri(),
+            zarr_backend_storage="fsspec",
+            storage_options={"foo": "bar"},
+        )
+        assert captured["storage_options"] == {"foo": "bar"}
+
+    def test_storage_options_forwarded_to_obstore(self, monkeypatch, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        captured = {}
+        original = obs.store.from_url
+
+        def spy(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return original(url, mkdir=kwargs.get("mkdir", False))
+
+        monkeypatch.setattr(obs.store, "from_url", spy)
+        open_zarr(
+            vcz,
+            zarr_backend_storage="obstore",
+            storage_options={"client_options": {"timeout": "30s"}},
+        )
+        assert captured["kwargs"]["client_options"] == {"timeout": "30s"}
+
+    def test_storage_options_forwarded_to_icechunk_s3(self, monkeypatch):
+        ic = pytest.importorskip("icechunk")
+
+        captured = {}
+
+        def spy(*, bucket, prefix, from_env, **kwargs):
+            captured.update(
+                bucket=bucket, prefix=prefix, from_env=from_env, kwargs=kwargs
+            )
+            return object()  # opaque; we're only verifying forwarding
+
+        monkeypatch.setattr(ic, "s3_storage", spy)
+        utils.make_icechunk_storage(
+            "s3://bucket/prefix", storage_options={"region_name": "us-east-1"}
+        )
+        assert captured["bucket"] == "bucket"
+        assert captured["prefix"] == "prefix"
+        assert captured["kwargs"] == {"region_name": "us-east-1"}
+
+    def test_storage_options_forwarded_to_icechunk_azure(self, monkeypatch):
+        ic = pytest.importorskip("icechunk")
+
+        captured = {}
+
+        def spy(*, account, container, prefix, from_env, **kwargs):
+            captured.update(
+                account=account,
+                container=container,
+                prefix=prefix,
+                from_env=from_env,
+                kwargs=kwargs,
+            )
+            return object()
+
+        monkeypatch.setattr(ic, "azure_storage", spy)
+        utils.make_icechunk_storage(
+            "az://account/container/prefix",
+            storage_options={"account_key": "secret"},
+        )
+        assert captured["account"] == "account"
+        assert captured["container"] == "container"
+        assert captured["prefix"] == "prefix"
+        assert captured["kwargs"] == {"account_key": "secret"}
+
+    def test_storage_options_rejected_for_icechunk_local_str(self, tmp_path):
+        pytest.importorskip("icechunk")
+        with pytest.raises(
+            ValueError, match="not supported for local icechunk storage"
+        ):
+            utils.make_icechunk_storage(str(tmp_path), storage_options={"foo": "bar"})
+
+    def test_storage_options_rejected_for_icechunk_local_path(self, tmp_path):
+        pytest.importorskip("icechunk")
+        with pytest.raises(
+            ValueError, match="not supported for local icechunk storage"
+        ):
+            utils.make_icechunk_storage(tmp_path, storage_options={"foo": "bar"})
+
+    # --- Backend error/edge paths ---
+
+    def test_obstore_unsupported_type_raises(self):
+        with pytest.raises(TypeError, match="Unsupported file_or_url type"):
+            open_zarr(42, zarr_backend_storage="obstore")
+
+    def test_obstore_remote_url_storage_options_forwarded(self, monkeypatch):
+        captured = {}
+
+        def spy(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            raise RuntimeError("captured")
+
+        monkeypatch.setattr(obs.store, "from_url", spy)
+        with pytest.raises(RuntimeError, match="captured"):
+            open_zarr(
+                "s3://bucket/path",
+                zarr_backend_storage="obstore",
+                storage_options={"region_name": "us-east-1"},
+            )
+        assert captured["url"] == "s3://bucket/path"
+        assert captured["kwargs"] == {"region_name": "us-east-1"}
+
+    def test_icechunk_store_passthrough(self, monkeypatch, tmp_path):
+        ic = pytest.importorskip("icechunk")
+        vcz_dir = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz_dir)
+        ic_path = to_vcz_icechunk(vcz_dir, tmp_path)
+        # Build the IcechunkStore once, then pass it back through.
+        first = open_zarr(ic_path, zarr_backend_storage="icechunk")
+        assert isinstance(first.store, ic.store.IcechunkStore)
+        second = open_zarr(first.store, zarr_backend_storage="icechunk")
+        assert second.store is first.store
+
+    def test_icechunk_local_str_returns_storage(self, monkeypatch, tmp_path):
+        ic = pytest.importorskip("icechunk")
+
+        captured = {}
+
+        def spy(path):
+            captured["path"] = path
+            return "local-storage"
+
+        monkeypatch.setattr(ic.Storage, "new_local_filesystem", spy)
+        result = utils.make_icechunk_storage(str(tmp_path))
+        assert result == "local-storage"
+        assert captured["path"] == str(tmp_path)
+
+    def test_icechunk_unsupported_url_raises(self):
+        pytest.importorskip("icechunk")
+        with pytest.raises(ValueError, match="Unsupported URL for icechunk"):
+            utils.make_icechunk_storage("ftp://host/path")
+
+    def test_icechunk_unsupported_type_raises(self):
+        pytest.importorskip("icechunk")
+        with pytest.raises(TypeError, match="Unsupported URL type for icechunk"):
+            utils.make_icechunk_storage(42)
+
+    def test_azure_az_url_missing_container_raises(self):
+        pytest.importorskip("icechunk")
+        # az://account/ has an account but no container path segment.
+        with pytest.raises(ValueError, match="must include a container name"):
+            utils.make_icechunk_storage("az://account/")
+
+    def test_azure_az_url_no_account_raises(self):
+        pytest.importorskip("icechunk")
+        with pytest.raises(ValueError, match="must use the form"):
+            utils.make_icechunk_storage("az:///container/prefix")
+
+    def test_azure_abfs_url_missing_at_raises(self):
+        pytest.importorskip("icechunk")
+        with pytest.raises(ValueError, match="ABFS Icechunk URLs"):
+            utils.make_icechunk_storage("abfs://container/prefix")
+
+    def test_azure_unsupported_https_url_raises(self):
+        pytest.importorskip("icechunk")
+        with pytest.raises(ValueError, match="Unsupported Azure URL"):
+            # https:// must end in *.blob.core.windows.net or
+            # *.dfs.core.windows.net — anything else is rejected.
+            utils.make_icechunk_storage("https://example.com/foo/bar")

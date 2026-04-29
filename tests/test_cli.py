@@ -2,6 +2,7 @@ import pathlib
 import sys
 from unittest import mock
 
+import click
 import click.testing as ct
 import numpy as np
 import pytest
@@ -412,3 +413,75 @@ class TestBackends:
         vcz = fx_sample_vcz.path(backend).as_posix()
         output, _ = run_vcztools(f"index -s {vcz}")
         assert output.strip().splitlines() == ["19\t.\t2", "20\t.\t6", "X\t.\t1"]
+
+
+class TestParseStorageOptions:
+    """``cli._parse_storage_options`` decodes ``KEY=VALUE`` pairs into a
+    dict, parsing each ``VALUE`` as JSON when possible and falling back
+    to the raw string."""
+
+    def test_empty_returns_none(self):
+        assert cli._parse_storage_options(()) is None
+
+    def test_json_int(self):
+        assert cli._parse_storage_options(("timeout=30",)) == {"timeout": 30}
+
+    def test_json_string_fallback(self):
+        # "us-east-1" is not valid JSON; falls through to raw string.
+        assert cli._parse_storage_options(("region=us-east-1",)) == {
+            "region": "us-east-1"
+        }
+
+    def test_json_object(self):
+        result = cli._parse_storage_options(('client_kwargs={"verify": false}',))
+        assert result == {"client_kwargs": {"verify": False}}
+
+    def test_multiple(self):
+        result = cli._parse_storage_options(
+            ("timeout=30", "region=us-east-1", 'tags=["a", "b"]')
+        )
+        assert result == {
+            "timeout": 30,
+            "region": "us-east-1",
+            "tags": ["a", "b"],
+        }
+
+    def test_value_with_equals_kept_intact(self):
+        # Only the first '=' splits; the rest is part of VALUE.
+        assert cli._parse_storage_options(("expr=a=b",)) == {"expr": "a=b"}
+
+    def test_invalid_format_raises(self):
+        with pytest.raises(click.BadParameter, match="must be KEY=VALUE"):
+            cli._parse_storage_options(("no-equals",))
+
+
+class TestStorageOptionCli:
+    """End-to-end: ``--storage-option`` flows through the CLI into
+    ``open_zarr`` for every command that accepts a backend."""
+
+    def test_view_passes_storage_options(self, fx_vcz_path, monkeypatch):
+        # Spy on open_zarr to capture the kwargs the CLI passes; abort
+        # immediately so the test doesn't have to navigate the rest of
+        # the view pipeline.
+        captured = {}
+
+        def spy(path, **kwargs):
+            captured.update(kwargs)
+            # ValueError is converted to a ClickException by the
+            # handle_exception decorator; the runner sees a clean exit.
+            raise ValueError("captured")
+
+        monkeypatch.setattr(cli, "open_zarr", spy)
+        _, err = run_vcztools(
+            f"view --no-version {fx_vcz_path} "
+            "--storage-option foo=42 --storage-option bar=baz",
+            expect_error=True,
+        )
+        assert captured["storage_options"] == {"foo": 42, "bar": "baz"}
+
+    def test_invalid_pair_raises_bad_parameter(self, fx_vcz_path):
+        _, err = run_vcztools(
+            f"view --no-version {fx_vcz_path} --storage-option no-equals",
+            expect_error=True,
+        )
+        assert "must be KEY=VALUE" in err

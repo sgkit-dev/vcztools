@@ -75,8 +75,6 @@ def test_write_vcf(
 
 
 def test_write_vcf__icechunk(tmp_path, fx_sample_vcz3):
-    pytest.importorskip("icechunk")
-
     vcz_icechunk = to_vcz_icechunk(fx_sample_vcz3.directory_path, tmp_path)
     output = tmp_path.joinpath("output.vcf")
 

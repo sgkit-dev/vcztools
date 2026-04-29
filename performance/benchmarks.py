@@ -1125,20 +1125,37 @@ def _compare_runs(a_path: pathlib.Path, b_path: pathlib.Path) -> int:
 # ---------------------------------------------------------------------------
 
 
-@click.group()
-@click.option(
+def _configure_logging(level: int) -> None:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s.%(msecs)03d %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+def _verbosity_callback(ctx, param, value):
+    level = {0: logging.WARNING, 1: logging.INFO}.get(value, logging.DEBUG)
+    _configure_logging(level)
+    return value
+
+
+verbosity_option = click.option(
     "-v",
     "--verbosity",
     count=True,
+    callback=_verbosity_callback,
+    expose_value=False,
     help="Increase log verbosity (-v for INFO, -vv for DEBUG).",
 )
-def cli(verbosity):
+
+
+@click.group()
+def cli():
     """vcztools benchmark suite."""
-    level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
-    logging.basicConfig(level=level, format="%(message)s")
 
 
 @cli.command("generate")
+@verbosity_option
 @click.option("--num-samples", type=int, default=100_000, show_default=True)
 @click.option("--seq-length", type=float, default=1e7, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
@@ -1185,6 +1202,7 @@ def generate_cmd(
 
 
 @cli.command("run")
+@verbosity_option
 @click.option(
     "--dataset",
     type=click.Path(path_type=pathlib.Path),
@@ -1287,6 +1305,7 @@ _TASK_NAMES_HELP = ", ".join(t.name for t in TASKS)
 
 
 @cli.command("run-one")
+@verbosity_option
 @click.argument("dataset", type=click.Path(path_type=str))
 @click.option(
     "--task",
@@ -1357,6 +1376,7 @@ def run_one_cmd(dataset, task_name, output, backend, repeats, region_fraction, p
 
 
 @cli.command("compare")
+@verbosity_option
 @click.argument("a", type=click.Path(exists=True, path_type=pathlib.Path))
 @click.argument("b", type=click.Path(exists=True, path_type=pathlib.Path))
 def compare_cmd(a, b):

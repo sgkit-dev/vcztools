@@ -314,6 +314,183 @@ class _DepthTrackingPipeline(retrieval_mod.ReadaheadPipeline):
         self.depths.append(len(self._in_flight))
 
 
+def _vcz_for_template_tests():
+    """Small VCZ exposing all four field shapes in the templates:
+
+    - 1-D static (``sample_id``)
+    - 1-D variant-axis non-call (``variant_position``)
+    - 2-D variant-axis non-call (``variant_allele``)
+    - 2-D ``call_*`` (``call_DP``)
+    - 3-D ``call_*`` (``call_genotype``)
+    """
+    num_variants = 4
+    num_samples = 4
+    ploidy = 2
+    call_dp = np.zeros((num_variants, num_samples), dtype=np.int32)
+    call_genotype = np.zeros((num_variants, num_samples, ploidy), dtype=np.int8)
+    return vcz_builder.make_vcz(
+        variant_contig=[0] * num_variants,
+        variant_position=list(range(1, num_variants + 1)),
+        alleles=[("A", "T")] * num_variants,
+        num_samples=num_samples,
+        sample_id=[f"s{i}" for i in range(num_samples)],
+        variants_chunk_size=2,
+        samples_chunk_size=2,
+        call_genotype=call_genotype,
+        call_fields={"DP": call_dp},
+    )
+
+
+class TestCreateChunkReadList:
+    """``create_chunk_read_list`` resolves each requested field to a
+    template once: one template per non-``call_*`` field, one per
+    ``(field, sample_chunk)`` pair for ``call_*``.
+    """
+
+    def _sample_plan(self, root):
+        samples_chunk_size = int(root["sample_id"].chunks[0])
+        non_null = np.flatnonzero(root["sample_id"][:] != "")
+        return samples_mod.build_chunk_plan(
+            non_null, samples_chunk_size=samples_chunk_size
+        )
+
+    def test_static_field_has_no_variants_axis_marker(self):
+        root = _vcz_for_template_tests()
+        templates = retrieval_mod.create_chunk_read_list(
+            root, self._sample_plan(root), ["sample_id"]
+        )
+        assert len(templates) == 1
+        t = templates[0]
+        assert t.key == ("sample_id",)
+        assert t.arr == root["sample_id"]
+        assert t.block_index_suffix is None
+
+    def test_variant_axis_1d_field(self):
+        root = _vcz_for_template_tests()
+        templates = retrieval_mod.create_chunk_read_list(
+            root, self._sample_plan(root), ["variant_position"]
+        )
+        assert len(templates) == 1
+        t = templates[0]
+        assert t.key == ("variant_position",)
+        assert t.arr == root["variant_position"]
+        # 1-D variants axis → no extra dims after the variant chunk slot.
+        assert t.block_index_suffix == ()
+
+    def test_variant_axis_2d_field(self):
+        root = _vcz_for_template_tests()
+        templates = retrieval_mod.create_chunk_read_list(
+            root, self._sample_plan(root), ["variant_allele"]
+        )
+        assert len(templates) == 1
+        t = templates[0]
+        assert t.key == ("variant_allele",)
+        # 2-D (variants, alleles) → one trailing slice(None).
+        assert t.block_index_suffix == (slice(None),)
+
+    def test_call_field_2d_fans_out_per_sample_chunk(self):
+        root = _vcz_for_template_tests()
+        plan = self._sample_plan(root)
+        # 4 samples, samples_chunk_size=2 → 2 sample chunks.
+        assert len(plan.chunk_reads) == 2
+        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_DP"])
+        assert len(templates) == 2
+        assert [t.key for t in templates] == [("call_DP", 0), ("call_DP", 1)]
+        call_dp = root["call_DP"]
+        for t, cr in zip(templates, plan.chunk_reads):
+            assert t.arr == call_dp
+            # 2-D (variants, samples) → suffix is (sci,), no trailing slices.
+            assert t.block_index_suffix == (cr.index,)
+
+    def test_call_field_3d_keeps_trailing_slice(self):
+        root = _vcz_for_template_tests()
+        plan = self._sample_plan(root)
+        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_genotype"])
+        assert len(templates) == len(plan.chunk_reads)
+        for t, cr in zip(templates, plan.chunk_reads):
+            assert t.key == ("call_genotype", cr.index)
+            # 3-D (variants, samples, ploidy) → suffix carries (sci, slice).
+            assert t.block_index_suffix == (cr.index, slice(None))
+
+    def test_multiple_fields_in_input_order(self):
+        # call_DP fans out into 2 entries between the two scalar
+        # templates; ordering is "fields in input order, then sample
+        # chunks within a call_*".
+        root = _vcz_for_template_tests()
+        plan = self._sample_plan(root)
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["variant_position", "call_DP", "sample_id"]
+        )
+        assert [t.key for t in templates] == [
+            ("variant_position",),
+            ("call_DP", 0),
+            ("call_DP", 1),
+            ("sample_id",),
+        ]
+
+
+class TestUpdateChunkReadList:
+    """``update_chunk_read_list`` substitutes the variant chunk index
+    into each template, leaving the templates unchanged so the same
+    list is reusable across every chunk in a query.
+    """
+
+    def test_static_template_yields_empty_block_index(self):
+        root = _vcz_for_template_tests()
+        plan = samples_mod.SampleChunkPlan(
+            chunk_reads=[utils.ChunkRead(index=0)], permutation=None
+        )
+        templates = retrieval_mod.create_chunk_read_list(root, plan, ["sample_id"])
+        reads = retrieval_mod.update_chunk_read_list(templates, 7)
+        assert len(reads) == 1
+        key, arr, block_index = reads[0]
+        assert key == ("sample_id",)
+        assert arr == root["sample_id"]
+        # Static field ignores the variant chunk index entirely.
+        assert block_index == ()
+
+    def test_variant_non_call_template_prepends_variant_chunk_index(self):
+        root = _vcz_for_template_tests()
+        plan = samples_mod.SampleChunkPlan(
+            chunk_reads=[utils.ChunkRead(index=0)], permutation=None
+        )
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["variant_position", "variant_allele"]
+        )
+        reads = retrieval_mod.update_chunk_read_list(templates, 3)
+        keys = [r[0] for r in reads]
+        block_indexes = [r[2] for r in reads]
+        assert keys == [("variant_position",), ("variant_allele",)]
+        assert block_indexes == [(3,), (3, slice(None))]
+
+    def test_call_template_keeps_sample_chunk_index_after_variant(self):
+        root = _vcz_for_template_tests()
+        plan = samples_mod.build_chunk_plan(
+            np.array([0, 1, 2, 3], dtype=np.int64), samples_chunk_size=2
+        )
+        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_DP"])
+        reads = retrieval_mod.update_chunk_read_list(templates, 5)
+        assert [r[0] for r in reads] == [("call_DP", 0), ("call_DP", 1)]
+        assert [r[2] for r in reads] == [(5, 0), (5, 1)]
+
+    def test_two_calls_yield_independent_lists(self):
+        # Reusing a template list across chunks must not have any
+        # cross-talk: each call returns a fresh list of fresh tuples
+        # against the supplied variant chunk index.
+        root = _vcz_for_template_tests()
+        plan = samples_mod.SampleChunkPlan(
+            chunk_reads=[utils.ChunkRead(index=0)], permutation=None
+        )
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["variant_position"]
+        )
+        reads_a = retrieval_mod.update_chunk_read_list(templates, 0)
+        reads_b = retrieval_mod.update_chunk_read_list(templates, 4)
+        assert reads_a is not reads_b
+        assert reads_a[0][2] == (0,)
+        assert reads_b[0][2] == (4,)
+
+
 class TestReadaheadPipeline:
     """Direct unit tests for ``retrieval.ReadaheadPipeline``.
 
@@ -773,9 +950,8 @@ def _make_cached_chunk(
     variant_chunk = utils.ChunkRead(
         index=variant_chunk_idx, selection=variant_selection
     )
-    reads = retrieval_mod._chunk_read_list(
-        root, variant_chunk, sample_chunk_plan, fields
-    )
+    templates = retrieval_mod.create_chunk_read_list(root, sample_chunk_plan, fields)
+    reads = retrieval_mod.update_chunk_read_list(templates, variant_chunk.index)
     blocks = {key: retrieval_mod._read_block(arr, idx) for key, arr, idx in reads}
     return CachedVariantChunk(
         root,

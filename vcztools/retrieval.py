@@ -52,46 +52,95 @@ def _has_variants_axis(arr) -> bool:
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
 
 
-def _chunk_read_list(
+@dataclasses.dataclass(frozen=True, slots=True)
+class BlockReadTemplate:
+    """Variant-chunk-independent read pattern for one block.
+
+    ``block_index_suffix`` is the part of the Zarr ``block_index``
+    *after* the variant chunk index slot — empty tuple for a 1-D
+    variant-axis field, ``(slice(None),) * (ndim - 1)`` for higher-D
+    non-call fields, ``(sci, slice(None) * (ndim - 2))`` for
+    ``call_*``, and ``None`` for static fields with no variants axis
+    (in which case the full ``block_index`` is ``()``).
+    """
+
+    key: tuple
+    arr: object
+    block_index_suffix: tuple | None
+
+
+def create_chunk_read_list(
     root,
-    variant_chunk: utils.ChunkRead,
     sample_chunk_plan: "samples_mod.SampleChunkPlan",
     fields,
-) -> list[tuple]:
-    """Return the block reads needed to materialize ``fields`` on a
-    single variant chunk: ``[(blocks_key, arr, block_index), ...]``.
+) -> list[BlockReadTemplate]:
+    """Resolve ``fields`` to a list of :class:`BlockReadTemplate`
+    once per query, before any variant chunk is visited.
 
-    ``blocks_key`` is the key under which the resulting ndarray will
-    sit in :attr:`CachedVariantChunk._blocks` — ``(field,)`` for
-    non-``call_*`` fields and static (non-variants-axis) fields,
-    ``(field, sci)`` for one ``call_*`` sample-chunk read.
+    Each template carries the variant-chunk-independent parts of one
+    block read — the cache key, the resolved Zarr array, and the
+    suffix of ``block_index`` that follows the variant chunk index
+    slot. :func:`update_chunk_read_list` substitutes a specific
+    variant chunk index to produce executor-ready
+    ``(key, arr, block_index)`` tuples.
+
+    For a ``call_*`` field the template list fans out one entry per
+    sample chunk in ``sample_chunk_plan.chunk_reads``; for any other
+    field exactly one entry is produced.
     """
-    reads = []
+    templates = []
     for field in fields:
         arr = root[field]
         if not _has_variants_axis(arr):
-            reads.append(((field,), arr, ()))
+            templates.append(
+                BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=None)
+            )
         elif not field.startswith("call_"):
-            index = (variant_chunk.index,) + (slice(None),) * (arr.ndim - 1)
-            reads.append(((field,), arr, index))
+            suffix = (slice(None),) * (arr.ndim - 1)
+            templates.append(
+                BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=suffix)
+            )
         else:
             for cr in sample_chunk_plan.chunk_reads:
-                index = (variant_chunk.index, cr.index) + (slice(None),) * (
-                    arr.ndim - 2
+                suffix = (cr.index,) + (slice(None),) * (arr.ndim - 2)
+                templates.append(
+                    BlockReadTemplate(
+                        key=(field, cr.index), arr=arr, block_index_suffix=suffix
+                    )
                 )
-                reads.append(((field, cr.index), arr, index))
+    return templates
+
+
+def update_chunk_read_list(
+    templates: list[BlockReadTemplate],
+    variant_chunk_index: int,
+) -> list[tuple]:
+    """Substitute ``variant_chunk_index`` into each template, returning
+    the ``[(key, arr, block_index), ...]`` list that
+    :class:`ReadaheadPipeline` submits to the thread pool. The
+    template list itself is unchanged.
+    """
+    reads = []
+    for t in templates:
+        if t.block_index_suffix is None:
+            block_index = ()
+        else:
+            block_index = (variant_chunk_index,) + t.block_index_suffix
+        reads.append((t.key, t.arr, block_index))
     return reads
 
 
 class ReadaheadPipeline:
     """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
 
-    For each entry in ``variant_chunk_plan``: compute the block reads
-    via :func:`_chunk_read_list`, submit them to a shared thread pool,
-    collect results into a ``blocks`` dict, then construct a
-    :class:`CachedVariantChunk` over those prefetched blocks and yield
-    it. Cross-chunk readahead overlaps later chunks' reads with the
-    current chunk's processing in the consumer.
+    Resolves the per-field read pattern once at init via
+    :func:`create_chunk_read_list`, then for each entry in
+    ``variant_chunk_plan``: substitute the variant chunk index via
+    :func:`update_chunk_read_list`, submit the resulting block reads
+    to a shared thread pool, collect results into a ``blocks`` dict,
+    then construct a :class:`CachedVariantChunk` over those prefetched
+    blocks and yield it. Cross-chunk readahead overlaps later chunks'
+    reads with the current chunk's processing in the consumer.
 
     The window is sized by a byte budget rather than a chunk count:
     one variant-chunk prefetch can vary from a few MB (single
@@ -133,7 +182,9 @@ class ReadaheadPipeline:
         self._variant_chunk_plan_iter = iter(variant_chunk_plan)
         self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
-        self._read_fields = read_fields
+        self._read_templates = create_chunk_read_list(
+            root, sample_chunk_plan, read_fields
+        )
         self._readahead_bytes = readahead_bytes
         # Set on the first chunk's completion in __iter__.
         self._per_chunk_bytes: int | None = None
@@ -152,9 +203,7 @@ class ReadaheadPipeline:
             variant_chunk = next(self._variant_chunk_plan_iter)
         except StopIteration:
             return False
-        reads = _chunk_read_list(
-            self.root, variant_chunk, self._sample_chunk_plan, self._read_fields
-        )
+        reads = update_chunk_read_list(self._read_templates, variant_chunk.index)
         futures = [
             (key, self._executor.submit(_read_block, arr, block_index))
             for key, arr, block_index in reads

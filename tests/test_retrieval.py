@@ -161,7 +161,7 @@ class TestFilterMultiChunk:
             chunk = CachedVariantChunk(
                 root,
                 utils.ChunkRead(index=chunk_idx),
-                read_plan=reader.non_null_sample_chunk_plan,
+                read_plan=reader.sample_chunk_plan,
                 output_columns=None,
             )
             nt.assert_array_equal(chunk.filter_view("filter_id"), ["PASS", "q10"])

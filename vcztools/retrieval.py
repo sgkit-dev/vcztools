@@ -613,15 +613,6 @@ class VczReader:
         return arr
 
     @property
-    def filter_samples(self) -> np.ndarray:
-        """Sample axis the variant filter evaluates over. Defaults to
-        :attr:`samples_selection` when :meth:`set_filter_samples` has
-        not been called."""
-        if self._filter_samples is None:
-            return self.samples_selection
-        return self._filter_samples
-
-    @property
     def filter_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
         """Chunk plan for reading the filter sample axis. When
         :meth:`set_filter_samples` has not been called this is the
@@ -667,11 +658,6 @@ class VczReader:
         return int(self.root["variant_position"].chunks[0])
 
     @functools.cached_property
-    def num_samples(self) -> int:
-        """Total samples in the store (including any null entries)."""
-        return int(self.root["sample_id"].shape[0])
-
-    @functools.cached_property
     def samples_chunk_size(self) -> int:
         """Chunk size along the samples axis."""
         return int(self.root["sample_id"].chunks[0])
@@ -688,16 +674,6 @@ class VczReader:
         """Global indices of non-null samples in ``sample_id``. Sorted;
         empty if every entry is null."""
         return np.flatnonzero(self.raw_sample_ids != "")
-
-    @functools.cached_property
-    def non_null_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
-        """:class:`~vcztools.samples.SampleChunkPlan` for every
-        non-null sample. Used by :class:`CachedVariantChunk` to build
-        view-mode filter views. Empty when no non-null samples exist."""
-        return samples_mod.build_chunk_plan(
-            self.non_null_sample_indices,
-            samples_chunk_size=self.samples_chunk_size,
-        )
 
     @functools.cached_property
     def contig_lengths(self) -> np.ndarray | None:

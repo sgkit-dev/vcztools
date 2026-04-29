@@ -1,4 +1,5 @@
 import dataclasses
+import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -287,3 +288,25 @@ def missing(arr: np.ndarray) -> np.ndarray:
         return ~arr
     else:
         raise ValueError(f"unrecognised dtype: {arr.dtype}")
+
+
+def array_memory_bytes(arr: np.ndarray) -> int:
+    """Best-effort in-memory footprint of ``arr``, in bytes.
+
+    For fixed-size dtypes ``arr.nbytes`` is exact. For variable-length
+    string dtypes it only covers the per-element metadata cells; the
+    string content itself lives in Python heap (``object`` dtype) or
+    numpy's ``StringDType`` arena, both of which we have to walk.
+
+    - kind ``"O"`` (numpy ``object``): per-element ``sys.getsizeof``
+      captures each Python str's header + content.
+    - kind ``"T"`` (numpy ``StringDType``): ``arr.nbytes`` for the
+      metadata cells, plus the UTF-8 byte length of every element.
+    - everything else: ``arr.nbytes`` is exact.
+    """
+    if arr.dtype.kind == "O":
+        return sum(sys.getsizeof(x) for x in arr.flat)
+    if arr.dtype.kind == "T":
+        content = sum(len(s.encode("utf-8")) for s in arr.flat)
+        return int(arr.nbytes) + content
+    return int(arr.nbytes)

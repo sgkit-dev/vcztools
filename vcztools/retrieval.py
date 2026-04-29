@@ -2,7 +2,6 @@ import concurrent.futures as cf
 import dataclasses
 import functools
 import os
-import sys
 
 import numpy as np
 
@@ -50,28 +49,6 @@ def _has_variants_axis(arr) -> bool:
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
 
 
-def _array_memory_bytes(arr: np.ndarray) -> int:
-    """Best-effort in-memory footprint of ``arr``, in bytes.
-
-    For fixed-size dtypes ``arr.nbytes`` is exact. For variable-length
-    string dtypes it only covers the per-element metadata cells; the
-    string content itself lives in Python heap (``object`` dtype) or
-    numpy's ``StringDType`` arena, both of which we have to walk.
-
-    - kind ``"O"`` (numpy ``object``): per-element ``sys.getsizeof``
-      captures each Python str's header + content.
-    - kind ``"T"`` (numpy ``StringDType``): ``arr.nbytes`` for the
-      metadata cells, plus the UTF-8 byte length of every element.
-    - everything else: ``arr.nbytes`` is exact.
-    """
-    if arr.dtype.kind == "O":
-        return sum(sys.getsizeof(x) for x in arr.flat)
-    if arr.dtype.kind == "T":
-        content = sum(len(s.encode("utf-8")) for s in arr.flat)
-        return int(arr.nbytes) + content
-    return int(arr.nbytes)
-
-
 class _ReadaheadPipeline:
     """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
 
@@ -88,8 +65,9 @@ class _ReadaheadPipeline:
 
     Per-chunk byte cost is *measured*, not predicted: the first chunk
     is scheduled solo, and once its prefetched blocks land we sum
-    their :func:`_array_memory_bytes` and use that as the window-sizing
-    estimate for every later chunk. The estimate is approximate —
+    their :func:`vcztools.utils.array_memory_bytes` and use that as
+    the window-sizing estimate for every later chunk. The estimate is
+    approximate —
 
     - The bootstrap chunk runs even when its prefetch alone exceeds
       ``readahead_bytes`` (the alternative is to never make progress).
@@ -184,7 +162,7 @@ class _ReadaheadPipeline:
                     chunk._raw[future_to_key[fut]] = fut.result()
                 if self._per_chunk_bytes is None:
                     self._per_chunk_bytes = sum(
-                        _array_memory_bytes(v) for v in chunk._raw.values()
+                        utils.array_memory_bytes(v) for v in chunk._raw.values()
                     )
                 yield chunk
                 # After the consumer drops the previous chunk reference,

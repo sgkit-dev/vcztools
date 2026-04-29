@@ -1,10 +1,16 @@
 # vcztools performance benchmark suite
 
-Drives `VczReader` through nine iteration, subset, region, and filter
-tasks across six storage backends (Zarr v2 local directory, Zarr v3
-local directory, Zarr v2 zip, local HTTP, obstore over `file://`,
-icechunk). Designed for "diff this branch against that branch on my
-laptop" — not for longitudinal tracking.
+Drives `VczReader` through a catalogue of iteration, subset, region, and
+filter tasks. Two entry points:
+
+- `run` — sweeps the task list across six storage-format siblings
+  (Zarr v2 local directory, Zarr v3 local directory, Zarr v2 zip, local
+  HTTP, obstore over `file://`, icechunk) produced by `generate`. Designed
+  for "diff this branch against that branch on my laptop".
+- `run-one` — runs one task against an arbitrary Zarr path on one storage
+  backend (`fsspec`, `obstore`, or `icechunk`). Useful for pointing the
+  suite at a real cohort, a remote bucket, or any store you didn't
+  produce with `generate`.
 
 ## Install
 
@@ -29,7 +35,7 @@ minutes wall time on a modern laptop, dominated by
 `mirror_icechunk`) is timed in the log so you can bisect if it
 overshoots.
 
-The command writes five artefacts under `performance/data/`, all
+The command writes four artefacts under `performance/data/`, all
 holding the same logical data:
 
 - `bench.vcz/` — Zarr v2 directory store (bio2zarr's default on-disk
@@ -37,12 +43,6 @@ holding the same logical data:
 - `bench.vcz3/` — Zarr v3 directory store, mirrored from the v2 copy.
 - `bench.vcz.zip` — Zarr v2 zipped via `bio2zarr.zarr_utils.zip_zarr`.
 - `bench.vcz.icechunk/` — icechunk repo mirrored from the v3 copy.
-- `bench.vcz.benchmark_meta.json` — exact expected record counts per
-  task, computed from the deterministic `np.arange`-based synthetic
-  fields (`variant_DP`, `variant_QUAL`, `variant_IMPACT`, `call_DP`,
-  `call_GQ`). The runner asserts every task's output against these
-  values, so a silently broken filter fails loudly rather than
-  passing as a speed win.
 
 For a tiny smoke run: `generate --num-samples 1000 --seq-length 200000`.
 
@@ -60,18 +60,46 @@ uv run python performance/benchmarks.py run \
 
 Writes one JSONL row per `(task, backend, repeat)` with `elapsed_s`,
 `peak_rss_mb`, `records`, `git_sha`, `timestamp`, `hostname`, and the
-`profile` tag. Defaults to `--repeats 3` across all nine tasks and all
-six backends.
+`profile` tag. Defaults to `--repeats 3` across all tasks and all six
+backends.
 
 Optional flags:
 
-- `--dataset PATH` — default `performance/data/bench.vcz`.
+- `--dataset PATH` — default `performance/data/bench.vcz`. The matrix
+  derives sibling paths (`<dataset>3/`, `<dataset>.zip`,
+  `<dataset>.icechunk/`) from this base.
 - `--task NAME` (repeatable) — restrict to specific tasks.
 - `--backend NAME` (repeatable) — restrict to specific backends
   (`local-dir`, `local-dir-zv3`, `local-zip`, `local-http`,
   `obstore-file`, `icechunk`).
 - `--skip-backend NAME` (repeatable) — exclude a backend.
 - `--profile {small,large}` — free-form tag recorded in each row.
+- `--region-fraction FLOAT` — fraction of the first contig's variants
+  used by the region tasks (default 0.002, computed at run start).
+
+## Run a single task against an arbitrary Zarr
+
+```
+uv run python performance/benchmarks.py run-one \
+    s3://my-bucket/cohort.vcz \
+    --task region_info_and_format \
+    --output performance/results/run-one.jsonl
+```
+
+Same JSONL schema as `run`, one row per repeat. The positional
+`dataset` argument is passed through to Zarr unchanged, so it can be a
+local directory, a `.zip`, or any URL the chosen backend can open.
+
+`--backend` selects the *storage layer* Zarr uses to open the path
+(not the file format):
+
+- `fsspec` (default) — local directories, `.zip`, `http(s)://`.
+- `obstore` — opens via the obstore object store.
+- `icechunk` — opens an icechunk repo at the given path.
+
+Other flags (`--repeats`, `--region-fraction`, `--profile`) match
+`run`. To compare backends, run `run-one` twice with different
+`--backend` values and feed both JSONLs to `compare`.
 
 ## Compare two runs
 
@@ -92,9 +120,9 @@ two runs disagree on:
 ## Task catalogue
 
 Tuned for the 100k-sample default so no task iterates the full
-genotype matrix. The `--region-fraction` setting on `generate` /
-`prepare` (default 0.2%) sets the common region for all `region_*`
-tasks.
+genotype matrix. The `--region-fraction` setting on `run` / `run-one`
+(default 0.2%) sets the common region for all `region_*` tasks; the
+region is computed at run start from the dataset.
 
 | # | Task | Fields | Selection |
 |---|------|--------|-----------|

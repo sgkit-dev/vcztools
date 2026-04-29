@@ -26,6 +26,35 @@ class ChunkRead:
     selection: np.ndarray | slice | None = None
 
 
+def normalise_local_selection(
+    local_sel: np.ndarray, chunk_size: int
+) -> np.ndarray | slice | None:
+    """Collapse a contiguous, sorted, no-duplicate per-chunk selection
+    into a basic-indexing form.
+
+    - Full chunk in order → ``None`` (caller should emit the raw block).
+    - Contiguous range in order → ``slice(start, stop)`` (basic
+      indexing returns a view, avoiding a fancy-index gather).
+    - Anything else → the original ndarray (gather as before).
+
+    The check is O(N) per chunk; chunk-plan builders run once per query,
+    so the cost is paid once and the saving is per-chunk.
+    """
+    if local_sel.size == 0:
+        return local_sel
+    start = int(local_sel[0])
+    stop = start + int(local_sel.size)
+    # Quick reject: if last element doesn't match a contiguous range,
+    # skip the array_equal scan.
+    if int(local_sel[-1]) != stop - 1:
+        return local_sel
+    if not np.array_equal(local_sel, np.arange(start, stop)):
+        return local_sel
+    if start == 0 and stop == chunk_size:
+        return None
+    return slice(start, stop)
+
+
 def array_dims(arr):
     """Return the dimension names for a Zarr array.
 

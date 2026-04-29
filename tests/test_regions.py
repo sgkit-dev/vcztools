@@ -347,20 +347,46 @@ class TestChunkPlanFromIndexes:
         plan = regions.chunk_plan_from_indexes(
             np.array([0, 1, 3, 5, 7]), variants_chunk_size=3
         )
-        # global indexes 0,1 → chunk 0 local [0,1]
-        # global index 3    → chunk 1 local [0]
-        # global indexes 5,7 → chunk 1 local [2], chunk 2 local [1]
-        # (sorted by chunk)
+        # global indexes 0,1 → chunk 0 local [0,1] → contiguous → slice(0, 2)
+        # global indexes 3,5 → chunk 1 local [0,2] → non-contiguous → ndarray
+        # global index  7   → chunk 2 local [1]   → single elt → slice(1, 2)
         assert [cr.index for cr in plan] == [0, 1, 2]
-        assert_array_equal(plan[0].selection, [0, 1])
+        assert plan[0].selection == slice(0, 2)
         assert_array_equal(plan[1].selection, [0, 2])
-        assert_array_equal(plan[2].selection, [1])
+        assert plan[2].selection == slice(1, 2)
 
     def test_empty(self):
         plan = regions.chunk_plan_from_indexes(
             np.array([], dtype=np.int64), variants_chunk_size=3
         )
         assert plan == []
+
+    def test_full_chunk_collapses_to_none(self):
+        plan = regions.chunk_plan_from_indexes(
+            np.array([0, 1, 2]), variants_chunk_size=3
+        )
+        assert [cr.index for cr in plan] == [0]
+        assert plan[0].selection is None
+
+    def test_multiple_full_chunks_collapse_to_none(self):
+        plan = regions.chunk_plan_from_indexes(np.arange(6), variants_chunk_size=3)
+        assert [cr.index for cr in plan] == [0, 1]
+        assert all(cr.selection is None for cr in plan)
+
+    def test_offset_contiguous_collapses_to_slice(self):
+        plan = regions.chunk_plan_from_indexes(np.array([4, 5]), variants_chunk_size=3)
+        assert [cr.index for cr in plan] == [1]
+        assert plan[0].selection == slice(1, 3)
+
+    def test_mixed_collapse_and_passthrough(self):
+        plan = regions.chunk_plan_from_indexes(
+            np.array([0, 2, 3, 4, 5]), variants_chunk_size=3
+        )
+        # chunk 0 local [0,2] → non-contiguous (ndarray passthrough)
+        # chunk 1 local [0,1,2] → full chunk → None
+        assert [cr.index for cr in plan] == [0, 1]
+        assert_array_equal(plan[0].selection, [0, 2])
+        assert plan[1].selection is None
 
 
 class TestBuildChunkPlan:

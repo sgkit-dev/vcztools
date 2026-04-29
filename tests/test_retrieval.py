@@ -261,22 +261,261 @@ class TestReadaheadStringField:
         )
 
 
-class TestReadaheadBudgetZero:
-    """``readahead_bytes=0`` is the smallest budget the caller can ask
-    for: it pins pipeline depth at 1 (one chunk prefetched ahead of
-    the consumer). The pipeline cannot go lower because ``_refill``
-    always tops back up when ``in_flight`` is empty. Verify a
-    multi-chunk iteration still produces the full, correct sequence
-    in this configuration.
+def _make_string_field_vcz(num_variants=9, variants_chunk_size=3):
+    """Multi-chunk VCZ with a variable-length string FORMAT field, used
+    by the readahead-budget sweep to exercise the bootstrap measurement
+    on a variable-width prefetch.
+    """
+    vlen = np.array(
+        [["a", "bb"], ["ccc", "dddd"], ["eeeee", "ffffff"]] * (num_variants // 3),
+        dtype=np.dtypes.StringDType(),
+    )
+    return vcz_builder.make_vcz(
+        variant_contig=[0] * num_variants,
+        variant_position=list(range(100, 100 + num_variants)),
+        alleles=[("A", "T")] * num_variants,
+        num_samples=2,
+        variants_chunk_size=variants_chunk_size,
+        call_fields={"AB": vlen},
+    )
+
+
+class TestReadaheadBudgetSweep:
+    """``readahead_bytes`` controls the cross-chunk prefetch window.
+
+    Sweeps across the budget range against a 9-variant / 3-chunk
+    fixture: ``0`` (depth pinned at 1, the smallest legal budget),
+    ``1`` (exercises the ``max(1, per_chunk_bytes)`` guard and the
+    early-out branch of the budget loop), a budget that admits all
+    remaining chunks once measured, an effectively unbounded budget,
+    and the default (``None`` → :data:`DEFAULT_READAHEAD_BYTES`).
+
+    Iteration must produce the full, correct sequence regardless of
+    budget.
     """
 
-    def test_iterates_full_sequence_at_budget_zero(self):
+    SWEEP = pytest.mark.parametrize(
+        "readahead_bytes",
+        [0, 1, 100, 10**9, None],
+        ids=["zero", "one", "small", "large", "default"],
+    )
+
+    @SWEEP
+    def test_single_field(self, readahead_bytes):
         root = _make_filter_vcz(num_variants=9, variants_chunk_size=3)
-        reader = VczReader(root, readahead_bytes=0)
+        reader = VczReader(root, readahead_bytes=readahead_bytes)
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         assert len(chunks) == 3
         positions = np.concatenate([c["variant_position"] for c in chunks])
         nt.assert_array_equal(positions, list(range(100, 109)))
+
+    @SWEEP
+    def test_string_field(self, readahead_bytes):
+        # Variable-length string FORMAT field — bootstrap measurement
+        # has to include the heap content via _array_memory_bytes, and
+        # later-chunk drift can over- or under-shoot the budget.
+        root = _make_string_field_vcz()
+        reader = VczReader(root, readahead_bytes=readahead_bytes)
+        chunks = list(reader.variant_chunks(fields=["variant_position", "call_AB"]))
+        assert len(chunks) == 3
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        ab = np.concatenate([c["call_AB"] for c in chunks], axis=0)
+        nt.assert_array_equal(positions, list(range(100, 109)))
+        nt.assert_array_equal(
+            ab,
+            [["a", "bb"], ["ccc", "dddd"], ["eeeee", "ffffff"]] * 3,
+        )
+
+
+def _make_pipeline(
+    root,
+    *,
+    readahead_bytes=10**9,
+    read_columns=None,
+    n_chunks=None,
+    workers=2,
+):
+    """Construct a ``_ReadaheadPipeline`` directly against ``root``,
+    matching the wiring ``VczReader.variant_chunks`` does (default
+    sample-chunk plan over non-null samples; one ``ChunkRead`` per
+    variant chunk; no view-mode column remap).
+    """
+    if read_columns is None:
+        read_columns = ["variant_position"]
+    samples_chunk_size = int(root["sample_id"].chunks[0])
+    raw_sample_ids = root["sample_id"][:]
+    samples_selection = np.flatnonzero(raw_sample_ids != "")
+    sample_chunk_plan = samples_mod.build_chunk_plan(
+        samples_selection, samples_chunk_size=samples_chunk_size
+    )
+    if n_chunks is None:
+        n_chunks = int(root["variant_position"].cdata_shape[0])
+    variant_chunk_plan = [utils.ChunkRead(index=i) for i in range(n_chunks)]
+    return retrieval_mod._ReadaheadPipeline(
+        root,
+        variant_chunk_plan,
+        sample_chunk_plan,
+        None,
+        read_columns,
+        readahead_bytes=readahead_bytes,
+        workers=workers,
+    )
+
+
+class _DepthTrackingPipeline(retrieval_mod._ReadaheadPipeline):
+    """Pipeline subclass that records ``len(_in_flight)`` after each
+    ``_refill`` call. Used to assert depth-control behaviour under
+    different ``readahead_bytes`` values without observing the executor
+    directly."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.depths = []
+
+    def _refill(self):
+        super()._refill()
+        self.depths.append(len(self._in_flight))
+
+
+class TestReadaheadPipeline:
+    """Direct unit tests for ``retrieval._ReadaheadPipeline``.
+
+    The end-to-end suites cover correctness; this class targets the
+    pipeline's own state machine — bootstrap, budget-driven scheduling
+    depth, executor cleanup, and behaviour at the edges (empty plan,
+    empty read columns).
+    """
+
+    @staticmethod
+    def _vcz(num_variants=12, variants_chunk_size=3, num_samples=2):
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=num_samples,
+            variants_chunk_size=variants_chunk_size,
+        )
+
+    def test_yields_one_chunk_per_plan_entry_in_order(self):
+        root = self._vcz()
+        pipeline = _make_pipeline(root)
+        indexes = [chunk.variant_chunk.index for chunk in pipeline]
+        assert indexes == [0, 1, 2, 3]
+
+    def test_empty_plan_yields_nothing(self):
+        root = self._vcz()
+        pipeline = _make_pipeline(root, n_chunks=0)
+        assert list(pipeline) == []
+        # Executor still cleaned up via the try/finally.
+        assert pipeline._executor._shutdown is True
+
+    def test_single_chunk_plan(self):
+        root = self._vcz(num_variants=3, variants_chunk_size=3)
+        pipeline = _make_pipeline(root)
+        chunks = list(pipeline)
+        assert len(chunks) == 1
+        assert chunks[0].variant_chunk.index == 0
+
+    def test_bootstrap_runs_first_chunk_solo(self):
+        # Until the first chunk's prefetch lands the pipeline can't
+        # measure per-chunk bytes, so _refill must schedule exactly one
+        # chunk on the bootstrap path.
+        root = self._vcz()
+        pipeline = _make_pipeline(root, readahead_bytes=10**9)
+        gen = iter(pipeline)
+        # Generator hasn't run yet — no scheduling, no measurement.
+        assert pipeline._per_chunk_bytes is None
+        chunk = next(gen)
+        # After bootstrap the measurement is recorded and matches the
+        # raw cache content.
+        assert isinstance(pipeline._per_chunk_bytes, int)
+        assert pipeline._per_chunk_bytes > 0
+        expected = sum(
+            retrieval_mod._array_memory_bytes(v) for v in chunk._raw.values()
+        )
+        assert pipeline._per_chunk_bytes == expected
+        gen.close()
+
+    def test_readahead_bytes_zero_keeps_depth_one(self):
+        # Budget=0 → after every refill, exactly one chunk is queued
+        # ahead of the consumer (and zero on the final, plan-exhausted
+        # refill).
+        root = self._vcz(num_variants=12, variants_chunk_size=3)
+        pipeline = _DepthTrackingPipeline(
+            root,
+            [utils.ChunkRead(index=i) for i in range(4)],
+            samples_mod.build_chunk_plan(
+                np.arange(2, dtype=np.int64), samples_chunk_size=2
+            ),
+            None,
+            ["variant_position"],
+            readahead_bytes=0,
+            workers=2,
+        )
+        list(pipeline)
+        # 4 chunks → 5 refills (one per consume + the post-final empty refill).
+        assert pipeline.depths == [1, 1, 1, 1, 0]
+
+    def test_large_readahead_schedules_all_remaining_after_bootstrap(self):
+        # Budget of 10**9 dwarfs the per-chunk cost, so the second
+        # refill fills with every remaining chunk in one go.
+        root = self._vcz(num_variants=12, variants_chunk_size=3)
+        pipeline = _DepthTrackingPipeline(
+            root,
+            [utils.ChunkRead(index=i) for i in range(4)],
+            samples_mod.build_chunk_plan(
+                np.arange(2, dtype=np.int64), samples_chunk_size=2
+            ),
+            None,
+            ["variant_position"],
+            readahead_bytes=10**9,
+            workers=2,
+        )
+        list(pipeline)
+        # Bootstrap depth=1, then post-yield-1 schedules the remaining
+        # 3, then drains.
+        assert pipeline.depths == [1, 3, 2, 1, 0]
+
+    def test_empty_read_columns_does_not_infinite_loop(self):
+        # With no fields to prefetch the bootstrap measurement is 0
+        # bytes; without the ``max(1, per_chunk_bytes)`` guard the
+        # budget loop would never exit. List materialises the full
+        # sequence.
+        root = self._vcz(num_variants=6, variants_chunk_size=3)
+        pipeline = _make_pipeline(root, read_columns=[], readahead_bytes=10**9)
+        chunks = list(pipeline)
+        assert len(chunks) == 2
+        for chunk in chunks:
+            assert chunk._raw == {}
+
+    def test_chunks_have_prefetched_blocks_in_raw_cache(self):
+        # Every (key, future) submitted lands in chunk._raw after the
+        # consumer receives the chunk.
+        root = self._vcz(num_variants=6, variants_chunk_size=3, num_samples=2)
+        pipeline = _make_pipeline(
+            root,
+            read_columns=["variant_position", "variant_contig"],
+            readahead_bytes=0,
+        )
+        for chunk in pipeline:
+            assert ("variant_position",) in chunk._raw
+            assert ("variant_contig",) in chunk._raw
+
+    def test_executor_shutdown_on_full_iteration(self):
+        root = self._vcz()
+        pipeline = _make_pipeline(root)
+        list(pipeline)
+        assert pipeline._executor._shutdown is True
+
+    def test_executor_shutdown_on_early_break(self):
+        # Closing the generator triggers the try/finally, which
+        # shuts the executor down even when iteration is abandoned.
+        root = self._vcz()
+        pipeline = _make_pipeline(root)
+        gen = iter(pipeline)
+        next(gen)
+        gen.close()
+        assert pipeline._executor._shutdown is True
 
 
 class TestVczReaderRegions:
@@ -1110,3 +1349,304 @@ class TestVczReaderMissingSamplesMultiChunk:
             [c["sample_filter_pass"] for c in pre], axis=0
         )
         nt.assert_array_equal(sample_filter_pass, [[False, True, True, True, True]])
+
+
+def _basic_vcz(num_variants=3, num_samples=2, **kwargs):
+    return vcz_builder.make_vcz(
+        variant_contig=[0] * num_variants,
+        variant_position=list(range(1, num_variants + 1)),
+        alleles=[("A", "T")] * num_variants,
+        num_samples=num_samples,
+        **kwargs,
+    )
+
+
+class TestBuildReadPlanCacheHits:
+    """``CachedVariantChunk._build_read_plan`` skips block reads whose
+    cache key is already populated, regardless of which of the three
+    branches (static field, variants-axis non-call, ``call_*``) the
+    field falls into.
+    """
+
+    def test_static_field_cached_returns_empty(self):
+        chunk = _make_cached_chunk(_basic_vcz())
+        chunk._raw[("sample_id",)] = chunk.root["sample_id"][:]
+        assert chunk._build_read_plan(["sample_id"]) == []
+
+    def test_variant_axis_field_cached_returns_empty(self):
+        chunk = _make_cached_chunk(_basic_vcz())
+        chunk._raw[("variant_position",)] = chunk.root["variant_position"].blocks[0]
+        assert chunk._build_read_plan(["variant_position"]) == []
+
+    def test_call_field_all_chunks_cached_returns_empty(self):
+        root = _vcz_for_cache_tests()
+        chunk = _make_cached_chunk(root)
+        for cr in chunk._read_plan.chunk_reads:
+            chunk._raw[("call_DP", cr.index)] = root["call_DP"].blocks[0, cr.index]
+        assert chunk._build_read_plan(["call_DP"]) == []
+
+
+class TestEmptyCallArray:
+    """``CachedVariantChunk._empty_call_array`` produces a zero-column
+    output for ``call_*`` fields when the read plan is empty (e.g.
+    ``set_samples([])``). Both the explicit-selection branch and the
+    full-chunk fallback need direct coverage.
+    """
+
+    @staticmethod
+    def _vcz():
+        # 5 variants over chunk size 3 → chunks 0 (full, 3 rows) and
+        # 1 (partial, 2 rows). Used to exercise the partial-chunk
+        # arithmetic in the ``selection is None`` branch.
+        num_samples = 2
+        call_dp = np.zeros((5, num_samples), dtype=np.int32)
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 5,
+            variant_position=list(range(1, 6)),
+            alleles=[("A", "T")] * 5,
+            num_samples=num_samples,
+            samples_chunk_size=num_samples,
+            variants_chunk_size=3,
+            call_fields={"DP": call_dp},
+        )
+
+    def _empty_plan_chunk(self, root, *, variant_chunk_idx, selection):
+        empty_plan = samples_mod.SampleChunkPlan(chunk_reads=[], permutation=None)
+        return CachedVariantChunk(
+            root,
+            utils.ChunkRead(index=variant_chunk_idx, selection=selection),
+            read_plan=empty_plan,
+            output_columns=None,
+        )
+
+    def test_explicit_selection_uses_sel_size(self):
+        chunk = self._empty_plan_chunk(
+            self._vcz(), variant_chunk_idx=0, selection=np.array([0, 2])
+        )
+        out = chunk.output_view("call_DP")
+        assert out.shape == (2, 0)
+        assert out.dtype == np.int32
+
+    def test_full_chunk_uses_chunk_size(self):
+        chunk = self._empty_plan_chunk(self._vcz(), variant_chunk_idx=0, selection=None)
+        out = chunk.output_view("call_DP")
+        assert out.shape == (3, 0)
+
+    def test_partial_final_chunk(self):
+        # 5 variants, chunks of 3 → final chunk has 2 rows.
+        chunk = self._empty_plan_chunk(self._vcz(), variant_chunk_idx=1, selection=None)
+        out = chunk.output_view("call_DP")
+        assert out.shape == (2, 0)
+
+
+class TestGetFilterIdsFallback:
+    """``_get_filter_ids`` falls back to a single ``b"PASS"`` entry when
+    the store has no ``filter_id`` array. ``VczReader.filters``
+    surfaces that fallback through its ``cached_property``."""
+
+    def test_no_filter_id_returns_pass(self):
+        root = _basic_vcz()
+        del root["filter_id"]
+        result = retrieval_mod._get_filter_ids(root)
+        nt.assert_array_equal(result, np.array(["PASS"], dtype="S"))
+
+    def test_reader_filters_uses_fallback(self):
+        root = _basic_vcz()
+        del root["filter_id"]
+        reader = VczReader(root)
+        nt.assert_array_equal(reader.filters, np.array(["PASS"], dtype="S"))
+
+    def test_filter_id_present_returns_store_array(self, fx_sample_vcz):
+        # Counterpart to the fallback test: when ``filter_id`` is
+        # present, ``_get_filter_ids`` returns the fixed-length-bytes
+        # encoding of the store array.
+        result = retrieval_mod._get_filter_ids(fx_sample_vcz.group)
+        assert result.dtype.kind == "S"
+        assert b"PASS" in result.tolist()
+
+
+def test_validate_samples_input_none():
+    # ``None`` passes through every other validator; make sure the
+    # helper accepts it without raising.
+    assert retrieval_mod._validate_samples_input(None) is None
+
+
+class TestSettersOneShot:
+    """Each ``VczReader.set_*`` raises ``RuntimeError`` when called a
+    second time (or after the corresponding state field has been
+    resolved by reading a property)."""
+
+    def test_set_samples_twice_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples([0])
+        with pytest.raises(RuntimeError, match="samples already configured"):
+            reader.set_samples([1])
+
+    def test_set_variants_twice_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variants(np.array([0], dtype=np.int64))
+        with pytest.raises(RuntimeError, match="variants already configured"):
+            reader.set_variants(np.array([1], dtype=np.int64))
+
+    def test_set_variant_filter_twice_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        f = BcftoolsFilter(field_names=reader.field_names, include="POS>0")
+        reader.set_variant_filter(f)
+        with pytest.raises(RuntimeError, match="variant_filter already configured"):
+            reader.set_variant_filter(f)
+
+    def test_set_filter_samples_twice_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_filter_samples([0, 1])
+        with pytest.raises(RuntimeError, match="filter_samples already configured"):
+            reader.set_filter_samples([0, 1])
+
+
+class TestNormalizeSampleIndexesSortedUnique:
+    """``_normalize_sample_indexes`` rejects non-sorted-unique input
+    when ``sorted_unique=True`` — the path used by
+    ``set_filter_samples``."""
+
+    def test_unsorted_filter_samples_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="must be sorted ascending and unique"):
+            reader.set_filter_samples([2, 1])
+
+    def test_duplicate_filter_samples_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="must be sorted ascending and unique"):
+            reader.set_filter_samples([1, 1])
+
+
+class TestFilterSampleChunkPlanDefault:
+    """``filter_sample_chunk_plan`` returns the same plan as
+    ``sample_chunk_plan`` when ``set_filter_samples`` has not been
+    called."""
+
+    def test_default_returns_sample_chunk_plan(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        assert reader.filter_sample_chunk_plan is reader.sample_chunk_plan
+
+
+class TestVczReaderCachedProperties:
+    """Direct exercise of every ``VczReader`` cached property — they're
+    thin Zarr-metadata accessors, but that means they aren't covered
+    by the iteration paths."""
+
+    def test_contig_ids(self, fx_sample_vcz):
+        ids = VczReader(fx_sample_vcz.group).contig_ids
+        assert "19" in ids.tolist()
+
+    def test_filter_ids(self, fx_sample_vcz):
+        ids = VczReader(fx_sample_vcz.group).filter_ids
+        assert "PASS" in ids.tolist()
+
+    def test_contigs_returns_fixed_length_bytes(self, fx_sample_vcz):
+        contigs = VczReader(fx_sample_vcz.group).contigs
+        assert contigs.dtype.kind == "S"
+
+    def test_num_variants(self, fx_sample_vcz):
+        n = VczReader(fx_sample_vcz.group).num_variants
+        assert n == int(fx_sample_vcz.group["variant_position"].shape[0])
+
+    def test_source_present(self):
+        root = _basic_vcz()
+        root.attrs["source"] = "vcztools-test"
+        assert VczReader(root).source == "vcztools-test"
+
+    def test_source_absent(self):
+        assert VczReader(_basic_vcz()).source is None
+
+    def test_vcf_meta_information_present(self):
+        root = _basic_vcz()
+        root.attrs["vcf_meta_information"] = ["##contig=<ID=chr1>"]
+        assert VczReader(root).vcf_meta_information == ["##contig=<ID=chr1>"]
+
+    def test_vcf_meta_information_absent(self):
+        assert VczReader(_basic_vcz()).vcf_meta_information is None
+
+    def test_field_info_cache_starts_empty(self):
+        # _field_info_cache is itself a cached_property; first access
+        # materialises the empty dict.
+        reader = VczReader(_basic_vcz())
+        assert reader._field_info_cache == {}
+
+    def test_contig_lengths_absent(self):
+        assert VczReader(_basic_vcz()).contig_lengths is None
+
+    def test_contig_lengths_present(self):
+        root = _basic_vcz()
+        root.create_array("contig_length", shape=(1,), dtype="i4")
+        root["contig_length"][:] = [42]
+        nt.assert_array_equal(VczReader(root).contig_lengths, [42])
+
+    def test_region_index_absent_raises(self):
+        root = _basic_vcz()
+        del root["region_index"]
+        reader = VczReader(root)
+        with pytest.raises(ValueError, match="Could not load 'region_index'"):
+            _ = reader.region_index
+
+    def test_region_index_present(self):
+        root = _basic_vcz()
+        idx = VczReader(root).region_index
+        # Shape varies with chunking; just confirm it's a 2-D table.
+        assert idx.ndim == 2
+
+    def test_filter_descriptions_absent(self):
+        assert VczReader(_basic_vcz()).filter_descriptions is None
+
+    def test_filter_descriptions_present(self):
+        root = vcz_builder.make_vcz(
+            variant_contig=[0, 0],
+            variant_position=[1, 2],
+            alleles=[("A", "T")] * 2,
+            num_samples=1,
+            filters=("PASS", "q10"),
+            filter_descriptions=("All filters passed", "Quality below 10"),
+        )
+        descriptions = VczReader(root).filter_descriptions
+        assert "All filters passed" in descriptions.tolist()
+
+
+class TestGetFieldInfo:
+    """``VczReader.get_field_info`` returns a memoised
+    :class:`FieldInfo`; second access of the same field returns the
+    same instance from the cache."""
+
+    def test_returns_fieldinfo_with_metadata(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        info = reader.get_field_info("variant_position")
+        arr = fx_sample_vcz.group["variant_position"]
+        assert info.name == "variant_position"
+        assert info.dtype == arr.dtype
+        assert info.shape == tuple(arr.shape)
+        assert "variants" in info.dims
+
+    def test_second_access_returns_cached_instance(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        first = reader.get_field_info("variant_position")
+        second = reader.get_field_info("variant_position")
+        assert first is second
+
+
+class TestResolveQueryFieldsAutoDiscover:
+    """``variant_chunks(fields=None)`` auto-discovers every
+    ``variant_*`` and ``call_*`` field in the store."""
+
+    def test_auto_discover_includes_variant_and_call_fields(self):
+        # Use a VCZ with a known call_* field so the test pins both
+        # branches of the comprehension.
+        num_samples = 2
+        call_dp = np.zeros((3, num_samples), dtype=np.int32)
+        root = vcz_builder.make_vcz(
+            variant_contig=[0, 0, 0],
+            variant_position=[1, 2, 3],
+            alleles=[("A", "T")] * 3,
+            num_samples=num_samples,
+            call_fields={"DP": call_dp},
+        )
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks())
+        assert "variant_position" in chunk
+        assert "call_DP" in chunk

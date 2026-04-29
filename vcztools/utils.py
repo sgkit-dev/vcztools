@@ -150,8 +150,6 @@ def open_zarr(
     if isinstance(file_or_url, zarr.abc.store.Store):
         return zarr.open(file_or_url, mode=mode)
 
-    storage_options = storage_options or {}
-
     if zarr_backend_storage is None:
         return _open_zarr_local(file_or_url, mode=mode, storage_options=storage_options)
     if zarr_backend_storage == "fsspec":
@@ -166,7 +164,7 @@ def open_zarr(
 
 
 def _open_zarr_local(file_or_url, *, mode, storage_options):
-    if storage_options:
+    if storage_options is not None and len(storage_options) > 0:
         raise ValueError("storage_options not supported for local stores")
     if _is_remote_url(file_or_url):
         raise ValueError(
@@ -188,9 +186,7 @@ def _open_zarr_fsspec(file_or_url, *, mode, storage_options):
             url = Path(file_or_url).resolve().as_uri()
     else:
         raise TypeError(f"Unsupported file_or_url type: {type(file_or_url)}")
-    store = zarr.storage.FsspecStore.from_url(
-        url, storage_options=storage_options or None
-    )
+    store = zarr.storage.FsspecStore.from_url(url, storage_options=storage_options)
     return zarr.open(store, mode=mode)
 
 
@@ -198,15 +194,16 @@ def _open_zarr_obstore(file_or_url, *, mode, storage_options):
     import obstore as obs  # noqa PLC0415
     from zarr.storage import ObjectStore  # noqa PLC0415
 
+    kwargs = storage_options if storage_options is not None else {}
     if isinstance(file_or_url, Path):
         url = file_or_url.resolve().as_uri()
-        backend = obs.store.from_url(url, mkdir=True, **storage_options)
+        backend = obs.store.from_url(url, mkdir=True, **kwargs)
     elif isinstance(file_or_url, str):
         if _is_remote_url(file_or_url):
-            backend = obs.store.from_url(file_or_url, **storage_options)
+            backend = obs.store.from_url(file_or_url, **kwargs)
         else:
             url = Path(file_or_url).resolve().as_uri()
-            backend = obs.store.from_url(url, mkdir=True, **storage_options)
+            backend = obs.store.from_url(url, mkdir=True, **kwargs)
     else:
         raise TypeError(f"Unsupported file_or_url type: {type(file_or_url)}")
     return zarr.open(ObjectStore(backend), mode=mode)
@@ -230,10 +227,10 @@ def make_icechunk_storage(file_or_url, *, storage_options=None):
     """
     import icechunk as ic  # noqa: PLC0415
 
-    storage_options = storage_options or {}
+    kwargs = storage_options if storage_options is not None else {}
     if isinstance(file_or_url, str):
         if "://" not in file_or_url:  # local path
-            if storage_options:
+            if storage_options is not None and len(storage_options) > 0:
                 raise ValueError(
                     "storage_options not supported for local icechunk storage"
                 )
@@ -244,7 +241,7 @@ def make_icechunk_storage(file_or_url, *, storage_options=None):
                 bucket=url_parsed.netloc,
                 prefix=url_parsed.path.lstrip("/"),
                 from_env=True,
-                **storage_options,
+                **kwargs,
             )
         elif file_or_url.startswith(
             ("az://", "azure://", "abfs://", "abfss://", "https://")
@@ -253,7 +250,7 @@ def make_icechunk_storage(file_or_url, *, storage_options=None):
         else:
             raise ValueError(f"Unsupported URL for icechunk: {file_or_url}")
     elif isinstance(file_or_url, Path):
-        if storage_options:
+        if storage_options is not None and len(storage_options) > 0:
             raise ValueError("storage_options not supported for local icechunk storage")
         path = file_or_url.resolve()  # make absolute
         return ic.Storage.new_local_filesystem(str(path))
@@ -271,7 +268,7 @@ def _split_azure_container_path(path, *, file_or_url):
 
 
 def _make_azure_storage(ic, file_or_url, *, storage_options=None):
-    storage_options = storage_options or {}
+    kwargs = storage_options if storage_options is not None else {}
     parsed = urlparse(file_or_url)
 
     if parsed.scheme in ("az", "azure"):
@@ -312,7 +309,7 @@ def _make_azure_storage(ic, file_or_url, *, storage_options=None):
         container=container,
         prefix=prefix,
         from_env=True,
-        **storage_options,
+        **kwargs,
     )
 
 

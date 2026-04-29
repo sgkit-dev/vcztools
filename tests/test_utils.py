@@ -18,6 +18,7 @@ from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     missing,
+    normalise_local_selection,
     open_zarr,
     search,
     vcf_name_to_vcz_names,
@@ -54,6 +55,61 @@ class TestChunkRead:
         cr = utils.ChunkRead(index=1, selection=sel)
         assert cr.index == 1
         assert_array_equal(cr.selection, [0, 2])
+
+
+class TestNormaliseLocalSelection:
+    """Collapse a contiguous, sorted, no-duplicate per-chunk selection
+    into ``None`` (full chunk), a ``slice`` (contiguous range), or pass
+    the original ndarray through (anything else)."""
+
+    def test_empty_returns_input(self):
+        local_sel = np.array([], dtype=np.int64)
+        result = normalise_local_selection(local_sel, chunk_size=10)
+        assert result is local_sel
+
+    def test_full_chunk_returns_none(self):
+        local_sel = np.arange(0, 4, dtype=np.int64)
+        assert normalise_local_selection(local_sel, chunk_size=4) is None
+
+    def test_full_chunk_size_two(self):
+        local_sel = np.array([0, 1], dtype=np.int64)
+        assert normalise_local_selection(local_sel, chunk_size=2) is None
+
+    def test_contiguous_from_zero_partial(self):
+        local_sel = np.array([0, 1, 2], dtype=np.int64)
+        assert normalise_local_selection(local_sel, chunk_size=10) == slice(0, 3)
+
+    def test_contiguous_offset(self):
+        local_sel = np.array([3, 4, 5], dtype=np.int64)
+        assert normalise_local_selection(local_sel, chunk_size=10) == slice(3, 6)
+
+    def test_single_element_is_slice(self):
+        local_sel = np.array([5], dtype=np.int64)
+        assert normalise_local_selection(local_sel, chunk_size=10) == slice(5, 6)
+
+    def test_non_contiguous_returns_input(self):
+        local_sel = np.array([1, 3, 5], dtype=np.int64)
+        result = normalise_local_selection(local_sel, chunk_size=10)
+        assert result is local_sel
+
+    def test_out_of_order_returns_input(self):
+        local_sel = np.array([3, 2, 1], dtype=np.int64)
+        result = normalise_local_selection(local_sel, chunk_size=10)
+        assert result is local_sel
+
+    def test_last_element_early_out(self):
+        # First/last endpoints are consistent with a contiguous range but
+        # the last element doesn't match stop-1 — exercises the cheap reject.
+        local_sel = np.array([3, 4, 6], dtype=np.int64)
+        result = normalise_local_selection(local_sel, chunk_size=10)
+        assert result is local_sel
+
+    def test_array_equal_reject(self):
+        # Last element equals stop-1 so the cheap reject passes, but the
+        # interior breaks the arange — exercises the array_equal reject.
+        local_sel = np.array([1, 1, 3], dtype=np.int64)
+        result = normalise_local_selection(local_sel, chunk_size=10)
+        assert result is local_sel
 
 
 @pytest.mark.parametrize(

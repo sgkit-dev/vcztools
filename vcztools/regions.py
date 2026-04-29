@@ -318,18 +318,29 @@ def chunk_plan_from_indexes(
     variants_chunk_size: int,
 ) -> list[utils.ChunkRead]:
     """Build a plan from a sorted flat array of global variant indexes.
-    Buckets into chunks, producing one :class:`~vcztools.utils.ChunkRead`
-    per visited chunk with a real (non-None) local selection."""
+
+    Buckets into chunks, producing one
+    :class:`~vcztools.utils.ChunkRead` per visited chunk. Per-chunk
+    local selections are collapsed via
+    :func:`~vcztools.utils.normalise_local_selection` so a contiguous
+    range becomes a ``slice`` (basic-index view) and a full chunk
+    becomes ``None`` (raw block, no slicing).
+    """
     variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
     chunk_of_each = variant_indexes // variants_chunk_size
     chunk_indexes = np.unique(chunk_of_each)
-    return [
-        utils.ChunkRead(
-            index=int(ci),
-            selection=variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size),
+    plan = []
+    for ci in chunk_indexes:
+        local_sel = variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size)
+        plan.append(
+            utils.ChunkRead(
+                index=int(ci),
+                selection=utils.normalise_local_selection(
+                    local_sel, variants_chunk_size
+                ),
+            )
         )
-        for ci in chunk_indexes
-    ]
+    return plan
 
 
 def build_chunk_plan(

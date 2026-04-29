@@ -9,37 +9,6 @@ from vcztools.utils import search
 logger = logging.getLogger(__name__)
 
 
-def _normalise_local_selection(
-    local_sel: np.ndarray, samples_chunk_size: int
-) -> np.ndarray | slice | None:
-    """Collapse a contiguous, sorted, no-duplicate per-chunk selection
-    into a basic-indexing form so :class:`~vcztools.retrieval.CachedVariantChunk`
-    can skip a no-op fancy-index gather.
-
-    - Full chunk in order → ``None`` (CachedVariantChunk emits the raw block).
-    - Contiguous range in order → ``slice(start, stop)`` (basic
-      indexing, returns a view; later concatenate copies once instead
-      of twice).
-    - Anything else → the original ndarray (gather as before).
-
-    The check is O(N) per chunk; build_chunk_plan runs once per query,
-    so the cost is paid once and the saving is per-variant-chunk.
-    """
-    if local_sel.size == 0:
-        return local_sel
-    start = int(local_sel[0])
-    stop = start + int(local_sel.size)
-    # Quick reject: if last element doesn't match a contiguous range,
-    # skip the array_equal scan.
-    if int(local_sel[-1]) != stop - 1:
-        return local_sel
-    if not np.array_equal(local_sel, np.arange(start, stop)):
-        return local_sel
-    if start == 0 and stop == samples_chunk_size:
-        return None
-    return slice(start, stop)
-
-
 @dataclasses.dataclass
 class SampleChunkPlan:
     """Plan for reading a subset of sample chunks.
@@ -83,7 +52,9 @@ def build_chunk_plan(
         chunk_reads.append(
             utils.ChunkRead(
                 index=int(ci),
-                selection=_normalise_local_selection(local_sel, samples_chunk_size),
+                selection=utils.normalise_local_selection(
+                    local_sel, samples_chunk_size
+                ),
             )
         )
         offset += count

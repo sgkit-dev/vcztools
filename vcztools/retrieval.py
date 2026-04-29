@@ -92,12 +92,12 @@ class _ReadaheadPipeline:
     estimate for every later chunk. The estimate is approximate —
 
     - The bootstrap chunk runs even when its prefetch alone exceeds
-      ``budget_bytes`` (the alternative is to never make progress).
+      ``readahead_bytes`` (the alternative is to never make progress).
     - Chunks can drift in content size across the iteration, especially
       when variable-length string fields are in the prefetch set, so
       later chunks may over- or under-shoot the budget.
 
-    ``budget_bytes=0`` pins pipeline depth at 1: the consumer's
+    ``readahead_bytes=0`` pins pipeline depth at 1: the consumer's
     current chunk plus exactly one prefetched ahead. The pipeline
     never goes below depth 1 (the consumer would have to wait for
     every chunk's I/O on the request thread), so this is the
@@ -107,20 +107,20 @@ class _ReadaheadPipeline:
     def __init__(
         self,
         root,
-        plan: list[utils.ChunkRead],
-        read_plan: "samples_mod.SampleChunkPlan",
+        variant_chunk_plan: list[utils.ChunkRead],
+        sample_chunk_plan: "samples_mod.SampleChunkPlan",
         output_columns: np.ndarray | None,
-        prefetch_fields: list[str],
+        read_columns: list[str],
         *,
-        budget_bytes: int,
+        readahead_bytes: int,
         workers: int,
     ):
         self.root = root
-        self._plan_iter = iter(plan)
-        self._read_plan = read_plan
+        self._variant_chunk_plan_iter = iter(variant_chunk_plan)
+        self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
-        self._prefetch_fields = prefetch_fields
-        self._budget_bytes = budget_bytes
+        self._read_columns = read_columns
+        self._readahead_bytes = readahead_bytes
         # Set on the first chunk's completion in __iter__.
         self._per_chunk_bytes: int | None = None
         self._executor = cf.ThreadPoolExecutor(
@@ -135,16 +135,16 @@ class _ReadaheadPipeline:
         """Construct the next CachedVariantChunk and submit its block reads
         to the thread pool. Returns False once the plan is exhausted."""
         try:
-            chunk_read = next(self._plan_iter)
+            chunk_read = next(self._variant_chunk_plan_iter)
         except StopIteration:
             return False
         chunk = CachedVariantChunk(
             self.root,
             chunk_read,
-            read_plan=self._read_plan,
+            read_plan=self._sample_chunk_plan,
             output_columns=self._output_columns,
         )
-        reads = chunk._build_read_plan(self._prefetch_fields)
+        reads = chunk._build_read_plan(self._read_columns)
         futures = [
             (key, self._executor.submit(_read_block, arr, block_index))
             for key, arr, block_index in reads
@@ -162,10 +162,10 @@ class _ReadaheadPipeline:
             return
         # Always keep at least one chunk in flight; otherwise honour the
         # byte budget (use an effective per-chunk cost of at least 1 to
-        # avoid an infinite loop when prefetch_fields is empty).
+        # avoid an infinite loop when read_columns is empty).
         per_chunk = max(1, self._per_chunk_bytes)
         while len(self._in_flight) == 0 or (
-            len(self._in_flight) * per_chunk < self._budget_bytes
+            len(self._in_flight) * per_chunk < self._readahead_bytes
         ):
             if not self._schedule_one():
                 return
@@ -774,7 +774,7 @@ class VczReader:
             # subsets, the no-subset default, and ``--drop-genotypes``
             # (empty subset collapses to an empty plan — no reads,
             # zero-column call_* output via CachedVariantChunk._empty_call_array).
-            read_plan = self.sample_chunk_plan
+            sample_chunk_plan = self.sample_chunk_plan
             output_columns = None
         else:
             # Explicit view mode: filter axis differs from subset. Read
@@ -786,7 +786,7 @@ class VczReader:
             # empty-subset AC/AN quirk cannot reach this branch via the
             # CLI; Python-API callers opting into this shape will see
             # zero-column output.
-            read_plan = self.filter_sample_chunk_plan
+            sample_chunk_plan = self.filter_sample_chunk_plan
             output_columns = np.searchsorted(
                 self._filter_samples, self.samples_selection
             )
@@ -800,8 +800,8 @@ class VczReader:
         # vanishingly rare; it just forfeits cross-chunk readahead on
         # every filtered query. Pay the rare chunk-rejection bandwidth
         # waste and keep the pipeline uniform.
-        prefetch_union = list(dict.fromkeys([*filter_fields, *query_fields]))
-        budget_bytes = (
+        read_columns = list(dict.fromkeys([*filter_fields, *query_fields]))
+        readahead_bytes = (
             self.readahead_bytes
             if self.readahead_bytes is not None
             else DEFAULT_READAHEAD_BYTES
@@ -814,10 +814,10 @@ class VczReader:
         for chunk in _ReadaheadPipeline(
             self.root,
             self.variant_chunk_plan,
-            read_plan,
+            sample_chunk_plan,
             output_columns,
-            prefetch_union,
-            budget_bytes=budget_bytes,
+            read_columns,
+            readahead_bytes=readahead_bytes,
             workers=workers,
         ):
             # variants_selection: 1-D bool over the chunk's variant axis, or

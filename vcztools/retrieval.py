@@ -21,11 +21,7 @@ DEFAULT_READAHEAD_WORKERS = min(32, (os.cpu_count() or 4))
 
 
 def _read_block(arr, block_index: tuple) -> np.ndarray:
-    """Fetch one Zarr block by block-index tuple, or the whole array
-    when ``block_index`` is empty (used for static, non-chunked fields).
-    """
-    if len(block_index) == 0:
-        return arr[:]
+    """Fetch one Zarr block by block-index tuple."""
     return arr.blocks[block_index]
 
 
@@ -59,14 +55,12 @@ class BlockReadTemplate:
     ``block_index_suffix`` is the part of the Zarr ``block_index``
     *after* the variant chunk index slot — empty tuple for a 1-D
     variant-axis field, ``(slice(None),) * (ndim - 1)`` for higher-D
-    non-call fields, ``(sci, slice(None) * (ndim - 2))`` for
-    ``call_*``, and ``None`` for static fields with no variants axis
-    (in which case the full ``block_index`` is ``()``).
+    non-call fields, ``(sci, slice(None) * (ndim - 2))`` for ``call_*``.
     """
 
     key: tuple
     arr: object
-    block_index_suffix: tuple | None
+    block_index_suffix: tuple
 
 
 def create_chunk_read_list(
@@ -87,15 +81,15 @@ def create_chunk_read_list(
     For a ``call_*`` field the template list fans out one entry per
     sample chunk in ``sample_chunk_plan.chunk_reads``; for any other
     field exactly one entry is produced.
+
+    Every field must be variant-axis. Static (no-variants-axis) fields
+    are handled by the reader's static-field cache, not the pipeline.
     """
     templates = []
     for field in fields:
         arr = root[field]
-        if not _has_variants_axis(arr):
-            templates.append(
-                BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=None)
-            )
-        elif not field.startswith("call_"):
+        assert _has_variants_axis(arr), f"non-variants-axis field in pipeline: {field}"
+        if not field.startswith("call_"):
             suffix = (slice(None),) * (arr.ndim - 1)
             templates.append(
                 BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=suffix)
@@ -122,10 +116,7 @@ def update_chunk_read_list(
     """
     reads = []
     for t in templates:
-        if t.block_index_suffix is None:
-            block_index = ()
-        else:
-            block_index = (variant_chunk_index,) + t.block_index_suffix
+        block_index = (variant_chunk_index,) + t.block_index_suffix
         reads.append((t.key, t.arr, block_index))
     return reads
 
@@ -263,9 +254,12 @@ class CachedVariantChunk:
     completed; performs no I/O itself. The constructor takes:
 
     - ``blocks`` — ``{key: ndarray}`` of prefetched Zarr blocks keyed by
-      ``(field,)`` for static / variants-axis non-``call_*`` reads and
+      ``(field,)`` for variants-axis non-``call_*`` reads and
       ``(field, sci)`` for one ``call_*`` sample-chunk read. Keys are
-      assigned by :func:`_chunk_read_list`.
+      assigned by :func:`create_chunk_read_list`. Static fields (no
+      variants axis) are not handled here — they live in the reader's
+      static-field cache and are seeded directly into the per-chunk
+      output by :meth:`VczReader.variant_chunks`.
     - ``sample_chunk_plan`` — the sample chunks the prefetch covers for
       every ``call_*`` field. In subset-mode this is the subset plan;
       in view-mode it is the non-null-samples plan. An empty plan
@@ -332,12 +326,9 @@ class CachedVariantChunk:
 
     def _materialize(self, field: str) -> np.ndarray:
         arr = self.root[field]
-        if field.startswith("call_") and _has_variants_axis(arr):
+        if field.startswith("call_"):
             return self._assemble_call(field, arr)
-        block = self._blocks[(field,)]
-        if _has_variants_axis(arr):
-            return self._slice_variants(block)
-        return block
+        return self._slice_variants(self._blocks[(field,)])
 
     def _slice_variants(self, block):
         sel = self.variant_chunk.selection
@@ -472,6 +463,20 @@ class VczReader:
         self._sample_ids = None
         self._filter_samples = None
         self.variant_filter = None
+        self._static_field_cache: dict[str, np.ndarray] = {}
+
+    def _load_static_field(self, name: str) -> np.ndarray:
+        """Read a static (no variants axis) field once and cache it on
+        the reader. Static fields don't change across variant chunk
+        visits, so paying for them per chunk in the readahead pipeline
+        is wasteful.
+        """
+        cached = self._static_field_cache.get(name)
+        if cached is not None:
+            return cached
+        value = self.root[name][:]
+        self._static_field_cache[name] = value
+        return value
 
     def _resolve_samples_if_needed(self) -> None:
         if self._samples_selection is not None:
@@ -792,8 +797,17 @@ class VczReader:
                 self._filter_samples, self.samples_selection
             )
 
-        # Fetch the union of filter + query fields
-        read_fields = set(filter_fields) | set(query_fields)
+        # Split referenced fields into static (read once on the reader)
+        # and dynamic (prefetched per variant chunk).
+        referenced = list(dict.fromkeys([*filter_fields, *query_fields]))
+        referenced_static_fields = {
+            name: self._load_static_field(name)
+            for name in referenced
+            if not _has_variants_axis(self.root[name])
+        }
+        read_fields = [
+            name for name in referenced if name not in referenced_static_fields
+        ]
         readahead_bytes = (
             self.readahead_bytes
             if self.readahead_bytes is not None
@@ -821,7 +835,12 @@ class VczReader:
             variants_selection = None
             sample_filter_pass = None
             if self.variant_filter is not None:
-                filter_data = {f: chunk.filter_view(f) for f in filter_fields}
+                filter_data = {
+                    f: referenced_static_fields[f]
+                    if f in referenced_static_fields
+                    else chunk.filter_view(f)
+                    for f in filter_fields
+                }
                 filter_result = self.variant_filter.evaluate(filter_data)
                 if filter_result.ndim == 1:
                     # Variant-scope filter: one bool per variant.
@@ -842,10 +861,11 @@ class VczReader:
 
             chunk_data = {}
             for field in query_fields:
+                if field in referenced_static_fields:
+                    chunk_data[field] = referenced_static_fields[field]
+                    continue
                 value = chunk.output_view(field)
-                if variants_selection is not None and _has_variants_axis(
-                    self.root[field]
-                ):
+                if variants_selection is not None:
                     value = value[variants_selection]
                 chunk_data[field] = value
             if sample_filter_pass is not None:

@@ -600,6 +600,8 @@ class RunContext:
     num_samples: int
     num_variants: int
     region_spec: tuple[str, int, int]
+    readahead_bytes: int | None = None
+    readahead_workers: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -967,6 +969,12 @@ def _run_task(
     opened = backend.open(dataset)
     try:
         reader = task.build_reader(opened.root, ctx)
+        if ctx.readahead_bytes is not None:
+            logger.info(f"readahead_bytes overridden to {ctx.readahead_bytes}")
+            reader.readahead_bytes = ctx.readahead_bytes
+        if ctx.readahead_workers is not None:
+            logger.info(f"readahead_workers overridden to {ctx.readahead_workers}")
+            reader.readahead_workers = ctx.readahead_workers
         with PeakRssSampler() as sampler:
             wall_t0 = time.perf_counter()
             cpu_t0 = time.process_time()
@@ -1034,12 +1042,20 @@ def _select_backends(
 
 
 def _build_run_context(
-    dataset, opener: BackendOpener, region_fraction: float
+    dataset,
+    opener: BackendOpener,
+    region_fraction: float,
+    *,
+    readahead_bytes: int | None = None,
+    readahead_workers: int | None = None,
 ) -> RunContext:
     """Open ``dataset`` with ``opener`` once to read sample/variant counts
     and compute a region spec at the requested fraction. Returns a frozen
     :class:`RunContext` that is then threaded through every per-(task,
     repeat) reopen."""
+    # Setup-only reader: this VczReader exists to materialize counts and
+    # the region spec. The timed reader is built fresh per repeat in
+    # `_run_task`, so the open here doesn't warm the timing-path cache.
     opened = opener.open(dataset)
     try:
         reader = retrieval.VczReader(opened.root)
@@ -1047,6 +1063,8 @@ def _build_run_context(
             num_samples=reader.num_samples,
             num_variants=reader.num_variants,
             region_spec=_default_region_spec(reader, region_fraction),
+            readahead_bytes=readahead_bytes,
+            readahead_workers=readahead_workers,
         )
     finally:
         opened.cleanup()
@@ -1342,7 +1360,33 @@ _TASK_NAMES_HELP = ", ".join(t.name for t in TASKS)
     show_default=True,
     help="Tag recorded in each JSONL row; does not affect task selection.",
 )
-def run_one_cmd(dataset, task_name, output, backend, repeats, region_fraction, profile):
+@click.option(
+    "--readahead-bytes",
+    type=int,
+    default=None,
+    show_default=True,
+    help="Override the readahead pipeline's byte budget. None uses the "
+    "VczReader default.",
+)
+@click.option(
+    "--readahead-workers",
+    type=int,
+    default=None,
+    show_default=True,
+    help="Override the readahead pipeline's worker count. None uses the "
+    "VczReader default.",
+)
+def run_one_cmd(
+    dataset,
+    task_name,
+    output,
+    backend,
+    repeats,
+    region_fraction,
+    profile,
+    readahead_bytes,
+    readahead_workers,
+):
     """Run a single task against a single Zarr store on a single backend.
 
     ``dataset`` may be a local path, a directory store, a ``.zip``, or any
@@ -1351,7 +1395,13 @@ def run_one_cmd(dataset, task_name, output, backend, repeats, region_fraction, p
     [task] = _select_tasks((task_name,))
     opener = RUN_ONE_BACKENDS[backend]
 
-    ctx = _build_run_context(dataset, opener, region_fraction)
+    ctx = _build_run_context(
+        dataset,
+        opener,
+        region_fraction,
+        readahead_bytes=readahead_bytes,
+        readahead_workers=readahead_workers,
+    )
 
     git_sha = _discover_git_sha()
     hostname = socket.gethostname()

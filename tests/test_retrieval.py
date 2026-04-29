@@ -1810,6 +1810,35 @@ class TestFmtBytes:
         assert retrieval_mod._fmt_bytes(n) == expected
 
 
+class TestOneLineRepr:
+    def test_collapses_multiline(self):
+        class Store:
+            def __repr__(self):
+                return "<FakeStore>\nread_only: True\nsnapshot_id: ABC\n"
+
+        out = retrieval_mod._one_line_repr(Store())
+        assert "\n" not in out
+        assert out == "<FakeStore> read_only: True snapshot_id: ABC"
+
+    def test_collapses_runs_of_whitespace(self):
+        class Store:
+            def __repr__(self):
+                return "<FakeStore>   spaced     out"
+
+        out = retrieval_mod._one_line_repr(Store())
+        assert out == "<FakeStore> spaced out"
+
+    def test_none(self):
+        assert retrieval_mod._one_line_repr(None) == "None"
+
+    def test_already_single_line_unchanged(self):
+        class Store:
+            def __repr__(self):
+                return "<LocalStore('/path/to/dir')>"
+
+        assert retrieval_mod._one_line_repr(Store()) == "<LocalStore('/path/to/dir')>"
+
+
 class TestLogging:
     """Lock in the contract that the read-path emits the expected
     INFO / DEBUG log events. See vcztools/retrieval.py for the
@@ -1866,6 +1895,36 @@ class TestLogging:
             reader.set_samples([0, 1])
         assert "VczReader init:" in caplog.text
         assert "set_samples:" in caplog.text
+
+    def test_init_log_is_single_line_with_multiline_store_repr(
+        self, fx_sample_vcz, caplog, monkeypatch
+    ):
+        # Wrap the fixture root with a proxy that exposes a multi-line
+        # repr from .store, mimicking IcechunkStore's behaviour.
+        class MultiLineStore:
+            def __repr__(self):
+                return "<FakeStore>\nread_only: True\nsnapshot_id: ABC\nbranch: None"
+
+        real_group = fx_sample_vcz.group
+
+        class Proxy:
+            store = MultiLineStore()
+
+            def __getattr__(self, name):
+                return getattr(real_group, name)
+
+            def __getitem__(self, key):
+                return real_group[key]
+
+        with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
+            VczReader(Proxy())
+        init_records = [
+            r for r in caplog.records if "VczReader init:" in r.getMessage()
+        ]
+        assert len(init_records) == 1
+        msg = init_records[0].getMessage()
+        assert "\n" not in msg
+        assert "<FakeStore> read_only: True snapshot_id: ABC branch: None" in msg
 
     def test_no_logging_at_warning_level(self, fx_sample_vcz, caplog):
         # The read path is informational, not a warning source: nothing

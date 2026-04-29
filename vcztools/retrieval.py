@@ -28,6 +28,18 @@ def _fmt_bytes(n: int) -> str:
     return f"{n} bytes"
 
 
+def _one_line_repr(obj) -> str:
+    """Collapse ``repr(obj)`` to a single physical line.
+
+    Some Zarr stores (notably icechunk) emit multi-line reprs that
+    fragment our DEBUG log output. ``" ".join(repr(...).split())``
+    keeps the discriminating fields on one line.
+    """
+    if obj is None:
+        return "None"
+    return " ".join(repr(obj).split())
+
+
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
 # TODO it's not clear that this is a good default. We're essentially
 # just using these threads to dispatch I/0 to the Zarr backend which
@@ -512,7 +524,7 @@ class VczReader:
         self.variant_filter = None
         self._static_field_cache: dict[str, np.ndarray] = {}
         logger.debug(
-            f"VczReader init: store={getattr(root, 'store', None)!r}, "
+            f"VczReader init: store={_one_line_repr(getattr(root, 'store', None))}, "
             f"num_variants={self.num_variants}, num_samples={self.num_samples}, "
             f"variants_chunk_size={self.variants_chunk_size}, "
             f"samples_chunk_size={self.samples_chunk_size}, "

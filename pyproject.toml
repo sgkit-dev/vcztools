@@ -48,6 +48,10 @@ repository = "https://github.com/sgkit-dev/vcztools"
 [project.scripts]
 vcztools = "vcztools.cli:vcztools_main"
 
+[project.optional-dependencies]
+obstore = ["obstore"]
+icechunk = ["icechunk"]
+
 [dependency-groups]
 test = [
   "azure-storage-blob",

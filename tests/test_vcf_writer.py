@@ -19,7 +19,7 @@ VCF = cyvcf2.VCF
 
 
 @pytest.mark.parametrize(
-    ("output_is_path", "zarr_backend_storage"),
+    ("output_is_path", "backend_storage"),
     [
         (True, None),
         (True, "obstore"),
@@ -30,17 +30,15 @@ def test_write_vcf(
     tmp_path,
     fx_sample_vcz,
     output_is_path,
-    zarr_backend_storage,
+    backend_storage,
 ):
-    if zarr_backend_storage == "obstore":
-        pytest.importorskip(zarr_backend_storage)
+    if backend_storage == "obstore":
+        pytest.importorskip(backend_storage)
     # obstore cannot read a ZipStore, so we need a directory VCZ.
     vcz = fx_sample_vcz.directory_path
     output = tmp_path.joinpath("output.vcf")
 
-    reader = VczReader(
-        open_zarr(vcz, mode="r", zarr_backend_storage=zarr_backend_storage)
-    )
+    reader = VczReader(open_zarr(vcz, mode="r", backend_storage=backend_storage))
     if output_is_path:
         write_vcf(reader, output, no_version=True)
     else:
@@ -78,9 +76,7 @@ def test_write_vcf__icechunk(tmp_path, fx_sample_vcz3):
     vcz_icechunk = to_vcz_icechunk(fx_sample_vcz3.directory_path, tmp_path)
     output = tmp_path.joinpath("output.vcf")
 
-    reader = VczReader(
-        open_zarr(vcz_icechunk, mode="r", zarr_backend_storage="icechunk")
-    )
+    reader = VczReader(open_zarr(vcz_icechunk, mode="r", backend_storage="icechunk"))
     write_vcf(reader, output, no_version=True)
 
     v = VCF(output)

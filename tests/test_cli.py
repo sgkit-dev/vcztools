@@ -485,3 +485,42 @@ class TestStorageOptionCli:
             expect_error=True,
         )
         assert "must be KEY=VALUE" in err
+
+
+class TestDeprecatedZarrBackendStorageAlias:
+    """``--zarr-backend-storage`` is accepted as a hidden, deprecated alias
+    for ``--backend-storage``: it forwards the value to ``open_zarr`` and
+    emits a ``DeprecationWarning``."""
+
+    def test_alias_forwards_and_warns(self, fx_vcz_path, monkeypatch):
+        captured = {}
+
+        def spy(path, **kwargs):
+            captured.update(kwargs)
+            raise ValueError("captured")
+
+        monkeypatch.setattr(cli, "open_zarr", spy)
+        with pytest.warns(DeprecationWarning, match="--zarr-backend-storage"):
+            run_vcztools(
+                f"view --no-version {fx_vcz_path} --zarr-backend-storage fsspec",
+                expect_error=True,
+            )
+        assert captured["backend_storage"] == "fsspec"
+
+    def test_new_flag_does_not_warn(self, fx_vcz_path, monkeypatch, recwarn):
+        captured = {}
+
+        def spy(path, **kwargs):
+            captured.update(kwargs)
+            raise ValueError("captured")
+
+        monkeypatch.setattr(cli, "open_zarr", spy)
+        run_vcztools(
+            f"view --no-version {fx_vcz_path} --backend-storage fsspec",
+            expect_error=True,
+        )
+        assert captured["backend_storage"] == "fsspec"
+        deprecation_warnings = [
+            w for w in recwarn.list if issubclass(w.category, DeprecationWarning)
+        ]
+        assert deprecation_warnings == []

@@ -2,6 +2,7 @@ import contextlib
 import json
 import os
 import sys
+import warnings
 from functools import wraps
 
 import click
@@ -109,8 +110,26 @@ targets_file = click.option(
     help="File of target regions to include.",
 )
 version = click.version_option(version=f"{provenance.__version__}")
-zarr_backend_storage = click.option(
-    "--zarr-backend-storage",
+
+
+def _zarr_backend_storage_alias_callback(ctx, param, value):
+    # ``--zarr-backend-storage`` is accepted as a deprecated alias for
+    # ``--backend-storage``. Forward the value to ``backend_storage`` so
+    # the command receives it under the new name, and emit a warning.
+    if value is not None:
+        warnings.warn(
+            "--zarr-backend-storage is deprecated; use --backend-storage",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if ctx.params.get("backend_storage") is None:
+            ctx.params["backend_storage"] = value
+    return value
+
+
+_backend_storage_option = click.option(
+    "--backend-storage",
+    "backend_storage",
     type=str,
     default=None,
     help=(
@@ -120,6 +139,23 @@ zarr_backend_storage = click.option(
         "backend."
     ),
 )
+_zarr_backend_storage_alias_option = click.option(
+    "--zarr-backend-storage",
+    "_zarr_backend_storage_alias",
+    type=str,
+    default=None,
+    expose_value=False,
+    callback=_zarr_backend_storage_alias_callback,
+    hidden=True,
+)
+
+
+def backend_storage(f):
+    """Decorator stack: primary ``--backend-storage`` option plus the
+    deprecated, hidden ``--zarr-backend-storage`` alias."""
+    return _backend_storage_option(_zarr_backend_storage_alias_option(f))
+
+
 storage_option = click.option(
     "--storage-option",
     "storage_options",
@@ -138,7 +174,7 @@ def _parse_storage_options(pairs: tuple[str, ...]) -> dict | None:
     Each ``VALUE`` is decoded with :func:`json.loads` first; on
     decode failure the raw string is kept. Returns ``None`` for an
     empty input so callers can pass it straight through to
-    :func:`vcztools.utils.open_zarr`.
+    :func:`vcztools.open_zarr`.
     """
     if len(pairs) == 0:
         return None
@@ -168,7 +204,7 @@ def make_reader(
     view_semantics=False,
     force_samples=False,
     drop_genotypes=False,
-    zarr_backend_storage=None,
+    backend_storage=None,
     storage_options=None,
 ):
     """Resolve file arguments and create a VczReader."""
@@ -213,7 +249,7 @@ def make_reader(
     root = open_zarr(
         path,
         mode="r",
-        zarr_backend_storage=zarr_backend_storage,
+        backend_storage=backend_storage,
         storage_options=storage_options,
     )
     reader = retrieval.VczReader(root)
@@ -295,10 +331,10 @@ class NaturalOrderGroup(click.Group):
     is_flag=True,
     help="Print per contig stats.",
 )
-@zarr_backend_storage
+@backend_storage
 @storage_option
 @handle_exception
-def index(path, nrecords, stats, zarr_backend_storage, storage_options):
+def index(path, nrecords, stats, backend_storage, storage_options):
     """
     Query the number of records in a VCZ dataset. This subcommand only
     implements the --nrecords and --stats options and does not build any
@@ -311,7 +347,7 @@ def index(path, nrecords, stats, zarr_backend_storage, storage_options):
     root = open_zarr(
         path,
         mode="r",
-        zarr_backend_storage=zarr_backend_storage,
+        backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
     )
     reader = retrieval.VczReader(root)
@@ -353,7 +389,7 @@ def index(path, nrecords, stats, zarr_backend_storage, storage_options):
     help="Disable automatic addition of a missing newline character at the end "
     "of the formatting expression.",
 )
-@zarr_backend_storage
+@backend_storage
 @storage_option
 @handle_exception
 def query(
@@ -371,7 +407,7 @@ def query(
     include,
     exclude,
     disable_automatic_newline,
-    zarr_backend_storage,
+    backend_storage,
     storage_options,
 ):
     """
@@ -390,7 +426,7 @@ def query(
         root = open_zarr(
             path,
             mode="r",
-            zarr_backend_storage=zarr_backend_storage,
+            backend_storage=backend_storage,
             storage_options=parsed_storage_options,
         )
         reader = retrieval.VczReader(root)
@@ -412,7 +448,7 @@ def query(
         include=include,
         exclude=exclude,
         force_samples=force_samples,
-        zarr_backend_storage=zarr_backend_storage,
+        backend_storage=backend_storage,
         storage_options=parsed_storage_options,
     )
     with handle_broken_pipe(output):
@@ -465,7 +501,7 @@ def query(
 @targets_file
 @include
 @exclude
-@zarr_backend_storage
+@backend_storage
 @storage_option
 @handle_exception
 def view(
@@ -485,7 +521,7 @@ def view(
     drop_genotypes,
     include,
     exclude,
-    zarr_backend_storage,
+    backend_storage,
     storage_options,
 ):
     """
@@ -521,7 +557,7 @@ def view(
         view_semantics=True,
         force_samples=force_samples,
         drop_genotypes=drop_genotypes,
-        zarr_backend_storage=zarr_backend_storage,
+        backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
     )
     subsetting_samples = (
@@ -545,9 +581,9 @@ def view(
 @include
 @exclude
 @click.option("--out", default="plink")
-@zarr_backend_storage
+@backend_storage
 @storage_option
-def view_plink1(path, include, exclude, out, zarr_backend_storage, storage_options):
+def view_plink1(path, include, exclude, out, backend_storage, storage_options):
     """
     Generate a plink1 binary fileset compatible with plink1.9 --vcf.
     This command is equivalent to running ``vcztools view [filtering options]
@@ -558,7 +594,7 @@ def view_plink1(path, include, exclude, out, zarr_backend_storage, storage_optio
         path,
         include=include,
         exclude=exclude,
-        zarr_backend_storage=zarr_backend_storage,
+        backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
     )
     plink.write_plink(reader, out)

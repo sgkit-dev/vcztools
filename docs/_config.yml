@@ -23,6 +23,7 @@ sphinx:
   extra_extensions:
     - sphinx_click.ext
     - sphinx.ext.todo
+    - sphinx.ext.autodoc
   config:
     html_show_copyright: false
     todo_include_todos: true

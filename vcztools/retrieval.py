@@ -492,7 +492,7 @@ class VczReader:
     ----------
     root
         An already-opened :class:`zarr.Group` pointing at the VCZ
-        dataset. Use :func:`vcztools.utils.open_zarr` to open a path
+        dataset. Use :func:`vcztools.open_zarr` to open a path
         (local, remote, or zip) with the desired backend before
         constructing the reader.
     readahead_workers

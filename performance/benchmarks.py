@@ -471,7 +471,7 @@ class ObstoreFileOpener(BackendOpener):
     name = "obstore-file"
 
     def open(self, vcz_path):
-        root = vcz_utils.open_zarr(str(vcz_path), zarr_backend_storage="obstore")
+        root = vcz_utils.open_zarr(str(vcz_path), backend_storage="obstore")
         return OpenedStore(root, lambda: None)
 
 
@@ -480,7 +480,7 @@ class IcechunkOpener(BackendOpener):
 
     def open(self, vcz_path):
         root = vcz_utils.open_zarr(
-            str(_icechunk_path(vcz_path)), zarr_backend_storage="icechunk"
+            str(_icechunk_path(vcz_path)), backend_storage="icechunk"
         )
         return OpenedStore(root, lambda: None)
 
@@ -566,7 +566,7 @@ class ObstoreOpener(BackendOpener):
     name = "obstore"
 
     def open(self, dataset):
-        root = vcz_utils.open_zarr(str(dataset), zarr_backend_storage="obstore")
+        root = vcz_utils.open_zarr(str(dataset), backend_storage="obstore")
         return OpenedStore(root, lambda: None)
 
 
@@ -574,7 +574,7 @@ class IcechunkUrlOpener(BackendOpener):
     name = "icechunk"
 
     def open(self, dataset):
-        root = vcz_utils.open_zarr(str(dataset), zarr_backend_storage="icechunk")
+        root = vcz_utils.open_zarr(str(dataset), backend_storage="icechunk")
         return OpenedStore(root, lambda: None)
 
 

@@ -327,10 +327,10 @@ class TestOpenZarr:
 
     def test_url_with_default_backend_raises(self, tmp_path):
         # The default backend is local-only; URLs require an explicit
-        # zarr_backend_storage value.
+        # backend_storage value.
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
-        with pytest.raises(ValueError, match="requires zarr_backend_storage"):
+        with pytest.raises(ValueError, match="requires backend_storage"):
             open_zarr(vcz.as_uri())
 
     def test_zarr_group_passthrough(self):
@@ -354,7 +354,7 @@ class TestOpenZarr:
     def test_fsspec_backend_uses_fsspec_store(self, tmp_path):
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
-        root = open_zarr(vcz.as_uri(), zarr_backend_storage="fsspec")
+        root = open_zarr(vcz.as_uri(), backend_storage="fsspec")
         assert isinstance(root.store, zarr.storage.FsspecStore)
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
@@ -363,18 +363,18 @@ class TestOpenZarr:
         # to file:// URIs so FsspecStore.from_url accepts them.
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
-        root_path = open_zarr(vcz, zarr_backend_storage="fsspec")
+        root_path = open_zarr(vcz, backend_storage="fsspec")
         assert isinstance(root_path.store, zarr.storage.FsspecStore)
-        root_str = open_zarr(str(vcz), zarr_backend_storage="fsspec")
+        root_str = open_zarr(str(vcz), backend_storage="fsspec")
         assert isinstance(root_str.store, zarr.storage.FsspecStore)
 
     def test_fsspec_backend_unsupported_type_raises(self):
         with pytest.raises(TypeError, match="Unsupported file_or_url type"):
-            open_zarr(42, zarr_backend_storage="fsspec")
+            open_zarr(42, backend_storage="fsspec")
 
     def test_invalid_backend_raises(self):
         with pytest.raises(ValueError, match="Unsupported Zarr backend storage"):
-            open_zarr(FIXTURE_VCZ_ZIP, zarr_backend_storage="bogus")
+            open_zarr(FIXTURE_VCZ_ZIP, backend_storage="bogus")
 
     def test_local_backend_unsupported_type_raises(self):
         # The default (local) backend rejects anything that isn't a
@@ -385,22 +385,22 @@ class TestOpenZarr:
     def test_obstore_local_path(self, tmp_path):
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
-        root = open_zarr(vcz, zarr_backend_storage="obstore")
+        root = open_zarr(vcz, backend_storage="obstore")
         assert isinstance(root.store, zarr.storage.ObjectStore)
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
     def test_obstore_local_str(self, tmp_path):
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
-        root = open_zarr(str(vcz), zarr_backend_storage="obstore")
+        root = open_zarr(str(vcz), backend_storage="obstore")
         assert isinstance(root.store, zarr.storage.ObjectStore)
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
     def test_obstore_passthrough_store_object(self, tmp_path):
         vcz = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz)
-        first = open_zarr(vcz, zarr_backend_storage="obstore")
-        second = open_zarr(first.store, zarr_backend_storage="obstore")
+        first = open_zarr(vcz, backend_storage="obstore")
+        second = open_zarr(first.store, backend_storage="obstore")
         assert isinstance(second.store, zarr.storage.ObjectStore)
         assert second["variant_position"][:].tolist() == [10, 20, 30, 40]
 
@@ -408,7 +408,7 @@ class TestOpenZarr:
         vcz_dir = tmp_path / "minimal.vcz"
         self._write_minimal_group(vcz_dir)
         ic_path = to_vcz_icechunk(vcz_dir, tmp_path)
-        root = open_zarr(ic_path, zarr_backend_storage="icechunk")
+        root = open_zarr(ic_path, backend_storage="icechunk")
         assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
 
     def test_nonexistent_zip_raises(self, tmp_path):
@@ -443,7 +443,7 @@ class TestOpenZarr:
         monkeypatch.setattr(zarr.storage.FsspecStore, "from_url", spy)
         open_zarr(
             vcz.as_uri(),
-            zarr_backend_storage="fsspec",
+            backend_storage="fsspec",
             storage_options={"foo": "bar"},
         )
         assert captured["storage_options"] == {"foo": "bar"}
@@ -462,7 +462,7 @@ class TestOpenZarr:
         monkeypatch.setattr(obs.store, "from_url", spy)
         open_zarr(
             vcz,
-            zarr_backend_storage="obstore",
+            backend_storage="obstore",
             storage_options={"client_options": {"timeout": "30s"}},
         )
         assert captured["kwargs"]["client_options"] == {"timeout": "30s"}
@@ -525,7 +525,7 @@ class TestOpenZarr:
 
     def test_obstore_unsupported_type_raises(self):
         with pytest.raises(TypeError, match="Unsupported file_or_url type"):
-            open_zarr(42, zarr_backend_storage="obstore")
+            open_zarr(42, backend_storage="obstore")
 
     def test_obstore_remote_url_storage_options_forwarded(self, monkeypatch):
         captured = {}
@@ -539,7 +539,7 @@ class TestOpenZarr:
         with pytest.raises(RuntimeError, match="captured"):
             open_zarr(
                 "s3://bucket/path",
-                zarr_backend_storage="obstore",
+                backend_storage="obstore",
                 storage_options={"region_name": "us-east-1"},
             )
         assert captured["url"] == "s3://bucket/path"
@@ -550,9 +550,9 @@ class TestOpenZarr:
         self._write_minimal_group(vcz_dir)
         ic_path = to_vcz_icechunk(vcz_dir, tmp_path)
         # Build the IcechunkStore once, then pass it back through.
-        first = open_zarr(ic_path, zarr_backend_storage="icechunk")
+        first = open_zarr(ic_path, backend_storage="icechunk")
         assert isinstance(first.store, ic.store.IcechunkStore)
-        second = open_zarr(first.store, zarr_backend_storage="icechunk")
+        second = open_zarr(first.store, backend_storage="icechunk")
         assert second.store is first.store
 
     def test_icechunk_local_str_returns_storage(self, monkeypatch, tmp_path):

@@ -19,6 +19,14 @@ scheme).
 `--zarr-backend-storage` is accepted as a deprecated alias for
 `--backend-storage` and emits a `DeprecationWarning`.
 
+The `obstore` and `icechunk` backends are install extras: pull them
+in with `pip install vcztools[obstore]` or
+`pip install vcztools[icechunk]` when you need them. Requesting one
+without the corresponding package installed raises `ImportError` with
+the matching `pip` command. The `fsspec` backend and its filesystem
+packages (`s3fs`, `gcsfs`, `adlfs`, …) stay separate installs because
+the protocol you need depends on where your data lives.
+
 ## Local (default)
 
 With no `--backend-storage` option, vcztools opens local data only:
@@ -84,7 +92,7 @@ Routes through {class}`zarr.storage.ObjectStore` built from
 Install:
 
 ```bash
-python3 -m pip install obstore
+python3 -m pip install vcztools[obstore]
 ```
 
 Definitive docs: [obstore](https://developmentseed.org/obstore/) and
@@ -113,7 +121,7 @@ paths reject non-empty `storage_options`.
 Install:
 
 ```bash
-python3 -m pip install icechunk
+python3 -m pip install vcztools[icechunk]
 ```
 
 Definitive docs: [Icechunk](https://icechunk.io/).

@@ -415,6 +415,22 @@ class TestOpenZarr:
         with pytest.raises(FileNotFoundError):
             open_zarr(tmp_path / "does-not-exist.vcz.zip")
 
+    # --- missing optional-extra dependencies ---
+
+    def test_obstore_missing_install_hint(self, monkeypatch, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        monkeypatch.setitem(sys.modules, "obstore", None)
+        with pytest.raises(ImportError, match=r"pip install vcztools\[obstore\]"):
+            open_zarr(vcz, backend_storage="obstore")
+
+    def test_icechunk_missing_install_hint(self, monkeypatch, tmp_path):
+        vcz = tmp_path / "minimal.vcz"
+        self._write_minimal_group(vcz)
+        monkeypatch.setitem(sys.modules, "icechunk", None)
+        with pytest.raises(ImportError, match=r"pip install vcztools\[icechunk\]"):
+            open_zarr(vcz, backend_storage="icechunk")
+
     # --- storage_options plumbing ---
 
     def test_storage_options_rejected_for_local_zip(self):

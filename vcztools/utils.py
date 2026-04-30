@@ -1,4 +1,5 @@
 import dataclasses
+import importlib
 import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -160,6 +161,21 @@ def open_zarr(
     return _open_zarr_icechunk(file_or_url, mode=mode, storage_options=storage_options)
 
 
+def _import_optional(module_name, *, extra):
+    """Import a module gated behind a vcztools install extra.
+
+    On ImportError, re-raise with a message pointing at the extra so the
+    user can install the missing backend with one ``pip`` invocation.
+    """
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as e:
+        raise ImportError(
+            f"{module_name} is required for backend_storage={extra!r}; "
+            f"install with `pip install vcztools[{extra}]`"
+        ) from e
+
+
 def _open_zarr_local(file_or_url, *, mode, storage_options):
     if storage_options is not None and len(storage_options) > 0:
         raise ValueError("storage_options not supported for local stores")
@@ -188,8 +204,7 @@ def _open_zarr_fsspec(file_or_url, *, mode, storage_options):
 
 
 def _open_zarr_obstore(file_or_url, *, mode, storage_options):
-    import obstore as obs  # noqa PLC0415
-
+    obs = _import_optional("obstore", extra="obstore")
     kwargs = storage_options if storage_options is not None else {}
     if isinstance(file_or_url, Path):
         url = file_or_url.resolve().as_uri()
@@ -206,8 +221,7 @@ def _open_zarr_obstore(file_or_url, *, mode, storage_options):
 
 
 def _open_zarr_icechunk(file_or_url, *, mode, storage_options):
-    import icechunk as ic  # noqa PLC0415
-
+    ic = _import_optional("icechunk", extra="icechunk")
     storage = make_icechunk_storage(file_or_url, storage_options=storage_options)
     repo = ic.Repository.open(storage)
     session = repo.readonly_session("main")
@@ -221,8 +235,7 @@ def make_icechunk_storage(file_or_url, *, storage_options=None):
     :mod:`icechunk` storage constructor (``s3_storage``, ``azure_storage``).
     Local-filesystem storage rejects non-empty ``storage_options``.
     """
-    import icechunk as ic  # noqa: PLC0415
-
+    ic = _import_optional("icechunk", extra="icechunk")
     kwargs = storage_options if storage_options is not None else {}
     if isinstance(file_or_url, str):
         if "://" not in file_or_url:  # local path

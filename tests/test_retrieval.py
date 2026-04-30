@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from tests import vcz_builder
-from tests.utils import make_reader
+from tests.utils import make_reader, to_vcz_icechunk
 from vcztools import regions as regions_mod
 from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
@@ -599,6 +599,43 @@ class TestReadaheadPipeline:
         next(gen)
         gen.close()
         assert pipeline._executor._shutdown is True
+
+
+class TestVczReaderBackendsEndToEnd:
+    """All four storage backends read the same local-directory VCZ identically.
+
+    Single canonical place to confirm that VczReader works end-to-end
+    over local / fsspec / obstore / icechunk. Uses the v3 fixture
+    because icechunk requires Zarr v3; the other three backends read
+    v2/v3 transparently.
+    """
+
+    @pytest.fixture
+    def fx_root(self, request, fx_sample_vcz3, tmp_path):
+        backend = request.param
+        directory = fx_sample_vcz3.directory_path
+        if backend == "icechunk":
+            ic_path = to_vcz_icechunk(directory, tmp_path)
+            return utils.open_zarr(ic_path, backend_storage="icechunk")
+        return utils.open_zarr(directory, backend_storage=backend)
+
+    @pytest.mark.parametrize(
+        "fx_root", [None, "fsspec", "obstore", "icechunk"], indirect=True
+    )
+    def test_variants_iteration(self, fx_root):
+        reader = VczReader(fx_root)
+        it = reader.variants(
+            fields=["variant_contig", "variant_position", "call_genotype"]
+        )
+
+        v1 = next(it)
+        assert v1["variant_contig"] == 0  # first contig in the table is "19"
+        assert v1["variant_position"] == 111
+        nt.assert_array_equal(v1["call_genotype"], [[0, 0], [0, 0], [0, 1]])
+
+        v2 = next(it)
+        assert v2["variant_contig"] == 0
+        assert v2["variant_position"] == 112
 
 
 class TestVczReaderRegions:

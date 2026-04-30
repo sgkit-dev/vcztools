@@ -16,9 +16,6 @@ scheme).
 | obstore | `--backend-storage obstore` | High-throughput object-store reads (Rust [object_store](https://docs.rs/object_store/) under the hood) |
 | icechunk | `--backend-storage icechunk` | Versioned Icechunk repositories on local disk, S3, or Azure |
 
-`--zarr-backend-storage` is accepted as a deprecated alias for
-`--backend-storage` and emits a `DeprecationWarning`.
-
 The `obstore` and `icechunk` backends are install extras: pull them
 in with `pip install vcztools[obstore]` or
 `pip install vcztools[icechunk]` when you need them. Requesting one
@@ -41,7 +38,7 @@ vcztools view sample.vcz
 vcztools view sample.vcz.zip
 ```
 
-Definitive docs: [Zarr storage](https://zarr.readthedocs.io/en/stable/api/zarr/storage/index.html).
+Definitive docs: [Zarr storage](https://zarr.readthedocs.io/en/stable/user-guide/storage/).
 
 ## fsspec
 

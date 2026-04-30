@@ -60,10 +60,11 @@ exhaustive list:
 - Azure: [adlfs](https://github.com/fsspec/adlfs) (e.g. `account_name`, `account_key`, `sas_token`).
 - HTTP(S): [fsspec http](https://filesystem-spec.readthedocs.io/en/latest/api.html#fsspec.implementations.http.HTTPFileSystem) (e.g. `client_kwargs`).
 
-Install fsspec plus the protocol package you need:
 
+Fsspec is included in the default install of vcztools, but additional protocols
+must be installed separately. For example, to use S3 you need to install s3fs:
 ```bash
-python3 -m pip install fsspec s3fs   # for S3
+python3 -m pip install s3fs
 ```
 
 Definitive docs: [fsspec](https://filesystem-spec.readthedocs.io/).

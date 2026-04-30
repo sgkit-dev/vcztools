@@ -46,7 +46,7 @@ def generate_fam(reader):
             "Phenotype": np.full_like(zeros, -9),
         }
     )
-    return df.to_csv(sep="\t", header=False, index=False)
+    return df.to_csv(sep="\t", header=False, index=False, lineterminator="\n")
 
 
 def generate_bim(reader, a12_allele):
@@ -92,7 +92,7 @@ def generate_bim(reader, a12_allele):
     if len(rows) == 0:
         return ""
     df = pd.concat(rows, ignore_index=True)
-    return df.to_csv(header=False, sep="\t", index=False)
+    return df.to_csv(header=False, sep="\t", index=False, lineterminator="\n")
 
 
 class Writer:

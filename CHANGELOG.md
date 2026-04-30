@@ -17,6 +17,7 @@ Bug fixes:
   and sample subsetting (#297)
 - Incorrect output for filtering with missing Number=A INFO field + numeric (#299)
 - Noise on stderr when performing arithmetic with missing values (#301)
+- Null samples included in plink output (#310)
 
 ## [0.1.1] - 2026-03-02
 

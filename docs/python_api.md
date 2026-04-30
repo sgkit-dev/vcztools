@@ -4,7 +4,7 @@
 ## Opening a VCZ dataset
 
 `vcztools.open_zarr` is the recommended entry point for opening a VCZ
-dataset. It returns a :class:`zarr.Group` and dispatches to one of four
+dataset. It returns a {class}`zarr.Group` and dispatches to one of four
 storage backends; see {ref}`sec-storage-backends` for the full
 description of each.
 
@@ -37,7 +37,7 @@ root = vcztools.open_zarr(
 )
 ```
 
-An already-built :class:`zarr.Group` or :class:`zarr.abc.store.Store`
+An already-built {class}`zarr.Group` or {class}`zarr.abc.store.Store`
 is accepted and passed through unchanged, which is useful when you've
 configured a store yourself:
 

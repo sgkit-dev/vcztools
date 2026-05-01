@@ -1,5 +1,25 @@
 """
-Convert VCZ to plink 1 binary format.
+Convert VCZ to PLINK 1 binary format (.bed/.bim/.fam) using the
+PLINK 2 REF/ALT convention: A1 = ALT, A2 = REF.
+
+The on-disk file layout is the PLINK 1 binary format. The semantic
+choice of which allele is A1 follows PLINK 2 (and matches the output
+of ``plink2 --vcf X --make-bed`` byte-for-byte for the .bed payload).
+
+Multi-allelic variants are rejected, mirroring ``plink2 --make-bed``,
+which errors with "Error: <out>.bim cannot contain multiallelic
+variants." Callers wanting to skip multi-allelic sites use the
+``--max-alleles 2`` flag on ``view-plink1`` (matching plink 2).
+
+Single-allele (monomorphic) variants emit ``A1 = "."`` in the .bim
+(plink 2's missing-allele encoding), with all genotype bits set to
+the MISSING code in the .bed.
+
+For the consequences for downstream tools (plink 1.9, REGENIE,
+BOLT-LMM, GCTA, KING, flashpca, ADMIXTURE), see the documentation
+page; the short version is "insensitive in practice", with plink 1.9
+the only consumer that visibly relabels allele columns on read
+(unless invoked with ``--keep-allele-order``).
 """
 
 import pathlib
@@ -35,10 +55,13 @@ def generate_fam(reader):
                 f"Sample ID {s!r} contains whitespace; "
                 "PLINK FAM is whitespace-separated."
             )
+    # FamilyID = "0" matches the default of `plink2 --vcf X --make-bed`,
+    # which writes 0 unless the user passes --double-id or --id-delim.
     zeros = np.zeros(sample_id.shape, dtype=int)
+    family_id = np.full(sample_id.shape, "0", dtype="U1")
     df = pd.DataFrame(
         {
-            "FamilyID": sample_id,
+            "FamilyID": family_id,
             "IndividualID": sample_id,
             "FatherID": zeros,
             "MotherId": zeros,
@@ -67,9 +90,9 @@ def generate_bim(reader, a12_allele):
         alleles = _as_fixed_length_unicode(chunk["variant_allele"])
 
         allele_1 = alleles[np.arange(n), chunk_a12[:, 0]]
-        # A1 == -1 marks a single-allele (effectively monomorphic) site;
-        # PLINK uses "0" as the missing-allele indicator there.
-        allele_1[chunk_a12[:, 0] == -1] = "0"
+        # A1 == -1 marks a single-allele (monomorphic) site. plink 2 uses
+        # "." as the missing-allele indicator in .bim; match that.
+        allele_1[chunk_a12[:, 0] == -1] = "."
 
         if has_variant_id:
             variant_id = _as_fixed_length_unicode(chunk["variant_id"])
@@ -103,44 +126,36 @@ class Writer:
         self.fam_path = fam_path
         self.bed_path = bed_path
 
-    def _compute_alleles(self, G, alleles):
+    def _compute_alleles(self, alleles):
         """
-        Returns the a12 alleles for the specified chunk of data.
+        Return per-variant a12 indexes in the plink 2 REF/ALT convention.
+
+        For biallelic input ``alleles`` of shape ``(n, 2)``:
+
+        * ``a12[:, 0] = 1`` (A1 = ALT, i.e. ``variant_allele[:, 1]``)
+        * ``a12[:, 1] = 0`` (A2 = REF, i.e. ``variant_allele[:, 0]``)
+
+        For single-allele (monomorphic) variants — where ``alleles[j, 1]``
+        is the empty string — ``a12[j, 0]`` is set to ``-1``. The .bim
+        writer emits ``"."`` in that slot, matching plink 2's
+        missing-allele convention.
+
+        Multi-allelic variants raise ValueError, mirroring
+        ``plink2 --make-bed`` (which errors out on multi-allelic .bim
+        rows). Use ``--max-alleles 2`` to skip them.
         """
-        max_alleles = alleles.shape[1]
-        if max_alleles != 2:
+        if alleles.shape[1] != 2:
             raise ValueError(
-                "Only biallelic VCFs supported currently: "
-                "please comment on https://github.com/sgkit-dev/vcztools/issues/224 "
-                "if this limitation affects you"
+                "Multi-allelic variants are not supported in PLINK 1 "
+                "binary output (plink 2 --make-bed has the same "
+                "restriction). Use --max-alleles 2 to skip them, or "
+                "split with bcftools norm -m- before conversion."
             )
-        num_variants = G.shape[0]
-        num_samples = G.shape[1]
-        a12_allele = np.zeros((num_variants, 2), dtype=int) - 1
-        for j, g in enumerate(G):
-            g = g.reshape(num_samples * 2)
-            assert np.all(g >= -2)
-            count = np.bincount(g + 2, minlength=max_alleles + 2)
-            # [dimension pad, missing data, reference, allele 1, ...]
-            count = count[2:]
-            argsort = np.argsort(count)
-            a12_allele[j, 1] = 0
-            if argsort[-1] == 0:
-                # print("Ref allele most frequent")
-                # Ref allele is most frequent - chose lowest allele from next most
-                # frequent class
-                f = count[argsort[-2]]
-            else:
-                # print("Ref allele not most frequent")
-                f = count[argsort[-1]]
-            a = 1
-            while count[a] != f:
-                a += 1
-            a12_allele[j, 0] = a
-            assert a12_allele[j, 0] != a12_allele[j, 1]
-            if alleles[j][1] == "":
-                a12_allele[j, 0] = -1
-        return a12_allele
+        num_variants = alleles.shape[0]
+        a12 = np.zeros((num_variants, 2), dtype=np.int8)
+        a12[:, 0] = 1
+        a12[alleles[:, 1] == "", 0] = -1
+        return a12
 
     def _write_genotypes(self):
         ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
@@ -159,12 +174,12 @@ class Writer:
                         "Only diploid genotypes are supported "
                         f"(call_genotype has shape {G.shape})"
                     )
-                a12 = self._compute_alleles(G, chunk["variant_allele"])
+                a12 = self._compute_alleles(chunk["variant_allele"])
                 buff = encode_genotypes(G, a12)
                 bed_file.write(buff)
                 a12_per_chunk.append(a12)
         if len(a12_per_chunk) == 0:
-            return np.zeros((0, 2), dtype=int)
+            return np.zeros((0, 2), dtype=np.int8)
         return np.concatenate(a12_per_chunk, axis=0)
 
     def run(self):

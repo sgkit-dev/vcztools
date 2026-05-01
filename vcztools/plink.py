@@ -90,32 +90,20 @@ class _AndVariantFilter:
         return result
 
 
-def compute_a12(alleles):
-    """
-    Return per-variant a12 indexes in the plink 2 REF/ALT convention.
+def encode_genotypes(genotypes):
+    # A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
+    # --vcf X --make-bed convention. The C extension requires a
+    # C-contiguous int8 array; a reader-yielded call_genotype that's
+    # been reordered by a sample subset is fancy-indexed and not
+    # contiguous, so force a copy when needed.
+    G = np.ascontiguousarray(genotypes, dtype=np.int8)
+    return bytes(_vcztools.encode_plink(G).data)
 
-    ``alleles`` has shape ``(n, max_alleles_in_store)``. The
-    per-variant allele count is the number of non-empty entries in
-    each row; the store-wide max is irrelevant once a downstream
-    filter (e.g. ``--max-alleles``) has dropped multi-allelic rows.
 
-    For each surviving variant:
-
-    * ``a12[:, 0] = 1`` (A1 = ALT, i.e. ``variant_allele[:, 1]``)
-    * ``a12[:, 1] = 0`` (A2 = REF, i.e. ``variant_allele[:, 0]``)
-
-    For single-allele (monomorphic) variants — where ``alleles[j, 1]``
-    is the empty string — ``a12[j, 0]`` is set to ``-1``. The .bim
-    writer emits ``"."`` in that slot, matching plink 2's
-    missing-allele convention.
-
-    Multi-allelic variants raise ValueError, mirroring
-    ``plink2 --make-bed`` (which errors out on multi-allelic .bim
-    rows). Use ``--max-alleles 2`` to skip them.
-
-    A1/A2 are derived from ``variant_allele`` shape; observed
-    genotypes in any sample subset do not influence the labelling.
-    """
+def _check_biallelic(alleles):
+    # plink 2 --make-bed errors on multi-allelic .bim rows; mirror that.
+    # Use --max-alleles 2 to skip them, or split with bcftools norm -m-
+    # before conversion.
     if alleles.shape[1] > 2 and (alleles[:, 2:] != "").any():
         raise ValueError(
             "Multi-allelic variants are not supported in PLINK 1 "
@@ -123,31 +111,6 @@ def compute_a12(alleles):
             "restriction). Use --max-alleles 2 to skip them, or "
             "split with bcftools norm -m- before conversion."
         )
-    num_variants = alleles.shape[0]
-    a12 = np.zeros((num_variants, 2), dtype=np.int8)
-    a12[:, 0] = 1
-    # alleles may have >2 columns when the store's max-allele
-    # is higher than 2; the second column still holds ALT for any
-    # surviving (≤2-allele) variant. A store-wide max of 1 (only
-    # possible for empty stores or stores written with monomorphic-only
-    # variants) means every row is monomorphic.
-    if alleles.shape[1] < 2:
-        a12[:, 0] = -1
-    else:
-        a12[alleles[:, 1] == "", 0] = -1
-    return a12
-
-
-def encode_genotypes(genotypes, a12_allele=None):
-    # The C extension requires C-contiguous int8 arrays. A reader-yielded
-    # call_genotype that's been reordered by a sample subset is fancy-
-    # indexed and not contiguous, so force a copy when needed.
-    G = np.ascontiguousarray(genotypes, dtype=np.int8)
-    if a12_allele is None:
-        a12_allele = np.zeros((G.shape[0], 2), dtype=G.dtype)
-        a12_allele[:, 0] = 1
-    a12_allele = np.ascontiguousarray(a12_allele, dtype=G.dtype)
-    return bytes(_vcztools.encode_plink(G, a12_allele).data)
 
 
 def generate_fam(reader):
@@ -202,7 +165,7 @@ def _plink2_normalise_chrom(chrom):
     return chrom
 
 
-def generate_bim(reader, a12_allele):
+def generate_bim(reader):
     contig_id = _as_fixed_length_unicode(reader.contig_ids)
     contig_id = np.array(
         [_plink2_normalise_chrom(str(c)) for c in contig_id], dtype=contig_id.dtype
@@ -214,18 +177,20 @@ def generate_bim(reader, a12_allele):
         fields.append("variant_id")
 
     rows = []
-    offset = 0
     for chunk in reader.variant_chunks(fields=fields):
         n = len(chunk["variant_position"])
-        chunk_a12 = a12_allele[offset : offset + n]
-        offset += n
-
         alleles = _as_fixed_length_unicode(chunk["variant_allele"])
+        _check_biallelic(alleles)
 
-        allele_1 = alleles[np.arange(n), chunk_a12[:, 0]]
-        # A1 == -1 marks a single-allele (monomorphic) site. plink 2 uses
-        # "." as the missing-allele indicator in .bim; match that.
-        allele_1[chunk_a12[:, 0] == -1] = "."
+        # A1 = ALT (column 1), A2 = REF (column 0). For single-allele
+        # (monomorphic) rows — alleles[j, 1] == "" — emit "." in the A1
+        # slot, matching plink 2's missing-allele convention.
+        if alleles.shape[1] >= 2:
+            allele_1 = alleles[:, 1].copy()
+            allele_1[alleles[:, 1] == ""] = "."
+        else:
+            allele_1 = np.full(n, ".", dtype=alleles.dtype)
+        allele_2 = alleles[:, 0]
 
         if has_variant_id:
             variant_id = _as_fixed_length_unicode(chunk["variant_id"])
@@ -240,7 +205,7 @@ def generate_bim(reader, a12_allele):
                     "GeneticPosition": np.zeros(n, dtype=int),
                     "Position": chunk["variant_position"],
                     "Allele1": allele_1,
-                    "Allele2": alleles[np.arange(n), chunk_a12[:, 1]],
+                    "Allele2": allele_2,
                 }
             )
         )
@@ -261,11 +226,6 @@ class Writer:
 
     def _write_genotypes(self):
         ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
-        # a12 is small (8*num_variants bytes per column) and only
-        # materialised for variants surviving the reader's filter, so
-        # collecting per-chunk arrays and concatenating is cheap and
-        # robust to partial-chunk yields under variant filtering.
-        a12_per_chunk = []
         with open(self.bed_path, "wb") as bed_file:
             bed_file.write(BED_MAGIC)
 
@@ -276,19 +236,14 @@ class Writer:
                         "Only diploid genotypes are supported "
                         f"(call_genotype has shape {G.shape})"
                     )
-                a12 = compute_a12(chunk["variant_allele"])
-                buff = encode_genotypes(G, a12)
-                bed_file.write(buff)
-                a12_per_chunk.append(a12)
-        if len(a12_per_chunk) == 0:
-            return np.zeros((0, 2), dtype=np.int8)
-        return np.concatenate(a12_per_chunk, axis=0)
+                _check_biallelic(chunk["variant_allele"])
+                bed_file.write(encode_genotypes(G))
 
     def run(self):
-        a12_allele = self._write_genotypes()
+        self._write_genotypes()
 
         with open(self.bim_path, "w") as f:
-            f.write(generate_bim(self.reader, a12_allele))
+            f.write(generate_bim(self.reader))
 
         with open(self.fam_path, "w") as f:
             f.write(generate_fam(self.reader))
@@ -341,12 +296,10 @@ class BedEncoder:
         self._bytes_per_variant = (self._num_samples + 3) // 4
         self._bed_size = 3 + self._num_variants * self._bytes_per_variant
 
-        variant_allele = reader.root["variant_allele"][:]
-        self._a12 = compute_a12(variant_allele)
+        _check_biallelic(reader.root["variant_allele"][:])
 
         self._iterator = None
         self._cur_byte_offset = None
-        self._next_chunk_first_variant = 0
         self._pending = bytearray()
         self._first_chunk_skip = 0
 
@@ -418,7 +371,6 @@ class BedEncoder:
             fields=["call_genotype"],
             start=target_chunk,
         )
-        self._next_chunk_first_variant = target_chunk * self._variants_chunk_size
         self._cur_byte_offset = off
 
     def _drain(self, n: int) -> bytes:
@@ -431,13 +383,7 @@ class BedEncoder:
         while n > 0:
             chunk = next(self._iterator)
             G = chunk["call_genotype"]
-            chunk_n = G.shape[0]
-            a12_chunk = self._a12[
-                self._next_chunk_first_variant : self._next_chunk_first_variant
-                + chunk_n
-            ]
-            self._next_chunk_first_variant += chunk_n
-            encoded = encode_genotypes(G, a12_chunk)
+            encoded = encode_genotypes(G)
             if self._first_chunk_skip > 0:
                 encoded = encoded[self._first_chunk_skip :]
                 self._first_chunk_skip = 0
@@ -463,7 +409,6 @@ class BedEncoder:
             self._closed = True
             self._teardown_iterator()
             self._cur_byte_offset = None
-            self._a12 = None
 
     def __enter__(self):
         return self

@@ -38,9 +38,6 @@ jobs:
   python_test:
     name: Python tests
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash -el {0}
     strategy:
       matrix:
         os: [macos-14, ubuntu-latest, windows-latest]
@@ -56,17 +53,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Miniconda with Python ${{ matrix.python-version }}
-        if: runner.os != 'Windows'
-        uses: conda-incubator/setup-miniconda@fc2d68f6413eb2d87b895e92f8584b5b94a10167  # v3.3.0
-        with:
-          auto-update-conda: true
-          python-version: ${{ matrix.python-version }}
-          channels: conda-forge,bioconda
-
-      - name: Install conda test tools
-        if: runner.os != 'Windows'
-        run: conda install bcftools plink2
+      - name: Install bcftools and plink2 (Linux only)
+        # The bcftools and plink2 validation test files skip cleanly
+        # via shutil.which on platforms without these binaries, so
+        # the install runs on Linux only; macOS and Windows leave
+        # the validation suites as no-ops.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bcftools plink2
 
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0

@@ -1,6 +1,6 @@
 import functools
+import shutil
 import subprocess
-import sys
 
 import click.testing as ct
 import pytest
@@ -10,7 +10,7 @@ import vcztools.cli as cli
 from .utils import assert_vcfs_close
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="Not supported on Windows"
+    shutil.which("bcftools") is None, reason="bcftools not on PATH"
 )
 
 

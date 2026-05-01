@@ -27,7 +27,6 @@ both tools and lock down the surviving-subset .bed bytes.
 
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import click.testing as ct
@@ -44,10 +43,7 @@ from tests import vcz_builder
 
 PLINK2 = shutil.which("plink2")
 
-pytestmark = [
-    pytest.mark.skipif(sys.platform == "win32", reason="Not supported on Windows"),
-    pytest.mark.skipif(PLINK2 is None, reason="plink2 not on PATH"),
-]
+pytestmark = pytest.mark.skipif(PLINK2 is None, reason="plink2 not on PATH")
 
 
 # ---------------------------------------------------------------------------

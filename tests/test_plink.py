@@ -9,7 +9,6 @@ No PLINK binary, no roundtripping.
 
 import math
 import pathlib
-import re
 
 import numpy as np
 import pandas as pd
@@ -274,59 +273,45 @@ class TestEncoderPythonReferenceParity:
 
 
 class TestComputeAlleles:
+    """A1/A2 derivation in plink 2 REF/ALT convention.
+
+    All biallelic input maps to ``[[1, 0], …]`` (A1=ALT, A2=REF).
+    Single-allele input maps to ``[[-1, 0]]`` (A1 = "missing"
+    sentinel; .bim writer emits "."). Multi-allelic raises.
+    """
+
     @staticmethod
     def _writer():
         return plink.Writer(reader=None, bed_path=None, fam_path=None, bim_path=None)
 
-    def test_ref_most_frequent_picks_alt_as_a1(self):
-        G = np.array([[[0, 0], [0, 0], [0, 1]]], dtype=np.int8)
-        alleles = np.array([["A", "T"]], dtype="U1")
-        a12 = self._writer()._compute_alleles(G, alleles)
-        np.testing.assert_array_equal(a12, [[1, 0]])
+    @pytest.mark.parametrize(
+        "alleles",
+        [
+            np.array([["A", "T"]], dtype="U1"),
+            np.array([["G", "C"]], dtype="U1"),
+            np.array([["A", "T"], ["G", "C"], ["T", "A"]], dtype="U1"),
+        ],
+    )
+    def test_biallelic_returns_alt_then_ref(self, alleles):
+        a12 = self._writer()._compute_alleles(alleles)
+        expected = np.tile([1, 0], (alleles.shape[0], 1))
+        np.testing.assert_array_equal(a12, expected)
+        assert a12.dtype == np.int8
 
-    def test_alt_most_frequent_picks_alt_as_a1(self):
-        G = np.array([[[1, 1], [1, 1], [0, 1]]], dtype=np.int8)
-        alleles = np.array([["A", "T"]], dtype="U1")
-        a12 = self._writer()._compute_alleles(G, alleles)
-        np.testing.assert_array_equal(a12, [[1, 0]])
-
-    def test_all_missing_calls(self):
-        G = -np.ones((1, 4, 2), dtype=np.int8)
-        alleles = np.array([["A", "T"]], dtype="U1")
-        a12 = self._writer()._compute_alleles(G, alleles)
-        # No real calls -> still picks A1=1, A2=0 (deterministic).
-        np.testing.assert_array_equal(a12, [[1, 0]])
-
-    def test_single_allele_site_marks_a1_as_missing(self):
-        G = np.zeros((1, 3, 2), dtype=np.int8)
+    def test_monomorphic_returns_minus_one(self):
         alleles = np.array([["A", ""]], dtype="U1")
-        a12 = self._writer()._compute_alleles(G, alleles)
+        a12 = self._writer()._compute_alleles(alleles)
         np.testing.assert_array_equal(a12, [[-1, 0]])
 
-    def test_multiallelic_raises_with_issue_pointer(self):
-        G = np.array([[[0, 1], [2, 0]]], dtype=np.int8)
-        alleles = np.array([["A", "T", "C"]], dtype="U1")
-        with pytest.raises(ValueError, match=r"issues/224"):
-            self._writer()._compute_alleles(G, alleles)
-
-    def test_mixed_biallelic_and_single_allele(self):
-        G = np.array(
-            [
-                [[0, 0], [0, 1]],
-                [[0, 0], [0, 0]],
-                [[1, 1], [0, 1]],
-            ],
-            dtype=np.int8,
-        )
+    def test_mixed_biallelic_and_monomorphic(self):
         alleles = np.array([["A", "T"], ["G", ""], ["C", "G"]], dtype="U1")
-        a12 = self._writer()._compute_alleles(G, alleles)
+        a12 = self._writer()._compute_alleles(alleles)
         np.testing.assert_array_equal(a12, [[1, 0], [-1, 0], [1, 0]])
 
-    def test_all_heterozygous_calls(self):
-        G = np.array([[[0, 1], [0, 1], [0, 1]]], dtype=np.int8)
-        alleles = np.array([["A", "T"]], dtype="U1")
-        a12 = self._writer()._compute_alleles(G, alleles)
-        np.testing.assert_array_equal(a12, [[1, 0]])
+    def test_multiallelic_raises(self):
+        alleles = np.array([["A", "T", "C"]], dtype="U1")
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            self._writer()._compute_alleles(alleles)
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +323,8 @@ class TestGenerateFam:
     def test_plain_ascii_sample_ids(self):
         reader = _build_reader(num_samples=2, sample_id=["s1", "s2"])
         fam = plink.generate_fam(reader)
-        assert fam == "s1\ts1\t0\t0\t0\t-9\ns2\ts2\t0\t0\t0\t-9\n"
+        # FID = "0" matches plink 2 default for `--vcf`.
+        assert fam == "0\ts1\t0\t0\t0\t-9\n0\ts2\t0\t0\t0\t-9\n"
 
     def test_zero_samples(self):
         reader = _build_reader(num_samples=0, call_genotype=None)
@@ -357,6 +343,7 @@ class TestGenerateFam:
         assert list(df["IID"]) == ["s1", "s3"]
         # There must be no empty-IID rows.
         assert not (df["IID"] == "").any()
+        assert list(df["FID"]) == ["0", "0"]
 
     @pytest.mark.parametrize(
         "bad_id",
@@ -377,6 +364,7 @@ class TestGenerateFam:
         fam = plink.generate_fam(reader)
         df = _parse_fam(fam)
         assert df["IID"].iloc[0] == long_id
+        assert df["FID"].iloc[0] == "0"
 
     def test_sample_subset_reflected_in_fam(self):
         reader = _build_reader(num_samples=4, sample_id=["s0", "s1", "s2", "s3"])
@@ -384,6 +372,7 @@ class TestGenerateFam:
         fam = plink.generate_fam(reader)
         df = _parse_fam(fam)
         assert list(df["IID"]) == ["s2", "s0"]
+        assert list(df["FID"]) == ["0", "0"]
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +411,7 @@ class TestGenerateBim:
         df = _parse_bim(bim)
         assert list(df["ID"]) == ["rs1", ".", "rs3"]
 
-    def test_single_allele_site_emits_zero_for_a1(self):
+    def test_single_allele_site_emits_dot_for_a1(self):
         reader = _build_reader(
             num_variants=2,
             alleles=[("A", "T"), ("G", "")],
@@ -432,7 +421,8 @@ class TestGenerateBim:
         a12 = np.array([[1, 0], [-1, 0]])
         bim = plink.generate_bim(reader, a12)
         df = _parse_bim(bim)
-        assert list(df["A1"]) == ["T", "0"]
+        # Monomorphic A1 is "." (plink 2 missing-allele convention).
+        assert list(df["A1"]) == ["T", "."]
         assert list(df["A2"]) == ["A", "G"]
 
     def test_multi_contig(self):
@@ -718,7 +708,7 @@ class TestWriterEndToEnd:
             call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
         )
         out = tmp_path / "p"
-        with pytest.raises(ValueError, match=r"issues/224"):
+        with pytest.raises(ValueError, match="Multi-allelic"):
             plink.write_plink(reader, out)
 
     def test_non_diploid_raises(self, tmp_path):
@@ -754,23 +744,3 @@ class TestWriterEndToEnd:
         assert (tmp_path / f"{stem}.bed").exists()
         assert (tmp_path / f"{stem}.bim").exists()
         assert (tmp_path / f"{stem}.fam").exists()
-
-
-# ---------------------------------------------------------------------------
-# Documenting the multiallelic guard interaction with _compute_alleles internals.
-# ---------------------------------------------------------------------------
-
-
-class TestComputeAllelesGuardInteraction:
-    """The ``while count[a] != f: a += 1`` loop in _compute_alleles relies
-    on max_alleles being 2 to terminate safely. The biallelic guard runs
-    first and prevents the loop from ever being reached for non-biallelic
-    input. Lock that ordering in here so a future refactor that drops the
-    guard cannot silently regress."""
-
-    def test_guard_runs_before_count_loop(self):
-        writer = plink.Writer(reader=None, bed_path=None, fam_path=None, bim_path=None)
-        G = np.array([[[0, 1]]], dtype=np.int8)
-        alleles = np.array([["A", "T", "C", "G"]], dtype="U1")
-        with pytest.raises(ValueError, match=re.compile(r"biallelic", re.IGNORECASE)):
-            writer._compute_alleles(G, alleles)

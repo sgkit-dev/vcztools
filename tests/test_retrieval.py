@@ -1,3 +1,4 @@
+import concurrent.futures as cf
 import logging
 
 import numpy as np
@@ -1596,6 +1597,101 @@ class TestSettersOneShot:
         reader.set_filter_samples([0, 1])
         with pytest.raises(RuntimeError, match="filter_samples already configured"):
             reader.set_filter_samples([0, 1])
+
+
+class TestVariantChunksStart:
+    """``VczReader.variant_chunks(start=k)`` begins iteration at the
+    k-th entry of the persistent ``variant_chunk_plan``. Used by
+    consumers that maintain their own iterator state across calls
+    (e.g. ``BedEncoder``)."""
+
+    @staticmethod
+    def _make_vcz(num_variants=12, variants_chunk_size=3):
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            variants_chunk_size=variants_chunk_size,
+        )
+
+    def test_default_kwarg_omitted_iterates_full_plan(self):
+        reader = VczReader(self._make_vcz())
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        assert len(chunks) == 4
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        nt.assert_array_equal(positions, list(range(100, 112)))
+
+    def test_start_zero_equals_omitted(self):
+        reader = VczReader(self._make_vcz())
+        baseline = list(reader.variant_chunks(fields=["variant_position"]))
+        explicit = list(reader.variant_chunks(fields=["variant_position"], start=0))
+        assert len(baseline) == len(explicit)
+        for a, b in zip(baseline, explicit):
+            nt.assert_array_equal(a["variant_position"], b["variant_position"])
+
+    def test_start_k_yields_plan_suffix(self):
+        reader = VczReader(self._make_vcz())
+        chunks = list(reader.variant_chunks(fields=["variant_position"], start=2))
+        assert len(chunks) == 2
+        positions = np.concatenate([c["variant_position"] for c in chunks])
+        nt.assert_array_equal(positions, list(range(106, 112)))
+
+    def test_start_at_last_chunk(self):
+        reader = VczReader(self._make_vcz())
+        chunks = list(reader.variant_chunks(fields=["variant_position"], start=3))
+        assert len(chunks) == 1
+        nt.assert_array_equal(chunks[0]["variant_position"], list(range(109, 112)))
+
+    def test_start_at_plan_length_is_empty(self):
+        reader = VczReader(self._make_vcz())
+        chunks = list(reader.variant_chunks(fields=["variant_position"], start=4))
+        assert chunks == []
+
+    def test_start_past_plan_length_is_empty(self):
+        reader = VczReader(self._make_vcz())
+        chunks = list(reader.variant_chunks(fields=["variant_position"], start=99))
+        assert chunks == []
+
+    def test_negative_start_raises(self):
+        reader = VczReader(self._make_vcz())
+        with pytest.raises(ValueError, match="start must be >= 0"):
+            list(reader.variant_chunks(fields=["variant_position"], start=-1))
+
+    def test_start_does_not_mutate_persistent_plan(self):
+        reader = VczReader(self._make_vcz())
+        before = list(reader.variant_chunk_plan)
+        list(reader.variant_chunks(fields=["variant_position"], start=2))
+        after = list(reader.variant_chunk_plan)
+        assert before == after
+        assert len(after) == 4
+
+    def test_start_after_set_variants_slices_persistent_subset(self):
+        reader = VczReader(self._make_vcz())
+        reader.set_variants(np.array([1, 4, 7, 10], dtype=np.int64))
+        full = list(reader.variant_chunks(fields=["variant_position"]))
+        assert len(full) > 1
+        sliced = list(reader.variant_chunks(fields=["variant_position"], start=1))
+        assert len(sliced) == len(full) - 1
+        expected = np.concatenate([c["variant_position"] for c in full[1:]])
+        actual = np.concatenate([c["variant_position"] for c in sliced])
+        nt.assert_array_equal(actual, expected)
+
+    def test_concurrent_threads_with_different_starts(self):
+        reader = VczReader(self._make_vcz())
+
+        def drain(start):
+            chunks = list(
+                reader.variant_chunks(fields=["variant_position"], start=start)
+            )
+            return np.concatenate([c["variant_position"] for c in chunks])
+
+        with cf.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(drain, [0, 1, 2, 3]))
+
+        nt.assert_array_equal(results[0], list(range(100, 112)))
+        nt.assert_array_equal(results[1], list(range(103, 112)))
+        nt.assert_array_equal(results[2], list(range(106, 112)))
+        nt.assert_array_equal(results[3], list(range(109, 112)))
 
 
 class TestNormalizeSampleIndexesSortedUnique:

@@ -853,14 +853,20 @@ class VczReader:
         self,
         *,
         fields: list[str] | None = None,
+        start: int = 0,
     ):
         """Yield dict[str, np.ndarray] per variant chunk that passes the
         current variants/samples/variant-filter selection.
 
+        ``start`` is an offset into ``variant_chunk_plan``; iteration
+        begins at ``variant_chunk_plan[start]``. ``start=0`` (default)
+        iterates the full plan. ``start >= len(variant_chunk_plan)``
+        yields no chunks. Negative ``start`` raises ``ValueError``.
+
         The per-chunk flow:
 
-        1. Iterate ``variant_chunk_plan``; each entry's ``selection``
-           pre-slices the chunk's variant axis.
+        1. Iterate ``variant_chunk_plan[start:]``; each entry's
+           ``selection`` pre-slices the chunk's variant axis.
         2. Construct a :class:`CachedVariantChunk` scoped to this variant
            chunk. It owns the raw-block cache and the
            subset-vs-real-axis decision.
@@ -872,6 +878,8 @@ class VczReader:
            query field; apply the variant selection to variants-axis
            fields.
         """
+        if start < 0:
+            raise ValueError(f"start must be >= 0 (got {start})")
         if fields is not None and len(fields) == 0:
             return
 
@@ -919,19 +927,23 @@ class VczReader:
             else DEFAULT_READAHEAD_WORKERS
         )
 
+        variant_chunk_plan = self.variant_chunk_plan
+        if start > 0:
+            variant_chunk_plan = variant_chunk_plan[start:]
+
         logger.info(
             f"variant_chunks: starting iteration "
             f"({len(query_fields)} query fields, {len(filter_fields)} filter fields, "
             f"{len(referenced_static_fields)} static fields, "
             f"{len(read_fields)} read fields, "
-            f"{len(self.variant_chunk_plan)} variant chunks, "
+            f"{len(variant_chunk_plan)} variant chunks, "
             f"{len(sample_chunk_plan.chunk_reads)} sample chunks, "
             f"readahead_bytes={_fmt_bytes(readahead_bytes)}, workers={workers})"
         )
 
         pipeline = ReadaheadPipeline(
             self.root,
-            self.variant_chunk_plan,
+            variant_chunk_plan,
             sample_chunk_plan,
             output_columns,
             read_fields,

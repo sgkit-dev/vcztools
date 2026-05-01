@@ -335,8 +335,8 @@ class TestQuery:
         assert output.exists()
 
 
-class TestViewPlink1:
-    """CLI surface for ``view-plink1``. Exercises only the wiring
+class TestViewBed:
+    """CLI surface for ``view-bed``. Exercises only the wiring
     (option parsing, reader assembly, output prefix handling, error
     surfacing). Byte-level parity with ``plink2 --make-bed`` lives in
     ``tests/test_plink_validation.py``.
@@ -355,7 +355,7 @@ class TestViewPlink1:
         # sample fixture contains multi-allelic variants.
         out = tmp_path / "p"
         result, _ = run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
         )
         assert (tmp_path / "p.bed").exists()
@@ -368,7 +368,7 @@ class TestViewPlink1:
         with runner.isolated_filesystem(tmp_path) as cwd:
             result = runner.invoke(
                 cli.vcztools_main,
-                f"view-plink1 {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
+                f"view-bed {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
                 catch_exceptions=False,
             )
             assert result.exit_code == 0
@@ -381,7 +381,7 @@ class TestViewPlink1:
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            "view-plink1",
+            "view-bed",
             catch_exceptions=False,
         )
         assert result.exit_code != 0
@@ -390,7 +390,7 @@ class TestViewPlink1:
         # No --max-alleles: vcztools encounters a 3-ALT site and raises.
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-plink1 {fx_vcz_path} --out {out.as_posix()}",
+            f"view-bed {fx_vcz_path} --out {out.as_posix()}",
             expect_error=True,
         )
         assert "Multi-allelic" in err
@@ -398,7 +398,7 @@ class TestViewPlink1:
     def test_max_alleles_skips_multiallelic(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         result, _ = run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -411,7 +411,7 @@ class TestViewPlink1:
     def test_sample_subset(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -s NA00001,NA00003 --out {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
@@ -423,7 +423,7 @@ class TestViewPlink1:
     def test_sample_complement(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -s ^NA00002 --out {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
@@ -433,7 +433,7 @@ class TestViewPlink1:
     def test_samples_file(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -S tests/data/txt/samples.txt "
             f"--out {out.as_posix()}"
         )
@@ -444,7 +444,7 @@ class TestViewPlink1:
     def test_regions(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-r '20:1230237-' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -458,7 +458,7 @@ class TestViewPlink1:
         # Targets uses exact-position semantics (vs regions overlap).
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-t '20:1230237-' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -470,7 +470,7 @@ class TestViewPlink1:
     def test_targets_complement(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
+            f"view-bed {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         for line in bim_lines:
@@ -480,7 +480,7 @@ class TestViewPlink1:
     def test_include_filter(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-i 'POS>1000000' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -492,7 +492,7 @@ class TestViewPlink1:
         # AND-composition path through _AndVariantFilter.
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-i 'POS>1000000' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -506,7 +506,7 @@ class TestViewPlink1:
         # --max-alleles is unsupported.
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-i 'FMT/DP>3' --out {out.as_posix()}",
             expect_error=True,
         )
@@ -517,7 +517,7 @@ class TestViewPlink1:
         # writer drops/normalises the suffix).
         out = tmp_path / "p.bed"
         run_vcztools(
-            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"view-bed {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
         )
         assert (tmp_path / "p.bed").exists()

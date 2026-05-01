@@ -335,6 +335,196 @@ class TestQuery:
         assert output.exists()
 
 
+class TestViewPlink1:
+    """CLI surface for ``view-plink1``. Exercises only the wiring
+    (option parsing, reader assembly, output prefix handling, error
+    surfacing). Byte-level parity with ``plink2 --make-bed`` lives in
+    ``tests/test_plink_validation.py``.
+    """
+
+    @staticmethod
+    def _read_bim(path):
+        return path.read_text().splitlines()
+
+    @staticmethod
+    def _read_fam(path):
+        return path.read_text().splitlines()
+
+    def test_minimum_invocation(self, tmp_path, fx_vcz_path):
+        # Smallest viable invocation needs --max-alleles 2 because the
+        # sample fixture contains multi-allelic variants.
+        out = tmp_path / "p"
+        result, _ = run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+        )
+        assert (tmp_path / "p.bed").exists()
+        assert (tmp_path / "p.bim").exists()
+        assert (tmp_path / "p.fam").exists()
+
+    def test_default_output_prefix(self, tmp_path, fx_vcz_path):
+        # Without --out, files land at "plink.{bed,bim,fam}" in cwd.
+        runner = ct.CliRunner()
+        with runner.isolated_filesystem(tmp_path) as cwd:
+            result = runner.invoke(
+                cli.vcztools_main,
+                f"view-plink1 {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
+                catch_exceptions=False,
+            )
+            assert result.exit_code == 0
+            cwd_path = pathlib.Path(cwd)
+            assert (cwd_path / "plink.bed").exists()
+            assert (cwd_path / "plink.bim").exists()
+            assert (cwd_path / "plink.fam").exists()
+
+    def test_path_required(self):
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            "view-plink1",
+            catch_exceptions=False,
+        )
+        assert result.exit_code != 0
+
+    def test_multiallelic_without_max_alleles_errors(self, tmp_path, fx_vcz_path):
+        # No --max-alleles: vcztools encounters a 3-ALT site and raises.
+        out = tmp_path / "p"
+        _, err = run_vcztools(
+            f"view-plink1 {fx_vcz_path} --out {out.as_posix()}",
+            expect_error=True,
+        )
+        assert "Multi-allelic" in err
+
+    def test_max_alleles_skips_multiallelic(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        result, _ = run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+        )
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        # sample.vcf.gz has 9 variants. The 1 chrX variant is multi-
+        # allelic; -e 'CHROM=="X"' drops it. Of the remaining 8,
+        # 20:1110696 and 20:1234567 are multi-allelic — --max-alleles 2
+        # drops them, leaving 6 (incl. two monomorphic sites).
+        assert len(bim_lines) == 6
+
+    def test_sample_subset(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -s NA00001,NA00003 --out {out.as_posix()}"
+        )
+        fam = self._read_fam(tmp_path / "p.fam")
+        assert len(fam) == 2
+        # FID column is "0", IID is the second column.
+        iids = [line.split("\t")[1] for line in fam]
+        assert iids == ["NA00001", "NA00003"]
+
+    def test_sample_complement(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -s ^NA00002 --out {out.as_posix()}"
+        )
+        fam = self._read_fam(tmp_path / "p.fam")
+        iids = [line.split("\t")[1] for line in fam]
+        assert iids == ["NA00001", "NA00003"]
+
+    def test_samples_file(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -S tests/data/txt/samples.txt "
+            f"--out {out.as_posix()}"
+        )
+        fam = self._read_fam(tmp_path / "p.fam")
+        iids = [line.split("\t")[1] for line in fam]
+        assert iids == ["NA00001", "NA00003"]
+
+    def test_regions(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-r '20:1230237-' --out {out.as_posix()}"
+        )
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        # All bim rows must be on contig 20 with pos >= 1230237.
+        for line in bim_lines:
+            chrom, _id, _cm, pos, _a1, _a2 = line.split("\t")
+            assert chrom == "20"
+            assert int(pos) >= 1230237
+
+    def test_targets(self, tmp_path, fx_vcz_path):
+        # Targets uses exact-position semantics (vs regions overlap).
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-t '20:1230237-' --out {out.as_posix()}"
+        )
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        for line in bim_lines:
+            chrom, _id, _cm, pos, _a1, _a2 = line.split("\t")
+            assert chrom == "20"
+            assert int(pos) >= 1230237
+
+    def test_targets_complement(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
+        )
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        for line in bim_lines:
+            chrom = line.split("\t")[0]
+            assert chrom != "20"
+
+    def test_include_filter(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-i 'POS>1000000' --out {out.as_posix()}"
+        )
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        for line in bim_lines:
+            pos = int(line.split("\t")[3])
+            assert pos > 1000000
+
+    def test_max_alleles_combines_with_include(self, tmp_path, fx_vcz_path):
+        # AND-composition path through _AndVariantFilter.
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-i 'POS>1000000' --out {out.as_posix()}"
+        )
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        # All rows must satisfy both POS>1000000 AND ≤2 alleles.
+        for line in bim_lines:
+            pos = int(line.split("\t")[3])
+            assert pos > 1000000
+
+    def test_max_alleles_with_sample_scope_filter_errors(self, tmp_path, fx_vcz_path):
+        # FMT/-prefixed filters are sample-scope; combining them with
+        # --max-alleles is unsupported.
+        out = tmp_path / "p"
+        _, err = run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-i 'FMT/DP>3' --out {out.as_posix()}",
+            expect_error=True,
+        )
+        assert "sample-scope" in err
+
+    def test_out_prefix_normalisation(self, tmp_path, fx_vcz_path):
+        # `--out p.bed` should still write to p.bed/p.bim/p.fam (the
+        # writer drops/normalises the suffix).
+        out = tmp_path / "p.bed"
+        run_vcztools(
+            f"view-plink1 {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+        )
+        assert (tmp_path / "p.bed").exists()
+        assert (tmp_path / "p.bim").exists()
+        assert (tmp_path / "p.fam").exists()
+
+
 class TestIndex:
     def test_stats(self, fx_vcz_path):
         result, _ = run_vcztools(f"index -s {fx_vcz_path}")

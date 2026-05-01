@@ -201,6 +201,7 @@ def make_reader(
     samples_file=None,
     include=None,
     exclude=None,
+    max_alleles=None,
     view_semantics=False,
     force_samples=False,
     drop_genotypes=False,
@@ -259,6 +260,20 @@ def make_reader(
         variant_filter = bcftools_filter.BcftoolsFilter(
             field_names=reader.field_names, include=include, exclude=exclude
         )
+
+    if max_alleles is not None:
+        max_alleles_filter = plink.MaxAllelesFilter(max_alleles)
+        if variant_filter is None:
+            variant_filter = max_alleles_filter
+        else:
+            if variant_filter.scope != "variant":
+                raise ValueError(
+                    "--max-alleles cannot be combined with a sample-scope "
+                    "filter (e.g. one referencing FMT/ fields)."
+                )
+            variant_filter = plink._AndVariantFilter(
+                [variant_filter, max_alleles_filter]
+            )
 
     if drop_genotypes:
         # --drop-genotypes can't coexist with a sample-scope filter:
@@ -578,22 +593,81 @@ def view(
 
 @click.command
 @click.argument("path", type=click.Path())
+@regions
+@regions_file
+@force_samples
+@samples
+@samples_file
+@targets
+@targets_file
 @include
 @exclude
-@click.option("--out", default="plink")
+@click.option(
+    "--max-alleles",
+    type=int,
+    default=None,
+    help=(
+        "Drop variants with more than this number of alleles. Use "
+        "--max-alleles 2 to skip multi-allelic variants (matches "
+        "`plink2 --vcf X --max-alleles 2 --make-bed`). Without this "
+        "flag, multi-allelic variants cause an error."
+    ),
+)
+@click.option(
+    "--out",
+    default="plink",
+    help="Output prefix for the .bed/.bim/.fam fileset.",
+)
 @backend_storage
 @storage_option
-def view_plink1(path, include, exclude, out, backend_storage, storage_options):
+@handle_exception
+def view_plink1(
+    path,
+    regions,
+    regions_file,
+    force_samples,
+    samples,
+    samples_file,
+    targets,
+    targets_file,
+    include,
+    exclude,
+    max_alleles,
+    out,
+    backend_storage,
+    storage_options,
+):
     """
-    Generate a plink1 binary fileset compatible with plink1.9 --vcf.
-    This command is equivalent to running ``vcztools view [filtering options]
-    -o intermediate.vcf && plink 1.9 --vcf intermediate.vcf [plink options]``
-    without generating the intermediate VCF.
+    Generate a PLINK 1 binary fileset (.bed/.bim/.fam) using the
+    plink 2 REF/ALT convention: A1=ALT, A2=REF.
+
+    The .bed payload is byte-identical to ``plink2 --vcf X --make-bed``
+    for biallelic variants. Sample/region/filter selection mirrors
+    bcftools view (-s/-S/-r/-R/-t/-T/-i/-e). Multi-allelic variants
+    are rejected by default (matching plink 2's --make-bed behaviour);
+    use --max-alleles 2 to skip them.
+
+    Reading downstream:
+
+      * plink 2: read natively, no flags needed.
+      * plink 1.9: pass ``--keep-allele-order`` to preserve A1=ALT
+        (without it, plink 1.9 reorders A1 to the minor allele in
+        memory on load).
+      * REGENIE: works as-is (default expects A1=non-ref).
+      * BOLT-LMM: works as-is; ALLELE1 is the effect allele.
     """
     reader = make_reader(
         path,
+        regions=regions,
+        regions_file=regions_file,
+        targets=targets,
+        targets_file=targets_file,
+        samples=samples,
+        samples_file=samples_file,
+        force_samples=force_samples,
         include=include,
         exclude=exclude,
+        max_alleles=max_alleles,
         backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
     )
@@ -609,4 +683,4 @@ def vcztools_main():
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
-# vcztools_main.add_command(view_plink1)
+vcztools_main.add_command(view_plink1)

@@ -31,6 +31,68 @@ from vcztools import _vcztools
 from vcztools.utils import _as_fixed_length_unicode
 
 
+class MaxAllelesFilter:
+    """Variant-scope :class:`~vcztools.variant_filter.VariantFilter` that
+    keeps variants whose number of non-empty alleles is at most
+    ``max_alleles``.
+
+    For PLINK 1 binary output this is invoked with ``max_alleles=2``,
+    matching ``plink2 --vcf X --make-bed --max-alleles 2``.
+    """
+
+    scope = "variant"
+    referenced_fields = frozenset({"variant_allele"})
+
+    def __init__(self, max_alleles):
+        if max_alleles < 1:
+            raise ValueError(f"max_alleles must be >= 1, got {max_alleles}")
+        self.max_alleles = max_alleles
+
+    def evaluate(self, chunk_data):
+        alleles = chunk_data["variant_allele"]
+        # variant_allele has shape (num_variants, max_alleles_in_store).
+        # A variant is within max_alleles when every entry past column
+        # `max_alleles - 1` is the empty string (the missing-allele
+        # sentinel that bio2zarr writes for unused slots).
+        if alleles.shape[1] <= self.max_alleles:
+            return np.ones(alleles.shape[0], dtype=bool)
+        tail = alleles[:, self.max_alleles :]
+        return (tail == "").all(axis=1)
+
+
+class _AndVariantFilter:
+    """Combine multiple variant-scope :class:`VariantFilter` objects with
+    a logical AND on their per-variant masks.
+
+    Used by the CLI to compose a user-supplied ``-i``/``-e`` filter
+    with the synthetic ``--max-alleles`` filter for ``view-plink1``.
+    Sample-scope filters are not supported; the constructor raises if
+    any input filter has ``scope != "variant"``.
+    """
+
+    scope = "variant"
+
+    def __init__(self, filters):
+        self._filters = list(filters)
+        if len(self._filters) == 0:
+            raise ValueError("at least one filter is required")
+        for f in self._filters:
+            if f.scope != "variant":
+                raise ValueError(
+                    "_AndVariantFilter can only combine variant-scope filters; "
+                    "got a sample-scope filter."
+                )
+        self.referenced_fields = frozenset().union(
+            *(f.referenced_fields for f in self._filters)
+        )
+
+    def evaluate(self, chunk_data):
+        result = self._filters[0].evaluate(chunk_data)
+        for f in self._filters[1:]:
+            result = result & f.evaluate(chunk_data)
+        return result
+
+
 def encode_genotypes(genotypes, a12_allele=None):
     # The C extension requires C-contiguous int8 arrays. A reader-yielded
     # call_genotype that's been reordered by a sample subset is fancy-
@@ -130,7 +192,12 @@ class Writer:
         """
         Return per-variant a12 indexes in the plink 2 REF/ALT convention.
 
-        For biallelic input ``alleles`` of shape ``(n, 2)``:
+        ``alleles`` has shape ``(n, max_alleles_in_store)``. The
+        per-variant allele count is the number of non-empty entries in
+        each row; the store-wide max is irrelevant once a downstream
+        filter (e.g. ``--max-alleles``) has dropped multi-allelic rows.
+
+        For each surviving variant:
 
         * ``a12[:, 0] = 1`` (A1 = ALT, i.e. ``variant_allele[:, 1]``)
         * ``a12[:, 1] = 0`` (A2 = REF, i.e. ``variant_allele[:, 0]``)
@@ -144,7 +211,7 @@ class Writer:
         ``plink2 --make-bed`` (which errors out on multi-allelic .bim
         rows). Use ``--max-alleles 2`` to skip them.
         """
-        if alleles.shape[1] != 2:
+        if alleles.shape[1] > 2 and (alleles[:, 2:] != "").any():
             raise ValueError(
                 "Multi-allelic variants are not supported in PLINK 1 "
                 "binary output (plink 2 --make-bed has the same "
@@ -154,6 +221,9 @@ class Writer:
         num_variants = alleles.shape[0]
         a12 = np.zeros((num_variants, 2), dtype=np.int8)
         a12[:, 0] = 1
+        # alleles may have >2 columns when the store's max-allele
+        # is higher than 2; the second column still holds ALT for any
+        # surviving (≤2-allele) variant.
         a12[alleles[:, 1] == "", 0] = -1
         return a12
 

@@ -313,6 +313,22 @@ class TestComputeAlleles:
         with pytest.raises(ValueError, match="Multi-allelic"):
             self._writer()._compute_alleles(alleles)
 
+    def test_wide_store_with_only_biallelic_rows_passes(self):
+        # variant_allele can have a wider second axis when the store's
+        # max-allele count is >2; if no row actually uses columns past
+        # index 1, _compute_alleles must accept it. This is the path
+        # exercised by --max-alleles 2 against a multi-allelic store.
+        alleles = np.array(
+            [
+                ["A", "T", "", ""],
+                ["G", "C", "", ""],
+                ["G", "", "", ""],
+            ],
+            dtype="U1",
+        )
+        a12 = self._writer()._compute_alleles(alleles)
+        np.testing.assert_array_equal(a12, [[1, 0], [1, 0], [-1, 0]])
+
 
 # ---------------------------------------------------------------------------
 # generate_fam.

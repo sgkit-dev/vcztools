@@ -1009,59 +1009,56 @@ vcz_variant_encoder_free(vcz_variant_encoder_t *self)
     }
 }
 
+/* A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
+ * --vcf X --make-bed convention. Diploid sums map to:
+ *   0 = REF/REF -> HOM_A2; 1 = REF/ALT or ALT/REF -> HET; 2 = ALT/ALT -> HOM_A1
+ * Anything else (negative sentinels, multi-allelic indices > 1) -> MISSING. */
+static const uint8_t plink_diploid_codes[3]
+    = { VCZ_PLINK_HOM_A2, VCZ_PLINK_HET, VCZ_PLINK_HOM_A1 };
+
+static inline uint8_t
+encode_diploid_fixed(int8_t a, int8_t b)
+{
+    if (b == -2) {
+        /* Haploid call: plink encodes as homozygous for the called allele. */
+        if (a == 0) {
+            return VCZ_PLINK_HOM_A2;
+        }
+        if (a == 1) {
+            return VCZ_PLINK_HOM_A1;
+        }
+        return VCZ_PLINK_MISSING;
+    }
+    /* Cast to unsigned to fold negatives (very large unsigned) and any
+     * value >= 2 into the same out-of-range branch. */
+    if ((unsigned) a > 1 || (unsigned) b > 1) {
+        return VCZ_PLINK_MISSING;
+    }
+    return plink_diploid_codes[a + b];
+}
+
 int
-vcz_encode_plink(size_t num_variants, size_t num_samples, const int8_t *genotypes,
-    const int8_t *a12_allele, char *buf)
+vcz_encode_plink(
+    size_t num_variants, size_t num_samples, const int8_t *genotypes, char *buf)
 {
     size_t j, k, variant_offset, byte_offset, bit_pos;
-    int8_t a, b, allele_1, allele_2, code;
+    int8_t a, b;
+    uint8_t code;
     int mask;
     const size_t bytes_per_variant = (num_samples + 3) / 4;
 
     variant_offset = 0;
-
     memset(buf, 0, bytes_per_variant * num_variants);
 
     for (j = 0; j < num_variants; j++) {
-        allele_1 = a12_allele[j * 2];
-        allele_2 = a12_allele[j * 2 + 1];
         for (k = 0; k < num_samples; k++) {
-            code = VCZ_PLINK_MISSING;
             a = genotypes[j * num_samples * 2 + k * 2];
             b = genotypes[j * num_samples * 2 + k * 2 + 1];
-            if (b == -2) {
-                /* Treated as a haploid call by plink */
-                if (a == allele_1) {
-                    code = VCZ_PLINK_HOM_A1;
-                } else if (a == allele_2) {
-                    code = VCZ_PLINK_HOM_A2;
-                }
-            } else {
-                if (a == allele_1) {
-                    if (b == allele_1) {
-                        code = VCZ_PLINK_HOM_A1;
-                    } else if (b == allele_2) {
-                        code = VCZ_PLINK_HET;
-                    }
-                } else if (a == allele_2) {
-                    if (b == allele_2) {
-                        code = VCZ_PLINK_HOM_A2;
-                    } else if (b == allele_1) {
-                        code = VCZ_PLINK_HET;
-                    }
-                }
-                if ((allele_1 == -1)
-                    && (code == VCZ_PLINK_HOM_A1 || code == VCZ_PLINK_HET)) {
-                    code = VCZ_PLINK_MISSING;
-                }
-            }
-
-            /* printf("a=%d b=%d a1=%d a2=%d code = %d\n", a, b, allele_1, allele_2,
-             * code); */
+            code = encode_diploid_fixed(a, b);
             byte_offset = variant_offset + k / 4;
             bit_pos = (k % 4) * 2;
             mask = ~(0x3 << bit_pos);
-            buf[byte_offset] = (char) (buf[byte_offset] & mask) | (code << bit_pos);
+            buf[byte_offset] = (char) ((buf[byte_offset] & mask) | (code << bit_pos));
         }
         variant_offset += bytes_per_variant;
     }

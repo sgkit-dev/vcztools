@@ -1,10 +1,10 @@
 """
 Unit tests for vcztools.plink.
 
-These exercise the four layers of the writer (encode_genotypes wrapper,
-compute_a12, generate_fam, generate_bim, end-to-end Writer) directly
-against in-memory VCZ groups built with :func:`tests.vcz_builder.make_vcz`.
-No PLINK binary, no roundtripping.
+These exercise the writer layers (encode_genotypes wrapper, generate_fam,
+generate_bim, end-to-end Writer) directly against in-memory VCZ groups
+built with :func:`tests.vcz_builder.make_vcz`. No PLINK binary, no
+roundtripping.
 """
 
 import concurrent.futures as cf
@@ -23,10 +23,12 @@ from vcztools import bcftools_filter, plink, retrieval
 # ---------------------------------------------------------------------------
 
 
-def _encode_genotypes_row(g, allele_1, allele_2):
+def _encode_genotypes_row(g):
+    # A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
+    # --vcf X --make-bed convention.
     # Missing genotype: 01 in PLINK format
-    # Homozygous allele 1: 00 in PLINK format
-    # Homozygous allele 2: 11 in PLINK format
+    # Homozygous A1 (ALT/ALT): 00 in PLINK format
+    # Homozygous A2 (REF/REF): 11 in PLINK format
     # Heterozygous: 10 in PLINK format
     HOM_A1 = 0b00
     HOM_A2 = 0b11
@@ -44,38 +46,27 @@ def _encode_genotypes_row(g, allele_1, allele_2):
         a, b = g[j]
         if b == -2:
             # Treated as a haploid call by plink
-            if a == allele_1:
+            if a == 1:
                 code = HOM_A1
-            elif a == allele_2:
+            elif a == 0:
                 code = HOM_A2
-        else:
-            if a == allele_1:
-                if b == allele_1:
-                    code = HOM_A1
-                elif b == allele_2:
-                    code = HET
-            elif a == allele_2:
-                if b == allele_2:
-                    code = HOM_A2
-                elif b == allele_1:
-                    code = HET
-            if allele_1 == -1 and (code == HOM_A1 or code == HET):
-                code = MISSING
+        elif a == 0 and b == 0:
+            code = HOM_A2
+        elif a == 1 and b == 1:
+            code = HOM_A1
+        elif (a == 0 and b == 1) or (a == 1 and b == 0):
+            code = HET
         mask = ~(0b11 << bit_pos)
         buff[byte_idx] = (buff[byte_idx] & mask) | (code << bit_pos)
     return buff
 
 
-def encode_genotypes_reference(G, a12_allele=None):
+def encode_genotypes_reference(G):
     G = np.array(G, dtype=np.int8)
-    if a12_allele is None:
-        a12_allele = np.zeros((G.shape[0], 2), dtype=G.dtype)
-        a12_allele[:, 0] = 1
-    assert G.shape[0] == a12_allele.shape[0]
     assert G.shape[2] == 2
     buff = bytearray()
     for j in range(len(G)):
-        buff.extend(_encode_genotypes_row(G[j], *a12_allele[j]))
+        buff.extend(_encode_genotypes_row(G[j]))
     return bytes(buff)
 
 
@@ -152,7 +143,7 @@ class TestEncodeGenotypesPython:
             ],
         ],
     )
-    def test_examples_default_a12(self, genotypes):
+    def test_examples(self, genotypes):
         b1 = encode_genotypes_reference(genotypes)
         b2 = plink.encode_genotypes(genotypes)
         assert b1 == b2
@@ -175,7 +166,7 @@ class TestEncodeGenotypesPython:
         ],
     )
     @pytest.mark.parametrize("value", [-1, 0, 1, 2])
-    def test_shapes_default_a12(self, value, num_variants, num_samples):
+    def test_shapes(self, value, num_variants, num_samples):
         g = np.zeros((num_variants, num_samples, 2), dtype=np.int8) + value
         b1 = encode_genotypes_reference(g)
         b2 = plink.encode_genotypes(g)
@@ -219,53 +210,10 @@ class TestEncodeGenotypesPython:
         pad_mask = 0xFF & ~((1 << (live_in_last * 2)) - 1)
         assert (last & pad_mask) == 0
 
-    def test_dimension_mismatch_raises(self):
-        g = np.zeros((2, 3, 2), dtype=np.int8)
-        a12 = np.zeros((1, 2), dtype=np.int8)
-        with pytest.raises(ValueError, match="same first dimension"):
-            plink.encode_genotypes(g, a12)
-
     def test_non_diploid_raises(self):
         g = np.zeros((2, 3, 3), dtype=np.int8)
         with pytest.raises(ValueError, match="diploid"):
             plink.encode_genotypes(g)
-
-
-class TestEncoderPythonReferenceParity:
-    """Parity tests that go beyond the default a12 = (1, 0)."""
-
-    @pytest.mark.parametrize(
-        "a12",
-        [
-            np.array([[1, 0]], dtype=np.int8),
-            np.array([[0, 1]], dtype=np.int8),
-            np.array([[-1, 0]], dtype=np.int8),  # single-allele site
-        ],
-    )
-    @pytest.mark.parametrize(
-        "genotypes",
-        [
-            [[[0, 0], [1, 1], [0, 1], [-1, -1], [0, -2]]],
-            [[[1, 0], [0, 1], [-2, -2], [1, -1], [-1, 0]]],
-        ],
-    )
-    def test_vary_a12(self, genotypes, a12):
-        b1 = encode_genotypes_reference(genotypes, a12)
-        b2 = plink.encode_genotypes(genotypes, a12)
-        assert b1 == b2
-
-    @pytest.mark.parametrize(
-        ("num_variants", "num_samples"),
-        [(1, 33), (5, 100)],
-    )
-    def test_arange_data(self, num_variants, num_samples):
-        g = np.arange((num_variants * num_samples * 2), dtype=np.int8).reshape(
-            (num_variants, num_samples, 2)
-        )
-        a12 = np.arange(num_variants * 2, dtype=np.int8).reshape((num_variants, 2))
-        b1 = encode_genotypes_reference(g, a12)
-        b2 = plink.encode_genotypes(g, a12)
-        assert b1 == b2
 
 
 # ---------------------------------------------------------------------------
@@ -431,77 +379,6 @@ class TestPlink2NormaliseChrom:
 
 
 # ---------------------------------------------------------------------------
-# compute_a12: A1/A2 selection logic.
-# ---------------------------------------------------------------------------
-
-
-class TestComputeAlleles:
-    """A1/A2 derivation in plink 2 REF/ALT convention.
-
-    All biallelic input maps to ``[[1, 0], …]`` (A1=ALT, A2=REF).
-    Single-allele input maps to ``[[-1, 0]]`` (A1 = "missing"
-    sentinel; .bim writer emits "."). Multi-allelic raises.
-    """
-
-    @pytest.mark.parametrize(
-        "alleles",
-        [
-            np.array([["A", "T"]], dtype="U1"),
-            np.array([["G", "C"]], dtype="U1"),
-            np.array([["A", "T"], ["G", "C"], ["T", "A"]], dtype="U1"),
-        ],
-    )
-    def test_biallelic_returns_alt_then_ref(self, alleles):
-        a12 = plink.compute_a12(alleles)
-        expected = np.tile([1, 0], (alleles.shape[0], 1))
-        np.testing.assert_array_equal(a12, expected)
-        assert a12.dtype == np.int8
-
-    def test_monomorphic_returns_minus_one(self):
-        alleles = np.array([["A", ""]], dtype="U1")
-        a12 = plink.compute_a12(alleles)
-        np.testing.assert_array_equal(a12, [[-1, 0]])
-
-    def test_mixed_biallelic_and_monomorphic(self):
-        alleles = np.array([["A", "T"], ["G", ""], ["C", "G"]], dtype="U1")
-        a12 = plink.compute_a12(alleles)
-        np.testing.assert_array_equal(a12, [[1, 0], [-1, 0], [1, 0]])
-
-    def test_multiallelic_raises(self):
-        alleles = np.array([["A", "T", "C"]], dtype="U1")
-        with pytest.raises(ValueError, match="Multi-allelic"):
-            plink.compute_a12(alleles)
-
-    def test_independent_of_genotypes(self):
-        # A1/A2 is record-driven (depends only on ``variant_allele``).
-        # The function signature already enforces this — there is no
-        # ``call_genotype`` parameter — but the test pins the contract
-        # so a future "helpful" refactor that feeds genotypes in fails
-        # loudly. See vcztools/plink.py module docstring.
-        alleles = np.array([["A", "T"], ["G", ""], ["C", "G"]], dtype="U1")
-        a12_a = plink.compute_a12(alleles)
-        a12_b = plink.compute_a12(alleles.copy())
-        np.testing.assert_array_equal(a12_a, a12_b)
-        np.testing.assert_array_equal(a12_a, [[1, 0], [-1, 0], [1, 0]])
-
-    def test_wide_store_with_only_biallelic_rows_passes(self):
-        # variant_allele can have a wider second axis when the store's
-        # max-allele count is >2; if no row actually uses columns past
-        # index 1, compute_a12 must accept it. This is the path
-        # exercised by --max-alleles 2 against a multi-allelic store.
-        alleles = np.array(
-            [
-                ["A", "T", "", ""],
-                ["G", "C", "", ""],
-                ["G", "", "", ""],
-            ],
-            dtype="U1",
-        )
-        a12 = plink.compute_a12(alleles)
-        np.testing.assert_array_equal(a12, [[1, 0], [1, 0], [-1, 0]])
-
-
-# ---------------------------------------------------------------------------
 # generate_fam.
 # ---------------------------------------------------------------------------
 
@@ -576,8 +453,7 @@ class TestGenerateBim:
             num_samples=1,
             call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
         )
-        a12 = np.array([[1, 0], [1, 0]])
-        bim = plink.generate_bim(reader, a12)
+        bim = plink.generate_bim(reader)
         df = _parse_bim(bim)
         # Default contig is "chr1"; plink 2 normalises this to "1".
         assert list(df["Chrom"]) == ["1", "1"]
@@ -594,8 +470,7 @@ class TestGenerateBim:
             call_genotype=np.zeros((3, 1, 2), dtype=np.int8),
             variant_id=["rs1", ".", "rs3"],
         )
-        a12 = np.array([[1, 0], [1, 0], [1, 0]])
-        bim = plink.generate_bim(reader, a12)
+        bim = plink.generate_bim(reader)
         df = _parse_bim(bim)
         assert list(df["ID"]) == ["rs1", ".", "rs3"]
 
@@ -606,8 +481,7 @@ class TestGenerateBim:
             num_samples=1,
             call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
         )
-        a12 = np.array([[1, 0], [-1, 0]])
-        bim = plink.generate_bim(reader, a12)
+        bim = plink.generate_bim(reader)
         df = _parse_bim(bim)
         # Monomorphic A1 is "." (plink 2 missing-allele convention).
         assert list(df["A1"]) == ["T", "."]
@@ -622,8 +496,7 @@ class TestGenerateBim:
             call_genotype=np.zeros((3, 1, 2), dtype=np.int8),
             contigs=("chrA", "chrB", "chrC"),
         )
-        a12 = np.array([[1, 0], [1, 0], [1, 0]])
-        bim = plink.generate_bim(reader, a12)
+        bim = plink.generate_bim(reader)
         df = _parse_bim(bim)
         assert list(df["Chrom"]) == ["chrA", "chrB", "chrC"]
 
@@ -636,8 +509,7 @@ class TestGenerateBim:
             call_genotype=np.zeros((5, 1, 2), dtype=np.int8),
             variants_chunk_size=2,
         )
-        a12 = np.array([[1, 0], [1, 0], [1, 0], [1, 0], [1, 0]])
-        bim = plink.generate_bim(reader, a12)
+        bim = plink.generate_bim(reader)
         df = _parse_bim(bim)
         assert list(df["Pos"]) == [10, 20, 30, 40, 50]
         assert list(df["A1"]) == ["T", "G", "G", "A", "C"]
@@ -658,8 +530,17 @@ class TestGenerateBim:
             field_names=reader.field_names, include="DP>100"
         )
         reader.set_variant_filter(vf)
-        a12 = np.zeros((0, 2), dtype=int)
-        assert plink.generate_bim(reader, a12) == ""
+        assert plink.generate_bim(reader) == ""
+
+    def test_multiallelic_raises(self):
+        reader = _build_reader(
+            num_variants=1,
+            alleles=[("A", "T", "C")],
+            num_samples=1,
+            call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
+        )
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            plink.generate_bim(reader)
 
 
 # ---------------------------------------------------------------------------

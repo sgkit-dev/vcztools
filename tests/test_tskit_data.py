@@ -307,5 +307,5 @@ class TestPlinkRoundTrip:
         self.assert_bio2zarr_rt(tmp_path, fx_diploid_missing_data)
 
     def test_diploid_multi_allelic(self, tmp_path, fx_diploid_multi_allelic):
-        with pytest.raises(ValueError, match="Only biallelic VCFs supported"):
+        with pytest.raises(ValueError, match="Multi-allelic"):
             self.assert_bio2zarr_rt(tmp_path, fx_diploid_multi_allelic)

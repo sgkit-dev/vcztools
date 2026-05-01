@@ -1,25 +1,35 @@
 """
-Convert VCZ to PLINK 1 binary format (.bed/.bim/.fam) using the
-PLINK 2 REF/ALT convention: A1 = ALT, A2 = REF.
+Convert VCZ to PLINK 1 binary format (.bed/.bim/.fam) — the on-disk
+layout that PLINK 1, 1.9 and 2 all read.
 
-The on-disk file layout is the PLINK 1 binary format. The semantic
-choice of which allele is A1 follows PLINK 2 (and matches the output
-of ``plink2 --vcf X --make-bed`` byte-for-byte for the .bed payload).
+The CLI verb is ``view-bed``. The semantic choice of which allele
+populates the A1 column follows **PLINK 2** (A1 = ALT, A2 = REF):
+the modern, REF/ALT-stable convention. The .bed payload is
+byte-identical to ``plink2 --vcf X --make-bed`` for biallelic
+variants.
+
+NOTE — this differs from PLINK 1.9's default behaviour. PLINK 1.9
+reorders A1/A2 in memory on load to put the minor allele in A1,
+unless invoked with ``--keep-allele-order`` (or
+``--real-ref-alleles``). Downstream pipelines that read vcztools'
+output with default PLINK 1.9 will see a different A1/A2 labelling
+than the .bim claims, and any frequency-derived statistic whose sign
+depends on the labelling will flip relative to a PLINK 2 run on the
+same file. Pass ``--keep-allele-order`` to preserve our labelling.
 
 Multi-allelic variants are rejected, mirroring ``plink2 --make-bed``,
 which errors with "Error: <out>.bim cannot contain multiallelic
 variants." Callers wanting to skip multi-allelic sites use the
-``--max-alleles 2`` flag on ``view-plink1`` (matching plink 2).
+``--max-alleles 2`` flag on ``view-bed`` (matching plink 2).
 
 Single-allele (monomorphic) variants emit ``A1 = "."`` in the .bim
 (plink 2's missing-allele encoding), with all genotype bits set to
 the MISSING code in the .bed.
 
-For the consequences for downstream tools (plink 1.9, REGENIE,
-BOLT-LMM, GCTA, KING, flashpca, ADMIXTURE), see the documentation
-page; the short version is "insensitive in practice", with plink 1.9
-the only consumer that visibly relabels allele columns on read
-(unless invoked with ``--keep-allele-order``).
+For consequences for the wider downstream tool ecosystem (REGENIE,
+BOLT-LMM, GCTA, KING, flashpca, ADMIXTURE), see the documentation;
+the short version is "insensitive in practice", with PLINK 1.9 the
+only consumer that visibly relabels allele columns on read.
 """
 
 import pathlib
@@ -65,7 +75,7 @@ class _AndVariantFilter:
     a logical AND on their per-variant masks.
 
     Used by the CLI to compose a user-supplied ``-i``/``-e`` filter
-    with the synthetic ``--max-alleles`` filter for ``view-plink1``.
+    with the synthetic ``--max-alleles`` filter for ``view-bed``.
     Sample-scope filters are not supported; the constructor raises if
     any input filter has ``scope != "variant"``.
     """

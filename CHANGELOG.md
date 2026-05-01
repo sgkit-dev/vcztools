@@ -5,6 +5,14 @@
 Features:
 
 - Add support for .vcz.zip files (#280).
+- Add `view-bed` command for PLINK 1 binary output (.bed/.bim/.fam).
+  The on-disk file is the PLINK 1 binary format that PLINK 1, 1.9
+  and 2 all read; the A1/A2 labelling follows PLINK 2 (A1=ALT,
+  A2=REF) and is byte-identical to `plink2 --vcf X --make-bed` for
+  biallelic variants. NOTE: this differs from PLINK 1.9's default,
+  which relabels A1 to the minor allele on load. Read the output
+  with `plink1.9 --bfile X --keep-allele-order` to preserve our
+  labelling. See `vcztools view-bed --help` for details.
 
 Bug fixes:
 

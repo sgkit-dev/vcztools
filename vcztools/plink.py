@@ -134,8 +134,34 @@ def generate_fam(reader):
     return df.to_csv(sep="\t", header=False, index=False, lineterminator="\n")
 
 
+_CHR_PREFIX = "chr"
+_PLINK2_STANDARD_CHROMS = frozenset(str(i) for i in range(1, 23)) | {"X", "Y", "MT"}
+
+
+def _plink2_normalise_chrom(chrom):
+    """Normalise a contig name to match plink 2's ``--make-bed`` output.
+
+    plink 2 strips the ``chr`` prefix from standard human chromosomes
+    (1–22, X, Y, MT) and rewrites ``chrM`` → ``MT``. Non-standard
+    contigs (e.g. ``chrUnknown``) are passed through unchanged (under
+    plink 2 they require ``--allow-extra-chr``; vcztools does not
+    enforce that flag).
+    """
+    if not chrom.startswith(_CHR_PREFIX):
+        return chrom
+    suffix = chrom[len(_CHR_PREFIX) :]
+    if suffix == "M":
+        return "MT"
+    if suffix in _PLINK2_STANDARD_CHROMS:
+        return suffix
+    return chrom
+
+
 def generate_bim(reader, a12_allele):
     contig_id = _as_fixed_length_unicode(reader.contig_ids)
+    contig_id = np.array(
+        [_plink2_normalise_chrom(str(c)) for c in contig_id], dtype=contig_id.dtype
+    )
     has_variant_id = "variant_id" in reader.field_names
 
     fields = ["variant_allele", "variant_contig", "variant_position"]

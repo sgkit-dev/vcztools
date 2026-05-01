@@ -268,6 +268,40 @@ class TestEncoderPythonReferenceParity:
 
 
 # ---------------------------------------------------------------------------
+# Chromosome normalisation (matches plink 2 --make-bed output).
+# ---------------------------------------------------------------------------
+
+
+class TestPlink2NormaliseChrom:
+    @pytest.mark.parametrize(
+        ("input_chrom", "expected"),
+        [
+            # Standard human chromosomes: strip "chr" prefix.
+            ("chr1", "1"),
+            ("chr22", "22"),
+            ("chrX", "X"),
+            ("chrY", "Y"),
+            ("chrMT", "MT"),
+            # chrM is rewritten to MT (plink 2 normalises mitochondrial).
+            ("chrM", "MT"),
+            # Already-normalised: pass through.
+            ("1", "1"),
+            ("22", "22"),
+            ("X", "X"),
+            ("MT", "MT"),
+            # Non-standard contigs: pass through (plink 2 keeps these
+            # as-is under --allow-extra-chr).
+            ("chrFoo", "chrFoo"),
+            ("chr23", "chr23"),
+            ("chrUn_random", "chrUn_random"),
+            ("scaffold_42", "scaffold_42"),
+        ],
+    )
+    def test_normalise_chrom(self, input_chrom, expected):
+        assert plink._plink2_normalise_chrom(input_chrom) == expected
+
+
+# ---------------------------------------------------------------------------
 # _compute_alleles: A1/A2 selection logic.
 # ---------------------------------------------------------------------------
 
@@ -408,7 +442,8 @@ class TestGenerateBim:
         a12 = np.array([[1, 0], [1, 0]])
         bim = plink.generate_bim(reader, a12)
         df = _parse_bim(bim)
-        assert list(df["Chrom"]) == ["chr1", "chr1"]
+        # Default contig is "chr1"; plink 2 normalises this to "1".
+        assert list(df["Chrom"]) == ["1", "1"]
         assert list(df["ID"]) == [".", "."]
         assert list(df["CM"]) == [0, 0]
         assert list(df["Pos"]) == [100, 200]

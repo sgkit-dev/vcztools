@@ -49,54 +49,13 @@ store = zarr.storage.MemoryStore()
 root = vcztools.open_zarr(store)
 ```
 
-## Streaming PLINK 1 binary output
-
-`vcztools.PlinkStreamingSource` exposes a VCZ store as the byte content
-of a PLINK 1 binary fileset (`.bed` / `.bim` / `.fam`) without
-materialising it on disk. It is intended for FUSE / range-HTTP
-serving / preview pipelines where consumers want random byte access
-to the virtual fileset.
-
-`.bim` and `.fam` are computed eagerly at construction (small enough
-to keep in memory). `.bed` bytes are produced on demand:
-
-```python
-import vcztools
-
-root = vcztools.open_zarr("sample.vcz")
-with vcztools.PlinkStreamingSource(root) as src:
-    # Eager metadata.
-    print(src.bed_size, src.bim_size, src.fam_size)
-    print(src.bim_bytes.decode("utf-8"))
-    print(src.fam_bytes.decode("utf-8"))
-
-    # Random `.bed` reads.
-    head = src.read_bed(offset=0, size=4096)
-    tail = src.read_tail(nbytes=4096)
-
-    # Variant-axis selection: slice or sorted ndarray.
-    rows = src.read_variants(slice(100, 200))
-
-    # Streaming `.bed` for forward-only consumers.
-    with open("sample.bed", "wb") as fh:
-        for fragment in src.stream_bed(chunk_size=1 << 20):
-            fh.write(fragment)
-```
-
-Every `read_variants` / `read_bed` / `stream_bed` call constructs a
-fresh underlying reader, so multiple in-flight calls (e.g. concurrent
-HTTP range reads) are independent. Output bytes are byte-identical to
-what `vcztools.plink.write_plink` would write for the same store.
-
 ## API reference
 
 ```{eval-rst}
 
 .. autofunction:: vcztools.open_zarr
 
-.. autoclass:: vcztools.PlinkStreamingSource
-   :members: read_variants, read_bed, read_tail, stream_bed, close,
-             num_variants, num_samples, bytes_per_variant, bed_size,
-             bim_size, fam_size, bim_bytes, fam_bytes
+.. autoclass:: vcztools.BedEncoder
+   :members:
 
 ```

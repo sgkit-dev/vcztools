@@ -15,13 +15,12 @@ normalisation, and known divergences from plink 2 — see
 
 import pathlib
 import threading
-from collections.abc import Iterator
 from typing import ClassVar
 
 import numpy as np
 import pandas as pd
 
-from vcztools import _vcztools, retrieval, utils
+from vcztools import _vcztools, retrieval
 from vcztools.utils import _as_fixed_length_unicode
 
 BED_MAGIC = b"\x6c\x1b\x01"
@@ -306,92 +305,54 @@ def write_plink(reader, out):
     writer.run()
 
 
-class PlinkStreamingSource:
-    """Read-only, streaming view of a VCZ store as a PLINK 1 binary
-    fileset (``.bed`` / ``.bim`` / ``.fam``).
+class BedEncoder:
+    """PLINK 1 ``.bed`` byte-stream encoder over a VCZ store.
 
-    Composes the existing PLINK 1 primitives (``compute_a12``,
-    ``encode_genotypes``, ``generate_bim``, ``generate_fam``) with
-    ``vcztools.retrieval.VczReader`` chunk iteration. No materialised
-    on-disk fileset; the caller streams or randomly reads bytes that
-    are byte-identical to what ``write_plink`` would produce for the
-    same store.
+    Exposes the virtual ``.bed`` as a byte stream addressable by
+    ``(off, size)``. Optimised for sequential consumers (FUSE /
+    range-HTTP / forward streaming): sequential reads consume from a
+    long-lived chunk iterator; non-sequential reads restart the
+    iterator at the chunk covering the requested offset (one chunk's
+    decode overhead).
 
-    Designed for FUSE / range-HTTP / preview consumers: ``.bim`` and
-    ``.fam`` are computed eagerly at construction (small enough to keep
-    in memory); ``.bed`` bytes are produced on demand from
-    :meth:`stream_bed`, :meth:`read_bed`, :meth:`read_tail`, or
-    :meth:`read_variants`.
+    Multiple encoders can share one :class:`~vcztools.retrieval.VczReader`
+    safely (each iteration is independent). The caller owns the reader's
+    lifetime — :meth:`close` does not close it.
 
-    Construction reads ``variant_allele`` once and traverses the
-    variant-axis fields needed for ``.bim``/``.fam``; no genotype IO.
+    Scope is the ``.bed`` stream only. For the companion ``.bim`` and
+    ``.fam`` files, use :func:`generate_bim` and :func:`generate_fam`
+    directly.
 
-    Each method that does a ranged genotype read constructs a fresh
-    ``VczReader`` (``set_variants`` is one-shot per reader). This
-    is concurrency-safe: multiple in-flight ``stream_bed`` /
-    ``read_variants`` calls each own their reader and read the
-    immutable cached ``a12``, ``.bim`` and ``.fam`` buffers without
-    locking. Only :meth:`close` mutates state, guarded by an internal
-    lock for idempotency.
-
-    Parameters
-    ----------
-    root
-        An already-opened :class:`zarr.Group` for a VCZ store. Use
-        :func:`vcztools.open_zarr` to open a path with the desired
-        backend before constructing the source.
-    readahead_workers
-        Forwarded to every ``VczReader`` this source builds.
-    readahead_bytes
-        Forwarded to every ``VczReader`` this source builds.
+    Requires the reader's variant axis to be the default (full-store)
+    plan; do not call ``reader.set_variants()`` before constructing
+    an encoder.
     """
 
     BED_MAGIC: ClassVar[bytes] = BED_MAGIC
-    DEFAULT_STREAM_CHUNK: ClassVar[int] = 1 << 20
-    SPARSE_VARIANT_THRESHOLD: ClassVar[float] = 0.01
 
-    def __init__(
-        self,
-        root,
-        *,
-        readahead_workers: int | None = None,
-        readahead_bytes: int | None = None,
-    ):
-        self._root = root
-        self._readahead_workers = readahead_workers
-        self._readahead_bytes = readahead_bytes
+    def __init__(self, reader: retrieval.VczReader):
+        self._reader = reader
         self._closed = False
         self._lock = threading.Lock()
 
-        self._reader = retrieval.VczReader(
-            root,
-            readahead_workers=readahead_workers,
-            readahead_bytes=readahead_bytes,
-        )
-        # Snapshot static metadata so post-close diagnostics still
-        # reach a consistent state (the reader itself is dropped on
-        # close()).
-        self._num_variants = self._reader.num_variants
-        # BED columns track the resolved (non-null) sample axis, which
-        # also drives FAM row count — keeping them in sync is what
-        # PLINK consumers expect.
-        self._num_samples = int(self._reader.sample_ids.size)
-        self._variants_chunk_size = self._reader.variants_chunk_size
+        self._num_variants = reader.num_variants
+        self._num_samples = int(reader.sample_ids.size)
+        self._variants_chunk_size = reader.variants_chunk_size
         self._bytes_per_variant = (self._num_samples + 3) // 4
         self._bed_size = 3 + self._num_variants * self._bytes_per_variant
 
-        # variant_allele is a small variant-axis array (n_var x
-        # max_alleles, short string dtype). One-shot read at init keeps
-        # downstream a12 lookups O(1) and memory-resident.
-        variant_allele = self._reader.root["variant_allele"][:]
+        variant_allele = reader.root["variant_allele"][:]
         self._a12 = compute_a12(variant_allele)
 
-        self._fam_bytes = generate_fam(self._reader).encode("utf-8")
-        self._bim_bytes = generate_bim(self._reader, self._a12).encode("utf-8")
+        self._iterator = None
+        self._cur_byte_offset = None
+        self._next_chunk_first_variant = 0
+        self._pending = bytearray()
+        self._first_chunk_skip = 0
 
     def _check_open(self) -> None:
         if self._closed:
-            raise RuntimeError("source closed")
+            raise RuntimeError("encoder closed")
 
     @property
     def num_variants(self) -> int:
@@ -400,7 +361,6 @@ class PlinkStreamingSource:
 
     @property
     def num_samples(self) -> int:
-        """Samples in the BED column axis (post null-sample filter)."""
         self._check_open()
         return self._num_samples
 
@@ -414,264 +374,96 @@ class PlinkStreamingSource:
         self._check_open()
         return self._bed_size
 
-    @property
-    def bim_size(self) -> int:
-        self._check_open()
-        return len(self._bim_bytes)
+    def read(self, off: int, size: int) -> bytes:
+        """Return up to ``size`` bytes from the virtual ``.bed`` at
+        ``off``. POSIX-read semantics:
 
-    @property
-    def fam_size(self) -> int:
-        self._check_open()
-        return len(self._fam_bytes)
+        - ``b""`` if ``off >= bed_size`` or ``size == 0``
+        - ``size`` clamped to the end of the file
+        - ``off < 0`` or ``size < 0`` raises ``ValueError``
 
-    @property
-    def bim_bytes(self) -> bytes:
-        self._check_open()
-        return self._bim_bytes
-
-    @property
-    def fam_bytes(self) -> bytes:
-        self._check_open()
-        return self._fam_bytes
-
-    def _build_contiguous_plan(self, start: int, stop: int) -> list:
-        """List of :class:`ChunkRead` covering global variants ``[start,
-        stop)``. Selection is ``None`` (raw block) for fully-covered
-        chunks and ``slice(local_start, local_end)`` for partial covers.
-        """
-        chunk_size = self._variants_chunk_size
-        n_var = self._num_variants
-        plan = []
-        first = start // chunk_size
-        last_excl = (stop - 1) // chunk_size + 1
-        for ci in range(first, last_excl):
-            chunk_global = ci * chunk_size
-            local_start = max(0, start - chunk_global)
-            local_end = min(chunk_size, stop - chunk_global)
-            actual_chunk_end = min(chunk_size, n_var - chunk_global)
-            if local_start == 0 and local_end == actual_chunk_end:
-                selection = None
-            else:
-                selection = slice(local_start, local_end)
-            plan.append(utils.ChunkRead(index=ci, selection=selection))
-        return plan
-
-    def _iterate_bed(self, plan, a12_run) -> Iterator[bytes]:
-        """Build a fresh reader, install ``plan``, and yield encoded
-        BED row bytes per chunk. ``a12_run`` is the a12 array for the
-        whole run; we walk it with an offset that mirrors the per-chunk
-        variant count.
-        """
-        reader = retrieval.VczReader(
-            self._root,
-            readahead_workers=self._readahead_workers,
-            readahead_bytes=self._readahead_bytes,
-        )
-        reader.set_variants(plan)
-        offset = 0
-        for chunk in reader.variant_chunks(fields=["call_genotype"]):
-            G = chunk["call_genotype"]
-            n = G.shape[0]
-            a12_chunk = a12_run[offset : offset + n]
-            offset += n
-            yield encode_genotypes(G, a12_chunk)
-
-    def read_variants(
-        self,
-        indexes,
-        *,
-        strategy: str = "auto",
-    ) -> bytes:
-        """Return the encoded BED rows for the requested variants
-        (concatenated, no magic header).
-
-        ``indexes`` is either a ``slice`` (``step`` must be ``None`` or
-        ``1``) or a sorted 1-D integer ndarray. Out-of-range ndarray
-        indexes raise ``IndexError``; unsorted raises ``ValueError``;
-        duplicates are kept (each emitted once per occurrence).
-
-        ``strategy`` is one of:
-
-        - ``"contiguous"`` reads the smallest contiguous variant range
-          covering the input and sub-slices the result. Cheap when the
-          requested variants are dense in their span.
-        - ``"sparse"`` builds a per-chunk plan from the indexes via
-          ``vcztools.regions.chunk_plan_from_indexes``. Cheap when the
-          indexes are scattered across many chunks.
-        - ``"auto"`` (default) picks ``"sparse"`` only when the input
-          density is below ``SPARSE_VARIANT_THRESHOLD`` AND the span
-          exceeds ``SPARSE_VARIANT_THRESHOLD`` * ``num_variants``.
+        Sequential calls consume from a running chunk iterator;
+        non-sequential calls reconstruct the iterator at ``off``'s
+        chunk (one chunk's worth of decode overhead).
         """
         self._check_open()
-
-        if isinstance(indexes, slice):
-            return self._read_variants_slice(indexes, strategy=strategy)
-
-        arr = np.asarray(indexes)
-        if arr.ndim != 1:
-            raise ValueError(f"indexes must be 1-D (got ndim={arr.ndim})")
-        if arr.dtype.kind not in ("i", "u"):
-            raise ValueError(f"indexes must be integer dtype (got {arr.dtype})")
-        if arr.size == 0:
-            return b""
-        if arr.min() < 0 or arr.max() >= self._num_variants:
-            raise IndexError(f"indexes out of range [0, {self._num_variants})")
-        if (np.diff(arr) < 0).any():
-            raise ValueError("indexes must be sorted ascending")
-
-        arr = arr.astype(np.int64, copy=False)
-        return self._read_variants_array(arr, strategy=strategy)
-
-    def _read_variants_slice(self, sl: slice, *, strategy: str) -> bytes:
-        if sl.step not in (None, 1):
-            raise ValueError("only step=1 slices are supported")
-        start = 0 if sl.start is None else int(sl.start)
-        stop = self._num_variants if sl.stop is None else int(sl.stop)
-        start = max(0, min(start, self._num_variants))
-        stop = max(start, min(stop, self._num_variants))
-        if stop <= start:
-            return b""
-        # A slice is always contiguous; honour an explicit "sparse"
-        # request by wrapping the range in an arange ndarray.
-        if strategy == "sparse":
-            return self._read_variants_array(
-                np.arange(start, stop, dtype=np.int64), strategy="sparse"
-            )
-        if strategy not in ("auto", "contiguous"):
-            raise ValueError(f"unknown strategy: {strategy!r}")
-        return self._read_contiguous_range(start, stop, picked=None)
-
-    def _read_variants_array(self, arr: np.ndarray, *, strategy: str) -> bytes:
-        if strategy == "auto":
-            span = int(arr[-1] - arr[0]) + 1
-            density = arr.size / self._num_variants
-            span_frac = span / self._num_variants
-            if (
-                density < self.SPARSE_VARIANT_THRESHOLD
-                and span_frac > self.SPARSE_VARIANT_THRESHOLD
-            ):
-                strategy = "sparse"
-            else:
-                strategy = "contiguous"
-        if strategy == "contiguous":
-            return self._read_contiguous_range(
-                int(arr[0]), int(arr[-1]) + 1, picked=arr
-            )
-        if strategy == "sparse":
-            return self._read_sparse(arr)
-        raise ValueError(f"unknown strategy: {strategy!r}")
-
-    def _read_contiguous_range(
-        self, start: int, stop: int, *, picked: np.ndarray | None
-    ) -> bytes:
-        plan = self._build_contiguous_plan(start, stop)
-        a12_run = self._a12[start:stop]
-        full = b"".join(self._iterate_bed(plan, a12_run))
-        if picked is None:
-            return full
-        bpv = self._bytes_per_variant
-        out = bytearray()
-        for global_idx in picked:
-            local = int(global_idx) - start
-            out += full[local * bpv : (local + 1) * bpv]
-        return bytes(out)
-
-    def _read_sparse(self, arr: np.ndarray) -> bytes:
-        a12_run = self._a12[arr]
-        # Pass the ndarray through set_variants so the reader uses
-        # chunk_plan_from_indexes internally — same code path the CLI
-        # uses for region queries.
-        return b"".join(self._iterate_bed(arr, a12_run))
-
-    def read_bed(self, offset: int, size: int) -> bytes:
-        """Return ``size`` bytes from the virtual ``.bed`` starting at
-        ``offset``. Returns ``b""`` if ``offset >= bed_size``; ``size``
-        is silently clamped to the end of the file. ``offset < 0`` and
-        ``size < 0`` raise ``ValueError``.
-        """
-        self._check_open()
-        if offset < 0:
-            raise ValueError(f"offset must be >= 0 (got {offset})")
+        if off < 0:
+            raise ValueError(f"off must be >= 0 (got {off})")
         if size < 0:
             raise ValueError(f"size must be >= 0 (got {size})")
-        if offset >= self._bed_size or size == 0:
+        if off >= self._bed_size or size == 0:
             return b""
-        end = min(offset + size, self._bed_size)
+        end = min(off + size, self._bed_size)
+        with self._lock:
+            if self._cur_byte_offset != off:
+                self._restart(off)
+            out = self._drain(end - off)
+            self._cur_byte_offset = off + len(out)
+        return out
+
+    def _restart(self, off: int) -> None:
+        self._teardown_iterator()
         bpv = self._bytes_per_variant
-
-        pieces = []
-        if offset < 3:
-            pieces.append(BED_MAGIC[offset : min(end, 3)])
-
-        geno_start = max(offset, 3)
-        if end > geno_start:
-            v_start = (geno_start - 3) // bpv
-            v_end = (end - 3 + bpv - 1) // bpv
-            v_bytes = self.read_variants(slice(v_start, v_end), strategy="contiguous")
-            slice_start = geno_start - (3 + v_start * bpv)
-            slice_end = slice_start + (end - geno_start)
-            pieces.append(v_bytes[slice_start:slice_end])
-
-        return b"".join(pieces)
-
-    def read_tail(self, nbytes: int = 4096) -> bytes:
-        """Return up to ``nbytes`` bytes from the end of the virtual
-        ``.bed``. ``nbytes <= 0`` raises ``ValueError``;
-        ``nbytes > bed_size`` clamps.
-        """
-        self._check_open()
-        if nbytes <= 0:
-            raise ValueError(f"nbytes must be > 0 (got {nbytes})")
-        nbytes = min(nbytes, self._bed_size)
-        return self.read_bed(self._bed_size - nbytes, nbytes)
-
-    def stream_bed(self, *, chunk_size: int | None = None) -> Iterator[bytes]:
-        """Yield the full ``.bed`` byte content (including the
-        ``BED_MAGIC`` header) in fragments of approximately
-        ``chunk_size`` bytes. Default is ``DEFAULT_STREAM_CHUNK``.
-
-        Multiple in-flight calls are independent — each owns its own
-        ``VczReader`` and reads the cached ``a12`` immutably. Callers
-        consuming the iterator must drive it to exhaustion (or close
-        it) to release the underlying readahead pipeline.
-        """
-        self._check_open()
-        if chunk_size is None:
-            chunk_size = self.DEFAULT_STREAM_CHUNK
-        if chunk_size <= 0:
-            raise ValueError(f"chunk_size must be > 0 (got {chunk_size})")
-
-        reader = retrieval.VczReader(
-            self._root,
-            readahead_workers=self._readahead_workers,
-            readahead_bytes=self._readahead_bytes,
+        if off < 3:
+            self._pending = bytearray(BED_MAGIC[off:3])
+            target_chunk = 0
+            self._first_chunk_skip = 0
+        else:
+            geno_off = off - 3
+            target_variant = geno_off // bpv
+            target_chunk = target_variant // self._variants_chunk_size
+            chunk_first_byte = 3 + target_chunk * self._variants_chunk_size * bpv
+            self._first_chunk_skip = off - chunk_first_byte
+        self._iterator = self._reader.variant_chunks(
+            fields=["call_genotype"],
+            start=target_chunk,
         )
-        # No set_variants: default plan resolves to full-store iteration.
-        buffer = bytearray(BED_MAGIC)
-        offset = 0
-        for chunk in reader.variant_chunks(fields=["call_genotype"]):
+        self._next_chunk_first_variant = target_chunk * self._variants_chunk_size
+        self._cur_byte_offset = off
+
+    def _drain(self, n: int) -> bytes:
+        out = bytearray()
+        if len(self._pending) > 0:
+            take = min(n, len(self._pending))
+            out += self._pending[:take]
+            del self._pending[:take]
+            n -= take
+        while n > 0:
+            chunk = next(self._iterator)
             G = chunk["call_genotype"]
-            n = G.shape[0]
-            a12_chunk = self._a12[offset : offset + n]
-            offset += n
-            buffer.extend(encode_genotypes(G, a12_chunk))
-            while len(buffer) >= chunk_size:
-                yield bytes(buffer[:chunk_size])
-                del buffer[:chunk_size]
-        if len(buffer) > 0:
-            yield bytes(buffer)
+            chunk_n = G.shape[0]
+            a12_chunk = self._a12[
+                self._next_chunk_first_variant : self._next_chunk_first_variant
+                + chunk_n
+            ]
+            self._next_chunk_first_variant += chunk_n
+            encoded = encode_genotypes(G, a12_chunk)
+            if self._first_chunk_skip > 0:
+                encoded = encoded[self._first_chunk_skip :]
+                self._first_chunk_skip = 0
+            take = min(n, len(encoded))
+            out += encoded[:take]
+            self._pending = bytearray(encoded[take:])
+            n -= take
+        return bytes(out)
+
+    def _teardown_iterator(self) -> None:
+        if self._iterator is not None:
+            self._iterator.close()
+            self._iterator = None
+        self._pending = bytearray()
+        self._first_chunk_skip = 0
 
     def close(self) -> None:
-        """Drop the cached ``.bim``/``.fam`` bytes, the a12 array, and
-        the bookkeeping ``VczReader``. Idempotent."""
+        """Tear down the active chunk iterator and drop iterator
+        state. Does not close the underlying reader. Idempotent."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            self._teardown_iterator()
+            self._cur_byte_offset = None
             self._a12 = None
-            self._bim_bytes = None
-            self._fam_bytes = None
-            self._reader = None
 
     def __enter__(self):
         return self

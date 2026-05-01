@@ -104,35 +104,37 @@ Bulk tasks land in the ~600 MB – 2 GB range. Readahead budget is 256 MiB of in
 
 icechunk's lead over the other directory-store backends comes from its async-friendly storage layout; `local-zip`'s last-place finish on the geomean is dominated by the small-read tasks (`iter_info_only`, `filter_info_dp_gt_80`) where the single file handle serialises everything.
 
-## `PlinkStreamingSource` micro-benchmarks
+## `BedEncoder` micro-benchmarks
 
-Read-only streaming view of a VCZ store as a PLINK 1 binary fileset
-(`.bed` / `.bim` / `.fam`). The benchmark exercises the four read
-patterns FUSE / range-HTTP / preview consumers drive.
+Stateful sequential `.bed` byte-stream encoder. The benchmark
+exercises the three patterns FUSE / range-HTTP / sequential consumers
+drive: sequential drain on one encoder, random reads on one encoder,
+and concurrent drains across N encoders sharing one `VczReader`.
 
 - **Source run:** `performance/plink_streaming.py` against
   `performance/bench_biallelic.vcz`, recorded 2026-05-01.
 - **Hardware:** 4-CPU host `claude-worker1`.
 - **Dataset:** 1000 diploid samples × 32 794 biallelic SNPs
   (msprime + `BinaryMutationModel` to guarantee no multi-allelic
-  sites — `PlinkStreamingSource.__init__` rejects multi-allelic
-  variants outright, mirroring `plink2 --make-bed`). Variant chunk
-  size 5000.
+  sites — `compute_a12` rejects multi-allelic variants outright,
+  mirroring `plink2 --make-bed`). Variant chunk size 5000.
+  BED size 8.2 MB.
 - **Reproduce:**
   ```
   uv run python performance/plink_streaming.py \
-      performance/bench_biallelic.vcz \
-      --repeats 5 --sparse-chunk-size-hint 5000
+      performance/bench_biallelic.vcz --repeats 5
   ```
 
 | Workload | Median | Notes |
 |---|---:|---|
-| `stream_bed` (full pass) | 0.29 s / 28 MB s⁻¹ | 8.2 MB BED, 1 MiB output chunks |
-| `read_tail(4096)` | 44 ms | Per-call latency (p50, 5 reps) |
-| `read_bed` (one variant row) | 49 ms | Single-chunk-aligned random read |
-| `read_variants` (10 across 10 chunks) | 125 ms | `strategy="sparse"` |
+| `sequential` (full drain) | 0.22 s / 37 MB s⁻¹ | 128 KiB reads on one encoder |
+| `random` (128 KiB) | 42 ms | One restart per read |
+| `fanout` (4 encoders, one reader) | 0.47 s / 70 MB s⁻¹ aggregate | Each encoder drains in its own thread |
 
-Each ranged genotype read constructs a fresh `VczReader` because
-`set_variants` is one-shot per reader; the per-call cost (~40 ms
-floor) reflects that setup. Forward streaming amortises it across the
-full pass.
+The `sequential` drain reuses one chunk iterator across all reads —
+the per-call `VczReader` construction floor that one-shot APIs paid
+(~40 ms each) is amortised to zero. `random` reads each pay one
+chunk's read + decode (the restart cost), which dominates for small
+``read_size``. `fanout` scales sub-linearly on a 4-CPU host because
+each encoder's `ReadaheadPipeline` runs its own thread pool — total
+threads in flight (encoders × readahead workers) exceeds CPU count.

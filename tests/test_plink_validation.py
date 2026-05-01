@@ -1,29 +1,4 @@
-"""End-to-end validation: vcztools view-bed vs plink 2 --make-bed.
-
-Modelled on :mod:`tests.test_bcftools_validation`. Each test runs
-``plink2 --vcf <fixture> --make-bed [args]`` against a fixture's VCF
-and ``vcztools view-bed <fixture>.vcz.zip [args]`` against the
-matching VCZ, then compares the resulting filesets.
-
-The guiding principle (per the implementation plan) is that PLINK 2
-is canonical: when vcztools and PLINK 2 disagree on the same
-variants, vcztools is wrong unless a deliberate divergence is
-documented in :class:`TestKnownDivergences`. PLINK 1.9's default
-behaviour (minor-allele relabelling on load) is *not* the spec —
-PLINK 1.9 is treated as a downstream consumer that must be invoked
-with ``--keep-allele-order`` to read our output faithfully.
-
-The .bed payload is byte-compared. The .bim and .fam files are
-text TSVs and compared via :func:`pandas.testing.assert_frame_equal`
-on parsed DataFrames; this gives clearer failure messages than a
-raw ``open(...).read()`` diff.
-
-Multi-allelic corner cases are the headline target of this suite —
-every fixture except ``sample-split-alleles.vcf.gz`` and
-``1kg_2020_chr20_annotations.bcf`` contains some multi-allelic
-variants. The validation strategy is to pass ``--max-alleles 2`` to
-both tools and lock down the surviving-subset .bed bytes.
-"""
+"""End-to-end validation: vcztools view-bed vs plink 2 --make-bed."""
 
 import shutil
 import subprocess

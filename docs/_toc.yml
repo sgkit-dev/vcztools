@@ -3,5 +3,6 @@ root: intro
 chapters:
 - file: installation
 - file: cli_ref
+- file: plink
 - file: python_api
 - file: storage_backends

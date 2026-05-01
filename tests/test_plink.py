@@ -319,6 +319,33 @@ class TestMaxAllelesFilter:
         assert f.scope == "variant"
         assert f.referenced_fields == frozenset({"variant_allele"})
 
+    def test_evaluate_independent_of_call_genotype(self):
+        # The max-alleles decision is record-driven: even if a sample
+        # subset would only ever observe two alleles at a tri-allelic
+        # site, the variant is dropped because the record lists 3.
+        # See vcztools/plink.py module docstring for the rationale.
+        f = plink.MaxAllelesFilter(2)
+        alleles = np.array(
+            [
+                ["A", "T", "", ""],  # biallelic record
+                ["G", "C", "T", ""],  # tri-allelic record
+            ],
+            dtype="U1",
+        )
+        # Same alleles, two very different genotype matrices.
+        chunk_all_ref = {
+            "variant_allele": alleles,
+            "call_genotype": np.zeros((2, 4, 2), dtype=np.int8),
+        }
+        chunk_third_allele_everywhere = {
+            "variant_allele": alleles,
+            "call_genotype": np.full((2, 4, 2), 2, dtype=np.int8),
+        }
+        mask_a = f.evaluate(chunk_all_ref)
+        mask_b = f.evaluate(chunk_third_allele_everywhere)
+        np.testing.assert_array_equal(mask_a, [True, False])
+        np.testing.assert_array_equal(mask_a, mask_b)
+
 
 class TestAndVariantFilter:
     """``_AndVariantFilter`` is private; only the CLI calls it. The
@@ -447,6 +474,18 @@ class TestComputeAlleles:
         alleles = np.array([["A", "T", "C"]], dtype="U1")
         with pytest.raises(ValueError, match="Multi-allelic"):
             self._writer()._compute_alleles(alleles)
+
+    def test_independent_of_genotypes(self):
+        # A1/A2 is record-driven (depends only on ``variant_allele``).
+        # The function signature already enforces this — there is no
+        # ``call_genotype`` parameter — but the test pins the contract
+        # so a future "helpful" refactor that feeds genotypes in fails
+        # loudly. See vcztools/plink.py module docstring.
+        alleles = np.array([["A", "T"], ["G", ""], ["C", "G"]], dtype="U1")
+        a12_a = self._writer()._compute_alleles(alleles)
+        a12_b = self._writer()._compute_alleles(alleles.copy())
+        np.testing.assert_array_equal(a12_a, a12_b)
+        np.testing.assert_array_equal(a12_a, [[1, 0], [-1, 0], [1, 0]])
 
     def test_wide_store_with_only_biallelic_rows_passes(self):
         # variant_allele can have a wider second axis when the store's

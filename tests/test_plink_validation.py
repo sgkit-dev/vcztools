@@ -398,6 +398,209 @@ class TestSampleSubset:
         assert_filesets_equal(p2_prefix, vcz_prefix)
 
 
+class TestSubsetInducedEdgeCases:
+    """Sample-subset interactions with allele-list-driven semantics.
+
+    Two corner cases pinned here: (A) a site that is biallelic in the
+    full dataset but monomorphic across a ``-s`` subset still emits
+    A1=ALT, A2=REF (because A1/A2 is record-driven, not subset-
+    derived); (B) a site with three alleles in the record is dropped
+    by ``--max-alleles 2`` even when only two alleles survive in the
+    subset (max-alleles is record-driven too). plink 2 ``--keep`` is
+    expected to agree on both.
+    """
+
+    @staticmethod
+    def _write_keep_file(path: Path, iids: list[str]) -> Path:
+        path.write_text("\n".join(f"0\t{iid}" for iid in iids) + "\n")
+        return path
+
+    @staticmethod
+    def _write_vcf(
+        path: Path,
+        sample_ids: list[str],
+        records: list[tuple[str, int, str, tuple, list[str]]],
+    ) -> Path:
+        # records: (contig, pos, ref, alts_tuple, gts_per_sample).
+        # Writes a minimal VCFv4.2 (one ##contig per unique contig in
+        # records, FORMAT=GT only). Returns ``path``. plink 2 reads
+        # plain-text VCF via ``--vcf`` — no bgzip needed.
+        contigs = []
+        for record in records:
+            if record[0] not in contigs:
+                contigs.append(record[0])
+        header_lines = ["##fileformat=VCFv4.2"]
+        for c in contigs:
+            header_lines.append(f"##contig=<ID={c}>")
+        header_lines.append(
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">'
+        )
+        col_header = "\t".join(
+            ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO", "FORMAT"]
+            + sample_ids
+        )
+        header_lines.append(col_header)
+        body_lines = []
+        for contig, pos, ref, alts, gts in records:
+            alt_field = ",".join(alts)
+            row = [contig, str(pos), ".", ref, alt_field, ".", "PASS", ".", "GT"] + gts
+            body_lines.append("\t".join(row))
+        path.write_text("\n".join(header_lines + body_lines) + "\n")
+        return path
+
+    @staticmethod
+    def _persist_vcz(root, dest_dir: Path) -> Path:
+        dest = zarr.storage.LocalStore(dest_dir)
+        test_utils.copy_store(root.store, dest)
+        return dest_dir
+
+    def test_subset_to_monomorphic_keeps_alt_label(self, tmp_path):
+        # Variant on chr1:100, REF=A ALT=T, biallelic in the full
+        # 4-sample fixture (s2 and s3 carry the ALT). Keeping s1 and
+        # s4 only — both 0|0 — leaves zero ALT carriers. The .bim row
+        # must still read A1=T, A2=A.
+        sample_ids = ["s1", "s2", "s3", "s4"]
+        gts = ["0|0", "0|1", "1|0", "0|0"]
+        records = [("1", 100, "A", ("T",), gts)]
+        vcf_path = self._write_vcf(tmp_path / "in.vcf", sample_ids, records)
+
+        gt = np.array(
+            [
+                [[0, 0], [0, 1], [1, 0], [0, 0]],
+            ],
+            dtype=np.int8,
+        )
+        root = vcz_builder.make_vcz(
+            num_samples=4,
+            variant_contig=[0],
+            variant_position=[100],
+            alleles=[("A", "T")],
+            sample_id=sample_ids,
+            contigs=("1",),
+            call_genotype=gt,
+        )
+        vcz_dir = self._persist_vcz(root, tmp_path / "in.vcz")
+
+        keep_iids = ["s1", "s4"]
+        keep_file = self._write_keep_file(tmp_path / "keep.txt", keep_iids)
+        p2_prefix = tmp_path / "p2"
+        vcz_prefix = tmp_path / "vcz"
+        run_plink2(
+            f"--max-alleles 2 --allow-extra-chr --keep {keep_file}",
+            vcf_path,
+            p2_prefix,
+        )
+        run_view_bed(
+            f"--max-alleles 2 -s {','.join(keep_iids)}",
+            vcz_dir,
+            vcz_prefix,
+        )
+
+        # The labelling claim — A1=T (ALT), A2=A (REF) — pinned
+        # independently of the byte equality below so a divergence
+        # gives a clearer message.
+        bim = _parse_bim(vcz_prefix.with_suffix(".bim"))
+        assert list(bim["A1"]) == ["T"]
+        assert list(bim["A2"]) == ["A"]
+        assert_filesets_equal(p2_prefix, vcz_prefix)
+
+    def test_subset_collapses_multiallelic_dropped_by_max_alleles(self, tmp_path):
+        # Tri-allelic site at chr1:100 where the s1+s2 subset only
+        # carries A and T (i.e. the third allele is "absent" in the
+        # subset). ``--max-alleles 2`` is record-driven, so both tools
+        # should drop that variant. A second biallelic variant at
+        # chr1:200 anchors the comparison: plink2 errors if the
+        # surviving variant set is empty, so the suite must keep at
+        # least one row.
+        sample_ids = ["s1", "s2", "s3", "s4"]
+        records = [
+            ("1", 100, "A", ("T", "G"), ["0|0", "0|1", "0|2", "0|0"]),
+            ("1", 200, "C", ("G",), ["0|0", "0|1", "1|0", "1|1"]),
+        ]
+        vcf_path = self._write_vcf(tmp_path / "in.vcf", sample_ids, records)
+
+        gt = np.array(
+            [
+                [[0, 0], [0, 1], [0, 2], [0, 0]],
+                [[0, 0], [0, 1], [1, 0], [1, 1]],
+            ],
+            dtype=np.int8,
+        )
+        root = vcz_builder.make_vcz(
+            num_samples=4,
+            variant_contig=[0, 0],
+            variant_position=[100, 200],
+            alleles=[("A", "T", "G"), ("C", "G")],
+            sample_id=sample_ids,
+            contigs=("1",),
+            call_genotype=gt,
+        )
+        vcz_dir = self._persist_vcz(root, tmp_path / "in.vcz")
+
+        keep_iids = ["s1", "s2"]
+        keep_file = self._write_keep_file(tmp_path / "keep.txt", keep_iids)
+        p2_prefix = tmp_path / "p2"
+        vcz_prefix = tmp_path / "vcz"
+        run_plink2(
+            f"--max-alleles 2 --allow-extra-chr --keep {keep_file}",
+            vcf_path,
+            p2_prefix,
+        )
+        run_view_bed(
+            f"--max-alleles 2 -s {','.join(keep_iids)}",
+            vcz_dir,
+            vcz_prefix,
+        )
+
+        # The tri-allelic variant is dropped; only chr1:200 survives.
+        bim = _parse_bim(vcz_prefix.with_suffix(".bim"))
+        assert list(bim["Pos"]) == [200]
+        assert_filesets_equal(p2_prefix, vcz_prefix)
+
+    def test_subset_collapses_multiallelic_without_max_alleles_both_error(
+        self, tmp_path
+    ):
+        # Same tri-allelic fixture, no ``--max-alleles 2``. The
+        # subset-induced "only 2 alleles observed" view does not
+        # bypass the multi-allelic rejection; both tools refuse.
+        sample_ids = ["s1", "s2", "s3", "s4"]
+        gts = ["0|0", "0|1", "0|2", "0|0"]
+        records = [("1", 100, "A", ("T", "G"), gts)]
+        vcf_path = self._write_vcf(tmp_path / "in.vcf", sample_ids, records)
+
+        gt = np.array(
+            [
+                [[0, 0], [0, 1], [0, 2], [0, 0]],
+            ],
+            dtype=np.int8,
+        )
+        root = vcz_builder.make_vcz(
+            num_samples=4,
+            variant_contig=[0],
+            variant_position=[100],
+            alleles=[("A", "T", "G")],
+            sample_id=sample_ids,
+            contigs=("1",),
+            call_genotype=gt,
+        )
+        vcz_dir = self._persist_vcz(root, tmp_path / "in.vcz")
+
+        keep_iids = ["s1", "s2"]
+        keep_file = self._write_keep_file(tmp_path / "keep.txt", keep_iids)
+        p2_err = run_plink2_expect_error(
+            f"--allow-extra-chr --keep {keep_file}",
+            vcf_path,
+            tmp_path / "p2",
+        )
+        vcz_err = run_view_bed_expect_error(
+            f"-s {','.join(keep_iids)}",
+            vcz_dir,
+            tmp_path / "vcz",
+        )
+        assert "multiallelic" in p2_err.lower()
+        assert "Multi-allelic" in vcz_err
+
+
 class TestRegionSelection:
     """Region/target selection vs plink 2 ``--chr`` / ``--from-bp`` /
     ``--to-bp`` and ``--extract range`` / ``--exclude range``.

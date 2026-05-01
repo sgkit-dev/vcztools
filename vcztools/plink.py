@@ -26,6 +26,17 @@ Single-allele (monomorphic) variants emit ``A1 = "."`` in the .bim
 (plink 2's missing-allele encoding), with all genotype bits set to
 the MISSING code in the .bed.
 
+Sample-subset semantics. A1/A2 labelling and the ``--max-alleles``
+filter are derived from the variant record's allele list, not from
+alleles observed in the kept-sample subset. A site that is biallelic
+in the full dataset but has no ALT carriers in a ``-s``/``-S`` subset
+still emits A1=ALT, A2=REF in the .bim (with HOM-REF / MISSING bits
+in the .bed for the kept samples). A site with three or more alleles
+in the record is dropped by ``--max-alleles 2`` even if only two
+alleles survive in the subset. This matches
+``plink2 --make-bed --keep``, which applies record-level filters
+before sample projection.
+
 For consequences for the wider downstream tool ecosystem (REGENIE,
 BOLT-LMM, GCTA, KING, flashpca, ADMIXTURE), see the documentation;
 the short version is "insensitive in practice", with PLINK 1.9 the
@@ -48,6 +59,10 @@ class MaxAllelesFilter:
 
     For PLINK 1 binary output this is invoked with ``max_alleles=2``,
     matching ``plink2 --vcf X --make-bed --max-alleles 2``.
+
+    Operates on ``variant_allele`` only; the per-variant decision is
+    independent of ``call_genotype`` and any sample subset applied
+    downstream.
     """
 
     scope = "variant"
@@ -244,6 +259,9 @@ class Writer:
         Multi-allelic variants raise ValueError, mirroring
         ``plink2 --make-bed`` (which errors out on multi-allelic .bim
         rows). Use ``--max-alleles 2`` to skip them.
+
+        A1/A2 are derived from ``variant_allele`` shape; observed
+        genotypes in any sample subset do not influence the labelling.
         """
         if alleles.shape[1] > 2 and (alleles[:, 2:] != "").any():
             raise ValueError(

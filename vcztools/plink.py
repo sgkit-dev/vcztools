@@ -74,8 +74,6 @@ class _AndVariantFilter:
 
     def __init__(self, filters):
         self._filters = list(filters)
-        if len(self._filters) == 0:
-            raise ValueError("at least one filter is required")
         for f in self._filters:
             if f.scope != "variant":
                 raise ValueError(

@@ -268,6 +268,107 @@ class TestEncoderPythonReferenceParity:
 
 
 # ---------------------------------------------------------------------------
+# MaxAllelesFilter / _AndVariantFilter — direct unit tests.
+# ---------------------------------------------------------------------------
+
+
+class TestMaxAllelesFilter:
+    def test_short_axis_passes_all(self):
+        # When the store's max-allele count is already <= max_alleles,
+        # the filter trivially keeps every row.
+        f = plink.MaxAllelesFilter(2)
+        alleles = np.array([["A", "T"], ["G", "C"]], dtype="U1")
+        mask = f.evaluate({"variant_allele": alleles})
+        np.testing.assert_array_equal(mask, [True, True])
+
+    def test_drops_overflow_rows(self):
+        f = plink.MaxAllelesFilter(2)
+        alleles = np.array(
+            [
+                ["A", "T", "", ""],
+                ["G", "C", "T", ""],  # 3 alleles → drop
+                ["A", "T", "", ""],
+            ],
+            dtype="U1",
+        )
+        mask = f.evaluate({"variant_allele": alleles})
+        np.testing.assert_array_equal(mask, [True, False, True])
+
+    def test_max_alleles_three(self):
+        # Sanity check: max_alleles is parametric, not hard-wired to 2.
+        f = plink.MaxAllelesFilter(3)
+        alleles = np.array(
+            [
+                ["A", "T", "C", ""],  # 3 alleles → keep
+                ["G", "C", "T", "A"],  # 4 alleles → drop
+            ],
+            dtype="U1",
+        )
+        mask = f.evaluate({"variant_allele": alleles})
+        np.testing.assert_array_equal(mask, [True, False])
+
+    @pytest.mark.parametrize("bad", [0, -1, -10])
+    def test_max_alleles_below_one_raises(self, bad):
+        # plink 2 itself errors on --max-alleles 0 ("Invalid --max-alleles
+        # argument '0'."); our validation matches.
+        with pytest.raises(ValueError, match=">= 1"):
+            plink.MaxAllelesFilter(bad)
+
+    def test_protocol_attributes(self):
+        f = plink.MaxAllelesFilter(2)
+        assert f.scope == "variant"
+        assert f.referenced_fields == frozenset({"variant_allele"})
+
+
+class TestAndVariantFilter:
+    """``_AndVariantFilter`` is private; only the CLI calls it. The
+    tests pin both the happy path (AND of two variant-scope filters)
+    and the constructor's scope check.
+    """
+
+    def test_and_combines_two_masks(self):
+        f1 = plink.MaxAllelesFilter(3)
+        f2 = plink.MaxAllelesFilter(2)
+        combined = plink._AndVariantFilter([f1, f2])
+        alleles = np.array(
+            [
+                ["A", "T", "", ""],  # ≤2 ✓ AND ≤3 ✓
+                ["G", "C", "T", ""],  # ≤3 ✓ AND ≤2 ✗
+                ["A", "T", "C", "G"],  # ≤3 ✗ AND ≤2 ✗
+            ],
+            dtype="U1",
+        )
+        mask = combined.evaluate({"variant_allele": alleles})
+        np.testing.assert_array_equal(mask, [True, False, False])
+
+    def test_referenced_fields_union(self):
+        f1 = plink.MaxAllelesFilter(2)
+
+        class _DummyFilter:
+            scope = "variant"
+            referenced_fields = frozenset({"variant_position"})
+
+            def evaluate(self, chunk_data):
+                return np.ones(len(chunk_data["variant_position"]), dtype=bool)
+
+        combined = plink._AndVariantFilter([f1, _DummyFilter()])
+        assert combined.referenced_fields == frozenset(
+            {"variant_allele", "variant_position"}
+        )
+
+    def test_rejects_sample_scope(self):
+        class _SampleScopeFilter:
+            scope = "sample"
+            referenced_fields = frozenset({"call_genotype"})
+
+            def evaluate(self, chunk_data):
+                raise NotImplementedError
+
+        with pytest.raises(ValueError, match="sample-scope"):
+            plink._AndVariantFilter([_SampleScopeFilter()])
+
+
+# ---------------------------------------------------------------------------
 # Chromosome normalisation (matches plink 2 --make-bed output).
 # ---------------------------------------------------------------------------
 

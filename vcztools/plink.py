@@ -21,6 +21,8 @@ import pandas as pd
 from vcztools import _vcztools
 from vcztools.utils import _as_fixed_length_unicode
 
+BED_MAGIC = b"\x6c\x1b\x01"
+
 
 class MaxAllelesFilter:
     """Variant-scope :class:`~vcztools.variant_filter.VariantFilter` that
@@ -84,6 +86,49 @@ class _AndVariantFilter:
         for f in self._filters[1:]:
             result = result & f.evaluate(chunk_data)
         return result
+
+
+def compute_a12(alleles):
+    """
+    Return per-variant a12 indexes in the plink 2 REF/ALT convention.
+
+    ``alleles`` has shape ``(n, max_alleles_in_store)``. The
+    per-variant allele count is the number of non-empty entries in
+    each row; the store-wide max is irrelevant once a downstream
+    filter (e.g. ``--max-alleles``) has dropped multi-allelic rows.
+
+    For each surviving variant:
+
+    * ``a12[:, 0] = 1`` (A1 = ALT, i.e. ``variant_allele[:, 1]``)
+    * ``a12[:, 1] = 0`` (A2 = REF, i.e. ``variant_allele[:, 0]``)
+
+    For single-allele (monomorphic) variants — where ``alleles[j, 1]``
+    is the empty string — ``a12[j, 0]`` is set to ``-1``. The .bim
+    writer emits ``"."`` in that slot, matching plink 2's
+    missing-allele convention.
+
+    Multi-allelic variants raise ValueError, mirroring
+    ``plink2 --make-bed`` (which errors out on multi-allelic .bim
+    rows). Use ``--max-alleles 2`` to skip them.
+
+    A1/A2 are derived from ``variant_allele`` shape; observed
+    genotypes in any sample subset do not influence the labelling.
+    """
+    if alleles.shape[1] > 2 and (alleles[:, 2:] != "").any():
+        raise ValueError(
+            "Multi-allelic variants are not supported in PLINK 1 "
+            "binary output (plink 2 --make-bed has the same "
+            "restriction). Use --max-alleles 2 to skip them, or "
+            "split with bcftools norm -m- before conversion."
+        )
+    num_variants = alleles.shape[0]
+    a12 = np.zeros((num_variants, 2), dtype=np.int8)
+    a12[:, 0] = 1
+    # alleles may have >2 columns when the store's max-allele
+    # is higher than 2; the second column still holds ALT for any
+    # surviving (≤2-allele) variant.
+    a12[alleles[:, 1] == "", 0] = -1
+    return a12
 
 
 def encode_genotypes(genotypes, a12_allele=None):
@@ -207,48 +252,6 @@ class Writer:
         self.fam_path = fam_path
         self.bed_path = bed_path
 
-    def _compute_alleles(self, alleles):
-        """
-        Return per-variant a12 indexes in the plink 2 REF/ALT convention.
-
-        ``alleles`` has shape ``(n, max_alleles_in_store)``. The
-        per-variant allele count is the number of non-empty entries in
-        each row; the store-wide max is irrelevant once a downstream
-        filter (e.g. ``--max-alleles``) has dropped multi-allelic rows.
-
-        For each surviving variant:
-
-        * ``a12[:, 0] = 1`` (A1 = ALT, i.e. ``variant_allele[:, 1]``)
-        * ``a12[:, 1] = 0`` (A2 = REF, i.e. ``variant_allele[:, 0]``)
-
-        For single-allele (monomorphic) variants — where ``alleles[j, 1]``
-        is the empty string — ``a12[j, 0]`` is set to ``-1``. The .bim
-        writer emits ``"."`` in that slot, matching plink 2's
-        missing-allele convention.
-
-        Multi-allelic variants raise ValueError, mirroring
-        ``plink2 --make-bed`` (which errors out on multi-allelic .bim
-        rows). Use ``--max-alleles 2`` to skip them.
-
-        A1/A2 are derived from ``variant_allele`` shape; observed
-        genotypes in any sample subset do not influence the labelling.
-        """
-        if alleles.shape[1] > 2 and (alleles[:, 2:] != "").any():
-            raise ValueError(
-                "Multi-allelic variants are not supported in PLINK 1 "
-                "binary output (plink 2 --make-bed has the same "
-                "restriction). Use --max-alleles 2 to skip them, or "
-                "split with bcftools norm -m- before conversion."
-            )
-        num_variants = alleles.shape[0]
-        a12 = np.zeros((num_variants, 2), dtype=np.int8)
-        a12[:, 0] = 1
-        # alleles may have >2 columns when the store's max-allele
-        # is higher than 2; the second column still holds ALT for any
-        # surviving (≤2-allele) variant.
-        a12[alleles[:, 1] == "", 0] = -1
-        return a12
-
     def _write_genotypes(self):
         ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
         # a12 is small (8*num_variants bytes per column) and only
@@ -257,7 +260,7 @@ class Writer:
         # robust to partial-chunk yields under variant filtering.
         a12_per_chunk = []
         with open(self.bed_path, "wb") as bed_file:
-            bed_file.write(bytes([0x6C, 0x1B, 0x01]))
+            bed_file.write(BED_MAGIC)
 
             for chunk in ci:
                 G = chunk["call_genotype"]
@@ -266,7 +269,7 @@ class Writer:
                         "Only diploid genotypes are supported "
                         f"(call_genotype has shape {G.shape})"
                     )
-                a12 = self._compute_alleles(chunk["variant_allele"])
+                a12 = compute_a12(chunk["variant_allele"])
                 buff = encode_genotypes(G, a12)
                 bed_file.write(buff)
                 a12_per_chunk.append(a12)

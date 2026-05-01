@@ -2,45 +2,15 @@
 Convert VCZ to PLINK 1 binary format (.bed/.bim/.fam) — the on-disk
 layout that PLINK 1, 1.9 and 2 all read.
 
-The CLI verb is ``view-bed``. The semantic choice of which allele
-populates the A1 column follows **PLINK 2** (A1 = ALT, A2 = REF):
-the modern, REF/ALT-stable convention. The .bed payload is
-byte-identical to ``plink2 --vcf X --make-bed`` for biallelic
-variants.
+The CLI verb is ``view-bed``. A1 = ALT, A2 = REF (plink 2's
+convention); the .bed payload is byte-identical to
+``plink2 --vcf X --make-bed`` for biallelic variants.
 
-NOTE — this differs from PLINK 1.9's default behaviour. PLINK 1.9
-reorders A1/A2 in memory on load to put the minor allele in A1,
-unless invoked with ``--keep-allele-order`` (or
-``--real-ref-alleles``). Downstream pipelines that read vcztools'
-output with default PLINK 1.9 will see a different A1/A2 labelling
-than the .bim claims, and any frequency-derived statistic whose sign
-depends on the labelling will flip relative to a PLINK 2 run on the
-same file. Pass ``--keep-allele-order`` to preserve our labelling.
-
-Multi-allelic variants are rejected, mirroring ``plink2 --make-bed``,
-which errors with "Error: <out>.bim cannot contain multiallelic
-variants." Callers wanting to skip multi-allelic sites use the
-``--max-alleles 2`` flag on ``view-bed`` (matching plink 2).
-
-Single-allele (monomorphic) variants emit ``A1 = "."`` in the .bim
-(plink 2's missing-allele encoding), with all genotype bits set to
-the MISSING code in the .bed.
-
-Sample-subset semantics. A1/A2 labelling and the ``--max-alleles``
-filter are derived from the variant record's allele list, not from
-alleles observed in the kept-sample subset. A site that is biallelic
-in the full dataset but has no ALT carriers in a ``-s``/``-S`` subset
-still emits A1=ALT, A2=REF in the .bim (with HOM-REF / MISSING bits
-in the .bed for the kept samples). A site with three or more alleles
-in the record is dropped by ``--max-alleles 2`` even if only two
-alleles survive in the subset. This matches
-``plink2 --make-bed --keep``, which applies record-level filters
-before sample projection.
-
-For consequences for the wider downstream tool ecosystem (REGENIE,
-BOLT-LMM, GCTA, KING, flashpca, ADMIXTURE), see the documentation;
-the short version is "insensitive in practice", with PLINK 1.9 the
-only consumer that visibly relabels allele columns on read.
+For the user-facing reference — A1/A2 rationale, downstream-tool
+compatibility (plink 1.9, REGENIE, BOLT-LMM, ...), multi-allelic and
+monomorphic encoding, sample-subset semantics, chromosome-name
+normalisation, and known divergences from plink 2 — see
+``docs/plink.md``.
 """
 
 import pathlib

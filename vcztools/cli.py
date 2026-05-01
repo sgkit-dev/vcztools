@@ -641,29 +641,16 @@ def view_bed(
     Generate a PLINK 1 binary fileset (.bed/.bim/.fam) from a VCZ
     dataset.
 
-    The .bed file format is the same one PLINK 1 / 1.9 / 2 all read,
-    but the *semantic* choice of which allele goes in the A1 column
-    follows PLINK 2 (A1=ALT, A2=REF) — the modern, REF/ALT-stable
-    convention. The .bed payload is byte-identical to
-    ``plink2 --vcf X --make-bed`` for biallelic variants.
-
-    NOTE — this differs from PLINK 1.9's default. PLINK 1.9 reorders
-    A1/A2 in memory to put the minor allele in A1 unless invoked with
-    ``--keep-allele-order`` (or ``--real-ref-alleles``). When reading
-    vcztools' output:
-
-      * plink 2: read natively, no flags needed.
-      * plink 1.9: pass ``--keep-allele-order`` to preserve A1=ALT.
-        Without it, plink 1.9 will silently relabel A1/A2 on load,
-        which can flip the sign of allele-frequency-derived
-        statistics relative to what the .bim labels suggest.
-      * REGENIE: works as-is (default expects A1=non-ref).
-      * BOLT-LMM: works as-is; ALLELE1 is the effect allele.
-
-    Sample/region/filter selection mirrors bcftools view
+    A1=ALT, A2=REF (plink 2's convention); the .bed payload is
+    byte-identical to ``plink2 --vcf X --make-bed`` for biallelic
+    variants. Sample/region/filter selection mirrors bcftools view
     (-s/-S/-r/-R/-t/-T/-i/-e). Multi-allelic variants are rejected
-    by default (matching plink 2 --make-bed behaviour); use
-    --max-alleles 2 to skip them.
+    by default; pass ``--max-alleles 2`` to skip them.
+
+    See the "PLINK 1 binary output" documentation page for the full
+    reference, including how to read this output with plink 1.9
+    (``--keep-allele-order``), REGENIE, BOLT-LMM, and other
+    downstream tools.
     """
     reader = make_reader(
         path,

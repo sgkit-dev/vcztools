@@ -2,7 +2,7 @@
 Unit tests for vcztools.plink.
 
 These exercise the four layers of the writer (encode_genotypes wrapper,
-_compute_alleles, generate_fam, generate_bim, end-to-end Writer) directly
+compute_a12, generate_fam, generate_bim, end-to-end Writer) directly
 against in-memory VCZ groups built with :func:`tests.vcz_builder.make_vcz`.
 No PLINK binary, no roundtripping.
 """
@@ -430,7 +430,7 @@ class TestPlink2NormaliseChrom:
 
 
 # ---------------------------------------------------------------------------
-# _compute_alleles: A1/A2 selection logic.
+# compute_a12: A1/A2 selection logic.
 # ---------------------------------------------------------------------------
 
 
@@ -442,10 +442,6 @@ class TestComputeAlleles:
     sentinel; .bim writer emits "."). Multi-allelic raises.
     """
 
-    @staticmethod
-    def _writer():
-        return plink.Writer(reader=None, bed_path=None, fam_path=None, bim_path=None)
-
     @pytest.mark.parametrize(
         "alleles",
         [
@@ -455,25 +451,25 @@ class TestComputeAlleles:
         ],
     )
     def test_biallelic_returns_alt_then_ref(self, alleles):
-        a12 = self._writer()._compute_alleles(alleles)
+        a12 = plink.compute_a12(alleles)
         expected = np.tile([1, 0], (alleles.shape[0], 1))
         np.testing.assert_array_equal(a12, expected)
         assert a12.dtype == np.int8
 
     def test_monomorphic_returns_minus_one(self):
         alleles = np.array([["A", ""]], dtype="U1")
-        a12 = self._writer()._compute_alleles(alleles)
+        a12 = plink.compute_a12(alleles)
         np.testing.assert_array_equal(a12, [[-1, 0]])
 
     def test_mixed_biallelic_and_monomorphic(self):
         alleles = np.array([["A", "T"], ["G", ""], ["C", "G"]], dtype="U1")
-        a12 = self._writer()._compute_alleles(alleles)
+        a12 = plink.compute_a12(alleles)
         np.testing.assert_array_equal(a12, [[1, 0], [-1, 0], [1, 0]])
 
     def test_multiallelic_raises(self):
         alleles = np.array([["A", "T", "C"]], dtype="U1")
         with pytest.raises(ValueError, match="Multi-allelic"):
-            self._writer()._compute_alleles(alleles)
+            plink.compute_a12(alleles)
 
     def test_independent_of_genotypes(self):
         # A1/A2 is record-driven (depends only on ``variant_allele``).
@@ -482,15 +478,15 @@ class TestComputeAlleles:
         # so a future "helpful" refactor that feeds genotypes in fails
         # loudly. See vcztools/plink.py module docstring.
         alleles = np.array([["A", "T"], ["G", ""], ["C", "G"]], dtype="U1")
-        a12_a = self._writer()._compute_alleles(alleles)
-        a12_b = self._writer()._compute_alleles(alleles.copy())
+        a12_a = plink.compute_a12(alleles)
+        a12_b = plink.compute_a12(alleles.copy())
         np.testing.assert_array_equal(a12_a, a12_b)
         np.testing.assert_array_equal(a12_a, [[1, 0], [-1, 0], [1, 0]])
 
     def test_wide_store_with_only_biallelic_rows_passes(self):
         # variant_allele can have a wider second axis when the store's
         # max-allele count is >2; if no row actually uses columns past
-        # index 1, _compute_alleles must accept it. This is the path
+        # index 1, compute_a12 must accept it. This is the path
         # exercised by --max-alleles 2 against a multi-allelic store.
         alleles = np.array(
             [
@@ -500,7 +496,7 @@ class TestComputeAlleles:
             ],
             dtype="U1",
         )
-        a12 = self._writer()._compute_alleles(alleles)
+        a12 = plink.compute_a12(alleles)
         np.testing.assert_array_equal(a12, [[1, 0], [1, 0], [-1, 0]])
 
 

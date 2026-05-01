@@ -625,6 +625,42 @@ class PlinkStreamingSource:
         nbytes = min(nbytes, self._bed_size)
         return self.read_bed(self._bed_size - nbytes, nbytes)
 
+    def stream_bed(self, *, chunk_size: int | None = None) -> Iterator[bytes]:
+        """Yield the full ``.bed`` byte content (including
+        :data:`BED_MAGIC` header) in fragments of approximately
+        ``chunk_size`` bytes. Default is :attr:`DEFAULT_STREAM_CHUNK`.
+
+        Multiple in-flight calls are independent — each owns its own
+        :class:`VczReader` and reads ``self._a12`` immutably. Callers
+        consuming the iterator must drive it to exhaustion (or close
+        it) to release the underlying readahead pipeline.
+        """
+        self._check_open()
+        if chunk_size is None:
+            chunk_size = self.DEFAULT_STREAM_CHUNK
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be > 0 (got {chunk_size})")
+
+        reader = retrieval.VczReader(
+            self._root,
+            readahead_workers=self._readahead_workers,
+            readahead_bytes=self._readahead_bytes,
+        )
+        # No set_variants: default plan resolves to full-store iteration.
+        buffer = bytearray(BED_MAGIC)
+        offset = 0
+        for chunk in reader.variant_chunks(fields=["call_genotype"]):
+            G = chunk["call_genotype"]
+            n = G.shape[0]
+            a12_chunk = self._a12[offset : offset + n]
+            offset += n
+            buffer.extend(encode_genotypes(G, a12_chunk))
+            while len(buffer) >= chunk_size:
+                yield bytes(buffer[:chunk_size])
+                del buffer[:chunk_size]
+        if len(buffer) > 0:
+            yield bytes(buffer)
+
     def close(self) -> None:
         """Drop the cached ``.bim``/``.fam`` bytes, the a12 array, and
         the bookkeeping :class:`VczReader`. Idempotent."""

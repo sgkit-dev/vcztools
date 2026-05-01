@@ -7,6 +7,7 @@ against in-memory VCZ groups built with :func:`tests.vcz_builder.make_vcz`.
 No PLINK binary, no roundtripping.
 """
 
+import concurrent.futures as cf
 import math
 import pathlib
 
@@ -1320,3 +1321,143 @@ class TestPlinkStreamingErrors:
                 num_samples=2,
                 alleles=[("A", "T", "C")],
             )
+
+
+class TestPlinkStreamingStreamBed:
+    def _src(self, *, num_variants=12, num_samples=7, variants_chunk_size=3):
+        rng = np.random.default_rng(17)
+        genotypes = rng.integers(0, 2, size=(num_variants, num_samples, 2)).astype(
+            np.int8
+        )
+        return _build_source(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=genotypes,
+            variants_chunk_size=variants_chunk_size,
+        )
+
+    def test_yields_full_bed(self):
+        src = self._src()
+        out = b"".join(src.stream_bed())
+        assert out == _materialise_bed(src)
+        assert len(out) == src.bed_size
+
+    def test_first_yield_starts_with_magic(self):
+        src = self._src()
+        first = next(iter(src.stream_bed()))
+        assert first.startswith(plink.BED_MAGIC)
+
+    @pytest.mark.parametrize("chunk_size", [1, 4, 16, 64, 1 << 20])
+    def test_chunk_size_respected(self, chunk_size):
+        src = self._src()
+        fragments = list(src.stream_bed(chunk_size=chunk_size))
+        if len(fragments) > 1:
+            for frag in fragments[:-1]:
+                assert len(frag) == chunk_size
+        assert b"".join(fragments) == _materialise_bed(src)
+
+    def test_invalid_chunk_size_raises(self):
+        src = self._src()
+        with pytest.raises(ValueError, match="chunk_size"):
+            list(src.stream_bed(chunk_size=0))
+        with pytest.raises(ValueError, match="chunk_size"):
+            list(src.stream_bed(chunk_size=-5))
+
+
+class TestPlinkStreamingEquivalence:
+    """``stream_bed`` ⇔ ``read_bed`` whole-file ⇔ Writer.run output."""
+
+    def test_three_paths_byte_identical(self, tmp_path):
+        rng = np.random.default_rng(23)
+        num_variants = 10
+        num_samples = 6
+        genotypes = rng.integers(0, 2, size=(num_variants, num_samples, 2)).astype(
+            np.int8
+        )
+
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=genotypes,
+            variants_chunk_size=3,
+        )
+        src = _build_source(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=genotypes,
+            variants_chunk_size=3,
+        )
+
+        streamed = b"".join(src.stream_bed(chunk_size=7))
+        whole_read = src.read_bed(0, src.bed_size)
+
+        assert streamed == bed_oracle
+        assert whole_read == bed_oracle
+
+        # Concatenated random read_bed slices must also match.
+        slice_size = 5
+        slices = []
+        offset = 0
+        while offset < src.bed_size:
+            slices.append(src.read_bed(offset, slice_size))
+            offset += slice_size
+        assert b"".join(slices) == bed_oracle
+
+
+class TestPlinkStreamingConcurrency:
+    def test_parallel_streams_byte_identical(self):
+        rng = np.random.default_rng(29)
+        num_variants = 30
+        num_samples = 9
+        genotypes = rng.integers(0, 2, size=(num_variants, num_samples, 2)).astype(
+            np.int8
+        )
+        src = _build_source(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=genotypes,
+            variants_chunk_size=4,
+        )
+        expected = _materialise_bed(src)
+
+        def _drain():
+            return b"".join(src.stream_bed(chunk_size=11))
+
+        with cf.ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_drain) for _ in range(4)]
+            results = [f.result() for f in futures]
+        for r in results:
+            assert r == expected
+
+
+class TestPlinkStreamingLifecycle:
+    def test_close_blocks_subsequent_calls(self):
+        src = _build_source()
+        src.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            src.read_bed(0, 1)
+        with pytest.raises(RuntimeError, match="closed"):
+            src.read_tail(10)
+        with pytest.raises(RuntimeError, match="closed"):
+            src.read_variants(slice(0, 1))
+        with pytest.raises(RuntimeError, match="closed"):
+            list(src.stream_bed())
+        with pytest.raises(RuntimeError, match="closed"):
+            _ = src.bim_bytes
+        with pytest.raises(RuntimeError, match="closed"):
+            _ = src.fam_bytes
+        with pytest.raises(RuntimeError, match="closed"):
+            _ = src.num_variants
+
+    def test_close_is_idempotent(self):
+        src = _build_source()
+        src.close()
+        src.close()  # no error
+
+    def test_context_manager(self):
+        with _build_source() as src:
+            assert src.num_variants == 2
+            assert src.read_bed(0, 3) == plink.BED_MAGIC
+        with pytest.raises(RuntimeError, match="closed"):
+            src.read_bed(0, 1)

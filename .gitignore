@@ -169,3 +169,4 @@ vcz_test_cache/
 **/.DS_Store
 performance/results/
 performance/bench.vcz*
+performance/bench_biallelic.vcz*

@@ -310,12 +310,12 @@ class PlinkStreamingSource:
     """Read-only, streaming view of a VCZ store as a PLINK 1 binary
     fileset (``.bed`` / ``.bim`` / ``.fam``).
 
-    Composes the existing PLINK 1 primitives (:func:`compute_a12`,
-    :func:`encode_genotypes`, :func:`generate_bim`, :func:`generate_fam`)
-    with :class:`vcztools.retrieval.VczReader` chunk iteration. No
-    materialised on-disk fileset; the caller streams or randomly reads
-    bytes that are byte-identical to what :func:`write_plink` would
-    produce for the same store.
+    Composes the existing PLINK 1 primitives (``compute_a12``,
+    ``encode_genotypes``, ``generate_bim``, ``generate_fam``) with
+    ``vcztools.retrieval.VczReader`` chunk iteration. No materialised
+    on-disk fileset; the caller streams or randomly reads bytes that
+    are byte-identical to what ``write_plink`` would produce for the
+    same store.
 
     Designed for FUSE / range-HTTP / preview consumers: ``.bim`` and
     ``.fam`` are computed eagerly at construction (small enough to keep
@@ -327,12 +327,12 @@ class PlinkStreamingSource:
     variant-axis fields needed for ``.bim``/``.fam``; no genotype IO.
 
     Each method that does a ranged genotype read constructs a fresh
-    :class:`VczReader` (``set_variants`` is one-shot per reader). This
+    ``VczReader`` (``set_variants`` is one-shot per reader). This
     is concurrency-safe: multiple in-flight ``stream_bed`` /
     ``read_variants`` calls each own their reader and read the
-    immutable ``self._a12`` / ``self._bim_bytes`` / ``self._fam_bytes``
-    without locking. Only :meth:`close` mutates state, guarded by an
-    internal lock for idempotency.
+    immutable cached ``a12``, ``.bim`` and ``.fam`` buffers without
+    locking. Only :meth:`close` mutates state, guarded by an internal
+    lock for idempotency.
 
     Parameters
     ----------
@@ -341,9 +341,9 @@ class PlinkStreamingSource:
         :func:`vcztools.open_zarr` to open a path with the desired
         backend before constructing the source.
     readahead_workers
-        Forwarded to every :class:`VczReader` this source builds.
+        Forwarded to every ``VczReader`` this source builds.
     readahead_bytes
-        Forwarded to every :class:`VczReader` this source builds.
+        Forwarded to every ``VczReader`` this source builds.
     """
 
     BED_MAGIC: ClassVar[bytes] = BED_MAGIC
@@ -496,11 +496,11 @@ class PlinkStreamingSource:
           covering the input and sub-slices the result. Cheap when the
           requested variants are dense in their span.
         - ``"sparse"`` builds a per-chunk plan from the indexes via
-          :func:`vcztools.regions.chunk_plan_from_indexes`. Cheap when
-          the indexes are scattered across many chunks.
+          ``vcztools.regions.chunk_plan_from_indexes``. Cheap when the
+          indexes are scattered across many chunks.
         - ``"auto"`` (default) picks ``"sparse"`` only when the input
-          density is below :attr:`SPARSE_VARIANT_THRESHOLD` AND the
-          span exceeds :attr:`SPARSE_VARIANT_THRESHOLD` * num_variants.
+          density is below ``SPARSE_VARIANT_THRESHOLD`` AND the span
+          exceeds ``SPARSE_VARIANT_THRESHOLD`` * ``num_variants``.
         """
         self._check_open()
 
@@ -626,12 +626,12 @@ class PlinkStreamingSource:
         return self.read_bed(self._bed_size - nbytes, nbytes)
 
     def stream_bed(self, *, chunk_size: int | None = None) -> Iterator[bytes]:
-        """Yield the full ``.bed`` byte content (including
-        :data:`BED_MAGIC` header) in fragments of approximately
-        ``chunk_size`` bytes. Default is :attr:`DEFAULT_STREAM_CHUNK`.
+        """Yield the full ``.bed`` byte content (including the
+        ``BED_MAGIC`` header) in fragments of approximately
+        ``chunk_size`` bytes. Default is ``DEFAULT_STREAM_CHUNK``.
 
         Multiple in-flight calls are independent — each owns its own
-        :class:`VczReader` and reads ``self._a12`` immutably. Callers
+        ``VczReader`` and reads the cached ``a12`` immutably. Callers
         consuming the iterator must drive it to exhaustion (or close
         it) to release the underlying readahead pipeline.
         """
@@ -663,7 +663,7 @@ class PlinkStreamingSource:
 
     def close(self) -> None:
         """Drop the cached ``.bim``/``.fam`` bytes, the a12 array, and
-        the bookkeeping :class:`VczReader`. Idempotent."""
+        the bookkeeping ``VczReader``. Idempotent."""
         with self._lock:
             if self._closed:
                 return

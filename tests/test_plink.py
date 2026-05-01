@@ -931,3 +931,392 @@ class TestWriterEndToEnd:
         assert (tmp_path / f"{stem}.bed").exists()
         assert (tmp_path / f"{stem}.bim").exists()
         assert (tmp_path / f"{stem}.fam").exists()
+
+
+# ---------------------------------------------------------------------------
+# PlinkStreamingSource: read-only streaming view of a VCZ store.
+# ---------------------------------------------------------------------------
+
+
+def _build_source(*, num_variants=2, num_samples=3, **overrides):
+    """Return a PlinkStreamingSource over an in-memory VCZ group."""
+    defaults = dict(
+        variant_contig=[0] * num_variants,
+        variant_position=list(range(100, 100 + num_variants)),
+        alleles=[("A", "T")] * num_variants,
+        num_samples=num_samples,
+        call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
+    )
+    defaults.update(overrides)
+    root = vcz_builder.make_vcz(**defaults)
+    return plink.PlinkStreamingSource(root)
+
+
+def _materialise_bed(src):
+    """Concatenate magic + every variant's encoded bytes."""
+    body = src.read_variants(slice(0, src.num_variants))
+    return plink.BED_MAGIC + body
+
+
+def _write_plink_oracle(tmp_path, *, num_variants, num_samples, **overrides):
+    """Materialise a reference .bed via Writer.run for cross-checks."""
+    defaults = dict(
+        variant_contig=[0] * num_variants,
+        variant_position=list(range(100, 100 + num_variants)),
+        alleles=[("A", "T")] * num_variants,
+        num_samples=num_samples,
+        call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
+    )
+    defaults.update(overrides)
+    root = vcz_builder.make_vcz(**defaults)
+    reader = retrieval.VczReader(root)
+    out = tmp_path / "p"
+    plink.write_plink(reader, out)
+    return (
+        out.with_suffix(".bed").read_bytes(),
+        out.with_suffix(".bim").read_text(),
+        out.with_suffix(".fam").read_text(),
+    )
+
+
+class TestPlinkStreamingMetadata:
+    @pytest.mark.parametrize(
+        ("num_variants", "num_samples"),
+        [(1, 1), (1, 4), (1, 5), (3, 7), (10, 9)],
+    )
+    def test_bed_size_formula(self, num_variants, num_samples):
+        src = _build_source(num_variants=num_variants, num_samples=num_samples)
+        bpv = math.ceil(num_samples / 4)
+        assert src.bytes_per_variant == bpv
+        assert src.bed_size == 3 + num_variants * bpv
+
+    def test_num_variants_and_samples(self):
+        src = _build_source(num_variants=4, num_samples=5)
+        assert src.num_variants == 4
+        assert src.num_samples == 5
+
+    def test_fam_bytes_match_generate_fam(self):
+        src = _build_source(num_variants=2, num_samples=3, sample_id=["s0", "s1", "s2"])
+        reader = retrieval.VczReader(src._root)
+        assert src.fam_bytes == plink.generate_fam(reader).encode("utf-8")
+        assert src.fam_size == len(src.fam_bytes)
+
+    def test_bim_bytes_match_writer_output(self, tmp_path):
+        _, bim_text, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=3,
+            num_samples=2,
+            variant_position=[100, 200, 300],
+            alleles=[("A", "T"), ("C", "G"), ("G", "A")],
+        )
+        src = _build_source(
+            num_variants=3,
+            num_samples=2,
+            variant_position=[100, 200, 300],
+            alleles=[("A", "T"), ("C", "G"), ("G", "A")],
+        )
+        assert src.bim_bytes == bim_text.encode("utf-8")
+        assert src.bim_size == len(src.bim_bytes)
+
+
+class TestPlinkStreamingReadVariants:
+    def _src_with_genotypes(self, num_variants=8, num_samples=5, variants_chunk_size=3):
+        rng = np.random.default_rng(7)
+        genotypes = rng.integers(0, 2, size=(num_variants, num_samples, 2)).astype(
+            np.int8
+        )
+        return (
+            _build_source(
+                num_variants=num_variants,
+                num_samples=num_samples,
+                call_genotype=genotypes,
+                variants_chunk_size=variants_chunk_size,
+            ),
+            genotypes,
+        )
+
+    def test_full_slice_matches_writer(self, tmp_path):
+        rng = np.random.default_rng(11)
+        genotypes = rng.integers(0, 2, size=(7, 4, 2)).astype(np.int8)
+        bed, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=7,
+            num_samples=4,
+            call_genotype=genotypes,
+            variants_chunk_size=2,
+        )
+        src = _build_source(
+            num_variants=7,
+            num_samples=4,
+            call_genotype=genotypes,
+            variants_chunk_size=2,
+        )
+        # read_variants does not emit BED_MAGIC, so compare against bed[3:].
+        out = src.read_variants(slice(0, src.num_variants))
+        assert out == bed[3:]
+
+    @pytest.mark.parametrize("strategy", ["auto", "contiguous", "sparse"])
+    def test_full_slice_strategies_agree(self, strategy):
+        src, _ = self._src_with_genotypes()
+        ref = src.read_variants(slice(0, src.num_variants), strategy="contiguous")
+        out = src.read_variants(slice(0, src.num_variants), strategy=strategy)
+        assert out == ref
+
+    @pytest.mark.parametrize(
+        ("start", "stop"),
+        [(0, 1), (1, 4), (3, 6), (0, 8), (2, 8), (5, 7)],
+    )
+    def test_partial_slice_matches_full(self, start, stop):
+        src, _ = self._src_with_genotypes()
+        full = src.read_variants(slice(0, src.num_variants))
+        partial = src.read_variants(slice(start, stop))
+        bpv = src.bytes_per_variant
+        assert partial == full[start * bpv : stop * bpv]
+
+    def test_empty_slice_returns_empty(self):
+        src, _ = self._src_with_genotypes()
+        assert src.read_variants(slice(0, 0)) == b""
+        assert src.read_variants(slice(3, 3)) == b""
+
+    def test_slice_step_not_one_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(ValueError, match="step=1"):
+            src.read_variants(slice(0, 5, 2))
+
+    def test_slice_clamps_oversized(self):
+        src, _ = self._src_with_genotypes()
+        full = src.read_variants(slice(0, src.num_variants))
+        # Oversized stop is clamped to num_variants.
+        assert src.read_variants(slice(0, 10000)) == full
+
+    @pytest.mark.parametrize("strategy", ["auto", "sparse", "contiguous"])
+    def test_ndarray_matches_per_variant_slices(self, strategy):
+        src, _ = self._src_with_genotypes()
+        bpv = src.bytes_per_variant
+        full = src.read_variants(slice(0, src.num_variants))
+        idx = np.array([0, 2, 5, 7], dtype=np.int64)
+        out = src.read_variants(idx, strategy=strategy)
+        expected = b"".join(full[i * bpv : (i + 1) * bpv] for i in idx)
+        assert out == expected
+
+    def test_ndarray_duplicates_kept(self):
+        src, _ = self._src_with_genotypes()
+        bpv = src.bytes_per_variant
+        full = src.read_variants(slice(0, src.num_variants))
+        idx = np.array([1, 1, 4, 4, 4], dtype=np.int64)
+        out = src.read_variants(idx, strategy="sparse")
+        expected = b"".join(full[i * bpv : (i + 1) * bpv] for i in idx)
+        assert out == expected
+
+    def test_ndarray_unsorted_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(ValueError, match="sorted"):
+            src.read_variants(np.array([3, 1, 2]))
+
+    def test_ndarray_out_of_range_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(IndexError):
+            src.read_variants(np.array([0, src.num_variants]))
+        with pytest.raises(IndexError):
+            src.read_variants(np.array([-1, 0]))
+
+    def test_ndarray_empty_returns_empty(self):
+        src, _ = self._src_with_genotypes()
+        assert src.read_variants(np.array([], dtype=np.int64)) == b""
+
+    def test_ndarray_non_integer_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(ValueError, match="integer"):
+            src.read_variants(np.array([0.0, 1.0]))
+
+    def test_unknown_strategy_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(ValueError, match="unknown strategy"):
+            src.read_variants(np.array([0, 1]), strategy="bogus")
+
+    def test_unknown_strategy_with_slice_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(ValueError, match="unknown strategy"):
+            src.read_variants(slice(0, 2), strategy="bogus")
+
+    def test_ndarray_2d_raises(self):
+        src, _ = self._src_with_genotypes()
+        with pytest.raises(ValueError, match="1-D"):
+            src.read_variants(np.array([[0, 1], [2, 3]]))
+
+    def test_auto_picks_sparse_for_low_density_wide_span(self):
+        # density < 0.01 AND span > 0.01 * num_variants: auto -> sparse.
+        rng = np.random.default_rng(13)
+        num_variants = 500
+        num_samples = 4
+        genotypes = rng.integers(0, 2, size=(num_variants, num_samples, 2)).astype(
+            np.int8
+        )
+        src = _build_source(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=genotypes,
+            variants_chunk_size=20,
+        )
+        idx = np.array([5, 250, 495], dtype=np.int64)
+        # The auto path should match an explicit sparse path byte-for-byte.
+        auto_bytes = src.read_variants(idx, strategy="auto")
+        sparse_bytes = src.read_variants(idx, strategy="sparse")
+        assert auto_bytes == sparse_bytes
+
+    def test_slice_with_sparse_strategy_matches_contiguous(self):
+        src, _ = self._src_with_genotypes()
+        ref = src.read_variants(slice(1, 6), strategy="contiguous")
+        out = src.read_variants(slice(1, 6), strategy="sparse")
+        assert out == ref
+
+
+class TestPlinkStreamingReadBed:
+    def _src(self):
+        rng = np.random.default_rng(3)
+        genotypes = rng.integers(0, 2, size=(5, 7, 2)).astype(np.int8)
+        return _build_source(
+            num_variants=5,
+            num_samples=7,
+            call_genotype=genotypes,
+            variants_chunk_size=2,
+        )
+
+    def test_negative_offset_raises(self):
+        src = self._src()
+        with pytest.raises(ValueError, match="offset"):
+            src.read_bed(-1, 10)
+
+    def test_negative_size_raises(self):
+        src = self._src()
+        with pytest.raises(ValueError, match="size"):
+            src.read_bed(0, -1)
+
+    def test_offset_at_or_past_eof_returns_empty(self):
+        src = self._src()
+        assert src.read_bed(src.bed_size, 100) == b""
+        assert src.read_bed(src.bed_size + 100, 100) == b""
+
+    def test_zero_size_returns_empty(self):
+        src = self._src()
+        assert src.read_bed(0, 0) == b""
+
+    def test_magic_header_slices(self):
+        src = self._src()
+        assert src.read_bed(0, 1) == plink.BED_MAGIC[:1]
+        assert src.read_bed(0, 3) == plink.BED_MAGIC
+        assert src.read_bed(1, 2) == plink.BED_MAGIC[1:3]
+        assert src.read_bed(2, 1) == plink.BED_MAGIC[2:3]
+
+    def test_magic_header_plus_genotypes(self):
+        src = self._src()
+        full = _materialise_bed(src)
+        assert len(full) == src.bed_size
+        assert src.read_bed(0, src.bed_size) == full
+        # Span covering both magic and genotype bytes.
+        assert src.read_bed(2, 4) == full[2:6]
+
+    def test_genotype_only_range(self):
+        src = self._src()
+        full = _materialise_bed(src)
+        bpv = src.bytes_per_variant
+        # Mid-variant offset.
+        assert src.read_bed(3 + bpv + 1, 1) == full[3 + bpv + 1 : 3 + bpv + 2]
+        # Single full variant row.
+        assert src.read_bed(3 + bpv, bpv) == full[3 + bpv : 3 + 2 * bpv]
+        # Up to EOF.
+        tail_start = src.bed_size - 2
+        assert src.read_bed(tail_start, 100) == full[tail_start : src.bed_size]
+
+    @pytest.mark.parametrize(
+        ("offset", "size"),
+        [
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (0, 4),
+            (1, 1),
+            (2, 5),
+            (3, 1),
+            (3, 7),
+        ],
+    )
+    def test_assorted_ranges_match_oracle(self, offset, size):
+        src = self._src()
+        full = _materialise_bed(src)
+        assert src.read_bed(offset, size) == full[offset : offset + size]
+
+
+class TestPlinkStreamingReadTail:
+    def _src(self):
+        rng = np.random.default_rng(5)
+        genotypes = rng.integers(0, 2, size=(6, 5, 2)).astype(np.int8)
+        return _build_source(
+            num_variants=6,
+            num_samples=5,
+            call_genotype=genotypes,
+            variants_chunk_size=2,
+        )
+
+    @pytest.mark.parametrize("nbytes", [1, 4, 13])
+    def test_returns_tail(self, nbytes):
+        src = self._src()
+        full = src.read_bed(0, src.bed_size)
+        assert src.read_tail(nbytes) == full[-nbytes:]
+
+    def test_oversized_clamps(self):
+        src = self._src()
+        full = src.read_bed(0, src.bed_size)
+        assert src.read_tail(src.bed_size + 100) == full
+        assert len(src.read_tail(src.bed_size + 100)) == src.bed_size
+
+    def test_default_nbytes(self):
+        src = self._src()
+        # Default 4096 > bed_size for this small store: clamps to full file.
+        assert src.read_tail() == src.read_bed(0, src.bed_size)
+
+    @pytest.mark.parametrize("nbytes", [0, -1, -100])
+    def test_non_positive_raises(self, nbytes):
+        src = self._src()
+        with pytest.raises(ValueError, match="nbytes"):
+            src.read_tail(nbytes)
+
+
+class TestPlinkStreamingEmptyStore:
+    def test_zero_variants(self):
+        # vcz_builder.make_vcz infers region_index shape from row count,
+        # so for 0 variants we pass an explicit (0, 6) array.
+        root = vcz_builder.make_vcz(
+            variant_contig=np.zeros(0, dtype=np.int32),
+            variant_position=np.zeros(0, dtype=np.int32),
+            alleles=np.zeros((0, 2), dtype="<U16"),
+            num_samples=3,
+            sample_id=["s0", "s1", "s2"],
+            call_genotype=np.zeros((0, 3, 2), dtype=np.int8),
+            region_index=np.zeros((0, 6), dtype=np.int32),
+        )
+        src = plink.PlinkStreamingSource(root)
+        assert src.num_variants == 0
+        assert src.bytes_per_variant == math.ceil(3 / 4)
+        assert src.bed_size == 3
+        assert src.read_bed(0, 100) == plink.BED_MAGIC
+        assert src.read_variants(slice(0, 0)) == b""
+        assert src.read_variants(np.array([], dtype=np.int64)) == b""
+        # Tail reads still work — clamp to the magic bytes.
+        assert src.read_tail(100) == plink.BED_MAGIC
+
+
+class TestPlinkStreamingErrors:
+    def test_init_succeeds_with_valid_store(self):
+        # Sanity: nothing in __init__ raises for the simple defaults.
+        src = _build_source()
+        assert src.num_variants == 2
+
+    def test_multiallelic_raises_at_init(self):
+        # compute_a12 rejects multi-allelic — must surface at __init__.
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            _build_source(
+                num_variants=1,
+                num_samples=2,
+                alleles=[("A", "T", "C")],
+            )

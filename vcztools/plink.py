@@ -13,7 +13,6 @@ normalisation, and known divergences from plink 2 — see
 ``docs/plink.md``.
 """
 
-import bisect
 import pathlib
 import threading
 from typing import ClassVar
@@ -318,11 +317,8 @@ class BedEncoder:
         # plan_pos == yielded_pos, but we record the mapping explicitly
         # so the binary search in _restart doesn't bake in that
         # assumption.
-        self._chunk_byte_offsets: list[int] = [3]
-        self._chunk_plan_indices: list[int] = []
-        self._num_variants = 0
         self._pre_walk()
-        self._bed_size = self._chunk_byte_offsets[-1]
+        self._bed_size = int(self._chunk_byte_offsets[-1])
 
         self._iterator = None
         self._cur_byte_offset = None
@@ -331,15 +327,21 @@ class BedEncoder:
 
     def _pre_walk(self) -> None:
         bpv = self._bytes_per_variant
+        byte_offsets = [3]
+        plan_indices = []
+        num_variants = 0
         for plan_pos, chunk_data in enumerate(
             self._reader.variant_chunks(fields=["variant_allele"])
         ):
             alleles = chunk_data["variant_allele"]
             _check_biallelic(alleles)
             n = len(alleles)
-            self._num_variants += n
-            self._chunk_plan_indices.append(plan_pos)
-            self._chunk_byte_offsets.append(self._chunk_byte_offsets[-1] + n * bpv)
+            num_variants += n
+            plan_indices.append(plan_pos)
+            byte_offsets.append(byte_offsets[-1] + n * bpv)
+        self._chunk_byte_offsets = np.array(byte_offsets, dtype=np.int64)
+        self._chunk_plan_indices = np.array(plan_indices, dtype=np.int64)
+        self._num_variants = num_variants
 
     def _check_open(self) -> None:
         if self._closed:
@@ -397,17 +399,21 @@ class BedEncoder:
         if off < 3:
             self._pending = bytearray(BED_MAGIC[off:3])
             self._first_chunk_skip = 0
-            target_plan_pos = (
-                self._chunk_plan_indices[0] if len(self._chunk_plan_indices) > 0 else 0
-            )
+            if self._chunk_plan_indices.size > 0:
+                target_plan_pos = int(self._chunk_plan_indices[0])
+            else:
+                target_plan_pos = 0
         else:
-            # bisect_right - 1: largest yielded position whose start
-            # offset is <= off. _chunk_byte_offsets has len(yielded)+1
-            # entries (the trailing entry is bed_size); off < bed_size
-            # is guaranteed by read(), so the index is in range.
-            yielded_pos = bisect.bisect_right(self._chunk_byte_offsets, off) - 1
-            target_plan_pos = self._chunk_plan_indices[yielded_pos]
-            self._first_chunk_skip = off - self._chunk_byte_offsets[yielded_pos]
+            # searchsorted(side="right") - 1: largest yielded position
+            # whose start offset is <= off. _chunk_byte_offsets has
+            # len(yielded)+1 entries (the trailing entry is bed_size);
+            # off < bed_size is guaranteed by read(), so the index is
+            # in range.
+            yielded_pos = (
+                int(np.searchsorted(self._chunk_byte_offsets, off, side="right")) - 1
+            )
+            target_plan_pos = int(self._chunk_plan_indices[yielded_pos])
+            self._first_chunk_skip = off - int(self._chunk_byte_offsets[yielded_pos])
             self._pending = bytearray()
         self._iterator = self._reader.variant_chunks(
             fields=["call_genotype"],

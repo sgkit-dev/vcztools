@@ -55,7 +55,4 @@ root = vcztools.open_zarr(store)
 
 .. autofunction:: vcztools.open_zarr
 
-.. autoclass:: vcztools.BedEncoder
-   :members:
-
 ```

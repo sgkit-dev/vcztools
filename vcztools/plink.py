@@ -13,6 +13,7 @@ normalisation, and known divergences from plink 2 — see
 ``docs/plink.md``.
 """
 
+import bisect
 import pathlib
 import threading
 from typing import ClassVar
@@ -278,30 +279,67 @@ class BedEncoder:
     ``.fam`` files, use :func:`generate_bim` and :func:`generate_fam`
     directly.
 
-    Requires the reader's variant axis to be the default (full-store)
-    plan; do not call ``reader.set_variants()`` before constructing
-    an encoder.
+    Honours :meth:`~vcztools.retrieval.VczReader.set_samples` and
+    :meth:`~vcztools.retrieval.VczReader.set_variants` configured on
+    the reader before construction. With ``set_variants``, the encoded
+    ``.bed`` covers exactly the selected variants in chunk-plan order;
+    :attr:`bed_size` and :attr:`num_variants` reflect the selection.
+    Construction performs an eager biallelic check by reading
+    ``variant_allele`` for the selected chunks only — variants outside
+    the selection are not inspected.
+
+    :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
+    yet supported and raises ``NotImplementedError`` at construction;
+    apply predicate filters externally before passing the reader in.
     """
 
     BED_MAGIC: ClassVar[bytes] = BED_MAGIC
 
     def __init__(self, reader: retrieval.VczReader):
+        if reader.variant_filter is not None:
+            raise NotImplementedError(
+                "BedEncoder does not yet support readers with a "
+                "set_variant_filter() configured. Apply the filter "
+                "externally and pass the resulting reader, or use "
+                "set_variants() to materialise the surviving indices."
+            )
+
         self._reader = reader
         self._closed = False
         self._lock = threading.Lock()
 
-        self._num_variants = reader.num_variants
         self._num_samples = int(reader.sample_ids.size)
-        self._variants_chunk_size = reader.variants_chunk_size
         self._bytes_per_variant = (self._num_samples + 3) // 4
-        self._bed_size = 3 + self._num_variants * self._bytes_per_variant
 
-        _check_biallelic(reader.root["variant_allele"][:])
+        # _chunk_byte_offsets: cumulative byte offset per yielded chunk,
+        # starting at 3 (post-magic). _chunk_plan_indices: plan position
+        # of each yielded chunk, used by _restart to resume iteration.
+        # Without a variant_filter (the only case currently supported),
+        # plan_pos == yielded_pos, but we record the mapping explicitly
+        # so the binary search in _restart doesn't bake in that
+        # assumption.
+        self._chunk_byte_offsets: list[int] = [3]
+        self._chunk_plan_indices: list[int] = []
+        self._num_variants = 0
+        self._pre_walk()
+        self._bed_size = self._chunk_byte_offsets[-1]
 
         self._iterator = None
         self._cur_byte_offset = None
         self._pending = bytearray()
         self._first_chunk_skip = 0
+
+    def _pre_walk(self) -> None:
+        bpv = self._bytes_per_variant
+        for plan_pos, chunk_data in enumerate(
+            self._reader.variant_chunks(fields=["variant_allele"])
+        ):
+            alleles = chunk_data["variant_allele"]
+            _check_biallelic(alleles)
+            n = len(alleles)
+            self._num_variants += n
+            self._chunk_plan_indices.append(plan_pos)
+            self._chunk_byte_offsets.append(self._chunk_byte_offsets[-1] + n * bpv)
 
     def _check_open(self) -> None:
         if self._closed:
@@ -356,20 +394,24 @@ class BedEncoder:
 
     def _restart(self, off: int) -> None:
         self._teardown_iterator()
-        bpv = self._bytes_per_variant
         if off < 3:
             self._pending = bytearray(BED_MAGIC[off:3])
-            target_chunk = 0
             self._first_chunk_skip = 0
+            target_plan_pos = (
+                self._chunk_plan_indices[0] if len(self._chunk_plan_indices) > 0 else 0
+            )
         else:
-            geno_off = off - 3
-            target_variant = geno_off // bpv
-            target_chunk = target_variant // self._variants_chunk_size
-            chunk_first_byte = 3 + target_chunk * self._variants_chunk_size * bpv
-            self._first_chunk_skip = off - chunk_first_byte
+            # bisect_right - 1: largest yielded position whose start
+            # offset is <= off. _chunk_byte_offsets has len(yielded)+1
+            # entries (the trailing entry is bed_size); off < bed_size
+            # is guaranteed by read(), so the index is in range.
+            yielded_pos = bisect.bisect_right(self._chunk_byte_offsets, off) - 1
+            target_plan_pos = self._chunk_plan_indices[yielded_pos]
+            self._first_chunk_skip = off - self._chunk_byte_offsets[yielded_pos]
+            self._pending = bytearray()
         self._iterator = self._reader.variant_chunks(
             fields=["call_genotype"],
-            start=target_chunk,
+            start=target_plan_pos,
         )
         self._cur_byte_offset = off
 

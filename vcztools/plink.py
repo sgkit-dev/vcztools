@@ -14,7 +14,6 @@ normalisation, and known divergences from plink 2 — see
 """
 
 import pathlib
-import threading
 from typing import ClassVar
 
 import numpy as np
@@ -270,9 +269,14 @@ class BedEncoder:
     iterator at the chunk covering the requested offset (one chunk's
     decode overhead).
 
-    Multiple encoders can share one :class:`~vcztools.retrieval.VczReader`
-    safely (each iteration is independent). The caller owns the reader's
-    lifetime — :meth:`close` does not close it.
+    Concurrency: a single :class:`BedEncoder` instance is **not**
+    thread-safe — :meth:`read` and :meth:`close` must be serialised
+    by the caller (one encoder per consumer: thread, FUSE handle,
+    range-HTTP connection). Multiple :class:`BedEncoder` instances
+    may share one :class:`~vcztools.retrieval.VczReader` safely;
+    each encoder runs an independent variant-chunk iteration on the
+    reader. The caller owns the reader's lifetime — :meth:`close`
+    tears down the encoder's iterator only, not the reader.
 
     Scope is the ``.bed`` stream only. For the companion ``.bim`` and
     ``.fam`` files, use :func:`generate_bim` and :func:`generate_fam`
@@ -305,7 +309,6 @@ class BedEncoder:
 
         self._reader = reader
         self._closed = False
-        self._lock = threading.Lock()
 
         self._num_samples = int(reader.sample_ids.size)
         self._bytes_per_variant = (self._num_samples + 3) // 4
@@ -387,11 +390,10 @@ class BedEncoder:
         if off >= self._bed_size or size == 0:
             return b""
         end = min(off + size, self._bed_size)
-        with self._lock:
-            if self._cur_byte_offset != off:
-                self._restart(off)
-            out = self._drain(end - off)
-            self._cur_byte_offset = off + len(out)
+        if self._cur_byte_offset != off:
+            self._restart(off)
+        out = self._drain(end - off)
+        self._cur_byte_offset = off + len(out)
         return out
 
     def _restart(self, off: int) -> None:
@@ -410,7 +412,7 @@ class BedEncoder:
             # off < bed_size is guaranteed by read(), so the index is
             # in range.
             yielded_pos = (
-                int(np.searchsorted(self._chunk_byte_offsets, off, side="right")) - 1
+                np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1
             )
             target_plan_pos = int(self._chunk_plan_indices[yielded_pos])
             self._first_chunk_skip = off - int(self._chunk_byte_offsets[yielded_pos])
@@ -451,12 +453,11 @@ class BedEncoder:
     def close(self) -> None:
         """Tear down the active chunk iterator and drop iterator
         state. Does not close the underlying reader. Idempotent."""
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._teardown_iterator()
-            self._cur_byte_offset = None
+        if self._closed:
+            return
+        self._closed = True
+        self._teardown_iterator()
+        self._cur_byte_offset = None
 
     def __enter__(self):
         return self

@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from tests import vcz_builder
-from vcztools import bcftools_filter, plink, retrieval
+from vcztools import bcftools_filter, plink, retrieval, utils
 
 # ---------------------------------------------------------------------------
 # Python reference encoder used to cross-check the C-level encoder.
@@ -1200,3 +1200,215 @@ class TestBedEncoderRestartCount:
         enc.read(3 + 8 * bpv, 5)
         enc.read(3 + 4 * bpv, 5)
         assert counter["n"] == 3
+
+
+# ---------------------------------------------------------------------------
+# BedEncoder honours reader.set_variants() — region/index-based selection
+# of the variant axis. bed_size and num_variants reflect the selection.
+# ---------------------------------------------------------------------------
+
+
+def _select_oracle(bed_oracle, indexes, bpv):
+    """Return a BED whose body is exactly the rows at ``indexes``,
+    sliced from the full-store oracle."""
+    out = bytearray(plink.BED_MAGIC)
+    for i in indexes:
+        start = 3 + i * bpv
+        out += bed_oracle[start : start + bpv]
+    return bytes(out)
+
+
+class TestBedEncoderWithSetVariants:
+    def test_index_array_basic(self, tmp_path):
+        gt = _varied_genotypes(num_variants=20, num_samples=11)
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=20,
+            num_samples=11,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader = _build_reader(
+            num_variants=20,
+            num_samples=11,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        indexes = np.array([3, 4, 5, 9, 10], dtype=np.int64)
+        reader.set_variants(indexes)
+        enc = plink.BedEncoder(reader)
+
+        bpv = enc.bytes_per_variant
+        assert enc.num_variants == len(indexes)
+        assert enc.bed_size == 3 + len(indexes) * bpv
+
+        out = enc.read(0, enc.bed_size)
+        assert out == _select_oracle(bed_oracle, indexes, bpv)
+
+    def test_chunk_read_list_spanning_two_chunks(self, tmp_path):
+        gt = _varied_genotypes(num_variants=12, num_samples=7)
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=12,
+            num_samples=7,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader = _build_reader(
+            num_variants=12,
+            num_samples=7,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        # ChunkRead-list form (region-style): chunk 0 keeps variants 1,3;
+        # chunk 2 keeps variants 8,9 (slice 0:2 within the chunk).
+        plan = [
+            utils.ChunkRead(index=0, selection=np.array([1, 3], dtype=np.int64)),
+            utils.ChunkRead(index=2, selection=slice(0, 2)),
+        ]
+        reader.set_variants(plan)
+        enc = plink.BedEncoder(reader)
+
+        bpv = enc.bytes_per_variant
+        expected_indexes = [1, 3, 8, 9]
+        assert enc.num_variants == len(expected_indexes)
+        assert enc.bed_size == 3 + len(expected_indexes) * bpv
+
+        out = enc.read(0, enc.bed_size)
+        assert out == _select_oracle(bed_oracle, expected_indexes, bpv)
+
+    @pytest.mark.parametrize("step", [1, 7, 4096])
+    def test_step_sizes_reassemble_selected_bed(self, tmp_path, step):
+        gt = _varied_genotypes(num_variants=20, num_samples=11)
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=20,
+            num_samples=11,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader = _build_reader(
+            num_variants=20,
+            num_samples=11,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        indexes = np.array([2, 6, 7, 13, 18, 19], dtype=np.int64)
+        reader.set_variants(indexes)
+        enc = plink.BedEncoder(reader)
+        bpv = enc.bytes_per_variant
+
+        out = bytearray()
+        off = 0
+        while off < enc.bed_size:
+            chunk = enc.read(off, step)
+            assert len(chunk) > 0
+            out += chunk
+            off += len(chunk)
+        assert bytes(out) == _select_oracle(bed_oracle, indexes, bpv)
+
+    def test_jump_back_with_selection(self, tmp_path):
+        gt = _varied_genotypes(num_variants=20, num_samples=5)
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=20,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader = _build_reader(
+            num_variants=20,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        # Two non-contiguous chunks worth of variants.
+        indexes = np.array([4, 5, 6, 7, 12, 13, 14, 15], dtype=np.int64)
+        reader.set_variants(indexes)
+        enc = plink.BedEncoder(reader)
+        bpv = enc.bytes_per_variant
+        selected = _select_oracle(bed_oracle, indexes, bpv)
+
+        # Forward, then jump back into the first selected chunk.
+        a = enc.read(3 + 4 * bpv, 4 * bpv)
+        b = enc.read(3, 4 * bpv)
+        c = enc.read(3 + 6 * bpv, 2 * bpv)
+        assert a == selected[3 + 4 * bpv : 3 + 8 * bpv]
+        assert b == selected[3 : 3 + 4 * bpv]
+        assert c == selected[3 + 6 * bpv : 3 + 8 * bpv]
+
+    def test_empty_selection_only_magic(self):
+        reader = _build_reader(num_variants=5, num_samples=4)
+        reader.set_variants(np.array([], dtype=np.int64))
+        enc = plink.BedEncoder(reader)
+        assert enc.num_variants == 0
+        assert enc.bed_size == 3
+        assert enc.read(0, 100) == plink.BED_MAGIC
+        assert enc.read(3, 1) == b""
+
+    def test_biallelic_check_scoped_to_selection(self):
+        # variants_chunk_size=2 puts variant 2 (the tri-allelic) alone
+        # in chunk 1; chunks 0 and 2 are biallelic.
+        alleles = [
+            ("A", "T"),
+            ("A", "T"),
+            ("A", "T", "G"),
+            ("A", "T"),
+            ("A", "T"),
+        ]
+        # Selection avoids the multi-allelic chunk: should construct
+        # cleanly even though the store has a tri-allelic.
+        reader_ok = _build_reader(
+            num_variants=5,
+            num_samples=3,
+            alleles=alleles,
+            variants_chunk_size=2,
+        )
+        reader_ok.set_variants(np.array([0, 1, 3, 4], dtype=np.int64))
+        enc = plink.BedEncoder(reader_ok)
+        assert enc.num_variants == 4
+
+    def test_biallelic_check_raises_on_selected_multi_allelic(self):
+        alleles = [
+            ("A", "T"),
+            ("A", "T"),
+            ("A", "T", "G"),
+            ("A", "T"),
+            ("A", "T"),
+        ]
+        reader = _build_reader(
+            num_variants=5,
+            num_samples=3,
+            alleles=alleles,
+            variants_chunk_size=2,
+        )
+        # Index 2 lands in chunk 1 alongside the tri-allelic.
+        reader.set_variants(np.array([2], dtype=np.int64))
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            plink.BedEncoder(reader)
+
+    def test_set_variant_filter_is_rejected(self):
+        reader = _build_reader(num_variants=5, num_samples=3)
+        reader.set_variant_filter(plink.MaxAllelesFilter(2))
+        with pytest.raises(NotImplementedError, match="set_variant_filter"):
+            plink.BedEncoder(reader)
+
+    def test_restart_count_with_selection(self, tmp_path):
+        gt = _varied_genotypes(num_variants=20, num_samples=5)
+        reader = _build_reader(
+            num_variants=20,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        # Selection covers two non-contiguous chunks.
+        reader.set_variants(np.array([4, 5, 12, 13], dtype=np.int64))
+        enc = plink.BedEncoder(reader)
+
+        counter = TestBedEncoderRestartCount._wrap_restart(enc)
+        # Sequential drain: exactly one restart.
+        off = 0
+        while off < enc.bed_size:
+            chunk = enc.read(off, 7)
+            off += len(chunk)
+        assert counter["n"] == 1

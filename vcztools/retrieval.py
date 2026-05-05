@@ -210,6 +210,10 @@ class ReadaheadPipeline:
         # consumed by VczReader.variant_chunks to attribute per-chunk time
         # into "read" vs. "assemble".
         self.last_chunk_read_seconds: float | None = None
+        # Sum of utils.array_memory_bytes() over the most recent chunk's
+        # decompressed blocks; consumed by VczReader.variant_chunks to
+        # accumulate retrieval-side throughput stats.
+        self.last_chunk_bytes: int | None = None
         self._executor = cf.ThreadPoolExecutor(
             max_workers=workers,
             thread_name_prefix="vcztools-readahead",
@@ -272,6 +276,7 @@ class ReadaheadPipeline:
                 read_seconds = time.perf_counter() - read_start
                 self.last_chunk_read_seconds = read_seconds
                 chunk_bytes = sum(utils.array_memory_bytes(v) for v in blocks.values())
+                self.last_chunk_bytes = chunk_bytes
                 if self._per_chunk_bytes is None:
                     self._per_chunk_bytes = chunk_bytes
                     if self._readahead_bytes > 0 and chunk_bytes > 0:
@@ -953,11 +958,13 @@ class VczReader:
         chunks_visited = 0
         chunks_yielded = 0
         variants_yielded = 0
+        bytes_yielded = 0
         iter_start = time.perf_counter()
         for chunk in pipeline:
             chunks_visited += 1
             chunk_start = time.perf_counter()
             read_seconds = pipeline.last_chunk_read_seconds or 0.0
+            bytes_yielded += pipeline.last_chunk_bytes or 0
             # variants_selection: 1-D bool over the chunk's variant axis, or
             # None meaning "no filter, keep every variant".
             # sample_filter_pass: 2-D bool over (surviving variants, output
@@ -1036,10 +1043,13 @@ class VczReader:
             )
             yield chunk_data
         elapsed = time.perf_counter() - iter_start
+        mib = bytes_yielded / (1024 * 1024)
+        rate = mib / elapsed if elapsed > 0 else 0.0
         logger.info(
             f"variant_chunks: iteration done in {elapsed:.2f}s "
             f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
-            f"{variants_yielded} variants)"
+            f"{variants_yielded} variants, "
+            f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s)"
         )
 
     def _resolve_query_fields(self, fields):

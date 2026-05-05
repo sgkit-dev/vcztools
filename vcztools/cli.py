@@ -1,5 +1,6 @@
 import contextlib
 import json
+import logging
 import os
 import sys
 import warnings
@@ -110,6 +111,33 @@ targets_file = click.option(
     help="File of target regions to include.",
 )
 version = click.version_option(version=f"{provenance.__version__}")
+
+log_level = click.option(
+    "--log-level",
+    type=click.Choice(["WARNING", "INFO", "DEBUG"], case_sensitive=False),
+    default="WARNING",
+    show_default=True,
+    help="Logging verbosity.",
+)
+log_file = click.option(
+    "--log-file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="Write log output to FILE instead of stderr.",
+)
+
+
+def setup_logging(level: str, log_file: str | None) -> None:
+    if log_file is not None:
+        handler: logging.Handler = logging.FileHandler(log_file)
+    else:
+        handler = logging.StreamHandler()
+    logging.basicConfig(
+        level=level.upper(),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        handlers=[handler],
+        force=True,
+    )
 
 
 def _zarr_backend_storage_alias_callback(ctx, param, value):
@@ -348,13 +376,16 @@ class NaturalOrderGroup(click.Group):
 )
 @backend_storage
 @storage_option
+@log_level
+@log_file
 @handle_exception
-def index(path, nrecords, stats, backend_storage, storage_options):
+def index(path, nrecords, stats, backend_storage, storage_options, log_level, log_file):
     """
     Query the number of records in a VCZ dataset. This subcommand only
     implements the --nrecords and --stats options and does not build any
     indexes.
     """
+    setup_logging(log_level, log_file)
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
     if not nrecords and not stats:
@@ -406,6 +437,8 @@ def index(path, nrecords, stats, backend_storage, storage_options):
 )
 @backend_storage
 @storage_option
+@log_level
+@log_file
 @handle_exception
 def query(
     path,
@@ -424,6 +457,8 @@ def query(
     disable_automatic_newline,
     backend_storage,
     storage_options,
+    log_level,
+    log_file,
 ):
     """
     Transform VCZ into user-defined formats with efficient subsetting and
@@ -434,6 +469,7 @@ def query(
     particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
+    setup_logging(log_level, log_file)
     parsed_storage_options = _parse_storage_options(storage_options)
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
@@ -518,6 +554,8 @@ def query(
 @exclude
 @backend_storage
 @storage_option
+@log_level
+@log_file
 @handle_exception
 def view(
     path,
@@ -538,6 +576,8 @@ def view(
     exclude,
     backend_storage,
     storage_options,
+    log_level,
+    log_file,
 ):
     """
     Convert VCZ dataset to VCF with efficient subsetting and filtering.
@@ -548,6 +588,7 @@ def view(
     particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
+    setup_logging(log_level, log_file)
     suffix = output.name.split(".")[-1]
     # Exclude suffixes which require bgzipped or BCF output:
     # https://github.com/samtools/htslib/blob/329e7943b7ba3f0af15b0eaa00a367a1ac15bd83/vcf.c#L3815
@@ -620,6 +661,8 @@ def view(
 )
 @backend_storage
 @storage_option
+@log_level
+@log_file
 @handle_exception
 def view_bed(
     path,
@@ -636,6 +679,8 @@ def view_bed(
     out,
     backend_storage,
     storage_options,
+    log_level,
+    log_file,
 ):
     """
     Generate a PLINK 1 binary fileset (.bed/.bim/.fam) from a VCZ
@@ -652,6 +697,7 @@ def view_bed(
     (``--keep-allele-order``), REGENIE, BOLT-LMM, and other
     downstream tools.
     """
+    setup_logging(log_level, log_file)
     reader = make_reader(
         path,
         regions=regions,

@@ -396,11 +396,11 @@ def index(path, nrecords, stats, backend_storage, storage_options, log_level, lo
         backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
     )
-    reader = retrieval.VczReader(root)
-    if nrecords:
-        stats_module.nrecords(reader, sys.stdout)
-    else:
-        stats_module.stats(reader, sys.stdout)
+    with retrieval.VczReader(root) as reader:
+        if nrecords:
+            stats_module.nrecords(reader, sys.stdout)
+        else:
+            stats_module.stats(reader, sys.stdout)
 
 
 @click.command
@@ -480,8 +480,7 @@ def query(
             backend_storage=backend_storage,
             storage_options=parsed_storage_options,
         )
-        reader = retrieval.VczReader(root)
-        with handle_broken_pipe(output):
+        with retrieval.VczReader(root) as reader, handle_broken_pipe(output):
             query_module.list_samples(reader, output)
         return
 
@@ -502,7 +501,7 @@ def query(
         backend_storage=backend_storage,
         storage_options=parsed_storage_options,
     )
-    with handle_broken_pipe(output):
+    with reader, handle_broken_pipe(output):
         query_module.write_query(
             reader,
             output,
@@ -619,7 +618,7 @@ def view(
     subsetting_samples = (
         samples is not None or samples_file is not None or drop_genotypes
     )
-    with handle_broken_pipe(output):
+    with reader, handle_broken_pipe(output):
         vcf_writer.write_vcf(
             reader,
             output,
@@ -713,7 +712,8 @@ def view_bed(
         backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
     )
-    plink.write_plink(reader, out)
+    with reader:
+        plink.write_plink(reader, out)
 
 
 @version

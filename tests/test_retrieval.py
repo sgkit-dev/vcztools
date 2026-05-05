@@ -260,15 +260,23 @@ def _make_pipeline(
     readahead_bytes=10**9,
     read_fields=None,
     n_chunks=None,
-    workers=2,
+    executor=None,
 ):
     """Construct a ``ReadaheadPipeline`` directly against ``root``,
     matching the wiring ``VczReader.variant_chunks`` does (default
     sample-chunk plan over non-null samples; one ``ChunkRead`` per
     variant chunk; no view-mode column remap).
+
+    ``executor`` is the thread pool the pipeline submits reads to. The
+    caller is responsible for shutting it down (e.g. via a ``with``
+    block); ``None`` means "build a small pool here", which is the
+    common case for tests that only need the pipeline to run once and
+    don't share the executor with other pipelines.
     """
     if read_fields is None:
         read_fields = ["variant_position"]
+    if executor is None:
+        executor = cf.ThreadPoolExecutor(max_workers=2)
     samples_chunk_size = int(root["sample_id"].chunks[0])
     raw_sample_ids = root["sample_id"][:]
     samples_selection = np.flatnonzero(raw_sample_ids != "")
@@ -285,7 +293,7 @@ def _make_pipeline(
         None,
         read_fields,
         readahead_bytes=readahead_bytes,
-        workers=workers,
+        executor=executor,
     )
 
 
@@ -492,8 +500,8 @@ class TestReadaheadPipeline:
         root = self._vcz()
         pipeline = _make_pipeline(root, n_chunks=0)
         assert list(pipeline) == []
-        # Executor still cleaned up via the try/finally.
-        assert pipeline._executor._shutdown is True
+        # No pending futures left after a clean drain.
+        assert pipeline._in_flight == []
 
     def test_single_chunk_plan(self):
         root = self._vcz(num_variants=3, variants_chunk_size=3)
@@ -525,18 +533,19 @@ class TestReadaheadPipeline:
         # ahead of the consumer (and zero on the final, plan-exhausted
         # refill).
         root = self._vcz(num_variants=12, variants_chunk_size=3)
-        pipeline = _DepthTrackingPipeline(
-            root,
-            [utils.ChunkRead(index=i) for i in range(4)],
-            samples_mod.build_chunk_plan(
-                np.arange(2, dtype=np.int64), samples_chunk_size=2
-            ),
-            None,
-            ["variant_position"],
-            readahead_bytes=0,
-            workers=2,
-        )
-        list(pipeline)
+        with cf.ThreadPoolExecutor(max_workers=2) as executor:
+            pipeline = _DepthTrackingPipeline(
+                root,
+                [utils.ChunkRead(index=i) for i in range(4)],
+                samples_mod.build_chunk_plan(
+                    np.arange(2, dtype=np.int64), samples_chunk_size=2
+                ),
+                None,
+                ["variant_position"],
+                readahead_bytes=0,
+                executor=executor,
+            )
+            list(pipeline)
         # 4 chunks → 5 refills (one per consume + the post-final empty refill).
         assert pipeline.depths == [1, 1, 1, 1, 0]
 
@@ -544,18 +553,19 @@ class TestReadaheadPipeline:
         # Budget of 10**9 dwarfs the per-chunk cost, so the second
         # refill fills with every remaining chunk in one go.
         root = self._vcz(num_variants=12, variants_chunk_size=3)
-        pipeline = _DepthTrackingPipeline(
-            root,
-            [utils.ChunkRead(index=i) for i in range(4)],
-            samples_mod.build_chunk_plan(
-                np.arange(2, dtype=np.int64), samples_chunk_size=2
-            ),
-            None,
-            ["variant_position"],
-            readahead_bytes=10**9,
-            workers=2,
-        )
-        list(pipeline)
+        with cf.ThreadPoolExecutor(max_workers=2) as executor:
+            pipeline = _DepthTrackingPipeline(
+                root,
+                [utils.ChunkRead(index=i) for i in range(4)],
+                samples_mod.build_chunk_plan(
+                    np.arange(2, dtype=np.int64), samples_chunk_size=2
+                ),
+                None,
+                ["variant_position"],
+                readahead_bytes=10**9,
+                executor=executor,
+            )
+            list(pipeline)
         # Bootstrap depth=1, then post-yield-1 schedules the remaining
         # 3, then drains.
         assert pipeline.depths == [1, 3, 2, 1, 0]
@@ -585,21 +595,33 @@ class TestReadaheadPipeline:
             assert ("variant_position",) in chunk._blocks
             assert ("variant_contig",) in chunk._blocks
 
-    def test_executor_shutdown_on_full_iteration(self):
+    def test_executor_outlives_full_iteration(self):
+        # The pipeline does not own the executor; full drain leaves
+        # the pool alive and ready to serve another pipeline.
         root = self._vcz()
-        pipeline = _make_pipeline(root)
-        list(pipeline)
-        assert pipeline._executor._shutdown is True
+        with cf.ThreadPoolExecutor(max_workers=2) as executor:
+            pipeline = _make_pipeline(root, executor=executor)
+            list(pipeline)
+            assert executor._shutdown is False
+            # Pool is still usable for a second pipeline.
+            second = _make_pipeline(root, executor=executor)
+            assert len(list(second)) > 0
 
-    def test_executor_shutdown_on_early_break(self):
-        # Closing the generator triggers the try/finally, which
-        # shuts the executor down even when iteration is abandoned.
-        root = self._vcz()
-        pipeline = _make_pipeline(root)
-        gen = iter(pipeline)
-        next(gen)
-        gen.close()
-        assert pipeline._executor._shutdown is True
+    def test_pending_futures_cancelled_on_early_break(self):
+        # Abandoning iteration cancels still-pending futures (those
+        # that hadn't started); the executor itself stays alive.
+        root = self._vcz(num_variants=24, variants_chunk_size=3)
+        with cf.ThreadPoolExecutor(max_workers=2) as executor:
+            pipeline = _make_pipeline(root, executor=executor, readahead_bytes=10**9)
+            gen = iter(pipeline)
+            next(gen)
+            in_flight_snapshot = [
+                fut for _, futures in pipeline._in_flight for _, fut in futures
+            ]
+            gen.close()
+            assert executor._shutdown is False
+            for fut in in_flight_snapshot:
+                assert fut.cancelled() or fut.done()
 
 
 class TestVczReaderBackendsEndToEnd:
@@ -2006,7 +2028,6 @@ class TestLogging:
         assert "schedule chunk 0:" in caplog.text
         assert "read complete in" in caplog.text
         assert "yielded" in caplog.text
-        assert "executor shutdown" in caplog.text
 
     def test_debug_static_field_load(self, fx_sample_vcz, caplog):
         # filter_id is a static (no variants axis) field; referencing it

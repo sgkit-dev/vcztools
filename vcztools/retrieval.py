@@ -2,7 +2,6 @@ import concurrent.futures as cf
 import dataclasses
 import functools
 import logging
-import os
 import time
 
 import numpy as np
@@ -41,10 +40,11 @@ def _one_line_repr(obj) -> str:
 
 
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
-# TODO it's not clear that this is a good default. We're essentially
-# just using these threads to dispatch I/0 to the Zarr backend which
-# handles async etc, so a larger fixed number may be better.
-DEFAULT_READAHEAD_WORKERS = min(32, (os.cpu_count() or 4))
+# Fixed by design: these threads dispatch I/O to the Zarr backend
+# (which already handles its own async/decompression parallelism),
+# so usable parallelism is dispatch-bound and GIL-capped rather than
+# scaling with cpu_count.
+DEFAULT_READAHEAD_WORKERS = 32
 
 
 def _read_block(arr, block_index: tuple) -> np.ndarray:
@@ -155,10 +155,19 @@ class ReadaheadPipeline:
     :func:`create_chunk_read_list`, then for each entry in
     ``variant_chunk_plan``: substitute the variant chunk index via
     :func:`update_chunk_read_list`, submit the resulting block reads
-    to a shared thread pool, collect results into a ``blocks`` dict,
-    then construct a :class:`CachedVariantChunk` over those prefetched
-    blocks and yield it. Cross-chunk readahead overlaps later chunks'
-    reads with the current chunk's processing in the consumer.
+    to the reader-owned thread pool, collect results into a
+    ``blocks`` dict, then construct a :class:`CachedVariantChunk`
+    over those prefetched blocks and yield it. Cross-chunk readahead
+    overlaps later chunks' reads with the current chunk's processing
+    in the consumer.
+
+    The executor is supplied by the caller (typically
+    :class:`VczReader`) and lives across pipelines. Multiple pipelines
+    on the same reader — for example the BedEncoder shared-reader
+    fanout — submit to a single shared pool. When iteration is
+    abandoned mid-stream (consumer breaks early, generator closed,
+    exception propagates), the pipeline cancels its own pending
+    futures only; the executor itself outlives the pipeline.
 
     The window is sized by a byte budget rather than a chunk count:
     one variant-chunk prefetch can vary from a few MB (single
@@ -194,7 +203,7 @@ class ReadaheadPipeline:
         read_fields,
         *,
         readahead_bytes: int,
-        workers: int,
+        executor: cf.ThreadPoolExecutor,
     ):
         self.root = root
         self._variant_chunk_plan_iter = iter(variant_chunk_plan)
@@ -214,17 +223,14 @@ class ReadaheadPipeline:
         # decompressed blocks; consumed by VczReader.variant_chunks to
         # accumulate retrieval-side throughput stats.
         self.last_chunk_bytes: int | None = None
-        self._executor = cf.ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="vcztools-readahead",
-        )
+        self._executor = executor
         # in_flight: list of (variant_chunk, [(blocks_key, Future), ...]).
         # The futures list is empty when the chunk needs no prefetch.
         self._in_flight: list = []
         logger.debug(
             f"ReadaheadPipeline init: {len(read_fields)} read_fields, "
             f"{len(self._read_templates)} templates, "
-            f"readahead_bytes={_fmt_bytes(readahead_bytes)}, workers={workers}"
+            f"readahead_bytes={_fmt_bytes(readahead_bytes)}"
         )
 
     def _schedule_one(self) -> bool:
@@ -307,8 +313,13 @@ class ReadaheadPipeline:
                 # top the pipeline back up.
                 self._refill()
         finally:
-            self._executor.shutdown(wait=False, cancel_futures=True)
-            logger.debug("executor shutdown")
+            cancelled = 0
+            for _variant_chunk, futures in self._in_flight:
+                for _key, fut in futures:
+                    if fut.cancel():
+                        cancelled += 1
+            if cancelled > 0:
+                logger.debug(f"cancelled {cancelled} pending futures")
 
 
 class CachedVariantChunk:
@@ -493,6 +504,15 @@ class VczReader:
     already populated (either by a prior ``set_samples`` or by
     default resolution during iteration).
 
+    The reader owns a single :class:`concurrent.futures.ThreadPoolExecutor`
+    that every :class:`ReadaheadPipeline` it spawns submits work to.
+    Use as a context manager (``with VczReader(root) as reader:``) so
+    the pool is torn down deterministically on exit. Multiple
+    pipelines (e.g. several :class:`vcztools.plink.BedEncoder`
+    instances driven concurrently against the same reader, or
+    repeated ``variant_chunks()`` calls) share the pool — submission
+    is thread-safe at the executor level.
+
     Parameters
     ----------
     root
@@ -501,9 +521,10 @@ class VczReader:
         (local, remote, or zip) with the desired backend before
         constructing the reader.
     readahead_workers
-        Worker count for the per-call readahead thread pool. ``None``
-        (default) uses :data:`DEFAULT_READAHEAD_WORKERS`
-        (``min(32, cpu_count)``).
+        Worker count for the readahead thread pool. ``None``
+        (default) uses :data:`DEFAULT_READAHEAD_WORKERS` (``32``).
+        The pool is created at construction; this parameter has no
+        post-init knob.
     readahead_bytes
         Cap, in bytes, on the cross-chunk readahead window. ``None``
         (default) uses :data:`DEFAULT_READAHEAD_BYTES` (256 MiB).
@@ -519,23 +540,42 @@ class VczReader:
         readahead_bytes: int | None = None,
     ):
         self.root = root
-        self.readahead_workers = readahead_workers
         self.readahead_bytes = readahead_bytes
+        workers = (
+            readahead_workers
+            if readahead_workers is not None
+            else DEFAULT_READAHEAD_WORKERS
+        )
+        self._executor = cf.ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="vcztools-readahead",
+        )
+        self._readahead_workers = workers
         self._sample_chunk_plan = None
         self._variant_chunk_plan = None
         self._samples_selection = None
         self._sample_ids = None
         self._filter_samples = None
         self.variant_filter = None
+        # Concurrent ``variant_chunks()`` calls may both miss and both
+        # write a static field here — last writer wins; both observers
+        # get a valid array (dict assignment is GIL-atomic).
         self._static_field_cache: dict[str, np.ndarray] = {}
         logger.debug(
             f"VczReader init: store={_one_line_repr(getattr(root, 'store', None))}, "
             f"num_variants={self.num_variants}, num_samples={self.num_samples}, "
             f"variants_chunk_size={self.variants_chunk_size}, "
             f"samples_chunk_size={self.samples_chunk_size}, "
-            f"readahead_workers={readahead_workers}, "
+            f"readahead_workers={workers}, "
             f"readahead_bytes={readahead_bytes}"
         )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._executor.shutdown(wait=True)
+        return False
 
     def _load_static_field(self, name: str) -> np.ndarray:
         """Read a static (no variants axis) field once and cache it on
@@ -926,11 +966,6 @@ class VczReader:
             if self.readahead_bytes is not None
             else DEFAULT_READAHEAD_BYTES
         )
-        workers = (
-            self.readahead_workers
-            if self.readahead_workers is not None
-            else DEFAULT_READAHEAD_WORKERS
-        )
 
         variant_chunk_plan = self.variant_chunk_plan
         if start > 0:
@@ -943,7 +978,8 @@ class VczReader:
             f"{len(read_fields)} read fields, "
             f"{len(variant_chunk_plan)} variant chunks, "
             f"{len(sample_chunk_plan.chunk_reads)} sample chunks, "
-            f"readahead_bytes={_fmt_bytes(readahead_bytes)}, workers={workers})"
+            f"readahead_bytes={_fmt_bytes(readahead_bytes)}, "
+            f"workers={self._readahead_workers})"
         )
 
         pipeline = ReadaheadPipeline(
@@ -953,7 +989,7 @@ class VczReader:
             output_columns,
             read_fields,
             readahead_bytes=readahead_bytes,
-            workers=workers,
+            executor=self._executor,
         )
         chunks_visited = 0
         chunks_yielded = 0

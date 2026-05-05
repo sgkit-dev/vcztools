@@ -187,22 +187,22 @@ def main(dataset, backend_storage, repeats, read_size, fanout, seed, output):
     """Benchmark BedEncoder against DATASET."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     root = vcztools.open_zarr(dataset, backend_storage=backend_storage)
-    reader = retrieval.VczReader(root)
-    num_samples = int(reader.sample_ids.size)
-    bed_size = 3 + reader.num_variants * ((num_samples + 3) // 4)
-    results = [
-        _bench_sequential(reader, read_size=read_size, repeats=1),
-        _bench_random(reader, read_size=read_size, repeats=repeats, seed=seed),
-        _bench_fanout(reader, read_size=read_size, n_encoders=fanout, repeats=1),
-    ]
-    report = {
-        "dataset": str(dataset),
-        "backend_storage": backend_storage,
-        "num_variants": reader.num_variants,
-        "num_samples": num_samples,
-        "bed_size": bed_size,
-        "results": [dataclasses.asdict(r) for r in results],
-    }
+    with retrieval.VczReader(root) as reader:
+        num_samples = int(reader.sample_ids.size)
+        bed_size = 3 + reader.num_variants * ((num_samples + 3) // 4)
+        results = [
+            _bench_sequential(reader, read_size=read_size, repeats=1),
+            _bench_random(reader, read_size=read_size, repeats=repeats, seed=seed),
+            _bench_fanout(reader, read_size=read_size, n_encoders=fanout, repeats=1),
+        ]
+        report = {
+            "dataset": str(dataset),
+            "backend_storage": backend_storage,
+            "num_variants": reader.num_variants,
+            "num_samples": num_samples,
+            "bed_size": bed_size,
+            "results": [dataclasses.asdict(r) for r in results],
+        }
     payload = json.dumps(report, indent=2)
     if output is not None:
         output.write_text(payload + "\n")

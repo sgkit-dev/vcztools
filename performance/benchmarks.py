@@ -601,7 +601,6 @@ class RunContext:
     num_variants: int
     region_spec: tuple[str, int, int]
     readahead_bytes: int | None = None
-    readahead_workers: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -972,10 +971,7 @@ def _run_task(
         if ctx.readahead_bytes is not None:
             logger.info(f"readahead_bytes overridden to {ctx.readahead_bytes}")
             reader.readahead_bytes = ctx.readahead_bytes
-        if ctx.readahead_workers is not None:
-            logger.info(f"readahead_workers overridden to {ctx.readahead_workers}")
-            reader.readahead_workers = ctx.readahead_workers
-        with PeakRssSampler() as sampler:
+        with reader, PeakRssSampler() as sampler:
             wall_t0 = time.perf_counter()
             cpu_t0 = time.process_time()
             stats = _iterate_reader(reader, task.fields)
@@ -1047,7 +1043,6 @@ def _build_run_context(
     region_fraction: float,
     *,
     readahead_bytes: int | None = None,
-    readahead_workers: int | None = None,
 ) -> RunContext:
     """Open ``dataset`` with ``opener`` once to read sample/variant counts
     and compute a region spec at the requested fraction. Returns a frozen
@@ -1058,14 +1053,13 @@ def _build_run_context(
     # `_run_task`, so the open here doesn't warm the timing-path cache.
     opened = opener.open(dataset)
     try:
-        reader = retrieval.VczReader(opened.root)
-        return RunContext(
-            num_samples=reader.num_samples,
-            num_variants=reader.num_variants,
-            region_spec=_default_region_spec(reader, region_fraction),
-            readahead_bytes=readahead_bytes,
-            readahead_workers=readahead_workers,
-        )
+        with retrieval.VczReader(opened.root) as reader:
+            return RunContext(
+                num_samples=reader.num_samples,
+                num_variants=reader.num_variants,
+                region_spec=_default_region_spec(reader, region_fraction),
+                readahead_bytes=readahead_bytes,
+            )
     finally:
         opened.cleanup()
 
@@ -1368,14 +1362,6 @@ _TASK_NAMES_HELP = ", ".join(t.name for t in TASKS)
     help="Override the readahead pipeline's byte budget. None uses the "
     "VczReader default.",
 )
-@click.option(
-    "--readahead-workers",
-    type=int,
-    default=None,
-    show_default=True,
-    help="Override the readahead pipeline's worker count. None uses the "
-    "VczReader default.",
-)
 def run_one_cmd(
     dataset,
     task_name,
@@ -1385,7 +1371,6 @@ def run_one_cmd(
     region_fraction,
     profile,
     readahead_bytes,
-    readahead_workers,
 ):
     """Run a single task against a single Zarr store on a single backend.
 
@@ -1400,7 +1385,6 @@ def run_one_cmd(
         opener,
         region_fraction,
         readahead_bytes=readahead_bytes,
-        readahead_workers=readahead_workers,
     )
 
     git_sha = _discover_git_sha()

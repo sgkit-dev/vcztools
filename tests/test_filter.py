@@ -279,6 +279,37 @@ class TestFilterExpression:
         nt.assert_array_equal(result, expected)
 
     @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("N_ALT == 0", [True, False, False, False]),
+            ("N_ALT == 1", [False, True, False, False]),
+            ("N_ALT >= 2", [False, False, True, True]),
+            ("N_ALT <= 1", [True, True, False, False]),
+            ("N_ALT < 3", [True, True, True, False]),
+            ("N_ALT > 0", [False, True, True, True]),
+            ("N_ALT >= 1 && N_ALT <= 1", [False, True, False, False]),
+            ('N_ALT >= 1 && TYPE~"snp"', [False, True, True, True]),
+        ],
+    )
+    def test_evaluate_n_alt(self, expression, expected):
+        data = {
+            "variant_allele": [
+                ["A", "", "", ""],
+                ["A", "T", "", ""],
+                ["A", "T", "G", ""],
+                ["A", "T", "G", "C"],
+            ],
+        }
+        fee = filter_mod.BcftoolsFilter(include=expression)
+        result = fee.evaluate(numpify_values(data))
+        nt.assert_array_equal(result, expected)
+
+    def test_n_alt_referenced_fields(self):
+        fee = filter_mod.BcftoolsFilter(include="N_ALT >= 2")
+        assert fee.referenced_fields == {"variant_allele"}
+        assert fee.scope == "variant"
+
+    @pytest.mark.parametrize(
         ("expr", "expected"),
         [
             ("a == b", {"variant_a", "variant_b"}),

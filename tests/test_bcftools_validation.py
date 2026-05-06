@@ -93,6 +93,22 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -i 'TYPE!~\"snp\"'", "1kg_2020_chrM.vcf.gz"),
         # Any allele is not a SNP, 9 rows
         ("view --no-version -i 'TYPE!=\"snp\"'", "1kg_2020_chrM.vcf.gz"),
+        # -v/-V/-m/-M flags. Only ``snps`` is fully wired through;
+        # indels/mnps/other reach UnsupportedTypeFieldError via the
+        # filter parser (see issue #166).
+        ("view --no-version -v snps", "sample.vcf.gz"),
+        ("view --no-version -V snps", "sample.vcf.gz"),
+        ("view --no-version -m 2", "sample.vcf.gz"),
+        ("view --no-version -M 2", "sample.vcf.gz"),
+        ("view --no-version -m 2 -M 2", "sample.vcf.gz"),
+        ("view --no-version -m 3", "sample.vcf.gz"),
+        ("view --no-version -v snps -m 2", "sample.vcf.gz"),
+        ("view --no-version -v snps -i 'QUAL>10'", "sample.vcf.gz"),
+        ("view --no-version -v snps", "1kg_2020_chrM.vcf.gz"),
+        ("view --no-version -m 2 -M 2", "1kg_2020_chrM.vcf.gz"),
+        # N_ALT identifier is exposed in the filter language too.
+        ("view --no-version -i 'N_ALT >= 2'", "sample.vcf.gz"),
+        ("view --no-version -i 'N_ALT == 1'", "sample.vcf.gz"),
         ("view --no-version -G", "sample.vcf.gz"),
         (
                 "view --no-update --no-version --samples-file "

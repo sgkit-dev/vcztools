@@ -551,6 +551,24 @@ class TypeOperator(EvaluationNode):
         return self.op1.referenced_fields()
 
 
+class NAltIdentifier(EvaluationNode):
+    """Pseudo-identifier returning the count of non-empty ALT slots
+    per variant, computed from ``variant_allele``. Behaves like a
+    plain integer identifier in comparisons, e.g. ``N_ALT >= 2``.
+    """
+
+    def eval(self, data):
+        variant_allele = np.asarray(data["variant_allele"])
+        alt = variant_allele[:, 1:]
+        return (alt != "").sum(axis=1)
+
+    def __repr__(self):
+        return "N_ALT"
+
+    def referenced_fields(self):
+        return frozenset(["variant_allele"])
+
+
 def _identity_list(x):
     return [x]
 
@@ -597,6 +615,12 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     type_expr = type_identifier + pp.one_of("= == != ~ !~") + type_string
     type_expr = type_expr.set_parse_action(TypeOperator)
 
+    # N_ALT is a value identifier (not paired with a string operand like
+    # TYPE), so it must be listed in the atoms ahead of the bare
+    # identifier rule to win against ``pp.common.identifier``.
+    n_alt_identifier = pp.Keyword("N_ALT")
+    n_alt_identifier = n_alt_identifier.set_parse_action(NAltIdentifier)
+
     lbracket, rbracket = map(pp.Suppress, "[]")
     # TODO we need to define the indexing grammar more carefully, but
     # this at least let's us match correct strings and raise an informative
@@ -626,6 +650,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
         chrom_field_expr
         | filter_field_expr
         | type_expr
+        | n_alt_identifier
         | function
         | constant
         | indexed_identifier

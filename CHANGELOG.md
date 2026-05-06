@@ -7,6 +7,10 @@ Features:
 - Add support for .vcz.zip files (#280).
 - Add `view-bed` command for PLINK 1 binary output (.bed/.bim/.fam)
   following the semantics of `plink2 --vcf X --make-bed`.
+- Add `-v/--types`, `-V/--exclude-types`, `-m/--min-alleles`, and
+  `-M/--max-alleles` to `view`, matching bcftools view. The
+  filter language exposes a new `N_ALT` identifier (count of
+  non-empty ALT slots), so e.g. `-i 'N_ALT >= 2'` is now valid.
 
 Bug fixes:
 

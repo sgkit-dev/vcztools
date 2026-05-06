@@ -218,6 +218,71 @@ def _parse_storage_options(pairs: tuple[str, ...]) -> dict | None:
     return options
 
 
+# Match bcftools' accepted set for ``view -v/-V``; bcftools rejects
+# ``refs`` and ``bnd`` outright. Only ``snps`` is fully wired through
+# to the TYPE operator at the moment — the others reach
+# ``UnsupportedTypeFieldError`` via the parser (see issue #166).
+_BCFTOOLS_TYPE_KEYWORDS = ("snps", "indels", "mnps", "other")
+_BCFTOOLS_TYPE_TO_SINGULAR = {
+    "snps": "snp",
+    "indels": "indel",
+    "mnps": "mnp",
+    "other": "other",
+}
+
+
+def _parse_types_option(value, option_name):
+    """Validate a comma-separated --types/--exclude-types argument and
+    return the list of TYPE-operator singular forms.
+    """
+    types = value.split(",")
+    invalid = [t for t in types if t not in _BCFTOOLS_TYPE_KEYWORDS]
+    if len(invalid) > 0:
+        raise ValueError(
+            f"Invalid type(s) {invalid} in --{option_name}; "
+            f"valid types are: {', '.join(_BCFTOOLS_TYPE_KEYWORDS)}."
+        )
+    return [_BCFTOOLS_TYPE_TO_SINGULAR[t] for t in types]
+
+
+def _build_view_filter_expression(types, exclude_types, min_alleles):
+    """Translate the bcftools-style ``-v/-V/-m`` view options to a
+    synthetic filter expression, or ``None`` if none of them are set.
+
+    ``-v LIST`` becomes a disjunction of ``TYPE~"X"`` matches (any-allele
+    semantics, matching bcftools), ``-V LIST`` becomes a conjunction of
+    ``TYPE!~"X"``, and ``-m N`` becomes ``N_ALT >= N - 1`` (a site has
+    REF + N_ALT alleles).
+    """
+    parts = []
+    if types is not None:
+        type_list = _parse_types_option(types, "types")
+        parts.append(" || ".join(f'TYPE~"{t}"' for t in type_list))
+    if exclude_types is not None:
+        type_list = _parse_types_option(exclude_types, "exclude-types")
+        parts.append(" && ".join(f'TYPE!~"{t}"' for t in type_list))
+    if min_alleles is not None:
+        if min_alleles < 1:
+            raise ValueError(f"--min-alleles must be >= 1, got {min_alleles}")
+        if min_alleles >= 2:
+            parts.append(f"N_ALT >= {min_alleles - 1}")
+    if len(parts) == 0:
+        return None
+    return " && ".join(f"({p})" for p in parts)
+
+
+def _compose_variant_filter(existing, new_filter, conflict_msg):
+    """Compose a variant-scope filter onto an existing filter via
+    :class:`plink._AndVariantFilter`. Raises ``ValueError`` with
+    ``conflict_msg`` if ``existing`` is sample-scope.
+    """
+    if existing is None:
+        return new_filter
+    if existing.scope != "variant":
+        raise ValueError(conflict_msg)
+    return plink._AndVariantFilter([existing, new_filter])
+
+
 def make_reader(
     path,
     *,
@@ -229,6 +294,9 @@ def make_reader(
     samples_file=None,
     include=None,
     exclude=None,
+    types=None,
+    exclude_types=None,
+    min_alleles=None,
     max_alleles=None,
     view_semantics=False,
     force_samples=False,
@@ -290,18 +358,24 @@ def make_reader(
         )
 
     if max_alleles is not None:
-        max_alleles_filter = plink.MaxAllelesFilter(max_alleles)
-        if variant_filter is None:
-            variant_filter = max_alleles_filter
-        else:
-            if variant_filter.scope != "variant":
-                raise ValueError(
-                    "--max-alleles cannot be combined with a sample-scope "
-                    "filter (e.g. one referencing FMT/ fields)."
-                )
-            variant_filter = plink._AndVariantFilter(
-                [variant_filter, max_alleles_filter]
-            )
+        variant_filter = _compose_variant_filter(
+            variant_filter,
+            plink.MaxAllelesFilter(max_alleles),
+            "--max-alleles cannot be combined with a sample-scope "
+            "filter (e.g. one referencing FMT/ fields).",
+        )
+
+    view_expr = _build_view_filter_expression(types, exclude_types, min_alleles)
+    if view_expr is not None:
+        synthetic_filter = bcftools_filter.BcftoolsFilter(
+            field_names=reader.field_names, include=view_expr
+        )
+        variant_filter = _compose_variant_filter(
+            variant_filter,
+            synthetic_filter,
+            "-v/-V/-m cannot be combined with a sample-scope -i/-e filter "
+            "(e.g. one referencing FMT/ fields).",
+        )
 
     if drop_genotypes:
         # --drop-genotypes can't coexist with a sample-scope filter:
@@ -551,6 +625,38 @@ def query(
 @targets_file
 @include
 @exclude
+@click.option(
+    "-v",
+    "--types",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated list of variant types to include "
+        "(snps,indels,mnps,other). A site is selected if any of its "
+        "alleles matches one of the listed types."
+    ),
+)
+@click.option(
+    "-V",
+    "--exclude-types",
+    type=str,
+    default=None,
+    help="Comma-separated list of variant types to exclude.",
+)
+@click.option(
+    "-m",
+    "--min-alleles",
+    type=int,
+    default=None,
+    help="Print sites with at least INT alleles listed in REF and ALT.",
+)
+@click.option(
+    "-M",
+    "--max-alleles",
+    type=int,
+    default=None,
+    help="Print sites with at most INT alleles listed in REF and ALT.",
+)
 @backend_storage
 @storage_option
 @log_level
@@ -573,6 +679,10 @@ def view(
     drop_genotypes,
     include,
     exclude,
+    types,
+    exclude_types,
+    min_alleles,
+    max_alleles,
     backend_storage,
     storage_options,
     log_level,
@@ -599,6 +709,9 @@ def view(
     if (samples or samples_file) and drop_genotypes:
         raise ValueError("Cannot select samples and drop genotypes.")
 
+    if types is not None and exclude_types is not None:
+        raise ValueError("Cannot use --types and --exclude-types together.")
+
     reader = make_reader(
         path,
         regions=regions,
@@ -609,6 +722,10 @@ def view(
         samples_file=samples_file,
         include=include,
         exclude=exclude,
+        types=types,
+        exclude_types=exclude_types,
+        min_alleles=min_alleles,
+        max_alleles=max_alleles,
         view_semantics=True,
         force_samples=force_samples,
         drop_genotypes=drop_genotypes,

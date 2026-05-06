@@ -845,9 +845,10 @@ def _biallelic_first_chunks_plan(root, num_chunks):
 
     Runs on a throwaway reader, returns a ``ChunkRead`` list ready to
     pass to ``set_variants``. Materialisation (rather than
-    ``set_variant_filter(MaxAllelesFilter(2))``) is required because
-    :class:`vcztools.BedEncoder` rejects readers with a variant filter
-    set; both write paths are happy with a chunk plan."""
+    ``set_variant_filter(BcftoolsFilter(include="N_ALT <= 1"))``) is
+    required because :class:`vcztools.BedEncoder` rejects readers with
+    a variant filter set; both write paths are happy with a chunk
+    plan."""
     with retrieval.VczReader(root) as discovery:
         num_variant_chunks = math.ceil(
             discovery.num_variants / discovery.variants_chunk_size

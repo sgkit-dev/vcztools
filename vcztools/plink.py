@@ -29,39 +29,6 @@ logger = logging.getLogger(__name__)
 BED_MAGIC = b"\x6c\x1b\x01"
 
 
-class MaxAllelesFilter:
-    """Variant-scope :class:`~vcztools.variant_filter.VariantFilter` that
-    keeps variants whose number of non-empty alleles is at most
-    ``max_alleles``.
-
-    For PLINK 1 binary output this is invoked with ``max_alleles=2``,
-    matching ``plink2 --vcf X --make-bed --max-alleles 2``.
-
-    Operates on ``variant_allele`` only; the per-variant decision is
-    independent of ``call_genotype`` and any sample subset applied
-    downstream.
-    """
-
-    scope = "variant"
-    referenced_fields = frozenset({"variant_allele"})
-
-    def __init__(self, max_alleles):
-        if max_alleles < 1:
-            raise ValueError(f"max_alleles must be >= 1, got {max_alleles}")
-        self.max_alleles = max_alleles
-
-    def evaluate(self, chunk_data):
-        alleles = chunk_data["variant_allele"]
-        # variant_allele has shape (num_variants, max_alleles_in_store).
-        # A variant is within max_alleles when every entry past column
-        # `max_alleles - 1` is the empty string (the missing-allele
-        # sentinel that bio2zarr writes for unused slots).
-        if alleles.shape[1] <= self.max_alleles:
-            return np.ones(alleles.shape[0], dtype=bool)
-        tail = alleles[:, self.max_alleles :]
-        return (tail == "").all(axis=1)
-
-
 def encode_genotypes(genotypes):
     # A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
     # --vcf X --make-bed convention. The C extension requires a

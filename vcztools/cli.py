@@ -278,14 +278,14 @@ def _parse_types_option(value, option_name):
     return [_BCFTOOLS_TYPE_TO_SINGULAR[t] for t in types]
 
 
-def _build_view_filter_expression(types, exclude_types, min_alleles):
-    """Translate the bcftools-style ``-v/-V/-m`` view options to a
+def _build_view_filter_expression(types, exclude_types, min_alleles, max_alleles):
+    """Translate the bcftools-style ``-v/-V/-m/-M`` view options to a
     synthetic filter expression, or ``None`` if none of them are set.
 
     ``-v LIST`` becomes a disjunction of ``TYPE~"X"`` matches (any-allele
     semantics, matching bcftools), ``-V LIST`` becomes a conjunction of
-    ``TYPE!~"X"``, and ``-m N`` becomes ``N_ALT >= N - 1`` (a site has
-    REF + N_ALT alleles).
+    ``TYPE!~"X"``, ``-m N`` becomes ``N_ALT >= N - 1`` and ``-M N``
+    becomes ``N_ALT <= N - 1`` (a site has REF + N_ALT alleles).
     """
     parts = []
     if types is not None:
@@ -299,6 +299,10 @@ def _build_view_filter_expression(types, exclude_types, min_alleles):
             raise ValueError(f"--min-alleles must be >= 1, got {min_alleles}")
         if min_alleles >= 2:
             parts.append(f"N_ALT >= {min_alleles - 1}")
+    if max_alleles is not None:
+        if max_alleles < 1:
+            raise ValueError(f"--max-alleles must be >= 1, got {max_alleles}")
+        parts.append(f"N_ALT <= {max_alleles - 1}")
     if len(parts) == 0:
         return None
     return " && ".join(f"({p})" for p in parts)
@@ -338,6 +342,8 @@ def make_reader(
         raise ValueError(
             "Cannot specify both a samples string (-s) and a samples file (-S)"
         )
+    if types is not None and exclude_types is not None:
+        raise ValueError("Cannot use --types and --exclude-types together.")
     if regions_file is not None:
         regions = regions_mod.read_regions_file(regions_file)
     elif regions is not None:
@@ -378,12 +384,9 @@ def make_reader(
             field_names=reader.field_names, include=include, exclude=exclude
         )
 
-    if max_alleles is not None:
-        variant_filter = variant_filter_mod.compose(
-            variant_filter, plink.MaxAllelesFilter(max_alleles)
-        )
-
-    view_expr = _build_view_filter_expression(types, exclude_types, min_alleles)
+    view_expr = _build_view_filter_expression(
+        types, exclude_types, min_alleles, max_alleles
+    )
     if view_expr is not None:
         synthetic_filter = bcftools_filter.BcftoolsFilter(
             field_names=reader.field_names, include=view_expr
@@ -694,9 +697,6 @@ def view(
     if (samples or samples_file) and drop_genotypes:
         raise ValueError("Cannot select samples and drop genotypes.")
 
-    if types is not None and exclude_types is not None:
-        raise ValueError("Cannot use --types and --exclude-types together.")
-
     reader = make_reader(
         path,
         regions=regions,
@@ -796,9 +796,6 @@ def view_bed(
     downstream tools.
     """
     setup_logging(log_level, log_file)
-
-    if types is not None and exclude_types is not None:
-        raise ValueError("Cannot use --types and --exclude-types together.")
 
     reader = make_reader(
         path,

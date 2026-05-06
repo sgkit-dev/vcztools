@@ -31,3 +31,45 @@ class VariantFilter(Protocol):
     def scope(self) -> Literal["variant", "sample"]: ...
 
     def evaluate(self, chunk_data: Mapping[str, np.ndarray]) -> np.ndarray: ...
+
+
+class AndFilter:
+    """AND-compose multiple :class:`VariantFilter` objects, including
+    across scopes.
+
+    A variant-scope (1-D) result is broadcast along axis 1 against any
+    sample-scope (2-D) result, so a synthetic ``-m/-M/-v/-V`` mask
+    composes naturally with a user ``-i 'FMT/...'`` mask. The combined
+    scope is ``sample`` when any input is sample-scope, else ``variant``.
+    """
+
+    def __init__(self, filters):
+        self._filters = list(filters)
+        self.scope = (
+            "sample" if any(f.scope == "sample" for f in self._filters) else "variant"
+        )
+        self.referenced_fields = frozenset().union(
+            *(f.referenced_fields for f in self._filters)
+        )
+
+    def evaluate(self, chunk_data):
+        result = self._filters[0].evaluate(chunk_data)
+        for f in self._filters[1:]:
+            other = f.evaluate(chunk_data)
+            if result.ndim == 1 and other.ndim == 2:
+                result = np.expand_dims(result, axis=1) & other
+            elif result.ndim == 2 and other.ndim == 1:
+                result = result & np.expand_dims(other, axis=1)
+            else:
+                result = result & other
+        return result
+
+
+def compose(existing, new_filter):
+    """AND-compose ``new_filter`` onto an existing filter, allowing
+    mixed variant/sample scope via :class:`AndFilter`. Returns
+    ``new_filter`` unchanged when there's nothing to compose with.
+    """
+    if existing is None:
+        return new_filter
+    return AndFilter([existing, new_filter])

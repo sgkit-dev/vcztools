@@ -334,73 +334,6 @@ class TestMakeReader:
         assert 1230237 not in self._positions(reader)
 
 
-class TestAndFilter:
-    """Direct unit tests for :class:`vcztools.cli._AndFilter`."""
-
-    @staticmethod
-    def _variant_filter(mask, fields=("variant_position",)):
-        class _F:
-            scope = "variant"
-            referenced_fields = frozenset(fields)
-
-            def evaluate(self, chunk_data):
-                return np.asarray(mask, dtype=bool)
-
-        return _F()
-
-    @staticmethod
-    def _sample_filter(mask, fields=("call_DP",)):
-        class _F:
-            scope = "sample"
-            referenced_fields = frozenset(fields)
-
-            def evaluate(self, chunk_data):
-                return np.asarray(mask, dtype=bool)
-
-        return _F()
-
-    def test_variant_and_variant(self):
-        a = self._variant_filter([True, True, False])
-        b = self._variant_filter([True, False, False], fields=("variant_id",))
-        combined = cli._AndFilter([a, b])
-        assert combined.scope == "variant"
-        assert combined.referenced_fields == frozenset(
-            {"variant_position", "variant_id"}
-        )
-        np.testing.assert_array_equal(combined.evaluate({}), [True, False, False])
-
-    def test_variant_and_sample_broadcasts(self):
-        # Variant mask (1-D) broadcasts along axis 1 against a 2-D
-        # sample mask. Variant 0: variant True & sample [T, F] → [T, F].
-        # Variant 1: variant False zeros the row regardless of samples.
-        var = self._variant_filter([True, False])
-        samp = self._sample_filter([[True, False], [True, True]])
-        combined = cli._AndFilter([var, samp])
-        assert combined.scope == "sample"
-        np.testing.assert_array_equal(
-            combined.evaluate({}), [[True, False], [False, False]]
-        )
-
-    def test_sample_and_variant_broadcasts(self):
-        # Same logic, opposite operand order.
-        samp = self._sample_filter([[True, False], [True, True]])
-        var = self._variant_filter([True, False])
-        combined = cli._AndFilter([samp, var])
-        assert combined.scope == "sample"
-        np.testing.assert_array_equal(
-            combined.evaluate({}), [[True, False], [False, False]]
-        )
-
-    def test_sample_and_sample_elementwise(self):
-        a = self._sample_filter([[True, True], [False, True]])
-        b = self._sample_filter([[True, False], [True, True]])
-        combined = cli._AndFilter([a, b])
-        assert combined.scope == "sample"
-        np.testing.assert_array_equal(
-            combined.evaluate({}), [[True, False], [False, True]]
-        )
-
-
 def test_types_and_exclude_types_mutually_exclusive(fx_vcz_path):
     _, vcztools_error = run_vcztools(
         f"view -v snps -V refs {fx_vcz_path}",
@@ -631,7 +564,7 @@ class TestViewBed:
             assert pos > 1000000
 
     def test_max_alleles_combines_with_include(self, tmp_path, fx_vcz_path):
-        # AND-composition path through _AndFilter.
+        # AND-composition path through variant_filter.AndFilter.
         out = tmp_path / "p"
         run_vcztools(
             f"view-bed {fx_vcz_path} --max-alleles 2 "

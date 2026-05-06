@@ -381,15 +381,7 @@ def build_chunk_plan(
 
     if regions_gr is None and targets_gr is None:
         num_variants = int(position_arr.shape[0])
-        return [
-            utils.ChunkRead(
-                index=i,
-                num_selected=min(
-                    variants_chunk_size, num_variants - i * variants_chunk_size
-                ),
-            )
-            for i in range(num_chunks)
-        ]
+        return utils.ChunkRead.simple_plan(num_variants, variants_chunk_size)
 
     contig_arr = root["variant_contig"]
     length_arr = root["variant_length"]

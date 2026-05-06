@@ -64,6 +64,31 @@ class TestChunkRead:
         assert cr.num_selected == 2
         assert_array_equal(cr.selection, [0, 2])
 
+    def test_simple_plan_exact_multiple(self):
+        plan = utils.ChunkRead.simple_plan(length=12, chunk_size=4)
+        assert [(cr.index, cr.num_selected, cr.selection) for cr in plan] == [
+            (0, 4, None),
+            (1, 4, None),
+            (2, 4, None),
+        ]
+
+    def test_simple_plan_partial_last_chunk(self):
+        plan = utils.ChunkRead.simple_plan(length=10, chunk_size=4)
+        assert [(cr.index, cr.num_selected, cr.selection) for cr in plan] == [
+            (0, 4, None),
+            (1, 4, None),
+            (2, 2, None),
+        ]
+
+    def test_simple_plan_single_partial_chunk(self):
+        plan = utils.ChunkRead.simple_plan(length=3, chunk_size=10)
+        assert [(cr.index, cr.num_selected, cr.selection) for cr in plan] == [
+            (0, 3, None),
+        ]
+
+    def test_simple_plan_zero_length(self):
+        assert utils.ChunkRead.simple_plan(length=0, chunk_size=5) == []
+
     def test_num_selected_matches_selection_length_via_chunk_plan_from_indexes(self):
         # chunk_plan_from_indexes is the canonical builder for
         # selection-bearing entries; assert num_selected matches the

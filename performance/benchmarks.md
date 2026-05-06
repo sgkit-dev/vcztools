@@ -112,17 +112,24 @@ drive: sequential drain on one encoder, random reads on one encoder,
 and concurrent drains across N encoders sharing one `VczReader`.
 
 - **Source run:** `performance/plink_streaming.py` against
-  `performance/bench_biallelic.vcz`, recorded 2026-05-01.
+  `performance/bench_biallelic.vcz`, recorded 2026-05-01. The
+  standalone script has since been removed; the sequential-drain
+  pattern is now task `output_bed_stream` in
+  `performance/benchmarks.py`. The `random` and `fanout` patterns
+  below are not in the matrix; recover them from git history if
+  needed.
 - **Hardware:** 4-CPU host `claude-worker1`.
 - **Dataset:** 1000 diploid samples × 32 794 biallelic SNPs
   (msprime + `BinaryMutationModel` to guarantee no multi-allelic
   sites — `compute_a12` rejects multi-allelic variants outright,
   mirroring `plink2 --make-bed`). Variant chunk size 5000.
   BED size 8.2 MB.
-- **Reproduce:**
+- **Reproduce sequential:**
   ```
-  uv run python performance/plink_streaming.py \
-      performance/bench_biallelic.vcz --repeats 5
+  uv run python performance/benchmarks.py run \
+      --dataset performance/bench_biallelic.vcz \
+      --task output_bed_stream \
+      --output /tmp/bed-stream.jsonl
   ```
 
 | Workload | Median | Notes |

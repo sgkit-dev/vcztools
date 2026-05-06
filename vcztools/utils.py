@@ -36,6 +36,26 @@ class ChunkRead:
     num_selected: int
     selection: np.ndarray | slice | None = None
 
+    @classmethod
+    def simple_plan(cls, length: int, chunk_size: int) -> list["ChunkRead"]:
+        """Build the trivial all-chunks plan covering ``length`` entries
+        with ``chunk_size`` per chunk.
+
+        Returns ``ceil(length / chunk_size)`` ChunkReads with
+        ``selection=None`` (full chunk, no slicing). ``num_selected``
+        is ``chunk_size`` for every full chunk and the remainder for
+        the partial last chunk when ``length`` is not a multiple of
+        ``chunk_size``.
+        """
+        num_chunks = (length + chunk_size - 1) // chunk_size
+        return [
+            cls(
+                index=i,
+                num_selected=min(chunk_size, length - i * chunk_size),
+            )
+            for i in range(num_chunks)
+        ]
+
 
 def normalise_local_selection(
     local_sel: np.ndarray, chunk_size: int

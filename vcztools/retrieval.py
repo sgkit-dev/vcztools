@@ -648,17 +648,15 @@ class VczReader:
     @property
     def variant_chunk_plan(self):
         if self._variant_chunk_plan is None:
-            num_chunks = int(self.root["variant_position"].cdata_shape[0])
             chunk_size = self.variants_chunk_size
             num_variants = self.num_variants
-            self._variant_chunk_plan = [
-                utils.ChunkRead(
-                    index=i,
-                    num_selected=min(chunk_size, num_variants - i * chunk_size),
-                )
-                for i in range(num_chunks)
-            ]
-            logger.debug(f"Built default variant_chunk_plan: {num_chunks} chunks")
+            self._variant_chunk_plan = utils.ChunkRead.simple_plan(
+                num_variants, chunk_size
+            )
+            logger.debug(
+                f"Built default variant_chunk_plan: "
+                f"{len(self._variant_chunk_plan)} chunks"
+            )
         return self._variant_chunk_plan
 
     def set_samples(self, samples) -> None:

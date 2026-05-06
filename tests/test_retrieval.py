@@ -287,15 +287,8 @@ def _make_pipeline(
         n_chunks = int(root["variant_position"].cdata_shape[0])
     variants_chunk_size = int(root["variant_position"].chunks[0])
     num_variants = int(root["variant_position"].shape[0])
-    variant_chunk_plan = [
-        utils.ChunkRead(
-            index=i,
-            num_selected=min(
-                variants_chunk_size, num_variants - i * variants_chunk_size
-            ),
-        )
-        for i in range(n_chunks)
-    ]
+    plan_length = min(n_chunks * variants_chunk_size, num_variants)
+    variant_chunk_plan = utils.ChunkRead.simple_plan(plan_length, variants_chunk_size)
     return retrieval_mod.ReadaheadPipeline(
         root,
         variant_chunk_plan,

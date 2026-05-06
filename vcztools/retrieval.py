@@ -747,8 +747,7 @@ class VczReader:
 
         Walks ``variant_chunk_plan``, evaluates the filter, and replaces
         ``(variant_filter, variant_chunk_plan)`` with a chunk plan over
-        the surviving global variant indexes. No-op if no filter is
-        configured.
+        the surviving variants. No-op if no filter is configured.
 
         Only variant-scope filters are supported. Sample-scope filters
         require reading on the filter sample axis and would duplicate
@@ -765,16 +764,23 @@ class VczReader:
                 "materialise_variant_filter; iterate variant_chunks() "
                 "to resolve them, or supply a variant-scope filter."
             )
-        indexes = self._surviving_variant_indexes(variant_filter)
+        plan = self._chunk_plan_from_filter(variant_filter)
         self.set_variant_filter(None)
-        self.set_variants(indexes)
-        logger.debug(f"materialise_variant_filter: {indexes.size} surviving variants")
+        self.set_variants(plan)
 
-    def _surviving_variant_indexes(self, variant_filter) -> np.ndarray:
+    def _chunk_plan_from_filter(self, variant_filter) -> list[utils.ChunkRead]:
         """Walk ``variant_chunk_plan`` and evaluate ``variant_filter``,
-        returning a sorted 1-D ``int64`` array of surviving global
-        variant indexes. Caller is responsible for ensuring the filter
-        is variant-scope."""
+        returning a new chunk plan over the surviving variants.
+        Per-chunk selections are run through
+        :func:`vcztools.utils.normalise_local_selection` so that a
+        full surviving chunk collapses to ``None`` and a contiguous
+        run collapses to a ``slice``. Caller is responsible for
+        ensuring the filter is variant-scope.
+
+        Logs surviving/original variant counts at INFO. ``original``
+        is the count the filter actually evaluated against — i.e. the
+        post-prior-selection input to this pass — not the store-wide
+        total."""
         chunk_size = self.variants_chunk_size
         static_fields = {}
         dynamic_fields = []
@@ -785,30 +791,40 @@ class VczReader:
             else:
                 static_fields[name] = arr[:]
 
-        surviving = []
+        plan = []
+        surviving_total = 0
+        original_total = 0
         for entry in self.variant_chunk_plan:
-            base = entry.index * chunk_size
             chunk_data = dict(static_fields)
             for name in dynamic_fields:
-                arr = self.root[name]
-                length = min(chunk_size, arr.shape[0] - base)
-                block = arr[base : base + length]
+                block = self.root[name].blocks[entry.index]
                 if entry.selection is not None:
                     block = block[entry.selection]
                 chunk_data[name] = block
             result = variant_filter.evaluate(chunk_data)
+            original_total += result.size
             local = np.flatnonzero(result)
+            if local.size == 0:
+                continue
+            surviving_total += local.size
             if entry.selection is None:
-                global_idx = base + local
+                chunk_local = local
             elif isinstance(entry.selection, slice):
                 offsets = np.arange(*entry.selection.indices(chunk_size))
-                global_idx = base + offsets[local]
+                chunk_local = offsets[local]
             else:
-                global_idx = base + np.asarray(entry.selection)[local]
-            surviving.append(global_idx)
-        if len(surviving) == 0:
-            return np.empty(0, dtype=np.int64)
-        return np.concatenate(surviving).astype(np.int64)
+                chunk_local = np.asarray(entry.selection)[local]
+            plan.append(
+                utils.ChunkRead(
+                    index=entry.index,
+                    selection=utils.normalise_local_selection(chunk_local, chunk_size),
+                )
+            )
+        logger.info(
+            f"_chunk_plan_from_filter: {surviving_total} of {original_total} "
+            f"variants survive ({len(plan)} chunks)"
+        )
+        return plan
 
     def set_filter_samples(self, filter_samples) -> None:
         """Configure the sample axis that a sample-scope variant filter

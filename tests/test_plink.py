@@ -1,7 +1,7 @@
 """
 Unit tests for vcztools.plink.
 
-These exercise the writer layers (encode_genotypes wrapper, generate_fam,
+These exercise the writer layers (encode_plink C kernel, generate_fam,
 generate_bim, end-to-end write_plink) directly against in-memory VCZ
 groups built with :func:`tests.vcz_builder.make_vcz`. No PLINK binary,
 no roundtripping.
@@ -118,6 +118,12 @@ def _parse_bim(text):
 # ---------------------------------------------------------------------------
 
 
+def _encode(g):
+    """Coerce ``g`` to C-contiguous int8 and run the PLINK C kernel."""
+    G = np.ascontiguousarray(g, dtype=np.int8)
+    return plink._encode_genotypes_sync(G)
+
+
 class TestEncodeGenotypesPython:
     @pytest.mark.parametrize(
         "genotypes",
@@ -145,7 +151,7 @@ class TestEncodeGenotypesPython:
     )
     def test_examples(self, genotypes):
         b1 = encode_genotypes_reference(genotypes)
-        b2 = plink.encode_genotypes(genotypes)
+        b2 = _encode(genotypes)
         assert b1 == b2
 
     @pytest.mark.parametrize(
@@ -169,12 +175,12 @@ class TestEncodeGenotypesPython:
     def test_shapes(self, value, num_variants, num_samples):
         g = np.zeros((num_variants, num_samples, 2), dtype=np.int8) + value
         b1 = encode_genotypes_reference(g)
-        b2 = plink.encode_genotypes(g)
+        b2 = _encode(g)
         assert b1 == b2
 
     def test_returns_bytes(self):
         g = np.zeros((1, 4, 2), dtype=np.int8)
-        result = plink.encode_genotypes(g)
+        result = _encode(g)
         assert isinstance(result, bytes)
 
     @pytest.mark.parametrize(
@@ -190,7 +196,7 @@ class TestEncodeGenotypesPython:
     )
     def test_output_length(self, num_variants, num_samples):
         g = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
-        result = plink.encode_genotypes(g)
+        result = _encode(g)
         expected = ((num_samples + 3) // 4) * num_variants
         assert len(result) == expected
 
@@ -199,7 +205,7 @@ class TestEncodeGenotypesPython:
         # All MISSING (0b01) genotypes: bytes have 01 in the live slots and
         # 00 in the trailing pad slots. We can read them back to confirm.
         g = -np.ones((1, num_samples, 2), dtype=np.int8)
-        encoded = plink.encode_genotypes(g)
+        encoded = _encode(g)
         bits_used = num_samples * 2
         bits_total = len(encoded) * 8
         if bits_used == bits_total:
@@ -213,7 +219,7 @@ class TestEncodeGenotypesPython:
     def test_non_diploid_raises(self):
         g = np.zeros((2, 3, 3), dtype=np.int8)
         with pytest.raises(ValueError, match="diploid"):
-            plink.encode_genotypes(g)
+            _encode(g)
 
 
 # ---------------------------------------------------------------------------

@@ -1221,7 +1221,9 @@ class TestBedEncoderWithSetVariants:
 
     def test_biallelic_check_scoped_to_selection(self):
         # variants_chunk_size=2 puts variant 2 (the tri-allelic) alone
-        # in chunk 1; chunks 0 and 2 are biallelic.
+        # in chunk 1; chunks 0 and 2 are biallelic. The biallelic
+        # check is lazy (per-chunk during read), so a draining read
+        # that never visits the multi-allelic chunk doesn't raise.
         alleles = [
             ("A", "T"),
             ("A", "T"),
@@ -1229,8 +1231,6 @@ class TestBedEncoderWithSetVariants:
             ("A", "T"),
             ("A", "T"),
         ]
-        # Selection avoids the multi-allelic chunk: should construct
-        # cleanly even though the store has a tri-allelic.
         reader_ok = _build_reader(
             num_variants=5,
             num_samples=3,
@@ -1240,8 +1240,10 @@ class TestBedEncoderWithSetVariants:
         reader_ok.set_variants(np.array([0, 1, 3, 4], dtype=np.int64))
         enc = plink.BedEncoder(reader_ok)
         assert enc.num_variants == 4
+        # Drain the whole BED: only biallelic chunks are visited.
+        assert len(enc.read(0, enc.bed_size)) == enc.bed_size
 
-    def test_biallelic_check_raises_on_selected_multi_allelic(self):
+    def test_biallelic_check_raises_on_read_of_multi_allelic_chunk(self):
         alleles = [
             ("A", "T"),
             ("A", "T"),
@@ -1255,10 +1257,12 @@ class TestBedEncoderWithSetVariants:
             alleles=alleles,
             variants_chunk_size=2,
         )
-        # Index 2 lands in chunk 1 alongside the tri-allelic.
+        # Index 2 is the tri-allelic. Construction is I/O-free and
+        # succeeds; the check fires when read drains that chunk.
         reader.set_variants(np.array([2], dtype=np.int64))
+        encoder = plink.BedEncoder(reader)
         with pytest.raises(ValueError, match="Multi-allelic"):
-            plink.BedEncoder(reader)
+            encoder.read(0, encoder.bed_size)
 
     def test_set_variant_filter_is_rejected(self):
         reader = _build_reader(num_variants=5, num_samples=3)

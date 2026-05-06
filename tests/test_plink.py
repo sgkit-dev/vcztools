@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from tests import vcz_builder
-from vcztools import bcftools_filter, plink, retrieval, utils
+from vcztools import _vcztools, bcftools_filter, plink, retrieval, utils
 
 # ---------------------------------------------------------------------------
 # Python reference encoder used to cross-check the C-level encoder.
@@ -121,7 +121,7 @@ def _parse_bim(text):
 def _encode(g):
     """Coerce ``g`` to C-contiguous int8 and run the PLINK C kernel."""
     G = np.ascontiguousarray(g, dtype=np.int8)
-    return plink._encode_genotypes_sync(G)
+    return bytes(_vcztools.encode_plink(G).data)
 
 
 class TestEncodeGenotypesPython:

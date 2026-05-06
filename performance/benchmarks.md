@@ -104,44 +104,62 @@ Bulk tasks land in the ~600 MB – 2 GB range. Readahead budget is 256 MiB of in
 
 icechunk's lead over the other directory-store backends comes from its async-friendly storage layout; `local-zip`'s last-place finish on the geomean is dominated by the small-read tasks (`iter_info_only`, `filter_info_dp_gt_80`) where the single file handle serialises everything.
 
-## `BedEncoder` micro-benchmarks
+## Output benchmarks (write_vcf / write_plink / BedEncoder)
 
-Stateful sequential `.bed` byte-stream encoder. The benchmark
-exercises the three patterns FUSE / range-HTTP / sequential consumers
-drive: sequential drain on one encoder, random reads on one encoder,
-and concurrent drains across N encoders sharing one `VczReader`.
+These three tasks measure how fast vcztools produces output bytes —
+headline metric is `output_rate_mib_s = bytes_written / elapsed_s`.
+They run on the `local-dir` backend only because the encoder is the
+bottleneck and the input store has negligible influence at these
+rates. Per-task chunk counts are sized so each task lands ~6–10 s
+wall on the standard 100k-sample dataset; the three encoder rates
+differ by ~2× so a shared chunk count would over- or under-spend.
 
-- **Source run:** `performance/plink_streaming.py` against
-  `performance/bench_biallelic.vcz`, recorded 2026-05-01. The
-  standalone script has since been removed; the sequential-drain
-  pattern is now task `output_bed_stream` in
-  `performance/benchmarks.py`. The `random` and `fanout` patterns
-  below are not in the matrix; recover them from git history if
-  needed.
+- **Source run:** `performance/benchmarks.py run --task output_vcf
+  --task output_plink --task output_bed_stream` against
+  `performance/bench.vcz`, recorded 2026-05-06.
 - **Hardware:** 4-CPU host `claude-worker1`.
-- **Dataset:** 1000 diploid samples × 32 794 biallelic SNPs
-  (msprime + `BinaryMutationModel` to guarantee no multi-allelic
-  sites — `compute_a12` rejects multi-allelic variants outright,
-  mirroring `plink2 --make-bed`). Variant chunk size 5000.
-  BED size 8.2 MB.
-- **Reproduce sequential:**
+- **Dataset:** 100 000 diploid samples, ~98 % biallelic (the rest
+  dropped via per-chunk materialisation in
+  `_biallelic_first_chunks_plan` so all three tasks see the same
+  variant set).
+- **Reproduce:**
   ```
   uv run python performance/benchmarks.py run \
-      --dataset performance/bench_biallelic.vcz \
-      --task output_bed_stream \
-      --output /tmp/bed-stream.jsonl
+      --dataset performance/bench.vcz \
+      --task output_vcf --task output_plink --task output_bed_stream \
+      --output /tmp/output.jsonl
   ```
 
-| Workload | Median | Notes |
-|---|---:|---|
-| `sequential` (full drain) | 0.22 s / 37 MB s⁻¹ | 128 KiB reads on one encoder |
-| `random` (128 KiB) | 42 ms | One restart per read |
-| `fanout` (4 encoders, one reader) | 0.47 s / 70 MB s⁻¹ aggregate | Each encoder drains in its own thread |
+| Task | Scope | bytes_written | elapsed | **output rate** |
+|---|---|---:|---:|---:|
+| `output_vcf` | 1 variant-chunk → /dev/null | 4.82 GiB | 8.3 s | **110 MiB/s** |
+| `output_plink` | 20 variant-chunks → tempdir | 472 MiB | 6.6 s | **72 MiB/s** |
+| `output_bed_stream` | 20 variant-chunks, sequential drain | 469 MiB | 6.2 s | **76 MiB/s** |
 
-The `sequential` drain reuses one chunk iterator across all reads —
-the per-call `VczReader` construction floor that one-shot APIs paid
-(~40 ms each) is amortised to zero. `random` reads each pay one
-chunk's read + decode (the restart cost), which dominates for small
-``read_size``. `fanout` scales sub-linearly on a 4-CPU host because
-each encoder's `ReadaheadPipeline` runs its own thread pool — total
-threads in flight (encoders × readahead workers) exceeds CPU count.
+### `vcz_encode_plink` kernel ceiling
+
+The pure C kernel, exercised in isolation by
+`performance/encode_plink_bench.py` on an in-memory genotype array
+(no I/O, no readahead, single chunk of 1000 variants × 100 000
+samples × 2):
+
+| | rate |
+|---|---:|
+| Input bytes processed | 2265 MiB/s |
+| Output bytes produced | **283 MiB/s** |
+
+So the kernel has ~3.7× more headroom than the pipeline currently
+uses; further wall-time gains on `output_plink` /
+`output_bed_stream` come from the read pipeline (Zarr decompression,
+`_assemble_call`), not from the encoder.
+
+### Optimisation history
+
+Two passes against the 2026-05-06 baseline took the headline
+PLINK output rate from 41 MiB/s to ~75 MiB/s (1.8×):
+
+| Stage | output_plink | output_bed_stream | Change |
+|---|---:|---:|---|
+| Original (RMW kernel) | 41 MiB/s | 42 MiB/s | — |
+| Unrolled kernel | 61 MiB/s | 60 MiB/s | rewrote `vcz_encode_plink` to pack 4 codes per byte and write once; deleted the initial `memset`. C tottime 4.39 s → 2.08 s. |
+| Fused assembly | **72 MiB/s** | **76 MiB/s** | Folded the variant-axis fancy-index slice into `_assemble_call` so the call_genotype path materialises the assembled output once instead of concat-then-slice. Saved ~64 ms per chunk. |

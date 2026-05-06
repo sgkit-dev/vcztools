@@ -24,11 +24,13 @@ import dataclasses
 import json
 import logging
 import math
+import os
 import pathlib
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -45,7 +47,7 @@ import tqdm
 import zarr
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from vcztools import bcftools_filter, retrieval
+from vcztools import bcftools_filter, plink, retrieval, vcf_writer
 from vcztools import regions as regions_mod
 from vcztools import utils as vcz_utils
 
@@ -607,7 +609,9 @@ class RunContext:
 class Task:
     name: str
     build_reader: object
-    fields: list[str] | None
+    fields: list[str] | None = None
+    run: object = None
+    backends: frozenset[str] | None = None
 
 
 def _build_iter_no_fields(root, ctx):
@@ -783,6 +787,173 @@ def _build_region_and_sample_subset(root, ctx):
     return reader
 
 
+# ---------------------------------------------------------------------------
+# Output tasks (write_vcf, write_plink, BedEncoder)
+# ---------------------------------------------------------------------------
+#
+# These benchmarks measure how fast vcztools generates output bytes —
+# headline metric is `output_rate_mib_s = bytes_written / elapsed_s`.
+# All three run on a single backend (`local-dir`) because the encoder
+# is the bottleneck and the input store has negligible influence.
+#
+# Per-task chunk counts are sized so each task lands ~10s wall on the
+# 100k-sample default dataset. The encoder rates differ by ~2 orders
+# of magnitude (VCF text ~100 MiB/s, BED encode ~45 MiB/s, full plink
+# write ~40 MiB/s), so a fixed shared chunk count would over- or
+# under-spend by 5-10x.
+
+OUTPUT_BACKENDS = frozenset({"local-dir"})
+
+OUTPUT_VCF_CHUNKS = 1
+OUTPUT_PLINK_CHUNKS = 20
+OUTPUT_BED_STREAM_CHUNKS = 20
+
+
+class _CountingTextWriter:
+    """File-like text proxy that counts UTF-8 bytes written.
+
+    Used by ``output_vcf`` to measure VCF emission size with the inner
+    sink set to ``os.devnull``: ``write_vcf`` calls ``.write(str)``
+    via ``print(..., file=output)``, and we want bytes-of-utf8 to
+    match what would land on disk."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.count = 0
+
+    def write(self, s):
+        if isinstance(s, str):
+            self.count += len(s.encode("utf-8"))
+        else:
+            self.count += len(s)
+        return self._inner.write(s)
+
+    def flush(self):
+        self._inner.flush()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._inner.close()
+        return False
+
+
+def _biallelic_first_chunks_plan(root, num_chunks):
+    """Discover a biallelic-only chunk plan covering the first
+    ``num_chunks`` variant-chunks.
+
+    Runs on a throwaway reader, returns a ``ChunkRead`` list ready to
+    pass to ``set_variants``. Materialisation (rather than
+    ``set_variant_filter(MaxAllelesFilter(2))``) is required because
+    :class:`vcztools.BedEncoder` rejects readers with a variant filter
+    set; both write paths are happy with a chunk plan."""
+    with retrieval.VczReader(root) as discovery:
+        num_variant_chunks = math.ceil(
+            discovery.num_variants / discovery.variants_chunk_size
+        )
+        take_chunks = min(num_chunks, num_variant_chunks)
+        coarse_plan = [vcz_utils.ChunkRead(index=i) for i in range(take_chunks)]
+        discovery.set_variants(coarse_plan)
+
+        fine_plan = []
+        for cr, chunk_data in zip(
+            coarse_plan, discovery.variant_chunks(fields=["variant_allele"])
+        ):
+            alleles = chunk_data["variant_allele"]
+            if alleles.shape[1] <= 2:
+                mask = np.ones(alleles.shape[0], dtype=bool)
+            else:
+                mask = (alleles[:, 2:] == "").all(axis=1)
+            local_idx = np.flatnonzero(mask)
+            if local_idx.size == 0:
+                continue
+            if local_idx.size == alleles.shape[0]:
+                fine_plan.append(vcz_utils.ChunkRead(index=cr.index))
+            else:
+                fine_plan.append(
+                    vcz_utils.ChunkRead(index=cr.index, selection=local_idx)
+                )
+    return fine_plan
+
+
+def _plan_records(reader):
+    """Count variants in the reader's current chunk plan (no filter)."""
+    chunk_size = reader.variants_chunk_size
+    num_variants = reader.num_variants
+    records = 0
+    for cr in reader.variant_chunk_plan:
+        if cr.selection is not None:
+            records += int(cr.selection.size)
+            continue
+        start = cr.index * chunk_size
+        stop = min(start + chunk_size, num_variants)
+        records += stop - start
+    return records
+
+
+def _build_output_vcf(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_first_chunks_plan(root, OUTPUT_VCF_CHUNKS))
+    return reader
+
+
+def _run_output_vcf(reader, ctx):
+    records = _plan_records(reader)
+    with open(os.devnull, "w") as devnull:
+        sink = _CountingTextWriter(devnull)
+        vcf_writer.write_vcf(reader, sink)
+    return RunStats(records=records, bytes_written=sink.count)
+
+
+def _build_output_plink(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_first_chunks_plan(root, OUTPUT_PLINK_CHUNKS))
+    return reader
+
+
+def _run_output_plink(reader, ctx):
+    records = _plan_records(reader)
+    with tempfile.TemporaryDirectory(prefix="vcztools-bench-plink-") as tmp:
+        tmp_dir = pathlib.Path(tmp)
+        bed_path = tmp_dir / "out.bed"
+        bim_path = tmp_dir / "out.bim"
+        fam_path = tmp_dir / "out.fam"
+        writer = plink.Writer(
+            reader,
+            bed_path=bed_path,
+            fam_path=fam_path,
+            bim_path=bim_path,
+        )
+        writer.run()
+        bytes_written = (
+            bed_path.stat().st_size + bim_path.stat().st_size + fam_path.stat().st_size
+        )
+    return RunStats(records=records, bytes_written=bytes_written)
+
+
+def _build_output_bed_stream(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_first_chunks_plan(root, OUTPUT_BED_STREAM_CHUNKS))
+    return reader
+
+
+_BED_STREAM_READ_SIZE = 1 << 20
+
+
+def _run_output_bed_stream(reader, ctx):
+    bytes_written = 0
+    with plink.BedEncoder(reader) as enc:
+        bed_size = enc.bed_size
+        num_variants = enc.num_variants
+        off = 0
+        while off < bed_size:
+            chunk = enc.read(off, _BED_STREAM_READ_SIZE)
+            bytes_written += len(chunk)
+            off += len(chunk)
+    return RunStats(records=num_variants, bytes_written=bytes_written)
+
+
 TASKS: list[Task] = [
     Task("iter_no_fields", _build_iter_no_fields, []),
     Task(
@@ -853,6 +1024,24 @@ TASKS: list[Task] = [
         _build_region_and_sample_subset,
         ["call_genotype"],
     ),
+    Task(
+        "output_vcf",
+        _build_output_vcf,
+        run=_run_output_vcf,
+        backends=OUTPUT_BACKENDS,
+    ),
+    Task(
+        "output_plink",
+        _build_output_plink,
+        run=_run_output_plink,
+        backends=OUTPUT_BACKENDS,
+    ),
+    Task(
+        "output_bed_stream",
+        _build_output_bed_stream,
+        run=_run_output_bed_stream,
+        backends=OUTPUT_BACKENDS,
+    ),
 ]
 
 
@@ -872,7 +1061,9 @@ class Result:
     cpu_s: float
     records: int
     bytes_retrieved: int
+    bytes_written: int
     data_rate_mib_s: float
+    output_rate_mib_s: float
     peak_rss_mb: float
     profile: str
     git_sha: str
@@ -881,9 +1072,10 @@ class Result:
 
 
 @dataclasses.dataclass
-class ReadStats:
+class RunStats:
     records: int
-    bytes_retrieved: int
+    bytes_retrieved: int = 0
+    bytes_written: int = 0
 
 
 class PeakRssSampler:
@@ -917,7 +1109,7 @@ class PeakRssSampler:
         return self._peak_bytes / (1024 * 1024)
 
 
-def _iterate_reader(reader: retrieval.VczReader, fields: list[str] | None) -> ReadStats:
+def _iterate_reader(reader: retrieval.VczReader, fields: list[str] | None) -> RunStats:
     """Iterate the reader's variant chunks, counting records and summing
     the byte volume of every returned array.
 
@@ -943,7 +1135,7 @@ def _iterate_reader(reader: retrieval.VczReader, fields: list[str] | None) -> Re
             start = cr.index * chunk_size
             stop = min(start + chunk_size, num_variants)
             records += stop - start
-        return ReadStats(records=records, bytes_retrieved=0)
+        return RunStats(records=records)
 
     records = 0
     total_bytes = 0
@@ -952,7 +1144,7 @@ def _iterate_reader(reader: retrieval.VczReader, fields: list[str] | None) -> Re
         records += int(first.shape[0])
         for arr in chunk.values():
             total_bytes += int(arr.nbytes)
-    return ReadStats(records=records, bytes_retrieved=total_bytes)
+    return RunStats(records=records, bytes_retrieved=total_bytes)
 
 
 def _run_task(
@@ -974,15 +1166,21 @@ def _run_task(
         with reader, PeakRssSampler() as sampler:
             wall_t0 = time.perf_counter()
             cpu_t0 = time.process_time()
-            stats = _iterate_reader(reader, task.fields)
+            if task.run is not None:
+                stats = task.run(reader, ctx)
+            else:
+                stats = _iterate_reader(reader, task.fields)
             elapsed = time.perf_counter() - wall_t0
             cpu = time.process_time() - cpu_t0
     finally:
         opened.cleanup()
 
-    data_rate_mib_s = (
-        stats.bytes_retrieved / (1024 * 1024) / elapsed if elapsed > 0 else 0.0
-    )
+    if elapsed > 0:
+        data_rate_mib_s = stats.bytes_retrieved / (1024 * 1024) / elapsed
+        output_rate_mib_s = stats.bytes_written / (1024 * 1024) / elapsed
+    else:
+        data_rate_mib_s = 0.0
+        output_rate_mib_s = 0.0
 
     return Result(
         task=task.name,
@@ -994,7 +1192,9 @@ def _run_task(
         cpu_s=cpu,
         records=stats.records,
         bytes_retrieved=stats.bytes_retrieved,
+        bytes_written=stats.bytes_written,
         data_rate_mib_s=data_rate_mib_s,
+        output_rate_mib_s=output_rate_mib_s,
         peak_rss_mb=sampler.peak_mb,
         profile=profile,
         git_sha=git_sha,
@@ -1290,6 +1490,8 @@ def run_cmd(
     with output.open("w") as fp:
         for task in selected_tasks:
             for backend in selected_backends:
+                if task.backends is not None and backend.name not in task.backends:
+                    continue
                 for repeat_index in range(repeats):
                     logger.info(
                         "%s / %s [%d/%d]",

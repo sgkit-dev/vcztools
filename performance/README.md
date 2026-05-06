@@ -59,9 +59,12 @@ uv run python performance/benchmarks.py run \
 ```
 
 Writes one JSONL row per `(task, backend, repeat)` with `elapsed_s`,
-`peak_rss_mb`, `records`, `git_sha`, `timestamp`, `hostname`, and the
-`profile` tag. Defaults to `--repeats 3` across all tasks and all six
-backends.
+`peak_rss_mb`, `records`, `bytes_retrieved`, `data_rate_mib_s`,
+`bytes_written`, `output_rate_mib_s`, `git_sha`, `timestamp`,
+`hostname`, and the `profile` tag. Defaults to `--repeats 3` across
+all tasks and all six backends — except output tasks, which run on
+`local-dir` only (the encoder is the bottleneck for output rate, so
+sweeping backends adds no signal).
 
 Optional flags:
 
@@ -136,6 +139,21 @@ region is computed at run start from the dataset.
 | 7 | `filter_info_dp_gt_80` | INFO | full (`INFO/DP>80`) |
 | 8 | `region_filter_format_gq_gt_50` | — | region + `FMT/GQ>50` with filter seeing *all* samples |
 | 9 | `region_and_sample_subset` | `call_genotype` | 1% samples × region |
+| 10 | `output_vcf` | (write_vcf) | first 1 variant-chunk → `/dev/null` |
+| 11 | `output_plink` | (Writer .bed/.bim/.fam) | first 20 variant-chunks → tempdir |
+| 12 | `output_bed_stream` | (`BedEncoder.read`) | first 20 variant-chunks, sequential drain |
+
+The three `output_*` tasks measure **output rate**:
+`output_rate_mib_s = bytes_written / elapsed_s`. They run on the
+`local-dir` backend only (encoder-bound — see above). Per-task
+chunk counts are sized so each task lands ~10 s wall on the default
+100k-sample dataset; the three encoder rates differ by ~2 orders of
+magnitude, so a shared chunk count would over- or under-spend. The
+multi-allelic variants are dropped via per-chunk materialisation so
+all three tasks see the same biallelic subset.
+
+Retrieval rows have `bytes_written = 0` / `output_rate_mib_s = 0`;
+output rows have `bytes_retrieved = 0` / `data_rate_mib_s = 0`.
 
 ## Files
 

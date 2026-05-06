@@ -13,6 +13,7 @@ normalisation, and known divergences from plink 2 — see
 ``docs/plink.md``.
 """
 
+import concurrent.futures as cf
 import logging
 import pathlib
 import time
@@ -36,7 +37,7 @@ def encode_genotypes(genotypes):
     # been reordered by a sample subset is fancy-indexed and not
     # contiguous, so force a copy when needed.
     G = np.ascontiguousarray(genotypes, dtype=np.int8)
-    return bytes(_vcztools.encode_plink(G).data)
+    return _encode_genotypes_sync(G)
 
 
 def _check_biallelic(alleles):
@@ -238,17 +239,38 @@ class BedEncoder:
     :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
     yet supported and raises ``NotImplementedError`` at construction;
     apply predicate filters externally before passing the reader in.
+
+    Per-chunk PLINK encoding parallelises across variant-axis
+    sub-blocks via a :class:`concurrent.futures.ThreadPoolExecutor`
+    owned by the encoder. ``encode_threads`` (default 4) sets the
+    pool size; ``encode_block_bytes`` (default 10 MiB) is the
+    input-bytes target per sub-block. Chunks at or below the
+    threshold encode synchronously on the calling thread. The pool
+    is created in ``__init__`` and joined in :meth:`close` /
+    :meth:`__exit__`.
     """
 
     BED_MAGIC: ClassVar[bytes] = BED_MAGIC
 
-    def __init__(self, reader: retrieval.VczReader):
+    def __init__(
+        self,
+        reader: retrieval.VczReader,
+        *,
+        encode_threads: int = 4,
+        encode_block_bytes: int = 10 * 1024 * 1024,
+    ):
         if reader.variant_filter is not None:
             raise NotImplementedError(
                 "BedEncoder does not yet support readers with a "
                 "set_variant_filter() configured. Apply the filter "
                 "externally and pass the resulting reader, or use "
                 "set_variants() to materialise the surviving indices."
+            )
+        if encode_threads < 1:
+            raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
+        if encode_block_bytes < 1:
+            raise ValueError(
+                f"encode_block_bytes must be >= 1 (got {encode_block_bytes})"
             )
 
         self._reader = reader
@@ -267,6 +289,13 @@ class BedEncoder:
         self._cur_byte_offset = None
         self._pending = bytearray()
         self._first_chunk_skip = 0
+
+        self._encode_threads = encode_threads
+        self._encode_block_bytes = encode_block_bytes
+        self._executor = cf.ThreadPoolExecutor(
+            max_workers=encode_threads,
+            thread_name_prefix="vcztools-encode-plink",
+        )
 
     def _pre_walk(self) -> None:
         bpv = self._bytes_per_variant
@@ -361,7 +390,7 @@ class BedEncoder:
             chunk = next(self._iterator)
             _check_biallelic(chunk["variant_allele"])
             G = chunk["call_genotype"]
-            encoded = encode_genotypes(G)
+            encoded = self._encode_genotypes(G)
             if self._first_chunk_skip > 0:
                 encoded = encoded[self._first_chunk_skip :]
                 self._first_chunk_skip = 0
@@ -369,6 +398,31 @@ class BedEncoder:
             out += encoded[:take]
             self._pending = bytearray(encoded[take:])
             n -= take
+        return bytes(out)
+
+    def _encode_genotypes(self, genotypes: np.ndarray) -> bytes:
+        # Coerce once at method entry: a sample-subset call_genotype
+        # is fancy-indexed and non-contiguous, so the copy must happen
+        # before slicing. Once G is C-contiguous, axis-0 sub-blocks
+        # are zero-copy views.
+        G = np.ascontiguousarray(genotypes, dtype=np.int8)
+        if self._encode_threads <= 1 or G.nbytes <= self._encode_block_bytes:
+            return _encode_genotypes_sync(G)
+
+        block_variants = max(1, self._encode_block_bytes // (G.shape[1] * 2))
+        # Slicing along axis 0 (variants) preserves per-row independence:
+        # the C kernel writes one row of bytes_per_variant per variant,
+        # so concatenating per-block outputs in submit order is bit-exact
+        # with a single-call output.
+        futures = [
+            self._executor.submit(
+                _encode_genotypes_sync, G[start : start + block_variants]
+            )
+            for start in range(0, G.shape[0], block_variants)
+        ]
+        out = bytearray()
+        for f in futures:
+            out.extend(f.result())
         return bytes(out)
 
     def _teardown_iterator(self) -> None:
@@ -379,12 +433,14 @@ class BedEncoder:
         self._first_chunk_skip = 0
 
     def close(self) -> None:
-        """Tear down the active chunk iterator and drop iterator
-        state. Does not close the underlying reader. Idempotent."""
+        """Tear down the active chunk iterator, shut down the encode
+        thread pool, and drop iterator state. Does not close the
+        underlying reader. Idempotent."""
         if self._closed:
             return
         self._closed = True
         self._teardown_iterator()
+        self._executor.shutdown(wait=True)
         self._cur_byte_offset = None
 
     def __enter__(self):

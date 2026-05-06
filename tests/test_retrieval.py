@@ -1591,9 +1591,10 @@ def test_validate_samples_input_none():
 
 
 class TestSettersOneShot:
-    """Each ``VczReader.set_*`` raises ``RuntimeError`` when called a
-    second time (or after the corresponding state field has been
-    resolved by reading a property)."""
+    """``set_samples`` and ``set_filter_samples`` are one-shot — a
+    second call raises ``RuntimeError``. ``set_variants`` and
+    ``set_variant_filter`` are re-callable (covered by
+    :class:`TestSettersReplace`)."""
 
     def test_set_samples_twice_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
@@ -1601,24 +1602,79 @@ class TestSettersOneShot:
         with pytest.raises(RuntimeError, match="samples already configured"):
             reader.set_samples([1])
 
-    def test_set_variants_twice_raises(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        reader.set_variants(np.array([0], dtype=np.int64))
-        with pytest.raises(RuntimeError, match="variants already configured"):
-            reader.set_variants(np.array([1], dtype=np.int64))
-
-    def test_set_variant_filter_twice_raises(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        f = BcftoolsFilter(field_names=reader.field_names, include="POS>0")
-        reader.set_variant_filter(f)
-        with pytest.raises(RuntimeError, match="variant_filter already configured"):
-            reader.set_variant_filter(f)
-
     def test_set_filter_samples_twice_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
         reader.set_filter_samples([0, 1])
         with pytest.raises(RuntimeError, match="filter_samples already configured"):
             reader.set_filter_samples([0, 1])
+
+
+class TestSettersReplace:
+    """``set_variants`` and ``set_variant_filter`` may be called
+    multiple times; each call replaces the prior value."""
+
+    def test_set_variants_replaces(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variants(np.array([0], dtype=np.int64))
+        reader.set_variants(np.array([1, 2], dtype=np.int64))
+        positions = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            positions.extend(chunk["variant_position"].tolist())
+        full = reader.root["variant_position"][:]
+        assert positions == [int(full[1]), int(full[2])]
+
+    def test_set_variant_filter_replaces(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS<0")
+        )
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS>0")
+        )
+        n = sum(
+            len(chunk["variant_position"])
+            for chunk in reader.variant_chunks(fields=["variant_position"])
+        )
+        assert n == reader.num_variants
+
+    def test_set_variant_filter_none_clears(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS<0")
+        )
+        reader.set_variant_filter(None)
+        assert reader.variant_filter is None
+        n = sum(
+            len(chunk["variant_position"])
+            for chunk in reader.variant_chunks(fields=["variant_position"])
+        )
+        assert n == reader.num_variants
+
+    def test_in_flight_generator_uses_filter_snapshot(self):
+        # Two chunks of two variants each (POS = 100, 101, 102, 103).
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * 4,
+            variant_position=[100, 101, 102, 103],
+            alleles=[("A", "T")] * 4,
+            variants_chunk_size=2,
+        )
+        reader = VczReader(root)
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS<102")
+        )
+        gen = reader.variant_chunks(fields=["variant_position"])
+        first = next(gen)
+        # Swap to a permissive filter mid-iteration; the in-flight
+        # generator should keep using the snapshot taken at start.
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS>=0")
+        )
+        rest = [chunk["variant_position"].tolist() for chunk in gen]
+        gen.close()
+        # The snapshot filter (POS<102) keeps the first chunk in full
+        # (100, 101) and excludes the second chunk entirely.
+        assert first["variant_position"].tolist() == [100, 101]
+        assert rest == []
 
 
 class TestVariantChunksStart:

@@ -21,7 +21,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from vcztools import _vcztools, retrieval, utils
+from vcztools import _vcztools, retrieval
 from vcztools.utils import _as_fixed_length_unicode
 
 logger = logging.getLogger(__name__)
@@ -219,86 +219,18 @@ def generate_bim(reader):
     return df.to_csv(header=False, sep="\t", index=False, lineterminator="\n")
 
 
-def materialise_variant_filter(reader):
-    """Resolve ``reader.variant_filter`` into a fixed variant selection.
-
-    Walks the reader's ``variant_chunk_plan``, evaluates the filter,
-    and replaces ``(variant_filter, variant_chunk_plan)`` on the same
-    reader with a chunk plan over the surviving global variant
-    indexes. No-op if no filter is configured.
-
-    Sample-scope filters are not supported in PLINK 1 binary output:
-    the ``.bed`` format is fixed-width per variant, so per-sample
-    filtering doesn't translate. Raises ``ValueError`` on a
-    sample-scope filter.
-    """
-    variant_filter = reader.variant_filter
-    if variant_filter is None:
-        return
-    if variant_filter.scope != "variant":
-        raise ValueError(
-            "Sample-scope variant filters are not supported for "
-            "PLINK 1 binary output: the .bed format is fixed-width "
-            "per variant. Use a variant-scope filter (e.g. one "
-            "referencing INFO fields, CHROM, POS, or QUAL)."
-        )
-    indexes = _surviving_variant_indexes(reader, variant_filter)
-    reader.set_variant_filter(None)
-    reader.set_variants(indexes)
-    logger.debug(f"materialise_variant_filter: {indexes.size} surviving variants")
-
-
-def _surviving_variant_indexes(reader, variant_filter):
-    """Walk ``reader.variant_chunk_plan`` and evaluate ``variant_filter``,
-    returning a sorted 1-D ``int64`` array of surviving global variant
-    indexes. Caller is responsible for ensuring the filter is
-    variant-scope."""
-    chunk_size = reader.variants_chunk_size
-    static_fields = {}
-    dynamic_fields = []
-    for name in variant_filter.referenced_fields:
-        arr = reader.root[name]
-        dims = utils.array_dims(arr)
-        if dims is not None and "variants" in dims:
-            dynamic_fields.append(name)
-        else:
-            static_fields[name] = arr[:]
-
-    surviving = []
-    for entry in reader.variant_chunk_plan:
-        base = entry.index * chunk_size
-        chunk_data = dict(static_fields)
-        for name in dynamic_fields:
-            arr = reader.root[name]
-            length = min(chunk_size, arr.shape[0] - base)
-            block = arr[base : base + length]
-            if entry.selection is not None:
-                block = block[entry.selection]
-            chunk_data[name] = block
-        result = variant_filter.evaluate(chunk_data)
-        local = np.flatnonzero(result)
-        if entry.selection is None:
-            global_idx = base + local
-        elif isinstance(entry.selection, slice):
-            offsets = np.arange(*entry.selection.indices(chunk_size))
-            global_idx = base + offsets[local]
-        else:
-            global_idx = base + np.asarray(entry.selection)[local]
-        surviving.append(global_idx)
-    if len(surviving) == 0:
-        return np.empty(0, dtype=np.int64)
-    return np.concatenate(surviving).astype(np.int64)
-
-
 def write_plink(reader, out):
     """Write PLINK 1 binary fileset (``.bed`` / ``.bim`` / ``.fam``) for
     ``reader`` under prefix ``out``.
 
     If a variant filter is configured on the reader, it is resolved
-    in place via :func:`materialise_variant_filter` before encoding
-    so that BIM rows and BED rows are guaranteed to align.
+    in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
+    before encoding so that BIM rows and BED rows are guaranteed to
+    align. Sample-scope filters are not supported in PLINK 1 binary
+    output: the ``.bed`` format is fixed-width per variant, so
+    per-sample filtering doesn't translate.
     """
-    materialise_variant_filter(reader)
+    reader.materialise_variant_filter()
     out_prefix = pathlib.Path(out)
     bed_path = out_prefix.with_suffix(".bed")
     bim_path = out_prefix.with_suffix(".bim")

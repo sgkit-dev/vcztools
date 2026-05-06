@@ -742,6 +742,74 @@ class VczReader:
                 f"{sorted(variant_filter.referenced_fields)}"
             )
 
+    def materialise_variant_filter(self) -> None:
+        """Resolve the configured variant filter into a fixed selection.
+
+        Walks ``variant_chunk_plan``, evaluates the filter, and replaces
+        ``(variant_filter, variant_chunk_plan)`` with a chunk plan over
+        the surviving global variant indexes. No-op if no filter is
+        configured.
+
+        Only variant-scope filters are supported. Sample-scope filters
+        require reading on the filter sample axis and would duplicate
+        much of :meth:`variant_chunks`; resolve them by iterating
+        :meth:`variant_chunks` instead. Raises ``ValueError`` on a
+        sample-scope filter.
+        """
+        variant_filter = self.variant_filter
+        if variant_filter is None:
+            return
+        if variant_filter.scope != "variant":
+            raise ValueError(
+                "Sample-scope variant filters are not supported by "
+                "materialise_variant_filter; iterate variant_chunks() "
+                "to resolve them, or supply a variant-scope filter."
+            )
+        indexes = self._surviving_variant_indexes(variant_filter)
+        self.set_variant_filter(None)
+        self.set_variants(indexes)
+        logger.debug(f"materialise_variant_filter: {indexes.size} surviving variants")
+
+    def _surviving_variant_indexes(self, variant_filter) -> np.ndarray:
+        """Walk ``variant_chunk_plan`` and evaluate ``variant_filter``,
+        returning a sorted 1-D ``int64`` array of surviving global
+        variant indexes. Caller is responsible for ensuring the filter
+        is variant-scope."""
+        chunk_size = self.variants_chunk_size
+        static_fields = {}
+        dynamic_fields = []
+        for name in variant_filter.referenced_fields:
+            arr = self.root[name]
+            if _has_variants_axis(arr):
+                dynamic_fields.append(name)
+            else:
+                static_fields[name] = arr[:]
+
+        surviving = []
+        for entry in self.variant_chunk_plan:
+            base = entry.index * chunk_size
+            chunk_data = dict(static_fields)
+            for name in dynamic_fields:
+                arr = self.root[name]
+                length = min(chunk_size, arr.shape[0] - base)
+                block = arr[base : base + length]
+                if entry.selection is not None:
+                    block = block[entry.selection]
+                chunk_data[name] = block
+            result = variant_filter.evaluate(chunk_data)
+            local = np.flatnonzero(result)
+            if entry.selection is None:
+                global_idx = base + local
+            elif isinstance(entry.selection, slice):
+                offsets = np.arange(*entry.selection.indices(chunk_size))
+                global_idx = base + offsets[local]
+            else:
+                global_idx = base + np.asarray(entry.selection)[local]
+            surviving.append(global_idx)
+        if len(surviving) == 0:
+            return np.empty(0, dtype=np.int64)
+        return np.concatenate(surviving).astype(np.int64)
+
     def set_filter_samples(self, filter_samples) -> None:
         """Configure the sample axis that a sample-scope variant filter
         evaluates over.

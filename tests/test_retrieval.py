@@ -1677,6 +1677,97 @@ class TestSettersReplace:
         assert rest == []
 
 
+class TestMaterialiseVariantFilter:
+    """``VczReader.materialise_variant_filter`` resolves a variant-scope
+    filter into a fixed selection: clears ``variant_filter`` and
+    replaces ``variant_chunk_plan`` with one over the surviving
+    indexes."""
+
+    @staticmethod
+    def _build(num_variants=5):
+        # DP = [0, 10, 20, 30, 40]; INFO field, variant-scope.
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=1,
+            call_genotype=np.zeros((num_variants, 1, 2), dtype=np.int8),
+            info_fields={"DP": np.arange(num_variants, dtype=np.int32) * 10},
+            variants_chunk_size=2,
+        )
+
+    def test_no_filter_is_noop(self):
+        reader = VczReader(self._build())
+        reader.materialise_variant_filter()
+        assert reader.variant_filter is None
+
+    def test_filter_is_cleared(self):
+        reader = VczReader(self._build())
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>=20")
+        )
+        reader.materialise_variant_filter()
+        assert reader.variant_filter is None
+
+    def test_surviving_indexes_match_independent_eval(self):
+        # DP = [0, 10, 20, 30, 40]; include "DP>=20" keeps indexes 2,3,4.
+        reader = VczReader(self._build())
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>=20")
+        )
+        reader.materialise_variant_filter()
+        positions = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            positions.extend(chunk["variant_position"].tolist())
+        assert positions == [102, 103, 104]
+
+    def test_filter_excludes_all(self):
+        reader = VczReader(self._build())
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>1000")
+        )
+        reader.materialise_variant_filter()
+        assert reader.variant_filter is None
+        assert len(reader.variant_chunk_plan) == 0
+
+    def test_composes_with_pre_existing_set_variants(self):
+        # Region/index selection already applied via set_variants;
+        # filter further narrows the surviving set. Indexes 1, 3 survive
+        # set_variants; of those, DP>=30 keeps only index 3.
+        reader = VczReader(self._build())
+        reader.set_variants(np.array([1, 3], dtype=np.int64))
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>=30")
+        )
+        reader.materialise_variant_filter()
+        positions = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            positions.extend(chunk["variant_position"].tolist())
+        assert positions == [103]
+
+    def test_sample_scope_filter_rejected(self):
+        reader = VczReader(
+            vcz_builder.make_vcz(
+                variant_contig=[0, 0],
+                variant_position=[100, 200],
+                alleles=[("A", "T"), ("A", "T")],
+                num_samples=2,
+                call_genotype=np.zeros((2, 2, 2), dtype=np.int8),
+            )
+        )
+
+        class _SampleScope:
+            scope = "sample"
+            referenced_fields = frozenset({"call_genotype"})
+
+            def evaluate(self, chunk_data):
+                raise NotImplementedError
+
+        reader.set_variant_filter(_SampleScope())
+        with pytest.raises(ValueError, match="Sample-scope"):
+            reader.materialise_variant_filter()
+
+
 class TestVariantChunksStart:
     """``VczReader.variant_chunks(start=k)`` begins iteration at the
     k-th entry of the persistent ``variant_chunk_plan``. Used by

@@ -643,19 +643,64 @@ class TestViewBed:
             pos = int(line.split("\t")[3])
             assert pos > 1000000
 
-    def test_max_alleles_combines_with_sample_scope_filter(self, tmp_path, fx_vcz_path):
-        # FMT/-prefixed filters are sample-scope; the variant-scope
-        # ``--max-alleles`` mask broadcasts along the sample axis and
-        # AND-composes naturally with them.
+    def test_sample_scope_filter_rejected(self, tmp_path, fx_vcz_path):
+        # plink output is fixed-width per variant, so a sample-scope
+        # ``-i 'FMT/...'`` filter has no per-cell channel to land in;
+        # the writer's ``materialise_variant_filter`` rejects it. This
+        # is independent of ``--max-alleles`` (the rejection lives in
+        # the reader, not the AND composition).
         out = tmp_path / "p"
-        run_vcztools(
+        _, err = run_vcztools(
             f"view-bed {fx_vcz_path} --max-alleles 2 "
-            f"-i 'FMT/DP>3' --out {out.as_posix()}"
+            f"-i 'FMT/DP>3' --out {out.as_posix()}",
+            expect_error=True,
         )
-        # 20:14370 is biallelic (≤2) and has NA00002 with DP=8, so it
-        # passes both filters and lands in the .bim.
+        assert "Sample-scope variant filters" in err
+
+    def test_min_alleles_drops_monomorphics(self, tmp_path, fx_vcz_path):
+        # Without -m, --max-alleles 2 alone keeps the two REF-only
+        # sites at 20:1230237 and 20:1235237; -m 2 drops them.
+        out = tmp_path / "p"
+        run_vcztools(f"view-bed {fx_vcz_path} -m 2 -M 2 --out {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
-        assert any("\t14370\t" in line for line in bim_lines)
+        positions = [int(line.split("\t")[3]) for line in bim_lines]
+        assert 1230237 not in positions
+        assert 1235237 not in positions
+
+    def test_types_snps_only(self, tmp_path, fx_vcz_path):
+        # -v snps + -M 2 keeps only the biallelic SNP rows. The two
+        # REF-only sites also drop (no SNP allele).
+        out = tmp_path / "p"
+        run_vcztools(f"view-bed {fx_vcz_path} -v snps -M 2 --out {out.as_posix()}")
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        positions = [int(line.split("\t")[3]) for line in bim_lines]
+        # 4 biallelic SNP sites in the fixture: 19:111, 19:112, 20:14370, 20:17330.
+        assert sorted(positions) == [111, 112, 14370, 17330]
+
+    def test_exclude_types_snps(self, tmp_path, fx_vcz_path):
+        # -V snps drops SNP sites. With -M 2 to skip the multiallelics,
+        # only the two monomorphic-REF sites survive.
+        out = tmp_path / "p"
+        run_vcztools(f"view-bed {fx_vcz_path} -V snps -M 2 --out {out.as_posix()}")
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        positions = [int(line.split("\t")[3]) for line in bim_lines]
+        assert sorted(positions) == [1230237, 1235237]
+
+    def test_unsupported_type_keyword(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        _, err = run_vcztools(
+            f"view-bed {fx_vcz_path} -v indels -M 2 --out {out.as_posix()}",
+            expect_error=True,
+        )
+        assert "TYPE field" in err
+
+    def test_types_and_exclude_types_mutually_exclusive(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        _, err = run_vcztools(
+            f"view-bed {fx_vcz_path} -v snps -V refs --out {out.as_posix()}",
+            expect_error=True,
+        )
+        assert "Cannot use --types and --exclude-types together" in err
 
     def test_out_prefix_normalisation(self, tmp_path, fx_vcz_path):
         # `--out p.bed` should still write to p.bed/p.bim/p.fam (the

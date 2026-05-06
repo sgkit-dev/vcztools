@@ -1130,98 +1130,100 @@ class VczReader:
         variants_yielded = 0
         bytes_yielded = 0
         iter_start = time.perf_counter()
-        for chunk in pipeline:
-            chunks_visited += 1
-            chunk_start = time.perf_counter()
-            read_seconds = pipeline.last_chunk_read_seconds or 0.0
-            bytes_yielded += pipeline.last_chunk_bytes or 0
-            # variants_selection: 1-D bool over the chunk's variant axis, or
-            # None meaning "no filter, keep every variant".
-            # sample_filter_pass: 2-D bool over (surviving variants, output
-            # samples) for sample-scope filters only; published so query.py
-            # can emit only matching samples in FORMAT-loop queries.
-            variants_selection = None
-            sample_filter_pass = None
-            if variant_filter is not None:
-                filter_data = {
-                    f: referenced_static_fields[f]
-                    if f in referenced_static_fields
-                    else chunk.filter_view(f)
-                    for f in filter_fields
-                }
-                filter_result = variant_filter.evaluate(filter_data)
-                if filter_result.ndim == 1:
-                    # Variant-scope filter: one bool per variant.
-                    variants_selection = filter_result
-                    logger.debug(
-                        f"chunk {chunk.variant_chunk.index}: filter pass "
-                        f"{int(filter_result.sum())}/{filter_result.size} variants"
-                    )
-                else:
-                    # Sample-scope filter: a variant survives if at least one
-                    # sample matched; the surviving rows are kept so the query
-                    # layer can emit only matching samples.
-                    variants_selection = filter_result.any(axis=1)
-                    sample_filter_pass = filter_result[variants_selection]
-                    if output_columns is not None:
-                        # Filter ran on the real-sample axis but output is
-                        # the user's subset axis; reindex columns to match.
-                        sample_filter_pass = sample_filter_pass[:, output_columns]
-                    logger.debug(
-                        f"chunk {chunk.variant_chunk.index}: filter pass "
-                        f"{int(variants_selection.sum())}/"
-                        f"{variants_selection.size} variants, "
-                        f"{int(filter_result.sum())}/{filter_result.size} "
-                        f"sample cells"
-                    )
+        try:
+            for chunk in pipeline:
+                chunks_visited += 1
+                chunk_start = time.perf_counter()
+                read_seconds = pipeline.last_chunk_read_seconds or 0.0
+                bytes_yielded += pipeline.last_chunk_bytes or 0
+                # variants_selection: 1-D bool over the chunk's variant axis, or
+                # None meaning "no filter, keep every variant".
+                # sample_filter_pass: 2-D bool over (surviving variants, output
+                # samples) for sample-scope filters only; published so query.py
+                # can emit only matching samples in FORMAT-loop queries.
+                variants_selection = None
+                sample_filter_pass = None
+                if variant_filter is not None:
+                    filter_data = {
+                        f: referenced_static_fields[f]
+                        if f in referenced_static_fields
+                        else chunk.filter_view(f)
+                        for f in filter_fields
+                    }
+                    filter_result = variant_filter.evaluate(filter_data)
+                    if filter_result.ndim == 1:
+                        # Variant-scope filter: one bool per variant.
+                        variants_selection = filter_result
+                        logger.debug(
+                            f"chunk {chunk.variant_chunk.index}: filter pass "
+                            f"{int(filter_result.sum())}/{filter_result.size} variants"
+                        )
+                    else:
+                        # Sample-scope filter: a variant survives if at least one
+                        # sample matched; the surviving rows are kept so the query
+                        # layer can emit only matching samples.
+                        variants_selection = filter_result.any(axis=1)
+                        sample_filter_pass = filter_result[variants_selection]
+                        if output_columns is not None:
+                            # Filter ran on the real-sample axis but output is
+                            # the user's subset axis; reindex columns to match.
+                            sample_filter_pass = sample_filter_pass[:, output_columns]
+                        logger.debug(
+                            f"chunk {chunk.variant_chunk.index}: filter pass "
+                            f"{int(variants_selection.sum())}/"
+                            f"{variants_selection.size} variants, "
+                            f"{int(filter_result.sum())}/{filter_result.size} "
+                            f"sample cells"
+                        )
 
-            if variants_selection is not None and not variants_selection.any():
-                continue
-
-            chunk_data = {}
-            for field in query_fields:
-                if field in referenced_static_fields:
-                    chunk_data[field] = referenced_static_fields[field]
+                if variants_selection is not None and not variants_selection.any():
                     continue
-                value = chunk.output_view(field)
-                if variants_selection is not None:
-                    value = value[variants_selection]
-                chunk_data[field] = value
-            if sample_filter_pass is not None:
-                chunk_data["sample_filter_pass"] = sample_filter_pass
 
-            # Count surviving variants from a dynamic (variants-axis)
-            # query field if there is one; static fields have the
-            # store-wide axis length, not the per-chunk variant count.
-            non_static_query = [
-                f for f in query_fields if f not in referenced_static_fields
-            ]
-            if len(non_static_query) > 0:
-                chunk_variants = len(chunk_data[non_static_query[0]])
-            elif variants_selection is not None:
-                chunk_variants = int(variants_selection.sum())
-            else:
-                chunk_variants = 0
-            variants_yielded += chunk_variants
-            chunks_yielded += 1
-            total_seconds = time.perf_counter() - chunk_start + read_seconds
-            assemble_seconds = max(0.0, total_seconds - read_seconds)
-            logger.debug(
-                f"chunk {chunk.variant_chunk.index}: yielded {chunk_variants} "
-                f"variants in {total_seconds:.2f}s "
-                f"(read {read_seconds:.2f}s, assemble {assemble_seconds:.2f}s)"
+                chunk_data = {}
+                for field in query_fields:
+                    if field in referenced_static_fields:
+                        chunk_data[field] = referenced_static_fields[field]
+                        continue
+                    value = chunk.output_view(field)
+                    if variants_selection is not None:
+                        value = value[variants_selection]
+                    chunk_data[field] = value
+                if sample_filter_pass is not None:
+                    chunk_data["sample_filter_pass"] = sample_filter_pass
+
+                # Count surviving variants from a dynamic (variants-axis)
+                # query field if there is one; static fields have the
+                # store-wide axis length, not the per-chunk variant count.
+                non_static_query = [
+                    f for f in query_fields if f not in referenced_static_fields
+                ]
+                if len(non_static_query) > 0:
+                    chunk_variants = len(chunk_data[non_static_query[0]])
+                elif variants_selection is not None:
+                    chunk_variants = int(variants_selection.sum())
+                else:
+                    chunk_variants = 0
+                variants_yielded += chunk_variants
+                chunks_yielded += 1
+                total_seconds = time.perf_counter() - chunk_start + read_seconds
+                assemble_seconds = max(0.0, total_seconds - read_seconds)
+                logger.debug(
+                    f"chunk {chunk.variant_chunk.index}: yielded {chunk_variants} "
+                    f"variants in {total_seconds:.2f}s "
+                    f"(read {read_seconds:.2f}s, assemble {assemble_seconds:.2f}s)"
+                )
+                yield chunk_data
+        finally:
+            elapsed = time.perf_counter() - iter_start
+            mib = bytes_yielded / (1024 * 1024)
+            rate = mib / elapsed if elapsed > 0 else 0.0
+            logger.info(
+                f"variant_chunks: iteration done in {elapsed:.2f}s "
+                f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
+                f"{variants_yielded} variants, "
+                f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s, "
+                f"max readahead depth {pipeline.max_in_flight})"
             )
-            yield chunk_data
-        elapsed = time.perf_counter() - iter_start
-        mib = bytes_yielded / (1024 * 1024)
-        rate = mib / elapsed if elapsed > 0 else 0.0
-        logger.info(
-            f"variant_chunks: iteration done in {elapsed:.2f}s "
-            f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
-            f"{variants_yielded} variants, "
-            f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s, "
-            f"max readahead depth {pipeline.max_in_flight})"
-        )
 
     def _resolve_query_fields(self, fields):
         if fields is not None:

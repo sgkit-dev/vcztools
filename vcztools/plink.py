@@ -30,14 +30,11 @@ logger = logging.getLogger(__name__)
 BED_MAGIC = b"\x6c\x1b\x01"
 
 
-def encode_genotypes(genotypes):
+def _encode_genotypes_sync(G: np.ndarray) -> bytes:
     # A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
-    # --vcf X --make-bed convention. The C extension requires a
-    # C-contiguous int8 array; a reader-yielded call_genotype that's
-    # been reordered by a sample subset is fancy-indexed and not
-    # contiguous, so force a copy when needed.
-    G = np.ascontiguousarray(genotypes, dtype=np.int8)
-    return _encode_genotypes_sync(G)
+    # --vcf X --make-bed convention. Caller must pass a C-contiguous
+    # int8 (V, S, 2) array.
+    return bytes(_vcztools.encode_plink(G).data)
 
 
 def _check_biallelic(alleles):
@@ -256,9 +253,14 @@ class BedEncoder:
         self,
         reader: retrieval.VczReader,
         *,
-        encode_threads: int = 4,
-        encode_block_bytes: int = 10 * 1024 * 1024,
+        encode_threads: int | None = None,
+        encode_block_bytes: int | None = None,
     ):
+        if encode_threads is None:
+            encode_threads = 4
+        if encode_block_bytes is None:
+            encode_block_bytes = 10 * 1024 * 1024
+
         if reader.variant_filter is not None:
             raise NotImplementedError(
                 "BedEncoder does not yet support readers with a "
@@ -282,7 +284,7 @@ class BedEncoder:
         # _chunk_byte_offsets: cumulative byte offset per plan entry,
         # starting at 3 (post-magic). Length = len(plan) + 1; the
         # trailing entry equals bed_size.
-        self._pre_walk()
+        self._compute_offsets()
         self._bed_size = int(self._chunk_byte_offsets[-1])
 
         self._iterator = None
@@ -297,7 +299,7 @@ class BedEncoder:
             thread_name_prefix="vcztools-encode-plink",
         )
 
-    def _pre_walk(self) -> None:
+    def _compute_offsets(self) -> None:
         bpv = self._bytes_per_variant
         counts = self._reader.variant_counts_per_chunk()
         self._num_variants = int(counts.sum())
@@ -400,7 +402,7 @@ class BedEncoder:
             n -= take
         return bytes(out)
 
-    def _encode_genotypes(self, genotypes: np.ndarray) -> bytes:
+    def _encode_genotypes(self, genotypes: np.ndarray):
         # Coerce once at method entry: a sample-subset call_genotype
         # is fancy-indexed and non-contiguous, so the copy must happen
         # before slicing. Once G is C-contiguous, axis-0 sub-blocks
@@ -409,21 +411,30 @@ class BedEncoder:
         if self._encode_threads <= 1 or G.nbytes <= self._encode_block_bytes:
             return _encode_genotypes_sync(G)
 
+        num_variants = G.shape[0]
+        bytes_per_variant = self._bytes_per_variant
         block_variants = max(1, self._encode_block_bytes // (G.shape[1] * 2))
+        # Pre-allocate the full chunk's output once; each completed
+        # future's result is copied into its variant-aligned slice.
         # Slicing along axis 0 (variants) preserves per-row independence:
-        # the C kernel writes one row of bytes_per_variant per variant,
-        # so concatenating per-block outputs in submit order is bit-exact
-        # with a single-call output.
-        futures = [
-            self._executor.submit(
-                _encode_genotypes_sync, G[start : start + block_variants]
-            )
-            for start in range(0, G.shape[0], block_variants)
-        ]
-        out = bytearray()
-        for f in futures:
-            out.extend(f.result())
-        return bytes(out)
+        # the C kernel writes one row of bytes_per_variant per variant.
+        output = np.empty(num_variants * bytes_per_variant, dtype=np.uint8)
+
+        future_to_index = {}
+        for j, start in enumerate(range(0, num_variants, block_variants)):
+            block = G[start : start + block_variants]
+            future = self._executor.submit(_vcztools.encode_plink, block)
+            future_to_index[future] = j
+
+        for future in cf.as_completed(future_to_index):
+            j = future_to_index[future]
+            start = j * block_variants
+            end = min(start + block_variants, num_variants)
+            out_start = start * bytes_per_variant
+            out_end = end * bytes_per_variant
+            output[out_start:out_end] = future.result()
+
+        return output.data
 
     def _teardown_iterator(self) -> None:
         if self._iterator is not None:

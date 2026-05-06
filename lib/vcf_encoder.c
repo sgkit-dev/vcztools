@@ -1041,26 +1041,34 @@ int
 vcz_encode_plink(
     size_t num_variants, size_t num_samples, const int8_t *genotypes, char *buf)
 {
-    size_t j, k, variant_offset, byte_offset, bit_pos;
-    int8_t a, b;
-    uint8_t code;
-    int mask;
-    const size_t bytes_per_variant = (num_samples + 3) / 4;
-
-    variant_offset = 0;
-    memset(buf, 0, bytes_per_variant * num_variants);
+    const size_t full_bytes = num_samples / 4;
+    const size_t tail = num_samples % 4;
+    uint8_t c0, c1, c2, c3, byte;
+    const int8_t *gt;
+    char *out;
+    size_t i, j, b;
 
     for (j = 0; j < num_variants; j++) {
-        for (k = 0; k < num_samples; k++) {
-            a = genotypes[j * num_samples * 2 + k * 2];
-            b = genotypes[j * num_samples * 2 + k * 2 + 1];
-            code = encode_diploid_fixed(a, b);
-            byte_offset = variant_offset + k / 4;
-            bit_pos = (k % 4) * 2;
-            mask = ~(0x3 << bit_pos);
-            buf[byte_offset] = (char) ((buf[byte_offset] & mask) | (code << bit_pos));
+        gt = genotypes + j * num_samples * 2;
+        out = buf + j * ((num_samples + 3) / 4);
+
+        for (b = 0; b < full_bytes; b++) {
+            c0 = encode_diploid_fixed(gt[0], gt[1]);
+            c1 = encode_diploid_fixed(gt[2], gt[3]);
+            c2 = encode_diploid_fixed(gt[4], gt[5]);
+            c3 = encode_diploid_fixed(gt[6], gt[7]);
+            out[b] = (char) (c0 | (c1 << 2) | (c2 << 4) | (c3 << 6));
+            gt += 8;
         }
-        variant_offset += bytes_per_variant;
+
+        if (tail > 0) {
+            byte = 0;
+            for (i = 0; i < tail; i++) {
+                byte |= (uint8_t) (encode_diploid_fixed(gt[0], gt[1]) << (i * 2));
+                gt += 2;
+            }
+            out[full_bytes] = (char) byte;
+        }
     }
     return 0;
 }

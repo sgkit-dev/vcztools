@@ -661,7 +661,15 @@ def _fmt_fields_reader(root):
 
     num_variant_chunks = math.ceil(reader.num_variants / reader.variants_chunk_size)
     take_chunks = min(FMT_FIELDS_VARIANT_CHUNKS_COUNT, num_variant_chunks)
-    plan = [vcz_utils.ChunkRead(index=i) for i in range(take_chunks)]
+    chunk_size = reader.variants_chunk_size
+    num_variants = reader.num_variants
+    plan = [
+        vcz_utils.ChunkRead(
+            index=i,
+            num_selected=min(chunk_size, num_variants - i * chunk_size),
+        )
+        for i in range(take_chunks)
+    ]
     reader.set_variants(plan)
     return reader
 
@@ -721,7 +729,15 @@ def _build_first_variant_chunks(root, ctx):
     reader = retrieval.VczReader(root)
     num_variant_chunks = math.ceil(reader.num_variants / reader.variants_chunk_size)
     take = min(FIRST_VARIANT_CHUNKS_COUNT, num_variant_chunks)
-    plan = [vcz_utils.ChunkRead(index=i) for i in range(take)]
+    chunk_size = reader.variants_chunk_size
+    num_variants = reader.num_variants
+    plan = [
+        vcz_utils.ChunkRead(
+            index=i,
+            num_selected=min(chunk_size, num_variants - i * chunk_size),
+        )
+        for i in range(take)
+    ]
     reader.set_variants(plan)
     return reader
 
@@ -854,7 +870,15 @@ def _biallelic_first_chunks_plan(root, num_chunks):
             discovery.num_variants / discovery.variants_chunk_size
         )
         take_chunks = min(num_chunks, num_variant_chunks)
-        coarse_plan = [vcz_utils.ChunkRead(index=i) for i in range(take_chunks)]
+        chunk_size = discovery.variants_chunk_size
+        num_variants = discovery.num_variants
+        coarse_plan = [
+            vcz_utils.ChunkRead(
+                index=i,
+                num_selected=min(chunk_size, num_variants - i * chunk_size),
+            )
+            for i in range(take_chunks)
+        ]
         discovery.set_variants(coarse_plan)
 
         fine_plan = []
@@ -870,10 +894,18 @@ def _biallelic_first_chunks_plan(root, num_chunks):
             if local_idx.size == 0:
                 continue
             if local_idx.size == alleles.shape[0]:
-                fine_plan.append(vcz_utils.ChunkRead(index=cr.index))
+                fine_plan.append(
+                    vcz_utils.ChunkRead(
+                        index=cr.index, num_selected=int(alleles.shape[0])
+                    )
+                )
             else:
                 fine_plan.append(
-                    vcz_utils.ChunkRead(index=cr.index, selection=local_idx)
+                    vcz_utils.ChunkRead(
+                        index=cr.index,
+                        num_selected=int(local_idx.size),
+                        selection=local_idx,
+                    )
                 )
     return fine_plan
 

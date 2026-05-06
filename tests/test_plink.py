@@ -1136,8 +1136,12 @@ class TestBedEncoderWithSetVariants:
         # ChunkRead-list form (region-style): chunk 0 keeps variants 1,3;
         # chunk 2 keeps variants 8,9 (slice 0:2 within the chunk).
         plan = [
-            utils.ChunkRead(index=0, selection=np.array([1, 3], dtype=np.int64)),
-            utils.ChunkRead(index=2, selection=slice(0, 2)),
+            utils.ChunkRead(
+                index=0,
+                num_selected=2,
+                selection=np.array([1, 3], dtype=np.int64),
+            ),
+            utils.ChunkRead(index=2, num_selected=2, selection=slice(0, 2)),
         ]
         reader.set_variants(plan)
         enc = plink.BedEncoder(reader)

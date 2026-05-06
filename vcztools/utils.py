@@ -22,9 +22,18 @@ class ChunkRead:
     chunk, no slicing". ``selection`` may be a ``slice`` for a
     contiguous range (basic indexing returns a view), or an ndarray of
     local indices for arbitrary fancy-index gather/permutation.
+
+    ``num_selected`` is the number of entries this chunk contributes
+    to its plan — equal to ``len(selection)`` for the ndarray form,
+    ``stop - start`` for ``slice``, and the chunk's actual size for
+    ``selection=None`` (which is ``chunk_size`` for non-last chunks
+    and the remainder for the partial last chunk). Stored explicitly
+    so consumers don't have to re-derive it from selection +
+    chunk_size + axis_size.
     """
 
     index: int
+    num_selected: int
     selection: np.ndarray | slice | None = None
 
 

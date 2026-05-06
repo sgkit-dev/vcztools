@@ -52,6 +52,7 @@ def build_chunk_plan(
         chunk_reads.append(
             utils.ChunkRead(
                 index=int(ci),
+                num_selected=int(count),
                 selection=utils.normalise_local_selection(
                     local_sel, samples_chunk_size
                 ),

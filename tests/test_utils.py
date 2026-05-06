@@ -9,6 +9,7 @@ import zarr
 from numpy.testing import assert_array_equal
 
 from tests.utils import to_vcz_icechunk
+from vcztools import regions as regions_mod
 from vcztools import utils
 from vcztools.constants import (
     FLOAT32_FILL,
@@ -51,15 +52,37 @@ class TestChunkRead:
     (:mod:`vcztools.samples`)."""
 
     def test_defaults(self):
-        cr = utils.ChunkRead(index=3)
+        cr = utils.ChunkRead(index=3, num_selected=5)
         assert cr.index == 3
+        assert cr.num_selected == 5
         assert cr.selection is None
 
     def test_with_selection(self):
         sel = np.array([0, 2], dtype=np.int64)
-        cr = utils.ChunkRead(index=1, selection=sel)
+        cr = utils.ChunkRead(index=1, num_selected=sel.size, selection=sel)
         assert cr.index == 1
+        assert cr.num_selected == 2
         assert_array_equal(cr.selection, [0, 2])
+
+    def test_num_selected_matches_selection_length_via_chunk_plan_from_indexes(self):
+        # chunk_plan_from_indexes is the canonical builder for
+        # selection-bearing entries; assert num_selected matches the
+        # actual local selection size for each form
+        # (None / slice / ndarray) it produces.
+        plan = regions_mod.chunk_plan_from_indexes(
+            np.array([0, 1, 2, 5, 7, 8], dtype=np.int64),
+            variants_chunk_size=3,
+        )
+        # chunk 0: contiguous 0..2 → selection=None (full chunk)
+        # chunk 1: index 5 → selection=slice or ndarray of size 1
+        # chunk 2: indexes 7, 8 → selection=slice(1, 3) or ndarray of size 2
+        for cr in plan:
+            if cr.selection is None:
+                assert cr.num_selected == 3
+            elif isinstance(cr.selection, slice):
+                assert cr.num_selected == cr.selection.stop - cr.selection.start
+            else:
+                assert cr.num_selected == len(cr.selection)
 
 
 class TestNormaliseLocalSelection:

@@ -111,6 +111,38 @@ targets_file = click.option(
     default=None,
     help="File of target regions to include.",
 )
+types_opt = click.option(
+    "-v",
+    "--types",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated list of variant types to include "
+        "(snps,indels,mnps,other). A site is selected if any of its "
+        "alleles matches one of the listed types."
+    ),
+)
+exclude_types_opt = click.option(
+    "-V",
+    "--exclude-types",
+    type=str,
+    default=None,
+    help="Comma-separated list of variant types to exclude.",
+)
+min_alleles_opt = click.option(
+    "-m",
+    "--min-alleles",
+    type=int,
+    default=None,
+    help="Print sites with at least INT alleles listed in REF and ALT.",
+)
+max_alleles_opt = click.option(
+    "-M",
+    "--max-alleles",
+    type=int,
+    default=None,
+    help="Print sites with at most INT alleles listed in REF and ALT.",
+)
 version = click.version_option(version=f"{provenance.__version__}")
 
 log_level = click.option(
@@ -648,38 +680,10 @@ def query(
 @targets_file
 @include
 @exclude
-@click.option(
-    "-v",
-    "--types",
-    type=str,
-    default=None,
-    help=(
-        "Comma-separated list of variant types to include "
-        "(snps,indels,mnps,other). A site is selected if any of its "
-        "alleles matches one of the listed types."
-    ),
-)
-@click.option(
-    "-V",
-    "--exclude-types",
-    type=str,
-    default=None,
-    help="Comma-separated list of variant types to exclude.",
-)
-@click.option(
-    "-m",
-    "--min-alleles",
-    type=int,
-    default=None,
-    help="Print sites with at least INT alleles listed in REF and ALT.",
-)
-@click.option(
-    "-M",
-    "--max-alleles",
-    type=int,
-    default=None,
-    help="Print sites with at most INT alleles listed in REF and ALT.",
-)
+@types_opt
+@exclude_types_opt
+@min_alleles_opt
+@max_alleles_opt
 @backend_storage
 @storage_option
 @log_level
@@ -782,17 +786,10 @@ def view(
 @targets_file
 @include
 @exclude
-@click.option(
-    "--max-alleles",
-    type=int,
-    default=None,
-    help=(
-        "Drop variants with more than this number of alleles. Use "
-        "--max-alleles 2 to skip multi-allelic variants (matches "
-        "`plink2 --vcf X --max-alleles 2 --make-bed`). Without this "
-        "flag, multi-allelic variants cause an error."
-    ),
-)
+@types_opt
+@exclude_types_opt
+@min_alleles_opt
+@max_alleles_opt
 @click.option(
     "--out",
     default="plink",
@@ -814,6 +811,9 @@ def view_bed(
     targets_file,
     include,
     exclude,
+    types,
+    exclude_types,
+    min_alleles,
     max_alleles,
     out,
     backend_storage,
@@ -828,8 +828,9 @@ def view_bed(
     A1=ALT, A2=REF (plink 2's convention); the .bed payload is
     byte-identical to ``plink2 --vcf X --make-bed`` for biallelic
     variants. Sample/region/filter selection mirrors bcftools view
-    (-s/-S/-r/-R/-t/-T/-i/-e). Multi-allelic variants are rejected
-    by default; pass ``--max-alleles 2`` to skip them.
+    (-s/-S/-r/-R/-t/-T/-i/-e/-v/-V/-m/-M). Multi-allelic variants
+    are rejected by default; pass ``-M 2`` (or ``--max-alleles 2``)
+    to skip them, matching ``plink2 --vcf X --max-alleles 2 --make-bed``.
 
     See the "PLINK 1 binary output" documentation page for the full
     reference, including how to read this output with plink 1.9
@@ -837,6 +838,10 @@ def view_bed(
     downstream tools.
     """
     setup_logging(log_level, log_file)
+
+    if types is not None and exclude_types is not None:
+        raise ValueError("Cannot use --types and --exclude-types together.")
+
     reader = make_reader(
         path,
         regions=regions,
@@ -848,6 +853,9 @@ def view_bed(
         force_samples=force_samples,
         include=include,
         exclude=exclude,
+        types=types,
+        exclude_types=exclude_types,
+        min_alleles=min_alleles,
         max_alleles=max_alleles,
         backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),

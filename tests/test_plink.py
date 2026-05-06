@@ -1075,6 +1075,131 @@ class TestBedEncoderRestartCount:
         assert counter["n"] == 3
 
 
+class TestBedEncoderParallelEncoding:
+    """Thread-parallel encode path inside ``BedEncoder._encode_genotypes``:
+    equivalence with the synchronous path, executor cleanup, and the
+    non-contiguous (sample-subset) input case."""
+
+    def test_threads_equivalence_full_bed(self, tmp_path):
+        # encode_block_bytes small enough that a single 8-variant chunk
+        # crosses multiple sub-blocks under threads=4. Per-row width is
+        # 7 samples * 2 bytes = 14 input bytes; 28 bytes ⇒ 2 variants
+        # per sub-block ⇒ 4 sub-blocks per chunk.
+        gt = _varied_genotypes(num_variants=24, num_samples=7)
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=24,
+            num_samples=7,
+            call_genotype=gt,
+            variants_chunk_size=8,
+        )
+        reader_serial = _build_reader(
+            num_variants=24,
+            num_samples=7,
+            call_genotype=gt,
+            variants_chunk_size=8,
+        )
+        reader_parallel = _build_reader(
+            num_variants=24,
+            num_samples=7,
+            call_genotype=gt,
+            variants_chunk_size=8,
+        )
+        with plink.BedEncoder(reader_serial, encode_threads=1) as enc1:
+            serial = enc1.read(0, enc1.bed_size)
+        with plink.BedEncoder(
+            reader_parallel, encode_threads=4, encode_block_bytes=28
+        ) as enc4:
+            parallel = enc4.read(0, enc4.bed_size)
+        assert serial == bed_oracle
+        assert parallel == bed_oracle
+        assert serial == parallel
+
+    def test_executor_cleanup_no_reads(self):
+        enc = _build_encoder(num_variants=2, num_samples=3)
+        executor = enc._executor
+        enc.close()
+        # ThreadPoolExecutor exposes _shutdown on the public _shutdown
+        # attribute after shutdown(wait=True). No leaked workers.
+        assert executor._shutdown is True
+
+    def test_executor_cleanup_after_drain(self, tmp_path):
+        gt = _varied_genotypes(num_variants=8, num_samples=5)
+        reader = _build_reader(
+            num_variants=8,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        enc = plink.BedEncoder(reader, encode_threads=4, encode_block_bytes=20)
+        executor = enc._executor
+        enc.read(0, enc.bed_size)
+        enc.close()
+        assert executor._shutdown is True
+
+    def test_executor_cleanup_via_context_manager(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            executor = enc._executor
+        assert executor._shutdown is True
+
+    def test_sample_subset_parallel_equivalence(self, tmp_path):
+        # set_samples([3, 0]) yields a fancy-indexed (non-contiguous)
+        # call_genotype; the parallel path must produce the same bytes
+        # as the synchronous path. Use the oracle built from a reader
+        # carrying the same selection so the BED is what plink would
+        # produce under the same sample subset.
+        gt = _varied_genotypes(num_variants=16, num_samples=4)
+        sample_id = ["s0", "s1", "s2", "s3"]
+        reader_oracle = _build_reader(
+            num_variants=16,
+            num_samples=4,
+            sample_id=sample_id,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader_oracle.set_samples([3, 0])
+        out_path = tmp_path / "p"
+        plink.write_plink(reader_oracle, out_path)
+        bed_oracle = out_path.with_suffix(".bed").read_bytes()
+
+        reader_serial = _build_reader(
+            num_variants=16,
+            num_samples=4,
+            sample_id=sample_id,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader_serial.set_samples([3, 0])
+        reader_parallel = _build_reader(
+            num_variants=16,
+            num_samples=4,
+            sample_id=sample_id,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        reader_parallel.set_samples([3, 0])
+        # 2 samples * 2 bytes = 4 input bytes per row; encode_block_bytes=8
+        # ⇒ 2 variants per sub-block, multiple sub-blocks per chunk.
+        with plink.BedEncoder(reader_serial, encode_threads=1) as enc1:
+            serial = enc1.read(0, enc1.bed_size)
+        with plink.BedEncoder(
+            reader_parallel, encode_threads=4, encode_block_bytes=8
+        ) as enc4:
+            parallel = enc4.read(0, enc4.bed_size)
+        assert serial == bed_oracle
+        assert parallel == bed_oracle
+
+    def test_invalid_encode_threads_raises(self):
+        reader = _build_reader(num_variants=2, num_samples=3)
+        with pytest.raises(ValueError, match="encode_threads must be >= 1"):
+            plink.BedEncoder(reader, encode_threads=0)
+
+    def test_invalid_encode_block_bytes_raises(self):
+        reader = _build_reader(num_variants=2, num_samples=3)
+        with pytest.raises(ValueError, match="encode_block_bytes must be >= 1"):
+            plink.BedEncoder(reader, encode_block_bytes=0)
+
+
 # ---------------------------------------------------------------------------
 # BedEncoder honours reader.set_variants() — region/index-based selection
 # of the variant axis. bed_size and num_variants reflect the selection.

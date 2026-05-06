@@ -9,7 +9,7 @@ import pytest
 
 import vcztools.cli as cli
 from tests.test_bcftools_validation import run_vcztools
-from vcztools import provenance
+from vcztools import bcftools_filter, provenance
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -265,6 +265,77 @@ class TestMakeReader:
                 targets="19",
                 targets_file="tests/data/txt/regions-3col.tsv",
             )
+
+    def test_min_alleles_excludes_monomorphic(self, fx_vcz_path):
+        # sample.vcf has two REF-only variants at 20:1230237 and
+        # 20:1235237 (T → .). -m 2 (>= 2 alleles) drops them.
+        reader = cli.make_reader(fx_vcz_path, min_alleles=2)
+        positions = self._positions(reader)
+        assert 1230237 not in positions
+        assert 1235237 not in positions
+
+    def test_max_alleles_keeps_biallelic(self, fx_vcz_path):
+        # -M 2 (<= 2 alleles) drops the multiallelics at
+        # 20:1110696, 20:1234567 and X:10.
+        reader = cli.make_reader(fx_vcz_path, max_alleles=2)
+        positions = self._positions(reader)
+        assert 1110696 not in positions
+        assert 1234567 not in positions
+        assert 10 not in positions
+
+    def test_min_and_max_alleles_biallelic_only(self, fx_vcz_path):
+        # -m 2 -M 2 keeps strictly biallelic sites.
+        reader = cli.make_reader(fx_vcz_path, min_alleles=2, max_alleles=2)
+        positions = self._positions(reader)
+        for excluded in (1230237, 1235237, 1110696, 1234567, 10):
+            assert excluded not in positions
+
+    def test_types_snps_keeps_snp_sites(self, fx_vcz_path):
+        # 20:1234567 is microsat (G→GA,GAC) and X:10 is AC→A,ATG,C —
+        # neither has any SNP allele, so both drop with -v snps.
+        reader = cli.make_reader(fx_vcz_path, types="snps")
+        positions = self._positions(reader)
+        assert 1234567 not in positions
+        assert 10 not in positions
+
+    def test_exclude_types_snps(self, fx_vcz_path):
+        # The biallelic SNP at 19:111 has TYPE=snp, so it drops with -V snps.
+        reader = cli.make_reader(fx_vcz_path, exclude_types="snps")
+        positions = self._positions(reader)
+        assert 111 not in positions
+
+    def test_unsupported_type_keyword_surfaces_parser_error(self, fx_vcz_path):
+        # ``indels`` is a bcftools-valid keyword but the TYPE operator
+        # only handles 'ref' and 'snp' today (issue #166), so the
+        # filter parser raises UnsupportedTypeFieldError.
+        with pytest.raises(bcftools_filter.UnsupportedTypeFieldError):
+            cli.make_reader(fx_vcz_path, types="indels")
+
+    def test_min_alleles_below_one_rejected(self, fx_vcz_path):
+        with pytest.raises(ValueError, match="--min-alleles must be >= 1"):
+            cli.make_reader(fx_vcz_path, min_alleles=0)
+
+    def test_invalid_type_keyword_rejected(self, fx_vcz_path):
+        with pytest.raises(ValueError, match="Invalid type"):
+            cli.make_reader(fx_vcz_path, types="garbage")
+
+    def test_view_options_reject_sample_scope_filter(self, fx_vcz_path):
+        # Composing a sample-scope -i with -v/-V/-m mirrors the
+        # existing --max-alleles error path.
+        with pytest.raises(ValueError, match="cannot be combined with a sample-scope"):
+            cli.make_reader(
+                fx_vcz_path,
+                include="FMT/DP>3",
+                min_alleles=2,
+            )
+
+
+def test_types_and_exclude_types_mutually_exclusive(fx_vcz_path):
+    _, vcztools_error = run_vcztools(
+        f"view -v snps -V refs {fx_vcz_path}",
+        expect_error=True,
+    )
+    assert "Cannot use --types and --exclude-types together" in vcztools_error
 
 
 def test_excluding_and_including_samples(fx_vcz_path):

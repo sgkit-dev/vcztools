@@ -1,6 +1,7 @@
 import io
 import logging
 import sys
+import time
 from datetime import datetime
 
 import numpy as np
@@ -85,6 +86,8 @@ def write_vcf(
     (matching ``bcftools view -s …`` semantics). Callers that already
     configured ``reader.set_samples(...)`` should pass ``True``.
     """
+    start = time.perf_counter()
+    bytes_written = 0
     with open_file_like(output) as output:
         if not no_header:
             force_ac_an_header = not drop_genotypes and subsetting_samples
@@ -94,21 +97,24 @@ def write_vcf(
                 force_ac_an=force_ac_an_header,
             )
             print(vcf_header, end="", file=output)
+            bytes_written += len(vcf_header)
 
-        if header_only:
-            return
-
-        for chunk_data in reader.variant_chunks():
-            c_chunk_to_vcf(
-                chunk_data,
-                reader.samples_selection,
-                reader.contigs,
-                reader.filters,
-                output,
-                drop_genotypes=drop_genotypes,
-                no_update=no_update,
-                subsetting_samples=subsetting_samples,
-            )
+        if not header_only:
+            for chunk_data in reader.variant_chunks():
+                bytes_written += c_chunk_to_vcf(
+                    chunk_data,
+                    reader.samples_selection,
+                    reader.contigs,
+                    reader.filters,
+                    output,
+                    drop_genotypes=drop_genotypes,
+                    no_update=no_update,
+                    subsetting_samples=subsetting_samples,
+                )
+    elapsed = time.perf_counter() - start
+    mib = bytes_written / (1024 * 1024)
+    rate = mib / elapsed if elapsed > 0 else 0.0
+    logger.info(f"write_vcf: wrote {mib:.1f} MiB in {elapsed:.2f}s ({rate:.1f} MiB/s)")
 
 
 def c_chunk_to_vcf(
@@ -130,7 +136,7 @@ def c_chunk_to_vcf(
     pos = chunk_data["variant_position"].astype(np.int32)
     num_variants = len(pos)
     if num_variants == 0:
-        return ""
+        return 0
     # Required fields
     chrom = contigs[chunk_data["variant_contig"]]
     alleles = chunk_data["variant_allele"]
@@ -242,6 +248,7 @@ def c_chunk_to_vcf(
     # TODO: (1) make a guess at this based on number of fields and samples,
     # and (2) log a DEBUG message when we have to double.
     buflen = 1024
+    bytes_written = 0
     for j in range(num_variants):
         failed = True
         while failed:
@@ -252,6 +259,8 @@ def c_chunk_to_vcf(
                 buflen *= 2
                 # print("Bumping buflen to", buflen)
         print(line, file=output)
+        bytes_written += len(line) + 1
+    return bytes_written
 
 
 def _generate_header(

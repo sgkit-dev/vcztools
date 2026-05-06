@@ -13,7 +13,9 @@ normalisation, and known divergences from plink 2 — see
 ``docs/plink.md``.
 """
 
+import logging
 import pathlib
+import time
 from typing import ClassVar
 
 import numpy as np
@@ -21,6 +23,8 @@ import pandas as pd
 
 from vcztools import _vcztools, retrieval
 from vcztools.utils import _as_fixed_length_unicode
+
+logger = logging.getLogger(__name__)
 
 BED_MAGIC = b"\x6c\x1b\x01"
 
@@ -224,9 +228,12 @@ class Writer:
         self.bed_path = bed_path
 
     def _write_genotypes(self):
+        start = time.perf_counter()
+        bytes_written = 0
         ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
         with open(self.bed_path, "wb") as bed_file:
             bed_file.write(BED_MAGIC)
+            bytes_written += len(BED_MAGIC)
 
             for chunk in ci:
                 G = chunk["call_genotype"]
@@ -236,7 +243,16 @@ class Writer:
                         f"(call_genotype has shape {G.shape})"
                     )
                 _check_biallelic(chunk["variant_allele"])
-                bed_file.write(encode_genotypes(G))
+                encoded = encode_genotypes(G)
+                bed_file.write(encoded)
+                bytes_written += len(encoded)
+        elapsed = time.perf_counter() - start
+        mib = bytes_written / (1024 * 1024)
+        rate = mib / elapsed if elapsed > 0 else 0.0
+        logger.info(
+            f"write_genotypes: wrote {mib:.1f} MiB to {self.bed_path} in "
+            f"{elapsed:.2f}s ({rate:.1f} MiB/s)"
+        )
 
     def run(self):
         self._write_genotypes()

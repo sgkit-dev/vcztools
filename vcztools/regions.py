@@ -335,6 +335,7 @@ def chunk_plan_from_indexes(
         plan.append(
             utils.ChunkRead(
                 index=int(ci),
+                num_selected=int(local_sel.size),
                 selection=utils.normalise_local_selection(
                     local_sel, variants_chunk_size
                 ),
@@ -379,7 +380,16 @@ def build_chunk_plan(
     )
 
     if regions_gr is None and targets_gr is None:
-        return [utils.ChunkRead(index=i) for i in range(num_chunks)]
+        num_variants = int(position_arr.shape[0])
+        return [
+            utils.ChunkRead(
+                index=i,
+                num_selected=min(
+                    variants_chunk_size, num_variants - i * variants_chunk_size
+                ),
+            )
+            for i in range(num_chunks)
+        ]
 
     contig_arr = root["variant_contig"]
     length_arr = root["variant_length"]
@@ -405,6 +415,7 @@ def build_chunk_plan(
         plan.append(
             utils.ChunkRead(
                 index=chunk_idx,
+                num_selected=int(local_sel.size),
                 selection=utils.normalise_local_selection(
                     local_sel, variants_chunk_size
                 ),

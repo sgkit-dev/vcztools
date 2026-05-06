@@ -649,8 +649,14 @@ class VczReader:
     def variant_chunk_plan(self):
         if self._variant_chunk_plan is None:
             num_chunks = int(self.root["variant_position"].cdata_shape[0])
+            chunk_size = self.variants_chunk_size
+            num_variants = self.num_variants
             self._variant_chunk_plan = [
-                utils.ChunkRead(index=i) for i in range(num_chunks)
+                utils.ChunkRead(
+                    index=i,
+                    num_selected=min(chunk_size, num_variants - i * chunk_size),
+                )
+                for i in range(num_chunks)
             ]
             logger.debug(f"Built default variant_chunk_plan: {num_chunks} chunks")
         return self._variant_chunk_plan
@@ -689,23 +695,14 @@ class VczReader:
         :attr:`variant_chunk_plan`.
 
         Returns a 1-D ``int64`` array of length
-        ``len(variant_chunk_plan)``. Pure plan-structure derivation —
-        no Zarr access. Useful for consumers (e.g. PLINK BED encoders)
-        that need to size per-chunk output without reading any data.
+        ``len(variant_chunk_plan)``. Reads the count stored on each
+        :class:`~vcztools.utils.ChunkRead` — no Zarr access. Useful
+        for consumers (e.g. PLINK BED encoders) that need to size
+        per-chunk output without reading any data.
         """
-        chunk_size = self.variants_chunk_size
-        num_variants = self.num_variants
-        plan = self.variant_chunk_plan
-        counts = np.empty(len(plan), dtype=np.int64)
-        for i, entry in enumerate(plan):
-            if entry.selection is None:
-                base = entry.index * chunk_size
-                counts[i] = min(chunk_size, num_variants - base)
-            elif isinstance(entry.selection, slice):
-                counts[i] = entry.selection.stop - entry.selection.start
-            else:
-                counts[i] = len(entry.selection)
-        return counts
+        return np.array(
+            [cr.num_selected for cr in self.variant_chunk_plan], dtype=np.int64
+        )
 
     def set_variants(self, variants) -> None:
         """Configure the variant selection.
@@ -840,6 +837,7 @@ class VczReader:
             plan.append(
                 utils.ChunkRead(
                     index=entry.index,
+                    num_selected=int(local.size),
                     selection=utils.normalise_local_selection(chunk_local, chunk_size),
                 )
             )

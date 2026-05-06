@@ -285,7 +285,17 @@ def _make_pipeline(
     )
     if n_chunks is None:
         n_chunks = int(root["variant_position"].cdata_shape[0])
-    variant_chunk_plan = [utils.ChunkRead(index=i) for i in range(n_chunks)]
+    variants_chunk_size = int(root["variant_position"].chunks[0])
+    num_variants = int(root["variant_position"].shape[0])
+    variant_chunk_plan = [
+        utils.ChunkRead(
+            index=i,
+            num_selected=min(
+                variants_chunk_size, num_variants - i * variants_chunk_size
+            ),
+        )
+        for i in range(n_chunks)
+    ]
     return retrieval_mod.ReadaheadPipeline(
         root,
         variant_chunk_plan,
@@ -432,7 +442,8 @@ class TestUpdateChunkReadList:
     def test_variant_non_call_template_prepends_variant_chunk_index(self):
         root = _vcz_for_template_tests()
         plan = samples_mod.SampleChunkPlan(
-            chunk_reads=[utils.ChunkRead(index=0)], permutation=None
+            chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
+            permutation=None,
         )
         templates = retrieval_mod.create_chunk_read_list(
             root, plan, ["variant_position", "variant_allele"]
@@ -459,7 +470,8 @@ class TestUpdateChunkReadList:
         # against the supplied variant chunk index.
         root = _vcz_for_template_tests()
         plan = samples_mod.SampleChunkPlan(
-            chunk_reads=[utils.ChunkRead(index=0)], permutation=None
+            chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
+            permutation=None,
         )
         templates = retrieval_mod.create_chunk_read_list(
             root, plan, ["variant_position"]
@@ -536,7 +548,7 @@ class TestReadaheadPipeline:
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
             pipeline = _DepthTrackingPipeline(
                 root,
-                [utils.ChunkRead(index=i) for i in range(4)],
+                [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
                 samples_mod.build_chunk_plan(
                     np.arange(2, dtype=np.int64), samples_chunk_size=2
                 ),
@@ -556,7 +568,7 @@ class TestReadaheadPipeline:
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
             pipeline = _DepthTrackingPipeline(
                 root,
-                [utils.ChunkRead(index=i) for i in range(4)],
+                [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
                 samples_mod.build_chunk_plan(
                     np.arange(2, dtype=np.int64), samples_chunk_size=2
                 ),
@@ -978,8 +990,19 @@ def _make_cached_chunk(
     else:
         sample_chunk_plan = subset_plan
         output_columns = None
+    variants_chunk_size = int(root["variant_position"].chunks[0])
+    num_variants = int(root["variant_position"].shape[0])
+    if variant_selection is None:
+        base = variant_chunk_idx * variants_chunk_size
+        variant_num_selected = min(variants_chunk_size, num_variants - base)
+    elif isinstance(variant_selection, slice):
+        variant_num_selected = variant_selection.stop - variant_selection.start
+    else:
+        variant_num_selected = len(variant_selection)
     variant_chunk = utils.ChunkRead(
-        index=variant_chunk_idx, selection=variant_selection
+        index=variant_chunk_idx,
+        num_selected=variant_num_selected,
+        selection=variant_selection,
     )
     templates = retrieval_mod.create_chunk_read_list(root, sample_chunk_plan, fields)
     reads = retrieval_mod.update_chunk_read_list(templates, variant_chunk.index)
@@ -1530,9 +1553,23 @@ class TestEmptyCallArray:
 
     def _empty_plan_chunk(self, root, *, variant_chunk_idx, selection):
         empty_plan = samples_mod.SampleChunkPlan(chunk_reads=[], permutation=None)
+        chunk_size = int(root["variant_position"].chunks[0])
+        num_variants = int(root["variant_position"].shape[0])
+        if selection is None:
+            num_selected = min(
+                chunk_size, num_variants - variant_chunk_idx * chunk_size
+            )
+        elif isinstance(selection, slice):
+            num_selected = selection.stop - selection.start
+        else:
+            num_selected = len(selection)
         return CachedVariantChunk(
             root,
-            utils.ChunkRead(index=variant_chunk_idx, selection=selection),
+            utils.ChunkRead(
+                index=variant_chunk_idx,
+                num_selected=num_selected,
+                selection=selection,
+            ),
             sample_chunk_plan=empty_plan,
             output_columns=None,
             blocks={},
@@ -1834,6 +1871,20 @@ class TestVariantCountsPerChunk:
         )
         reader.materialise_variant_filter()
         nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([4, 1]))
+
+    def test_num_selected_matches_emitted_chunk_size(self):
+        # Cross-check: num_selected stored on each ChunkRead must equal
+        # the number of variants the reader actually emits for that
+        # chunk. Covers default plan, sparse index selection, and
+        # post-filter plan.
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=4))
+        reader.set_variants(np.array([0, 1, 5, 8, 9], dtype=np.int64))
+        plan = reader.variant_chunk_plan
+        emitted = [
+            len(chunk["variant_position"])
+            for chunk in reader.variant_chunks(fields=["variant_position"])
+        ]
+        assert emitted == [cr.num_selected for cr in plan]
 
 
 class TestVariantChunksStart:

@@ -2,9 +2,9 @@
 Unit tests for vcztools.plink.
 
 These exercise the writer layers (encode_genotypes wrapper, generate_fam,
-generate_bim, end-to-end Writer) directly against in-memory VCZ groups
-built with :func:`tests.vcz_builder.make_vcz`. No PLINK binary, no
-roundtripping.
+generate_bim, end-to-end write_plink) directly against in-memory VCZ
+groups built with :func:`tests.vcz_builder.make_vcz`. No PLINK binary,
+no roundtripping.
 """
 
 import concurrent.futures as cf
@@ -345,6 +345,107 @@ class TestAndVariantFilter:
 
 
 # ---------------------------------------------------------------------------
+# materialise_variant_filter — pre-runs the reader's variant filter into
+# a fixed selection so BedEncoder, generate_bim, and generate_fam all
+# see the same surviving variants.
+# ---------------------------------------------------------------------------
+
+
+class TestMaterialiseVariantFilter:
+    def _build(self, *, num_variants=5, dp=None, alleles=None):
+        if alleles is None:
+            alleles = [("A", "T")] * num_variants
+        if dp is None:
+            dp = np.arange(num_variants, dtype=np.int32) * 10
+        return _build_reader(
+            num_variants=num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=alleles,
+            num_samples=1,
+            call_genotype=np.zeros((num_variants, 1, 2), dtype=np.int8),
+            info_fields={"DP": dp},
+            variants_chunk_size=2,
+        )
+
+    def test_no_filter_is_noop(self):
+        reader = self._build()
+        plink.materialise_variant_filter(reader)
+        # No filter, no selection → default plan covers all chunks.
+        assert reader.variant_filter is None
+
+    def test_filter_is_cleared(self):
+        reader = self._build()
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(
+                field_names=reader.field_names, include="DP>=20"
+            )
+        )
+        plink.materialise_variant_filter(reader)
+        assert reader.variant_filter is None
+
+    def test_surviving_indexes_match_independent_eval(self):
+        # DP = [0, 10, 20, 30, 40]; include "DP>=20" keeps indexes 2,3,4.
+        reader = self._build()
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(
+                field_names=reader.field_names, include="DP>=20"
+            )
+        )
+        plink.materialise_variant_filter(reader)
+        positions = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            positions.extend(chunk["variant_position"].tolist())
+        assert positions == [102, 103, 104]
+
+    def test_filter_excludes_all(self):
+        reader = self._build()
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(
+                field_names=reader.field_names, include="DP>1000"
+            )
+        )
+        plink.materialise_variant_filter(reader)
+        assert reader.variant_filter is None
+        # All chunks excluded → empty plan.
+        assert len(reader.variant_chunk_plan) == 0
+
+    def test_composes_with_pre_existing_set_variants(self):
+        # Region/index selection already applied via set_variants;
+        # filter further narrows the surviving set. Indexes 1, 3 survive
+        # set_variants; of those, DP>=30 keeps only index 3.
+        reader = self._build()
+        reader.set_variants(np.array([1, 3], dtype=np.int64))
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(
+                field_names=reader.field_names, include="DP>=30"
+            )
+        )
+        plink.materialise_variant_filter(reader)
+        positions = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            positions.extend(chunk["variant_position"].tolist())
+        assert positions == [103]
+
+    def test_sample_scope_filter_rejected(self):
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=2,
+            call_genotype=np.zeros((2, 2, 2), dtype=np.int8),
+        )
+
+        class _SampleScope:
+            scope = "sample"
+            referenced_fields = frozenset({"call_genotype"})
+
+            def evaluate(self, chunk_data):
+                raise NotImplementedError
+
+        reader.set_variant_filter(_SampleScope())
+        with pytest.raises(ValueError, match="Sample-scope"):
+            plink.materialise_variant_filter(reader)
+
+
+# ---------------------------------------------------------------------------
 # Chromosome normalisation (matches plink 2 --make-bed output).
 # ---------------------------------------------------------------------------
 
@@ -544,11 +645,11 @@ class TestGenerateBim:
 
 
 # ---------------------------------------------------------------------------
-# Writer / write_plink end-to-end.
+# write_plink end-to-end.
 # ---------------------------------------------------------------------------
 
 
-class TestWriterEndToEnd:
+class TestWritePlinkEndToEnd:
     def test_keystone_known_bytes(self, tmp_path):
         # 3 variants, 3 samples — the same example used by
         # test_encode_plink_example in lib/tests.c.
@@ -745,8 +846,9 @@ class TestWriterEndToEnd:
         assert (len(bed) - 3) == bytes_per_variant * 3
 
     def test_filter_excludes_all(self, tmp_path):
-        # No variants survive — BED gets only the magic header, BIM/FAM
-        # are empty. Exercises the empty-a12 branch in _write_genotypes.
+        # No variants survive — BED gets only the magic header, BIM is
+        # empty, FAM still lists samples (variant filter doesn't touch
+        # the sample axis).
         num_variants, num_samples = 3, 2
         reader = _build_reader(
             num_variants=num_variants,
@@ -829,7 +931,7 @@ def _build_encoder(*, num_variants=2, num_samples=3, **overrides):
 
 
 def _write_plink_oracle(tmp_path, *, num_variants, num_samples, **overrides):
-    """Materialise a reference .bed via Writer.run for cross-checks."""
+    """Materialise a reference .bed via write_plink for cross-checks."""
     reader = _build_reader(
         num_variants=num_variants, num_samples=num_samples, **overrides
     )

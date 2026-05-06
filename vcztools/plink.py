@@ -21,7 +21,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from vcztools import _vcztools, retrieval
+from vcztools import _vcztools, retrieval, utils
 from vcztools.utils import _as_fixed_length_unicode
 
 logger = logging.getLogger(__name__)
@@ -219,60 +219,125 @@ def generate_bim(reader):
     return df.to_csv(header=False, sep="\t", index=False, lineterminator="\n")
 
 
-class Writer:
-    def __init__(self, reader, bed_path, fam_path, bim_path):
-        self.reader = reader
+def materialise_variant_filter(reader):
+    """Resolve ``reader.variant_filter`` into a fixed variant selection.
 
-        self.bim_path = bim_path
-        self.fam_path = fam_path
-        self.bed_path = bed_path
+    Walks the reader's ``variant_chunk_plan``, evaluates the filter,
+    and replaces ``(variant_filter, variant_chunk_plan)`` on the same
+    reader with a chunk plan over the surviving global variant
+    indexes. No-op if no filter is configured.
 
-    def _write_genotypes(self):
-        start = time.perf_counter()
-        bytes_written = 0
-        ci = self.reader.variant_chunks(fields=["call_genotype", "variant_allele"])
-        with open(self.bed_path, "wb") as bed_file:
-            bed_file.write(BED_MAGIC)
-            bytes_written += len(BED_MAGIC)
-
-            for chunk in ci:
-                G = chunk["call_genotype"]
-                if G.ndim != 3 or G.shape[2] != 2:
-                    raise ValueError(
-                        "Only diploid genotypes are supported "
-                        f"(call_genotype has shape {G.shape})"
-                    )
-                _check_biallelic(chunk["variant_allele"])
-                encoded = encode_genotypes(G)
-                bed_file.write(encoded)
-                bytes_written += len(encoded)
-        elapsed = time.perf_counter() - start
-        mib = bytes_written / (1024 * 1024)
-        rate = mib / elapsed if elapsed > 0 else 0.0
-        logger.info(
-            f"write_genotypes: wrote {mib:.1f} MiB to {self.bed_path} in "
-            f"{elapsed:.2f}s ({rate:.1f} MiB/s)"
+    Sample-scope filters are not supported in PLINK 1 binary output:
+    the ``.bed`` format is fixed-width per variant, so per-sample
+    filtering doesn't translate. Raises ``ValueError`` on a
+    sample-scope filter.
+    """
+    variant_filter = reader.variant_filter
+    if variant_filter is None:
+        return
+    if variant_filter.scope != "variant":
+        raise ValueError(
+            "Sample-scope variant filters are not supported for "
+            "PLINK 1 binary output: the .bed format is fixed-width "
+            "per variant. Use a variant-scope filter (e.g. one "
+            "referencing INFO fields, CHROM, POS, or QUAL)."
         )
+    indexes = _surviving_variant_indexes(reader, variant_filter)
+    reader.set_variant_filter(None)
+    reader.set_variants(indexes)
+    logger.debug(f"materialise_variant_filter: {indexes.size} surviving variants")
 
-    def run(self):
-        self._write_genotypes()
 
-        with open(self.bim_path, "w") as f:
-            f.write(generate_bim(self.reader))
+def _surviving_variant_indexes(reader, variant_filter):
+    """Walk ``reader.variant_chunk_plan`` and evaluate ``variant_filter``,
+    returning a sorted 1-D ``int64`` array of surviving global variant
+    indexes. Caller is responsible for ensuring the filter is
+    variant-scope."""
+    chunk_size = reader.variants_chunk_size
+    static_fields = {}
+    dynamic_fields = []
+    for name in variant_filter.referenced_fields:
+        arr = reader.root[name]
+        dims = utils.array_dims(arr)
+        if dims is not None and "variants" in dims:
+            dynamic_fields.append(name)
+        else:
+            static_fields[name] = arr[:]
 
-        with open(self.fam_path, "w") as f:
-            f.write(generate_fam(self.reader))
+    surviving = []
+    for entry in reader.variant_chunk_plan:
+        base = entry.index * chunk_size
+        chunk_data = dict(static_fields)
+        for name in dynamic_fields:
+            arr = reader.root[name]
+            length = min(chunk_size, arr.shape[0] - base)
+            block = arr[base : base + length]
+            if entry.selection is not None:
+                block = block[entry.selection]
+            chunk_data[name] = block
+        result = variant_filter.evaluate(chunk_data)
+        local = np.flatnonzero(result)
+        if entry.selection is None:
+            global_idx = base + local
+        elif isinstance(entry.selection, slice):
+            offsets = np.arange(*entry.selection.indices(chunk_size))
+            global_idx = base + offsets[local]
+        else:
+            global_idx = base + np.asarray(entry.selection)[local]
+        surviving.append(global_idx)
+    if len(surviving) == 0:
+        return np.empty(0, dtype=np.int64)
+    return np.concatenate(surviving).astype(np.int64)
 
 
 def write_plink(reader, out):
+    """Write PLINK 1 binary fileset (``.bed`` / ``.bim`` / ``.fam``) for
+    ``reader`` under prefix ``out``.
+
+    If a variant filter is configured on the reader, it is resolved
+    in place via :func:`materialise_variant_filter` before encoding
+    so that BIM rows and BED rows are guaranteed to align.
+    """
+    materialise_variant_filter(reader)
     out_prefix = pathlib.Path(out)
-    writer = Writer(
-        reader,
-        bed_path=out_prefix.with_suffix(".bed"),
-        fam_path=out_prefix.with_suffix(".fam"),
-        bim_path=out_prefix.with_suffix(".bim"),
+    bed_path = out_prefix.with_suffix(".bed")
+    bim_path = out_prefix.with_suffix(".bim")
+    fam_path = out_prefix.with_suffix(".fam")
+
+    with open(fam_path, "w") as f:
+        f.write(generate_fam(reader))
+    with open(bim_path, "w") as f:
+        f.write(generate_bim(reader))
+    _stream_bed_to_file(reader, bed_path)
+
+
+def _stream_bed_to_file(reader, bed_path):
+    start = time.perf_counter()
+    bytes_written = 0
+    with BedEncoder(reader) as encoder, open(bed_path, "wb") as bed_file:
+        bed_size = encoder.bed_size
+        # Drain the encoder one variant chunk's worth at a time. The
+        # first read covers the magic header (offset 0..2) and the
+        # opening genotype chunk; subsequent reads consume the next
+        # chunk via the encoder's running iterator.
+        chunk_bytes = encoder.bytes_per_variant * reader.variants_chunk_size
+        if chunk_bytes <= 0:
+            chunk_bytes = 1
+        off = 0
+        while off < bed_size:
+            buf = encoder.read(off, chunk_bytes)
+            if len(buf) == 0:
+                break
+            bed_file.write(buf)
+            off += len(buf)
+            bytes_written += len(buf)
+    elapsed = time.perf_counter() - start
+    mib = bytes_written / (1024 * 1024)
+    rate = mib / elapsed if elapsed > 0 else 0.0
+    logger.info(
+        f"write_plink: wrote {mib:.1f} MiB to {bed_path} in "
+        f"{elapsed:.2f}s ({rate:.1f} MiB/s)"
     )
-    writer.run()
 
 
 class BedEncoder:

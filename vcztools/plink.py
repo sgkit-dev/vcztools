@@ -30,13 +30,6 @@ logger = logging.getLogger(__name__)
 BED_MAGIC = b"\x6c\x1b\x01"
 
 
-def _encode_genotypes_sync(G: np.ndarray) -> bytes:
-    # A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
-    # --vcf X --make-bed convention. Caller must pass a C-contiguous
-    # int8 (V, S, 2) array.
-    return bytes(_vcztools.encode_plink(G).data)
-
-
 def _check_biallelic(alleles):
     # plink 2 --make-bed errors on multi-allelic .bim rows; mirror that.
     # Use --max-alleles 2 to skip them, or split with bcftools norm -m-
@@ -409,7 +402,7 @@ class BedEncoder:
         # are zero-copy views.
         G = np.ascontiguousarray(genotypes, dtype=np.int8)
         if self._encode_threads <= 1 or G.nbytes <= self._encode_block_bytes:
-            return _encode_genotypes_sync(G)
+            return bytes(_vcztools.encode_plink(G).data)
 
         num_variants = G.shape[0]
         bytes_per_variant = self._bytes_per_variant
@@ -420,15 +413,14 @@ class BedEncoder:
         # the C kernel writes one row of bytes_per_variant per variant.
         output = np.empty(num_variants * bytes_per_variant, dtype=np.uint8)
 
-        future_to_index = {}
-        for j, start in enumerate(range(0, num_variants, block_variants)):
+        future_to_start = {}
+        for start in range(0, num_variants, block_variants):
             block = G[start : start + block_variants]
             future = self._executor.submit(_vcztools.encode_plink, block)
-            future_to_index[future] = j
+            future_to_start[future] = start
 
-        for future in cf.as_completed(future_to_index):
-            j = future_to_index[future]
-            start = j * block_variants
+        for future in cf.as_completed(future_to_start):
+            start = future_to_start[future]
             end = min(start + block_variants, num_variants)
             out_start = start * bytes_per_variant
             out_end = end * bytes_per_variant

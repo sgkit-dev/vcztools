@@ -575,6 +575,22 @@ class TestReadaheadPipeline:
         # 3, then drains.
         assert pipeline.depths == [1, 3, 2, 1, 0]
 
+    def test_max_in_flight_tracks_peak_depth(self):
+        # Budget large enough to fit every remaining chunk after the
+        # bootstrap; peak depth should be (plan length - 1) reached at
+        # the post-yield refill that schedules every remaining chunk.
+        root = self._vcz(num_variants=12, variants_chunk_size=3)
+        pipeline = _make_pipeline(root, readahead_bytes=10**9)
+        assert pipeline.max_in_flight == 0
+        list(pipeline)
+        assert pipeline.max_in_flight == 3
+
+    def test_max_in_flight_pinned_at_one_with_zero_budget(self):
+        root = self._vcz(num_variants=12, variants_chunk_size=3)
+        pipeline = _make_pipeline(root, readahead_bytes=0)
+        list(pipeline)
+        assert pipeline.max_in_flight == 1
+
     def test_empty_read_fields_does_not_infinite_loop(self):
         # With no fields to prefetch the bootstrap measurement is 0
         # bytes; without the ``max(1, per_chunk_bytes)`` guard the
@@ -2278,6 +2294,7 @@ class TestLogging:
         assert "chunks visited" in msg
         assert "yielded" in msg
         assert "variants" in msg
+        assert "max readahead depth" in msg
 
     def test_debug_per_chunk_lines(self, fx_sample_vcz, caplog):
         reader = VczReader(fx_sample_vcz.group)

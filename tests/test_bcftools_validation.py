@@ -109,6 +109,45 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -m 2 -i 'FMT/DP>3'", "sample.vcf.gz"),
         ("view --no-version -v snps", "1kg_2020_chrM.vcf.gz"),
         ("view --no-version -m 2 -M 2", "1kg_2020_chrM.vcf.gz"),
+        # -v/-V/-m/-M composed with variant-scope -i/-e (INFO/site fields).
+        ("view --no-version -m 2 -i 'INFO/DP>10'", "sample.vcf.gz"),
+        ("view --no-version -M 2 -i 'QUAL>10'", "sample.vcf.gz"),
+        ("view --no-version -v snps -i 'INFO/DP>10'", "sample.vcf.gz"),
+        ("view --no-version -V snps -i 'QUAL>=10'", "sample.vcf.gz"),
+        ("view --no-version -m 2 -M 2 -v snps -i 'POS>10000'", "sample.vcf.gz"),
+        # -v/-V/-m/-M composed with sample-scope -i/-e (FMT/-prefixed) —
+        # variant-scope synthetic mask broadcasts against the 2-D mask.
+        ("view --no-version -m 2 -i 'FMT/GQ>10'", "sample.vcf.gz"),
+        ("view --no-version -M 2 -i 'FMT/DP>=5'", "sample.vcf.gz"),
+        (
+            "view --no-version -v snps -i 'FMT/DP>5 && FMT/GQ>10'",
+            "sample.vcf.gz",
+        ),
+        ("view --no-version -V snps -i 'FMT/GQ>=20'", "sample.vcf.gz"),
+        # -v/-V/-m/-M with sample subsetting (-s/-S). Sample-scope filters
+        # under bcftools view evaluate over the pre-subset axis, then -s
+        # subsets the output.
+        ("view --no-version -m 2 -s NA00001", "sample.vcf.gz"),
+        ("view --no-version -v snps -s NA00001,NA00002", "sample.vcf.gz"),
+        ("view --no-version -M 2 -s ^NA00003", "sample.vcf.gz"),
+        # Three-way: variant-scope synthetic AND sample-scope filter AND
+        # sample subset. Filter sees the full sample axis; -s subsets
+        # after.
+        (
+            "view --no-version -m 2 -i 'FMT/DP>3' -s NA00002",
+            "sample.vcf.gz",
+        ),
+        (
+            "view --no-version -v snps -i 'FMT/GQ>10' -s NA00001,NA00002",
+            "sample.vcf.gz",
+        ),
+        (
+            "view --no-version -M 2 -i 'FMT/DP>=5' -s ^NA00003",
+            "sample.vcf.gz",
+        ),
+        # Multi-allelic file exercises the per-allele AC/TYPE paths.
+        ("view --no-version -v snps -i 'QUAL>50'", "1kg_2020_chrM.vcf.gz"),
+        ("view --no-version -m 2 -M 2 -i 'QUAL>50'", "1kg_2020_chrM.vcf.gz"),
         # N_ALT identifier is exposed in the filter language too.
         ("view --no-version -i 'N_ALT >= 2'", "sample.vcf.gz"),
         ("view --no-version -i 'N_ALT == 1'", "sample.vcf.gz"),

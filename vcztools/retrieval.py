@@ -227,6 +227,10 @@ class ReadaheadPipeline:
         # in_flight: list of (variant_chunk, [(blocks_key, Future), ...]).
         # The futures list is empty when the chunk needs no prefetch.
         self._in_flight: list = []
+        # Peak ``len(_in_flight)`` observed across the iteration; the
+        # consumer reads it after iteration to assess how effective
+        # the readahead window was at staying ahead of demand.
+        self.max_in_flight = 0
         logger.debug(
             f"ReadaheadPipeline init: {len(read_fields)} read_fields, "
             f"{len(self._read_templates)} templates, "
@@ -246,6 +250,8 @@ class ReadaheadPipeline:
             for key, arr, block_index in reads
         ]
         self._in_flight.append((variant_chunk, futures))
+        if len(self._in_flight) > self.max_in_flight:
+            self.max_in_flight = len(self._in_flight)
         logger.debug(
             f"schedule chunk {variant_chunk.index}: {len(futures)} blocks submitted"
         )
@@ -1213,7 +1219,8 @@ class VczReader:
             f"variant_chunks: iteration done in {elapsed:.2f}s "
             f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
             f"{variants_yielded} variants, "
-            f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s)"
+            f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s, "
+            f"max readahead depth {pipeline.max_in_flight})"
         )
 
     def _resolve_query_fields(self, fields):

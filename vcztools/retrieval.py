@@ -413,18 +413,37 @@ class CachedVariantChunk:
 
     def _assemble_call(self, field: str, arr) -> np.ndarray:
         plan = self._sample_chunk_plan
+        if len(plan.chunk_reads) == 0:
+            return self._empty_call_array(arr)
         parts = []
         for cr in plan.chunk_reads:
             raw = self._blocks[(field, cr.index)]
             if cr.selection is not None:
                 raw = raw[:, cr.selection]
             parts.append(raw)
-        if len(parts) == 0:
-            return self._empty_call_array(arr)
-        data = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+
+        sel = self.variant_chunk.selection
+        # A slice selection is a basic-indexing view that costs nothing to
+        # apply post-concat, so the fused path is only useful for the
+        # ndarray (fancy-index) case where concat-then-slice would copy the
+        # full block twice.
+        if isinstance(sel, np.ndarray) and len(parts) > 1:
+            n_samples = sum(p.shape[1] for p in parts)
+            out_shape = (sel.size, n_samples) + parts[0].shape[2:]
+            data = np.empty(out_shape, dtype=parts[0].dtype)
+            col = 0
+            for p in parts:
+                cols = p.shape[1]
+                data[:, col : col + cols] = p[sel]
+                col += cols
+        else:
+            data = np.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+            if sel is not None:
+                data = data[sel]
+
         if plan.permutation is not None:
             data = data[:, plan.permutation]
-        return self._slice_variants(data)
+        return data
 
     def _empty_call_array(self, arr) -> np.ndarray:
         """Zero-sample-column array for a call_* field, without I/O.

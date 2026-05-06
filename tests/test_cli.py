@@ -319,15 +319,86 @@ class TestMakeReader:
         with pytest.raises(ValueError, match="Invalid type"):
             cli.make_reader(fx_vcz_path, types="garbage")
 
-    def test_view_options_reject_sample_scope_filter(self, fx_vcz_path):
-        # Composing a sample-scope -i with -v/-V/-m mirrors the
-        # existing --max-alleles error path.
-        with pytest.raises(ValueError, match="cannot be combined with a sample-scope"):
-            cli.make_reader(
-                fx_vcz_path,
-                include="FMT/DP>3",
-                min_alleles=2,
-            )
+    def test_view_options_compose_with_sample_scope_filter(self, fx_vcz_path):
+        # The variant-scope synthetic mask (here from -m 2) broadcasts
+        # against a sample-scope user filter, so a site is included
+        # only if it has >=2 alleles AND at least one sample passes
+        # FMT/DP>3.
+        reader = cli.make_reader(
+            fx_vcz_path,
+            include="FMT/DP>3",
+            min_alleles=2,
+        )
+        # 20:1230237 is REF-only (1 allele) so -m 2 drops it regardless
+        # of whether any sample passes the FMT/DP filter.
+        assert 1230237 not in self._positions(reader)
+
+
+class TestAndFilter:
+    """Direct unit tests for :class:`vcztools.cli._AndFilter`."""
+
+    @staticmethod
+    def _variant_filter(mask, fields=("variant_position",)):
+        class _F:
+            scope = "variant"
+            referenced_fields = frozenset(fields)
+
+            def evaluate(self, chunk_data):
+                return np.asarray(mask, dtype=bool)
+
+        return _F()
+
+    @staticmethod
+    def _sample_filter(mask, fields=("call_DP",)):
+        class _F:
+            scope = "sample"
+            referenced_fields = frozenset(fields)
+
+            def evaluate(self, chunk_data):
+                return np.asarray(mask, dtype=bool)
+
+        return _F()
+
+    def test_variant_and_variant(self):
+        a = self._variant_filter([True, True, False])
+        b = self._variant_filter([True, False, False], fields=("variant_id",))
+        combined = cli._AndFilter([a, b])
+        assert combined.scope == "variant"
+        assert combined.referenced_fields == frozenset(
+            {"variant_position", "variant_id"}
+        )
+        np.testing.assert_array_equal(combined.evaluate({}), [True, False, False])
+
+    def test_variant_and_sample_broadcasts(self):
+        # Variant mask (1-D) broadcasts along axis 1 against a 2-D
+        # sample mask. Variant 0: variant True & sample [T, F] → [T, F].
+        # Variant 1: variant False zeros the row regardless of samples.
+        var = self._variant_filter([True, False])
+        samp = self._sample_filter([[True, False], [True, True]])
+        combined = cli._AndFilter([var, samp])
+        assert combined.scope == "sample"
+        np.testing.assert_array_equal(
+            combined.evaluate({}), [[True, False], [False, False]]
+        )
+
+    def test_sample_and_variant_broadcasts(self):
+        # Same logic, opposite operand order.
+        samp = self._sample_filter([[True, False], [True, True]])
+        var = self._variant_filter([True, False])
+        combined = cli._AndFilter([samp, var])
+        assert combined.scope == "sample"
+        np.testing.assert_array_equal(
+            combined.evaluate({}), [[True, False], [False, False]]
+        )
+
+    def test_sample_and_sample_elementwise(self):
+        a = self._sample_filter([[True, True], [False, True]])
+        b = self._sample_filter([[True, False], [True, True]])
+        combined = cli._AndFilter([a, b])
+        assert combined.scope == "sample"
+        np.testing.assert_array_equal(
+            combined.evaluate({}), [[True, False], [False, True]]
+        )
 
 
 def test_types_and_exclude_types_mutually_exclusive(fx_vcz_path):
@@ -560,7 +631,7 @@ class TestViewBed:
             assert pos > 1000000
 
     def test_max_alleles_combines_with_include(self, tmp_path, fx_vcz_path):
-        # AND-composition path through _AndVariantFilter.
+        # AND-composition path through _AndFilter.
         out = tmp_path / "p"
         run_vcztools(
             f"view-bed {fx_vcz_path} --max-alleles 2 "
@@ -572,16 +643,19 @@ class TestViewBed:
             pos = int(line.split("\t")[3])
             assert pos > 1000000
 
-    def test_max_alleles_with_sample_scope_filter_errors(self, tmp_path, fx_vcz_path):
-        # FMT/-prefixed filters are sample-scope; combining them with
-        # --max-alleles is unsupported.
+    def test_max_alleles_combines_with_sample_scope_filter(self, tmp_path, fx_vcz_path):
+        # FMT/-prefixed filters are sample-scope; the variant-scope
+        # ``--max-alleles`` mask broadcasts along the sample axis and
+        # AND-composes naturally with them.
         out = tmp_path / "p"
-        _, err = run_vcztools(
+        run_vcztools(
             f"view-bed {fx_vcz_path} --max-alleles 2 "
-            f"-i 'FMT/DP>3' --out {out.as_posix()}",
-            expect_error=True,
+            f"-i 'FMT/DP>3' --out {out.as_posix()}"
         )
-        assert "sample-scope" in err
+        # 20:14370 is biallelic (≤2) and has NA00002 with DP=8, so it
+        # passes both filters and lands in the .bim.
+        bim_lines = self._read_bim(tmp_path / "p.bim")
+        assert any("\t14370\t" in line for line in bim_lines)
 
     def test_out_prefix_normalisation(self, tmp_path, fx_vcz_path):
         # `--out p.bed` should still write to p.bed/p.bim/p.fam (the

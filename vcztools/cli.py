@@ -7,6 +7,7 @@ import warnings
 from functools import wraps
 
 import click
+import numpy as np
 
 from . import bcftools_filter, plink, provenance, retrieval, vcf_writer
 from . import query as query_module
@@ -271,16 +272,46 @@ def _build_view_filter_expression(types, exclude_types, min_alleles):
     return " && ".join(f"({p})" for p in parts)
 
 
-def _compose_variant_filter(existing, new_filter, conflict_msg):
-    """Compose a variant-scope filter onto an existing filter via
-    :class:`plink._AndVariantFilter`. Raises ``ValueError`` with
-    ``conflict_msg`` if ``existing`` is sample-scope.
+class _AndFilter:
+    """AND-compose multiple :class:`~vcztools.variant_filter.VariantFilter`
+    objects, including across scopes.
+
+    A variant-scope (1-D) result is broadcast along axis 1 against any
+    sample-scope (2-D) result, so a synthetic ``-m/-M/-v/-V`` mask
+    composes naturally with a user ``-i 'FMT/...'`` mask. The combined
+    scope is ``sample`` when any input is sample-scope, else ``variant``.
+    """
+
+    def __init__(self, filters):
+        self._filters = list(filters)
+        self.scope = (
+            "sample" if any(f.scope == "sample" for f in self._filters) else "variant"
+        )
+        self.referenced_fields = frozenset().union(
+            *(f.referenced_fields for f in self._filters)
+        )
+
+    def evaluate(self, chunk_data):
+        result = self._filters[0].evaluate(chunk_data)
+        for f in self._filters[1:]:
+            other = f.evaluate(chunk_data)
+            if result.ndim == 1 and other.ndim == 2:
+                result = np.expand_dims(result, axis=1) & other
+            elif result.ndim == 2 and other.ndim == 1:
+                result = result & np.expand_dims(other, axis=1)
+            else:
+                result = result & other
+        return result
+
+
+def _compose_filter(existing, new_filter):
+    """AND-compose ``new_filter`` onto an existing filter, allowing
+    mixed variant/sample scope via :class:`_AndFilter`. Returns
+    ``new_filter`` unchanged when there's nothing to compose with.
     """
     if existing is None:
         return new_filter
-    if existing.scope != "variant":
-        raise ValueError(conflict_msg)
-    return plink._AndVariantFilter([existing, new_filter])
+    return _AndFilter([existing, new_filter])
 
 
 def make_reader(
@@ -358,11 +389,8 @@ def make_reader(
         )
 
     if max_alleles is not None:
-        variant_filter = _compose_variant_filter(
-            variant_filter,
-            plink.MaxAllelesFilter(max_alleles),
-            "--max-alleles cannot be combined with a sample-scope "
-            "filter (e.g. one referencing FMT/ fields).",
+        variant_filter = _compose_filter(
+            variant_filter, plink.MaxAllelesFilter(max_alleles)
         )
 
     view_expr = _build_view_filter_expression(types, exclude_types, min_alleles)
@@ -370,12 +398,7 @@ def make_reader(
         synthetic_filter = bcftools_filter.BcftoolsFilter(
             field_names=reader.field_names, include=view_expr
         )
-        variant_filter = _compose_variant_filter(
-            variant_filter,
-            synthetic_filter,
-            "-v/-V/-m cannot be combined with a sample-scope -i/-e filter "
-            "(e.g. one referencing FMT/ fields).",
-        )
+        variant_filter = _compose_filter(variant_filter, synthetic_filter)
 
     if drop_genotypes:
         # --drop-genotypes can't coexist with a sample-scope filter:

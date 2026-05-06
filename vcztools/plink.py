@@ -62,37 +62,6 @@ class MaxAllelesFilter:
         return (tail == "").all(axis=1)
 
 
-class _AndVariantFilter:
-    """Combine multiple variant-scope :class:`VariantFilter` objects with
-    a logical AND on their per-variant masks.
-
-    Used by the CLI to compose a user-supplied ``-i``/``-e`` filter
-    with the synthetic ``--max-alleles`` filter for ``view-bed``.
-    Sample-scope filters are not supported; the constructor raises if
-    any input filter has ``scope != "variant"``.
-    """
-
-    scope = "variant"
-
-    def __init__(self, filters):
-        self._filters = list(filters)
-        for f in self._filters:
-            if f.scope != "variant":
-                raise ValueError(
-                    "_AndVariantFilter can only combine variant-scope filters; "
-                    "got a sample-scope filter."
-                )
-        self.referenced_fields = frozenset().union(
-            *(f.referenced_fields for f in self._filters)
-        )
-
-    def evaluate(self, chunk_data):
-        result = self._filters[0].evaluate(chunk_data)
-        for f in self._filters[1:]:
-            result = result & f.evaluate(chunk_data)
-        return result
-
-
 def encode_genotypes(genotypes):
     # A1 = ALT (allele index 1), A2 = REF (allele index 0): plink 2's
     # --vcf X --make-bed convention. The C extension requires a

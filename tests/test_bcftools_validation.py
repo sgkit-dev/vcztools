@@ -104,6 +104,9 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         ("view --no-version -m 3", "sample.vcf.gz"),
         ("view --no-version -v snps -m 2", "sample.vcf.gz"),
         ("view --no-version -v snps -i 'QUAL>10'", "sample.vcf.gz"),
+        # The variant-scope -m mask broadcasts against a sample-scope
+        # FMT/-prefixed filter — the AND composition handles mixed scope.
+        ("view --no-version -m 2 -i 'FMT/DP>3'", "sample.vcf.gz"),
         ("view --no-version -v snps", "1kg_2020_chrM.vcf.gz"),
         ("view --no-version -m 2 -M 2", "1kg_2020_chrM.vcf.gz"),
         # N_ALT identifier is exposed in the filter language too.

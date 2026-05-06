@@ -217,7 +217,7 @@ class TestEncodeGenotypesPython:
 
 
 # ---------------------------------------------------------------------------
-# MaxAllelesFilter / _AndVariantFilter — direct unit tests.
+# MaxAllelesFilter — direct unit tests.
 # ---------------------------------------------------------------------------
 
 
@@ -294,54 +294,6 @@ class TestMaxAllelesFilter:
         mask_b = f.evaluate(chunk_third_allele_everywhere)
         np.testing.assert_array_equal(mask_a, [True, False])
         np.testing.assert_array_equal(mask_a, mask_b)
-
-
-class TestAndVariantFilter:
-    """``_AndVariantFilter`` is private; only the CLI calls it. The
-    tests pin both the happy path (AND of two variant-scope filters)
-    and the constructor's scope check.
-    """
-
-    def test_and_combines_two_masks(self):
-        f1 = plink.MaxAllelesFilter(3)
-        f2 = plink.MaxAllelesFilter(2)
-        combined = plink._AndVariantFilter([f1, f2])
-        alleles = np.array(
-            [
-                ["A", "T", "", ""],  # ≤2 ✓ AND ≤3 ✓
-                ["G", "C", "T", ""],  # ≤3 ✓ AND ≤2 ✗
-                ["A", "T", "C", "G"],  # ≤3 ✗ AND ≤2 ✗
-            ],
-            dtype="U1",
-        )
-        mask = combined.evaluate({"variant_allele": alleles})
-        np.testing.assert_array_equal(mask, [True, False, False])
-
-    def test_referenced_fields_union(self):
-        f1 = plink.MaxAllelesFilter(2)
-
-        class _DummyFilter:
-            scope = "variant"
-            referenced_fields = frozenset({"variant_position"})
-
-            def evaluate(self, chunk_data):
-                return np.ones(len(chunk_data["variant_position"]), dtype=bool)
-
-        combined = plink._AndVariantFilter([f1, _DummyFilter()])
-        assert combined.referenced_fields == frozenset(
-            {"variant_allele", "variant_position"}
-        )
-
-    def test_rejects_sample_scope(self):
-        class _SampleScopeFilter:
-            scope = "sample"
-            referenced_fields = frozenset({"call_genotype"})
-
-            def evaluate(self, chunk_data):
-                raise NotImplementedError
-
-        with pytest.raises(ValueError, match="sample-scope"):
-            plink._AndVariantFilter([_SampleScopeFilter()])
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,9 @@ Features:
   `-M/--max-alleles` to `view`, matching bcftools view. The
   filter language exposes a new `N_ALT` identifier (count of
   non-empty ALT slots), so e.g. `-i 'N_ALT >= 2'` is now valid.
+- `--max-alleles` and `-v/-V/-m` now compose with sample-scope
+  ``-i 'FMT/...'`` filters via axis-1 broadcasting (previously
+  rejected). View-bed gains the same flexibility.
 
 Bug fixes:
 

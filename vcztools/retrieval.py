@@ -509,19 +509,21 @@ class VczReader:
     The reader starts with no configured selection or filter — plan
     state is lazy and is filled in to sensible defaults (every real
     sample; every variant chunk) on first iteration. Callers
-    customize via the one-shot setters **before** iterating:
+    customize via the setters **before** iterating:
 
     - :meth:`set_samples` — sample selection (integer indexes).
     - :meth:`set_variants` — variant selection (``list[ChunkRead]``
-      or a sorted 1-D index array).
-    - :meth:`set_variant_filter` — per-variant filter predicate.
+      or a sorted 1-D index array). Re-callable; replaces.
+    - :meth:`set_variant_filter` — per-variant filter predicate (or
+      ``None`` to clear). Re-callable; replaces.
+    - :meth:`set_filter_samples` — sample axis a sample-scope filter
+      evaluates over.
 
-    Each setter can be called at most once; a second call raises
-    ``RuntimeError``. The state field itself is the "configured"
-    signal: e.g. ``samples_selection is None`` means "not set", so
-    ``set_samples`` refuses to run when ``samples_selection`` is
-    already populated (either by a prior ``set_samples`` or by
-    default resolution during iteration).
+    :meth:`set_samples` and :meth:`set_filter_samples` are one-shot —
+    a second call raises ``RuntimeError``. ``set_samples`` also
+    refuses to run when ``samples_selection`` has already been
+    resolved by reading the corresponding property during default
+    iteration.
 
     The reader owns a single :class:`concurrent.futures.ThreadPoolExecutor`
     that every :class:`ReadaheadPipeline` it spawns submits work to.
@@ -689,12 +691,11 @@ class VczReader:
         :func:`vcztools.regions.build_chunk_plan` to build one from
         region/target strings and a root) or a sorted 1-D array of
         global variant indexes (bucketed into a plan internally).
-        Raises ``RuntimeError`` if already configured (including if
-        the default was already resolved by reading
-        ``variant_chunk_plan``).
+
+        May be called multiple times; each call replaces the prior
+        selection. A ``variant_chunks()`` generator already iterating
+        is unaffected — it snapshots the plan at start.
         """
-        if self._variant_chunk_plan is not None:
-            raise RuntimeError("variants already configured")
         if isinstance(variants, list):
             self._variant_chunk_plan = variants
             logger.debug(
@@ -714,28 +715,32 @@ class VczReader:
 
     def set_variant_filter(
         self,
-        variant_filter: variant_filter_mod.VariantFilter,
+        variant_filter: variant_filter_mod.VariantFilter | None,
     ) -> None:
-        """Configure the variant filter.
+        """Configure (or clear) the variant filter.
 
         ``variant_filter`` is any object implementing the
-        :class:`~vcztools.variant_filter.VariantFilter` protocol. The
-        sample axis a sample-scope filter evaluates over is controlled
-        separately via :meth:`set_filter_samples`; the default axis is
-        the user's sample selection (``bcftools query`` FMT-scope
-        post-subset semantics). Call :meth:`set_filter_samples` with
+        :class:`~vcztools.variant_filter.VariantFilter` protocol, or
+        ``None`` to clear a previously-set filter. The sample axis a
+        sample-scope filter evaluates over is controlled separately
+        via :meth:`set_filter_samples`; the default axis is the user's
+        sample selection (``bcftools query`` FMT-scope post-subset
+        semantics). Call :meth:`set_filter_samples` with
         :attr:`non_null_sample_indices` for ``bcftools view`` pre-subset
         semantics.
 
-        Raises ``RuntimeError`` if already configured.
+        May be called multiple times; each call replaces the prior
+        filter. A ``variant_chunks()`` generator already iterating is
+        unaffected — it snapshots the filter at start.
         """
-        if self.variant_filter is not None:
-            raise RuntimeError("variant_filter already configured")
         self.variant_filter = variant_filter
-        logger.debug(
-            f"set_variant_filter: referenced_fields="
-            f"{sorted(variant_filter.referenced_fields)}"
-        )
+        if variant_filter is None:
+            logger.debug("set_variant_filter: cleared")
+        else:
+            logger.debug(
+                f"set_variant_filter: referenced_fields="
+                f"{sorted(variant_filter.referenced_fields)}"
+            )
 
     def set_filter_samples(self, filter_samples) -> None:
         """Configure the sample axis that a sample-scope variant filter
@@ -947,11 +952,12 @@ class VczReader:
         if fields is not None and len(fields) == 0:
             return
 
+        # Snapshot the filter so a mid-iteration set_variant_filter
+        # can't change behaviour for this generator.
+        variant_filter = self.variant_filter
         query_fields = self._resolve_query_fields(fields)
         filter_fields = frozenset(
-            self.variant_filter.referenced_fields
-            if self.variant_filter is not None
-            else ()
+            variant_filter.referenced_fields if variant_filter is not None else ()
         )
         if self._filter_samples is None:
             # Default: filter axis IS the subset axis. Covers non-empty
@@ -1027,14 +1033,14 @@ class VczReader:
             # can emit only matching samples in FORMAT-loop queries.
             variants_selection = None
             sample_filter_pass = None
-            if self.variant_filter is not None:
+            if variant_filter is not None:
                 filter_data = {
                     f: referenced_static_fields[f]
                     if f in referenced_static_fields
                     else chunk.filter_view(f)
                     for f in filter_fields
                 }
-                filter_result = self.variant_filter.evaluate(filter_data)
+                filter_result = variant_filter.evaluate(filter_data)
                 if filter_result.ndim == 1:
                     # Variant-scope filter: one bool per variant.
                     variants_selection = filter_result

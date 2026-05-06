@@ -227,9 +227,13 @@ class BedEncoder:
     the reader before construction. With ``set_variants``, the encoded
     ``.bed`` covers exactly the selected variants in chunk-plan order;
     :attr:`bed_size` and :attr:`num_variants` reflect the selection.
-    Construction performs an eager biallelic check by reading
-    ``variant_allele`` for the selected chunks only — variants outside
-    the selection are not inspected.
+
+    Construction is I/O-free: byte offsets are derived from the
+    reader's chunk plan via
+    :meth:`~vcztools.retrieval.VczReader.variant_counts_per_chunk`.
+    Biallelic checking is performed lazily as chunks are decoded;
+    multi-allelic variants raise ``ValueError`` during :meth:`read`,
+    not at construction.
 
     :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
     yet supported and raises ``NotImplementedError`` at construction;
@@ -253,13 +257,9 @@ class BedEncoder:
         self._num_samples = int(reader.sample_ids.size)
         self._bytes_per_variant = (self._num_samples + 3) // 4
 
-        # _chunk_byte_offsets: cumulative byte offset per yielded chunk,
-        # starting at 3 (post-magic). _chunk_plan_indices: plan position
-        # of each yielded chunk, used by _restart to resume iteration.
-        # Without a variant_filter (the only case currently supported),
-        # plan_pos == yielded_pos, but we record the mapping explicitly
-        # so the binary search in _restart doesn't bake in that
-        # assumption.
+        # _chunk_byte_offsets: cumulative byte offset per plan entry,
+        # starting at 3 (post-magic). Length = len(plan) + 1; the
+        # trailing entry equals bed_size.
         self._pre_walk()
         self._bed_size = int(self._chunk_byte_offsets[-1])
 
@@ -270,21 +270,12 @@ class BedEncoder:
 
     def _pre_walk(self) -> None:
         bpv = self._bytes_per_variant
-        byte_offsets = [3]
-        plan_indices = []
-        num_variants = 0
-        for plan_pos, chunk_data in enumerate(
-            self._reader.variant_chunks(fields=["variant_allele"])
-        ):
-            alleles = chunk_data["variant_allele"]
-            _check_biallelic(alleles)
-            n = len(alleles)
-            num_variants += n
-            plan_indices.append(plan_pos)
-            byte_offsets.append(byte_offsets[-1] + n * bpv)
-        self._chunk_byte_offsets = np.array(byte_offsets, dtype=np.int64)
-        self._chunk_plan_indices = np.array(plan_indices, dtype=np.int64)
-        self._num_variants = num_variants
+        counts = self._reader.variant_counts_per_chunk()
+        self._num_variants = int(counts.sum())
+        self._chunk_byte_offsets = np.empty(len(counts) + 1, dtype=np.int64)
+        self._chunk_byte_offsets[0] = 3
+        np.cumsum(counts * bpv, out=self._chunk_byte_offsets[1:])
+        self._chunk_byte_offsets[1:] += 3
 
     def _check_open(self) -> None:
         if self._closed:
@@ -341,25 +332,21 @@ class BedEncoder:
         if off < 3:
             self._pending = bytearray(BED_MAGIC[off:3])
             self._first_chunk_skip = 0
-            if self._chunk_plan_indices.size > 0:
-                target_plan_pos = int(self._chunk_plan_indices[0])
-            else:
-                target_plan_pos = 0
+            plan_pos = 0
         else:
-            # searchsorted(side="right") - 1: largest yielded position
+            # searchsorted(side="right") - 1: largest plan position
             # whose start offset is <= off. _chunk_byte_offsets has
-            # len(yielded)+1 entries (the trailing entry is bed_size);
+            # len(plan)+1 entries (the trailing entry is bed_size);
             # off < bed_size is guaranteed by read(), so the index is
             # in range.
-            yielded_pos = (
+            plan_pos = int(
                 np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1
             )
-            target_plan_pos = int(self._chunk_plan_indices[yielded_pos])
-            self._first_chunk_skip = off - int(self._chunk_byte_offsets[yielded_pos])
+            self._first_chunk_skip = off - int(self._chunk_byte_offsets[plan_pos])
             self._pending = bytearray()
         self._iterator = self._reader.variant_chunks(
-            fields=["call_genotype"],
-            start=target_plan_pos,
+            fields=["call_genotype", "variant_allele"],
+            start=plan_pos,
         )
         self._cur_byte_offset = off
 
@@ -372,6 +359,7 @@ class BedEncoder:
             n -= take
         while n > 0:
             chunk = next(self._iterator)
+            _check_biallelic(chunk["variant_allele"])
             G = chunk["call_genotype"]
             encoded = encode_genotypes(G)
             if self._first_chunk_skip > 0:

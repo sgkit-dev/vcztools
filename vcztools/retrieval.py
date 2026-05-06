@@ -684,6 +684,29 @@ class VczReader:
             f"{len(self._sample_chunk_plan.chunk_reads)} sample chunks"
         )
 
+    def variant_counts_per_chunk(self) -> np.ndarray:
+        """Number of variants contributed by each entry in
+        :attr:`variant_chunk_plan`.
+
+        Returns a 1-D ``int64`` array of length
+        ``len(variant_chunk_plan)``. Pure plan-structure derivation —
+        no Zarr access. Useful for consumers (e.g. PLINK BED encoders)
+        that need to size per-chunk output without reading any data.
+        """
+        chunk_size = self.variants_chunk_size
+        num_variants = self.num_variants
+        plan = self.variant_chunk_plan
+        counts = np.empty(len(plan), dtype=np.int64)
+        for i, entry in enumerate(plan):
+            if entry.selection is None:
+                base = entry.index * chunk_size
+                counts[i] = min(chunk_size, num_variants - base)
+            elif isinstance(entry.selection, slice):
+                counts[i] = entry.selection.stop - entry.selection.start
+            else:
+                counts[i] = len(entry.selection)
+        return counts
+
     def set_variants(self, variants) -> None:
         """Configure the variant selection.
 

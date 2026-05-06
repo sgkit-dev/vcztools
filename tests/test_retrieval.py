@@ -1768,6 +1768,74 @@ class TestMaterialiseVariantFilter:
             reader.materialise_variant_filter()
 
 
+class TestVariantCountsPerChunk:
+    """``VczReader.variant_counts_per_chunk`` derives per-plan-entry
+    variant counts from the chunk plan structure alone — no Zarr
+    access. Used by ``BedEncoder`` to size byte offsets without an
+    upfront scan."""
+
+    @staticmethod
+    def _make(num_variants, variants_chunk_size=3):
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            variants_chunk_size=variants_chunk_size,
+        )
+
+    def test_default_plan_full_chunks(self):
+        # 9 variants with chunk_size 3 → three full chunks of 3.
+        reader = VczReader(self._make(num_variants=9))
+        nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([3, 3, 3]))
+
+    def test_default_plan_partial_last_chunk(self):
+        # 7 variants with chunk_size 3 → 3, 3, 1.
+        reader = VczReader(self._make(num_variants=7))
+        nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([3, 3, 1]))
+
+    def test_set_variants_array(self):
+        # Indexes [0, 1, 5, 7] over 9 variants, chunk_size 3:
+        #   chunk 0 selection [0, 1] (size 2)
+        #   chunk 1 selection [2]    (size 1)
+        #   chunk 2 selection [1]    (size 1)
+        reader = VczReader(self._make(num_variants=9))
+        reader.set_variants(np.array([0, 1, 5, 7], dtype=np.int64))
+        nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([2, 1, 1]))
+
+    def test_set_variants_contiguous_range_collapses_to_slice(self):
+        # Indexes [3, 4, 5] = chunk 1 fully → selection collapses to
+        # None (full chunk) per normalise_local_selection.
+        reader = VczReader(self._make(num_variants=9))
+        reader.set_variants(np.array([3, 4, 5], dtype=np.int64))
+        nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([3]))
+
+    def test_set_variants_slice_within_chunk(self):
+        # Indexes [3, 4] = chunk 1 partial → selection is slice(0, 2).
+        reader = VczReader(self._make(num_variants=9))
+        reader.set_variants(np.array([3, 4], dtype=np.int64))
+        plan = reader.variant_chunk_plan
+        assert isinstance(plan[0].selection, slice)
+        nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([2]))
+
+    def test_empty_plan(self):
+        reader = VczReader(self._make(num_variants=9))
+        reader.set_variants(np.empty(0, dtype=np.int64))
+        nt.assert_array_equal(
+            reader.variant_counts_per_chunk(), np.array([], dtype=np.int64)
+        )
+
+    def test_after_materialise_variant_filter(self):
+        # 10 variants with chunk_size 4 → chunks of 4, 4, 2.
+        # POS = 100..109; filter POS<105 → indexes 0..4 survive
+        # (chunk 0 full, chunk 1 first variant only).
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=4))
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS<105")
+        )
+        reader.materialise_variant_filter()
+        nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([4, 1]))
+
+
 class TestVariantChunksStart:
     """``VczReader.variant_chunks(start=k)`` begins iteration at the
     k-th entry of the persistent ``variant_chunk_plan``. Used by

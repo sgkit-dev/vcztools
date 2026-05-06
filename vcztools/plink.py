@@ -246,20 +246,11 @@ def write_plink(reader, out):
 def _stream_bed_to_file(reader, bed_path):
     start = time.perf_counter()
     bytes_written = 0
+    block_size = 1 << 20  # 1 MiB
     with BedEncoder(reader) as encoder, open(bed_path, "wb") as bed_file:
-        bed_size = encoder.bed_size
-        # Drain the encoder one variant chunk's worth at a time. The
-        # first read covers the magic header (offset 0..2) and the
-        # opening genotype chunk; subsequent reads consume the next
-        # chunk via the encoder's running iterator.
-        chunk_bytes = encoder.bytes_per_variant * reader.variants_chunk_size
-        if chunk_bytes <= 0:
-            chunk_bytes = 1
         off = 0
-        while off < bed_size:
-            buf = encoder.read(off, chunk_bytes)
-            if len(buf) == 0:
-                break
+        while off < encoder.bed_size:
+            buf = encoder.read(off, block_size)
             bed_file.write(buf)
             off += len(buf)
             bytes_written += len(buf)

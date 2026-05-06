@@ -217,86 +217,6 @@ class TestEncodeGenotypesPython:
 
 
 # ---------------------------------------------------------------------------
-# MaxAllelesFilter — direct unit tests.
-# ---------------------------------------------------------------------------
-
-
-class TestMaxAllelesFilter:
-    def test_short_axis_passes_all(self):
-        # When the store's max-allele count is already <= max_alleles,
-        # the filter trivially keeps every row.
-        f = plink.MaxAllelesFilter(2)
-        alleles = np.array([["A", "T"], ["G", "C"]], dtype="U1")
-        mask = f.evaluate({"variant_allele": alleles})
-        np.testing.assert_array_equal(mask, [True, True])
-
-    def test_drops_overflow_rows(self):
-        f = plink.MaxAllelesFilter(2)
-        alleles = np.array(
-            [
-                ["A", "T", "", ""],
-                ["G", "C", "T", ""],  # 3 alleles → drop
-                ["A", "T", "", ""],
-            ],
-            dtype="U1",
-        )
-        mask = f.evaluate({"variant_allele": alleles})
-        np.testing.assert_array_equal(mask, [True, False, True])
-
-    def test_max_alleles_three(self):
-        # Sanity check: max_alleles is parametric, not hard-wired to 2.
-        f = plink.MaxAllelesFilter(3)
-        alleles = np.array(
-            [
-                ["A", "T", "C", ""],  # 3 alleles → keep
-                ["G", "C", "T", "A"],  # 4 alleles → drop
-            ],
-            dtype="U1",
-        )
-        mask = f.evaluate({"variant_allele": alleles})
-        np.testing.assert_array_equal(mask, [True, False])
-
-    @pytest.mark.parametrize("bad", [0, -1, -10])
-    def test_max_alleles_below_one_raises(self, bad):
-        # plink 2 itself errors on --max-alleles 0 ("Invalid --max-alleles
-        # argument '0'."); our validation matches.
-        with pytest.raises(ValueError, match=">= 1"):
-            plink.MaxAllelesFilter(bad)
-
-    def test_protocol_attributes(self):
-        f = plink.MaxAllelesFilter(2)
-        assert f.scope == "variant"
-        assert f.referenced_fields == frozenset({"variant_allele"})
-
-    def test_evaluate_independent_of_call_genotype(self):
-        # The max-alleles decision is record-driven: even if a sample
-        # subset would only ever observe two alleles at a tri-allelic
-        # site, the variant is dropped because the record lists 3.
-        # See vcztools/plink.py module docstring for the rationale.
-        f = plink.MaxAllelesFilter(2)
-        alleles = np.array(
-            [
-                ["A", "T", "", ""],  # biallelic record
-                ["G", "C", "T", ""],  # tri-allelic record
-            ],
-            dtype="U1",
-        )
-        # Same alleles, two very different genotype matrices.
-        chunk_all_ref = {
-            "variant_allele": alleles,
-            "call_genotype": np.zeros((2, 4, 2), dtype=np.int8),
-        }
-        chunk_third_allele_everywhere = {
-            "variant_allele": alleles,
-            "call_genotype": np.full((2, 4, 2), 2, dtype=np.int8),
-        }
-        mask_a = f.evaluate(chunk_all_ref)
-        mask_b = f.evaluate(chunk_third_allele_everywhere)
-        np.testing.assert_array_equal(mask_a, [True, False])
-        np.testing.assert_array_equal(mask_a, mask_b)
-
-
-# ---------------------------------------------------------------------------
 # Chromosome normalisation (matches plink 2 --make-bed output).
 # ---------------------------------------------------------------------------
 
@@ -1342,7 +1262,9 @@ class TestBedEncoderWithSetVariants:
 
     def test_set_variant_filter_is_rejected(self):
         reader = _build_reader(num_variants=5, num_samples=3)
-        reader.set_variant_filter(plink.MaxAllelesFilter(2))
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(field_names=set(), include="N_ALT <= 1")
+        )
         with pytest.raises(NotImplementedError, match="set_variant_filter"):
             plink.BedEncoder(reader)
 

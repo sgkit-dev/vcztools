@@ -292,6 +292,10 @@ class BedEncoder:
         self._cur_byte_offset = None
         self._pending = bytearray()
         self._first_chunk_skip = 0
+        # Counts only true restarts (offset jumps). The first read() after
+        # construction is mechanically a restart-from-None but is logged
+        # as an "init" event and does not increment this counter.
+        self._restart_count = 0
 
         self._encode_threads = encode_threads
         self._encode_block_bytes = encode_block_bytes
@@ -360,6 +364,8 @@ class BedEncoder:
         return out
 
     def _restart(self, off: int) -> None:
+        prev_offset = self._cur_byte_offset
+        pending_discarded = len(self._pending)
         self._teardown_iterator()
         if off < 3:
             self._pending = bytearray(BED_MAGIC[off:3])
@@ -381,6 +387,21 @@ class BedEncoder:
             start=plan_pos,
         )
         self._cur_byte_offset = off
+        if prev_offset is None:
+            logger.debug(
+                f"BedEncoder iterator init: off={off}, "
+                f"plan_pos={plan_pos}, first_chunk_skip={self._first_chunk_skip}"
+            )
+        else:
+            self._restart_count += 1
+            delta = off - prev_offset
+            logger.info(
+                f"BedEncoder restart #{self._restart_count}: "
+                f"cur_offset={prev_offset} → off={off} "
+                f"(delta={delta:+d}), "
+                f"discarding pending={pending_discarded} bytes; "
+                f"plan_pos={plan_pos}, first_chunk_skip={self._first_chunk_skip}"
+            )
 
     def _drain(self, n: int) -> bytes:
         out = bytearray()
@@ -452,6 +473,11 @@ class BedEncoder:
         self._closed = True
         self._teardown_iterator()
         self._executor.shutdown(wait=True)
+        if self._restart_count > 0:
+            logger.debug(
+                f"BedEncoder closed: {self._restart_count} restarts "
+                f"over {self._bed_size} bytes"
+            )
         self._cur_byte_offset = None
 
     def __enter__(self):

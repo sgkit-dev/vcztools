@@ -8,6 +8,7 @@ no roundtripping.
 """
 
 import concurrent.futures as cf
+import logging
 import math
 import pathlib
 
@@ -1079,6 +1080,99 @@ class TestBedEncoderRestartCount:
         enc.read(3 + 8 * bpv, 5)
         enc.read(3 + 4 * bpv, 5)
         assert counter["n"] == 3
+
+
+class TestBedEncoderRestartLogging:
+    """``_restart`` emits a single DEBUG line per call: an "iterator init"
+    on the first read and a "restart #N" on every subsequent offset
+    jump, including the pending-buffer size being thrown away. ``close``
+    summarises the lifetime restart count when non-zero."""
+
+    def test_streaming_emits_init_only_no_restarts(self, tmp_path, caplog):
+        # _stream_bed_to_file is sequential: exactly one init, zero
+        # restarts, no close summary.
+        gt = _varied_genotypes(num_variants=8, num_samples=5)
+        reader = _build_reader(
+            num_variants=8,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        with caplog.at_level(logging.DEBUG, logger="vcztools.plink"):
+            plink._stream_bed_to_file(reader, tmp_path / "p.bed")
+        assert "BedEncoder iterator init:" in caplog.text
+        assert "BedEncoder restart" not in caplog.text
+        assert "BedEncoder closed:" not in caplog.text
+
+    def test_forced_restart_logs_pending_and_delta(self, caplog):
+        gt = _varied_genotypes(num_variants=20, num_samples=5)
+        enc = _build_encoder(
+            num_variants=20,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        bpv = enc.bytes_per_variant
+        with caplog.at_level(logging.DEBUG, logger="vcztools.plink"):
+            # First read: init, partial drain leaves pending bytes.
+            enc.read(3, 1)
+            # Second read: forward jump into a later chunk.
+            enc.read(3 + 8 * bpv, 5)
+        restart_lines = [
+            r.getMessage()
+            for r in caplog.records
+            if "BedEncoder restart" in r.getMessage()
+        ]
+        assert len(restart_lines) == 1
+        msg = restart_lines[0]
+        assert "BedEncoder restart #1:" in msg
+        assert "cur_offset=" in msg
+        assert "→ off=" in msg
+        assert "delta=+" in msg
+        assert "discarding pending=" in msg
+        assert "plan_pos=" in msg
+        assert "first_chunk_skip=" in msg
+        # The first read at off=3, size=1 leaves a partial chunk's worth
+        # of encoded bytes in _pending; the restart message must report
+        # a non-zero discard.
+        assert "discarding pending=0 bytes" not in msg
+
+    def test_close_summary_only_when_restarts_happened(self, caplog):
+        gt = _varied_genotypes(num_variants=12, num_samples=5)
+
+        # No restarts: no summary line on close.
+        enc_a = _build_encoder(
+            num_variants=12,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        with caplog.at_level(logging.DEBUG, logger="vcztools.plink"):
+            enc_a.read(0, enc_a.bed_size)
+            enc_a.close()
+        assert "BedEncoder closed:" not in caplog.text
+
+        caplog.clear()
+
+        # One restart: one summary line, naming the count.
+        enc_b = _build_encoder(
+            num_variants=12,
+            num_samples=5,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        bpv = enc_b.bytes_per_variant
+        with caplog.at_level(logging.DEBUG, logger="vcztools.plink"):
+            enc_b.read(3, 1)
+            enc_b.read(3 + 8 * bpv, 1)
+            enc_b.close()
+        close_lines = [
+            r.getMessage()
+            for r in caplog.records
+            if "BedEncoder closed:" in r.getMessage()
+        ]
+        assert len(close_lines) == 1
+        assert "1 restarts" in close_lines[0]
 
 
 class TestBedEncoderParallelEncoding:

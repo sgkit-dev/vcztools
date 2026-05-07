@@ -141,6 +141,7 @@ def open_zarr(
     /,
     *,
     mode: str = "r",
+    zarr_format: int | None = None,
     backend_storage: str | None = None,
     storage_options: dict | None = None,
 ):
@@ -175,19 +176,32 @@ def open_zarr(
     if isinstance(file_or_url, zarr.Group):
         return file_or_url
     if isinstance(file_or_url, zarr.abc.store.Store):
-        return zarr.open(file_or_url, mode=mode)
+        return zarr.open(file_or_url, mode=mode, zarr_format=zarr_format)
 
     if backend_storage is None:
-        return _open_zarr_local(file_or_url, mode=mode, storage_options=storage_options)
+        return _open_zarr_local(
+            file_or_url,
+            mode=mode,
+            zarr_format=zarr_format,
+            storage_options=storage_options,
+        )
     if backend_storage == "fsspec":
         return _open_zarr_fsspec(
-            file_or_url, mode=mode, storage_options=storage_options
+            file_or_url,
+            mode=mode,
+            zarr_format=zarr_format,
+            storage_options=storage_options,
         )
     if backend_storage == "obstore":
         return _open_zarr_obstore(
-            file_or_url, mode=mode, storage_options=storage_options
+            file_or_url,
+            mode=mode,
+            zarr_format=zarr_format,
+            storage_options=storage_options,
         )
-    return _open_zarr_icechunk(file_or_url, mode=mode, storage_options=storage_options)
+    return _open_zarr_icechunk(
+        file_or_url, mode=mode, zarr_format=zarr_format, storage_options=storage_options
+    )
 
 
 def _import_optional(module_name, *, extra):
@@ -205,7 +219,7 @@ def _import_optional(module_name, *, extra):
         ) from e
 
 
-def _open_zarr_local(file_or_url, *, mode, storage_options):
+def _open_zarr_local(file_or_url, *, mode, zarr_format, storage_options):
     if storage_options is not None and len(storage_options) > 0:
         raise ValueError("storage_options not supported for local stores")
     if _is_remote_url(file_or_url):
@@ -214,11 +228,17 @@ def _open_zarr_local(file_or_url, *, mode, storage_options):
             "'obstore', or 'icechunk'"
         )
     if _is_zip_path(file_or_url):
-        return zarr.open(zarr.storage.ZipStore(file_or_url, mode="r"), mode=mode)
-    return zarr.open(zarr.storage.LocalStore(file_or_url), mode=mode)
+        return zarr.open(
+            zarr.storage.ZipStore(file_or_url, mode="r"),
+            mode=mode,
+            zarr_format=zarr_format,
+        )
+    return zarr.open(
+        zarr.storage.LocalStore(file_or_url), mode=mode, zarr_format=zarr_format
+    )
 
 
-def _open_zarr_fsspec(file_or_url, *, mode, storage_options):
+def _open_zarr_fsspec(file_or_url, *, mode, zarr_format, storage_options):
     if isinstance(file_or_url, Path):
         url = file_or_url.resolve().as_uri()
     elif isinstance(file_or_url, str):
@@ -229,10 +249,10 @@ def _open_zarr_fsspec(file_or_url, *, mode, storage_options):
     else:
         raise TypeError(f"Unsupported file_or_url type: {type(file_or_url)}")
     store = zarr.storage.FsspecStore.from_url(url, storage_options=storage_options)
-    return zarr.open(store, mode=mode)
+    return zarr.open(store, mode=mode, zarr_format=zarr_format)
 
 
-def _open_zarr_obstore(file_or_url, *, mode, storage_options):
+def _open_zarr_obstore(file_or_url, *, mode, zarr_format, storage_options):
     obs = _import_optional("obstore", extra="obstore")
     kwargs = storage_options if storage_options is not None else {}
     if isinstance(file_or_url, Path):
@@ -246,15 +266,17 @@ def _open_zarr_obstore(file_or_url, *, mode, storage_options):
             backend = obs.store.from_url(url, mkdir=True, **kwargs)
     else:
         raise TypeError(f"Unsupported file_or_url type: {type(file_or_url)}")
-    return zarr.open(zarr.storage.ObjectStore(backend), mode=mode)
+    return zarr.open(
+        zarr.storage.ObjectStore(backend), mode=mode, zarr_format=zarr_format
+    )
 
 
-def _open_zarr_icechunk(file_or_url, *, mode, storage_options):
+def _open_zarr_icechunk(file_or_url, *, mode, zarr_format, storage_options):
     ic = _import_optional("icechunk", extra="icechunk")
     storage = make_icechunk_storage(file_or_url, storage_options=storage_options)
     repo = ic.Repository.open(storage)
     session = repo.readonly_session("main")
-    return zarr.open(session.store, mode=mode)
+    return zarr.open(session.store, mode=mode, zarr_format=zarr_format)
 
 
 def make_icechunk_storage(file_or_url, *, storage_options=None):

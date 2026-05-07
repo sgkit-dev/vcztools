@@ -397,6 +397,20 @@ class TestOpenZarr:
         root = open_zarr(store)
         assert root["variant_position"][:].tolist() == [1, 2, 3]
 
+    @pytest.mark.parametrize(
+        ("zarr_format", "expected_zarr_format"), [(2, 2), (3, 3), (None, 3)]
+    )
+    def test_zarr_format(self, tmp_path, zarr_format, expected_zarr_format):
+        vcz = tmp_path / "minimal.vcz"
+        root = open_zarr(vcz, mode="w", zarr_format=zarr_format)
+        root.create_array("variant_position", shape=(4,), dtype="int32")
+        root["variant_position"][:] = [10, 20, 30, 40]
+
+        root = open_zarr(vcz)
+        assert root.metadata.zarr_format == expected_zarr_format
+        assert isinstance(root.store, zarr.storage.LocalStore)
+        assert root["variant_position"][:].tolist() == [10, 20, 30, 40]
+
     # --- Backend selection ---
 
     def test_fsspec_backend_uses_fsspec_store(self, tmp_path):

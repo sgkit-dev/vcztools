@@ -100,7 +100,11 @@ class _PrefetchIterator:
             self._next_future.result()
         except BaseException:
             pass
-        self._source.close()
+        # Plain iterators (e.g. list_iterator) have no close(); only
+        # generators and similar resource-holding iterators do.
+        source_close = getattr(self._source, "close", None)
+        if source_close is not None:
+            source_close()
         self._executor.shutdown(wait=True)
 
     def __del__(self):

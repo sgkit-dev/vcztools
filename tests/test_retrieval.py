@@ -1,5 +1,7 @@
 import concurrent.futures as cf
 import logging
+import threading
+import time
 
 import numpy as np
 import numpy.testing as nt
@@ -2382,3 +2384,73 @@ class TestLogging:
         with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
             list(reader.variant_chunks(fields=["variant_position"]))
         assert "Readahead budget is single-chunk-bound" in caplog.text
+
+
+class TestVariantChunksPrefetch:
+    """``variant_chunks`` returns a one-deep prefetch iterator that
+    drives the inner generator in a background thread so the
+    consumer's per-chunk work overlaps with the producer's
+    per-chunk assembly. These cases lock in the wrapper's contract:
+    eager validation, empty-iterator short-circuit, exception
+    propagation, and clean worker-thread teardown."""
+
+    def _prefetch_threads(self):
+        return [t for t in threading.enumerate() if "vcztools-prefetch" in t.name]
+
+    def test_eager_negative_start_validation(self, fx_sample_vcz):
+        # Was previously raised on first next() (lazy generator);
+        # the wrapper validates eagerly on the call itself.
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="start must be >= 0"):
+            reader.variant_chunks(start=-1)
+
+    def test_empty_fields_starts_no_worker(self, fx_sample_vcz):
+        # fields=[] short-circuits to iter(()) without spinning up
+        # the prefetch worker — exhausting the iterator must not
+        # leave a vcztools-prefetch thread alive.
+        reader = VczReader(fx_sample_vcz.group)
+        before = len(self._prefetch_threads())
+        result = list(reader.variant_chunks(fields=[]))
+        assert result == []
+        assert len(self._prefetch_threads()) == before
+
+    def test_exception_in_inner_gen_surfaces_to_consumer(
+        self, fx_sample_vcz, monkeypatch
+    ):
+        # The wrapper retrieves each item from the worker future via
+        # result(); an exception raised by the inner generator must
+        # re-raise on the consumer's next() call rather than be
+        # swallowed.
+        sentinel = RuntimeError("boom from inner generator")
+
+        def faulty_gen(self, *, fields=None, start=0):
+            yield {"variant_position": np.array([0])}
+            raise sentinel
+
+        monkeypatch.setattr(VczReader, "_variant_chunks_gen", faulty_gen)
+        reader = VczReader(fx_sample_vcz.group)
+        it = reader.variant_chunks(fields=["variant_position"])
+        # First chunk arrives normally.
+        next(it)
+        with pytest.raises(RuntimeError, match="boom from inner generator"):
+            next(it)
+        it.close()
+
+    def test_close_terminates_worker_thread(self, fx_sample_vcz):
+        # After close(), no vcztools-prefetch thread should remain
+        # running — confirms the wrapper joins its worker pool.
+        reader = VczReader(fx_sample_vcz.group)
+        before = self._prefetch_threads()
+        it = reader.variant_chunks(fields=["variant_position"])
+        # Pull one chunk so the worker is definitely live.
+        next(it)
+        it.close()
+        # Pools shut down asynchronously; allow the worker a brief
+        # window to exit before asserting absence.
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            after = self._prefetch_threads()
+            if len(after) <= len(before):
+                break
+            time.sleep(0.01)
+        assert len(self._prefetch_threads()) <= len(before)

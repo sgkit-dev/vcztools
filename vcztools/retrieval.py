@@ -44,6 +44,74 @@ def _one_line_repr(obj) -> str:
     return " ".join(repr(obj).split())
 
 
+class _PrefetchIterator:
+    """One-deep prefetch wrapper around an iterator.
+
+    On every ``__next__`` returns the previously prefetched item and
+    submits the next ``__next__`` call on the underlying iterator to
+    a dedicated single-worker pool. While the consumer's per-item
+    work runs, the producer's next item is being computed in the
+    background. Exceptions raised by the underlying iterator surface
+    on the consumer's ``__next__`` call.
+
+    Lifetime: the worker pool is created in ``__init__`` and shut
+    down by ``close()`` (also called from ``__del__`` defensively to
+    prevent thread leaks if a caller forgets to close).
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, source):
+        self._source = source
+        self._executor = cf.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="vcztools-prefetch"
+        )
+        self._next_future = self._executor.submit(self._fetch)
+        self._closed = False
+
+    def _fetch(self):
+        try:
+            return next(self._source)
+        except StopIteration:
+            return self._SENTINEL
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+        result = self._next_future.result()
+        if result is self._SENTINEL:
+            self._closed = True
+            self._executor.shutdown(wait=False)
+            raise StopIteration
+        self._next_future = self._executor.submit(self._fetch)
+        return result
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        # Drain the in-flight fetch so the worker isn't left producing
+        # into the void; the result (next item, sentinel, or
+        # exception) is no longer needed.
+        try:
+            self._next_future.result()
+        except BaseException:
+            pass
+        self._source.close()
+        self._executor.shutdown(wait=True)
+
+    def __del__(self):
+        # Defensive: prevent thread leaks if a caller forgets close().
+        # Mirrors generator finalisation semantics.
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
 # Fixed by design: these threads dispatch I/O to the Zarr backend
 # (which already handles its own async/decompression parallelism),
@@ -1080,12 +1148,34 @@ class VczReader:
         4. Assemble output from ``CachedVariantChunk.output_view`` for each
            query field; apply the variant selection to variants-axis
            fields.
+
+        The returned iterator runs the chunk pipeline in a dedicated
+        background thread so that the consumer's per-chunk work and
+        the producer's per-chunk assembly overlap. Peak in-flight
+        memory grows by one extra chunk's worth of arrays for the
+        duration of iteration; ``close()`` the iterator promptly to
+        release it. Argument validation is eager: ``start < 0`` and
+        ``fields == []`` are detected on the call itself rather than
+        on the first ``next()``.
         """
         if start < 0:
             raise ValueError(f"start must be >= 0 (got {start})")
         if fields is not None and len(fields) == 0:
-            return
+            return iter(())
 
+        return _PrefetchIterator(self._variant_chunks_gen(fields=fields, start=start))
+
+    def _variant_chunks_gen(
+        self,
+        *,
+        fields: list[str] | None = None,
+        start: int = 0,
+    ):
+        """Inner generator backing :meth:`variant_chunks`. The public
+        entry point validates arguments eagerly and wraps this
+        generator in a one-deep prefetch iterator; tests that need
+        the raw single-threaded behaviour (e.g. for deterministic
+        in-thread state inspection) can drive this directly."""
         # Snapshot the filter so a mid-iteration set_variant_filter
         # can't change behaviour for this generator.
         variant_filter = self.variant_filter

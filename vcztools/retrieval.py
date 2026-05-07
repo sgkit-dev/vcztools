@@ -16,6 +16,11 @@ from vcztools.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Sub-DEBUG level for very-high-cardinality per-block / per-chunk
+# scheduler events (one or more lines per variant chunk). Enable with
+# logging.getLogger("vcztools.retrieval").setLevel(retrieval.TRACE).
+TRACE = logging.DEBUG - 5
+
 
 def _fmt_bytes(n: int) -> str:
     if n >= 1024**3:
@@ -252,8 +257,9 @@ class ReadaheadPipeline:
         self._in_flight.append((variant_chunk, futures))
         if len(self._in_flight) > self.max_in_flight:
             self.max_in_flight = len(self._in_flight)
-        logger.debug(
-            f"schedule chunk {variant_chunk.index}: {len(futures)} blocks submitted"
+        logger.log(
+            TRACE,
+            f"schedule chunk {variant_chunk.index}: {len(futures)} blocks submitted",
         )
         return True
 
@@ -303,6 +309,18 @@ class ReadaheadPipeline:
                         f"~{window_chunks} chunks under budget "
                         f"{_fmt_bytes(self._readahead_bytes)}"
                     )
+                    if (
+                        self._readahead_bytes > 0
+                        and chunk_bytes > self._readahead_bytes / 2
+                    ):
+                        logger.warning(
+                            f"Readahead budget is single-chunk-bound: "
+                            f"per-chunk {_fmt_bytes(chunk_bytes)} > "
+                            f"half of {_fmt_bytes(self._readahead_bytes)}; "
+                            f"the prefetch window will be capped at ~1 "
+                            f"in flight regardless of worker count. "
+                            f"Increase readahead_bytes to widen the window."
+                        )
                 logger.debug(
                     f"chunk {variant_chunk.index} read complete in "
                     f"{read_seconds:.2f}s ({len(blocks)} blocks, "
@@ -818,6 +836,8 @@ class VczReader:
         plan = []
         surviving_total = 0
         original_total = 0
+        bytes_read = 0
+        start = time.perf_counter()
         for entry in self.variant_chunk_plan:
             chunk_data = dict(static_fields)
             for name in dynamic_fields:
@@ -825,6 +845,7 @@ class VczReader:
                 if entry.selection is not None:
                     block = block[entry.selection]
                 chunk_data[name] = block
+                bytes_read += utils.array_memory_bytes(block)
             result = variant_filter.evaluate(chunk_data)
             original_total += result.size
             local = np.flatnonzero(result)
@@ -845,9 +866,13 @@ class VczReader:
                     selection=utils.normalise_local_selection(chunk_local, chunk_size),
                 )
             )
+        elapsed = time.perf_counter() - start
+        rate = bytes_read / elapsed / (1024 * 1024) if elapsed > 0 else 0.0
         logger.info(
             f"_chunk_plan_from_filter: {surviving_total} of {original_total} "
-            f"variants survive ({len(plan)} chunks)"
+            f"variants survive ({len(plan)} chunks) "
+            f"in {elapsed:.2f}s ({_fmt_bytes(bytes_read)} read, "
+            f"{rate:.1f} MiB/s)"
         )
         return plan
 
@@ -1113,7 +1138,9 @@ class VczReader:
             f"{len(variant_chunk_plan)} variant chunks, "
             f"{len(sample_chunk_plan.chunk_reads)} sample chunks, "
             f"readahead_bytes={_fmt_bytes(readahead_bytes)}, "
-            f"workers={self._readahead_workers})"
+            f"workers={self._readahead_workers}); "
+            f"query_fields={list(query_fields)}, "
+            f"read_fields={read_fields}"
         )
 
         pipeline = ReadaheadPipeline(
@@ -1129,12 +1156,25 @@ class VczReader:
         chunks_yielded = 0
         variants_yielded = 0
         bytes_yielded = 0
+        # Per-iteration time accounting. consumer_wait isolates the gap
+        # between yielding chunk N and the consumer pulling chunk N+1
+        # (minus the producer's own read wait for N+1), exposing the
+        # downstream encoder/writer cost which the iterator otherwise
+        # can't see.
+        producer_assemble_total = 0.0
+        producer_read_total = 0.0
+        consumer_wait_total = 0.0
+        last_yield_t: float | None = None
         iter_start = time.perf_counter()
         try:
             for chunk in pipeline:
                 chunks_visited += 1
                 chunk_start = time.perf_counter()
                 read_seconds = pipeline.last_chunk_read_seconds or 0.0
+                producer_read_total += read_seconds
+                if last_yield_t is not None:
+                    gap = chunk_start - last_yield_t
+                    consumer_wait_total += max(0.0, gap - read_seconds)
                 bytes_yielded += pipeline.last_chunk_bytes or 0
                 # variants_selection: 1-D bool over the chunk's variant axis, or
                 # None meaning "no filter, keep every variant".
@@ -1207,11 +1247,13 @@ class VczReader:
                 chunks_yielded += 1
                 total_seconds = time.perf_counter() - chunk_start + read_seconds
                 assemble_seconds = max(0.0, total_seconds - read_seconds)
+                producer_assemble_total += assemble_seconds
                 logger.debug(
                     f"chunk {chunk.variant_chunk.index}: yielded {chunk_variants} "
                     f"variants in {total_seconds:.2f}s "
                     f"(read {read_seconds:.2f}s, assemble {assemble_seconds:.2f}s)"
                 )
+                last_yield_t = time.perf_counter()
                 yield chunk_data
         finally:
             elapsed = time.perf_counter() - iter_start
@@ -1222,7 +1264,10 @@ class VczReader:
                 f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
                 f"{variants_yielded} variants, "
                 f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s, "
-                f"max readahead depth {pipeline.max_in_flight})"
+                f"max readahead depth {pipeline.max_in_flight}); "
+                f"producer_assemble={producer_assemble_total:.2f}s, "
+                f"producer_read_wait={producer_read_total:.2f}s, "
+                f"consumer_wait={consumer_wait_total:.2f}s"
             )
 
     def _resolve_query_fields(self, fields):

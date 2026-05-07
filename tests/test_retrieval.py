@@ -2301,9 +2301,16 @@ class TestLogging:
         with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
             list(reader.variant_chunks(fields=["variant_position"]))
         assert "ReadaheadPipeline init:" in caplog.text
-        assert "schedule chunk 0:" in caplog.text
         assert "read complete in" in caplog.text
         assert "yielded" in caplog.text
+
+    def test_trace_schedule_chunk(self, fx_sample_vcz, caplog):
+        # schedule chunk lines fire once per chunk and are too noisy
+        # for DEBUG; they live at the sub-DEBUG TRACE level.
+        reader = VczReader(fx_sample_vcz.group)
+        with caplog.at_level(retrieval_mod.TRACE, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        assert "schedule chunk 0:" in caplog.text
 
     def test_debug_static_field_load(self, fx_sample_vcz, caplog):
         # filter_id is a static (no variants axis) field; referencing it
@@ -2366,3 +2373,12 @@ class TestLogging:
             r for r in caplog.records if r.name == "vcztools.retrieval"
         ]
         assert retrieval_records == []
+
+    def test_warn_single_chunk_bound_budget(self, fx_sample_vcz, caplog):
+        # When per-chunk bytes exceed half the readahead budget, the
+        # window collapses to ~1 in flight regardless of worker count;
+        # warn the operator so they can raise the budget.
+        reader = VczReader(fx_sample_vcz.group, readahead_bytes=1)
+        with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
+            list(reader.variant_chunks(fields=["variant_position"]))
+        assert "Readahead budget is single-chunk-bound" in caplog.text

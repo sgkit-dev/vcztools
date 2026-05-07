@@ -202,11 +202,15 @@ class BedEncoder:
     """PLINK 1 ``.bed`` byte-stream encoder over a VCZ store.
 
     Exposes the virtual ``.bed`` as a byte stream addressable by
-    ``(off, size)``. Optimised for sequential consumers (FUSE /
-    range-HTTP / forward streaming): sequential reads consume from a
-    long-lived chunk iterator; non-sequential reads restart the
-    iterator at the chunk covering the requested offset (one chunk's
-    decode overhead).
+    ``(off, size)``. State is chunk-resident: the encoder holds the
+    most recently produced chunk's full encoded bytes plus the chunk's
+    start offset, and serves :meth:`read` by slicing into that buffer.
+    Reads whose start lies in the loaded chunk or the immediately-next
+    plan chunk roll forward through a running variant-chunk iterator
+    one chunk at a time. Reads whose start is further away — a forward
+    skip that would bypass a whole chunk, or a backward jump past the
+    loaded chunk — tear down and rebuild the iterator at the chunk
+    containing ``off``.
 
     Concurrency: a single :class:`BedEncoder` instance is **not**
     thread-safe — :meth:`read` and :meth:`close` must be serialised
@@ -289,9 +293,9 @@ class BedEncoder:
         self._bed_size = int(self._chunk_byte_offsets[-1])
 
         self._iterator = None
-        self._cur_byte_offset = None
-        self._pending = bytearray()
-        self._first_chunk_skip = 0
+        self._chunk_bytes: bytes | None = None
+        self._chunk_start = 0
+        self._chunk_plan_pos = -1
         # Counts only true restarts (offset jumps). The first read() after
         # construction is mechanically a restart-from-None but is logged
         # as an "init" event and does not increment this counter.
@@ -345,9 +349,11 @@ class BedEncoder:
         - ``size`` clamped to the end of the file
         - ``off < 0`` or ``size < 0`` raises ``ValueError``
 
-        Sequential calls consume from a running chunk iterator;
-        non-sequential calls reconstruct the iterator at ``off``'s
-        chunk (one chunk's worth of decode overhead).
+        Reads whose start falls in the loaded chunk or the immediately-
+        next plan chunk are served by slicing chunk-resident bytes,
+        advancing the running iterator one chunk at a time as needed.
+        Reads whose start is further away rebuild the iterator at the
+        chunk containing ``off``.
         """
         self._check_open()
         if off < 0:
@@ -357,72 +363,76 @@ class BedEncoder:
         if off >= self._bed_size or size == 0:
             return b""
         end = min(off + size, self._bed_size)
-        if self._cur_byte_offset != off:
+
+        out = bytearray()
+        if off < 3:
+            out.extend(BED_MAGIC[off : min(end, 3)])
+            off = min(end, 3)
+        if off < end:
+            out.extend(self._read_data(off, end - off))
+        return bytes(out)
+
+    def _read_data(self, off: int, size: int) -> bytes:
+        # Caller guarantees: off >= 3, size > 0, off + size <= bed_size.
+        # Off is reachable without restart iff it lies in the loaded chunk
+        # or the immediately-next plan chunk: at most one advance gets us
+        # to the chunk containing off. Anything further skips a chunk's
+        # bytes that nobody asked for, so restart is cheaper than advance.
+        in_range = False
+        if self._chunk_bytes is not None and self._chunk_start <= off:
+            next_plan_end_idx = self._chunk_plan_pos + 2
+            if next_plan_end_idx < len(self._chunk_byte_offsets):
+                reachable_end = int(self._chunk_byte_offsets[next_plan_end_idx])
+            else:
+                reachable_end = self._chunk_start + len(self._chunk_bytes)
+            in_range = off < reachable_end
+        if not in_range:
             self._restart(off)
-        out = self._drain(end - off)
-        self._cur_byte_offset = off + len(out)
-        return out
+
+        out = bytearray()
+        while len(out) < size:
+            # If off has crossed into a chunk we haven't loaded yet, roll
+            # forward via the running iterator. The >= covers both the
+            # exact trailing-edge boundary and the case where off sits
+            # inside the next chunk past its start.
+            if off >= self._chunk_start + len(self._chunk_bytes):
+                self._advance()
+            local = off - self._chunk_start
+            take = min(size - len(out), len(self._chunk_bytes) - local)
+            out.extend(self._chunk_bytes[local : local + take])
+            off += take
+        return bytes(out)
+
+    def _advance(self) -> None:
+        chunk = next(self._iterator)
+        _check_biallelic(chunk["variant_allele"])
+        encoded = self._encode_genotypes(chunk["call_genotype"])
+        self._chunk_plan_pos += 1
+        self._chunk_start = int(self._chunk_byte_offsets[self._chunk_plan_pos])
+        self._chunk_bytes = bytes(encoded)
 
     def _restart(self, off: int) -> None:
-        prev_offset = self._cur_byte_offset
-        pending_discarded = len(self._pending)
+        prev_plan_pos = self._chunk_plan_pos
         self._teardown_iterator()
-        if off < 3:
-            self._pending = bytearray(BED_MAGIC[off:3])
-            self._first_chunk_skip = 0
-            plan_pos = 0
-        else:
-            # searchsorted(side="right") - 1: largest plan position
-            # whose start offset is <= off. _chunk_byte_offsets has
-            # len(plan)+1 entries (the trailing entry is bed_size);
-            # off < bed_size is guaranteed by read(), so the index is
-            # in range.
-            plan_pos = int(
-                np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1
-            )
-            self._first_chunk_skip = off - int(self._chunk_byte_offsets[plan_pos])
-            self._pending = bytearray()
+        # searchsorted(side="right") - 1: largest plan position whose
+        # start offset is <= off. _chunk_byte_offsets has len(plan)+1
+        # entries (the trailing entry is bed_size); off < bed_size is
+        # guaranteed by read(), so the index is in range.
+        plan_pos = int(np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1)
         self._iterator = self._reader.variant_chunks(
             fields=["call_genotype", "variant_allele"],
             start=plan_pos,
         )
-        self._cur_byte_offset = off
-        if prev_offset is None:
-            logger.debug(
-                f"BedEncoder iterator init: off={off}, "
-                f"plan_pos={plan_pos}, first_chunk_skip={self._first_chunk_skip}"
-            )
+        self._chunk_plan_pos = plan_pos - 1
+        self._advance()
+        if prev_plan_pos == -1:
+            logger.debug(f"BedEncoder iterator init: off={off}, plan_pos={plan_pos}")
         else:
             self._restart_count += 1
-            delta = off - prev_offset
             logger.info(
                 f"BedEncoder restart #{self._restart_count}: "
-                f"cur_offset={prev_offset} → off={off} "
-                f"(delta={delta:+d}), "
-                f"discarding pending={pending_discarded} bytes; "
-                f"plan_pos={plan_pos}, first_chunk_skip={self._first_chunk_skip}"
+                f"off={off}, plan_pos={prev_plan_pos} → {plan_pos}"
             )
-
-    def _drain(self, n: int) -> bytes:
-        out = bytearray()
-        if len(self._pending) > 0:
-            take = min(n, len(self._pending))
-            out += self._pending[:take]
-            del self._pending[:take]
-            n -= take
-        while n > 0:
-            chunk = next(self._iterator)
-            _check_biallelic(chunk["variant_allele"])
-            G = chunk["call_genotype"]
-            encoded = self._encode_genotypes(G)
-            if self._first_chunk_skip > 0:
-                encoded = encoded[self._first_chunk_skip :]
-                self._first_chunk_skip = 0
-            take = min(n, len(encoded))
-            out += encoded[:take]
-            self._pending = bytearray(encoded[take:])
-            n -= take
-        return bytes(out)
 
     def _encode_genotypes(self, genotypes: np.ndarray):
         # Coerce once at method entry: a sample-subset call_genotype
@@ -461,8 +471,8 @@ class BedEncoder:
         if self._iterator is not None:
             self._iterator.close()
             self._iterator = None
-        self._pending = bytearray()
-        self._first_chunk_skip = 0
+        self._chunk_bytes = None
+        self._chunk_plan_pos = -1
 
     def close(self) -> None:
         """Tear down the active chunk iterator, shut down the encode
@@ -478,7 +488,6 @@ class BedEncoder:
                 f"BedEncoder closed: {self._restart_count} restarts "
                 f"over {self._bed_size} bytes"
             )
-        self._cur_byte_offset = None
 
     def __enter__(self):
         return self

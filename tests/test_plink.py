@@ -1082,6 +1082,149 @@ class TestBedEncoderRestartCount:
         assert counter["n"] == 3
 
 
+class TestBedEncoderChunkResidentReads:
+    """Reads served against the chunk-resident state machine: a read
+    starting inside (or at the trailing edge of) the loaded chunk does
+    not restart, regardless of how many subsequent chunks the read
+    spans. Reads outside that window restart at the chunk containing
+    ``off``."""
+
+    NUM_VARIANTS = 20
+    NUM_SAMPLES = 11
+    CHUNK_SIZE = 4
+    # bpv = ceil(11/4) = 3; chunk byte length = 4 * 3 = 12.
+    # chunk i covers BED offsets [3 + 12*i, 3 + 12*(i+1)).
+
+    @staticmethod
+    def _wrap_restart(enc):
+        counter = {"n": 0}
+        original = enc._restart
+
+        def counting(off):
+            counter["n"] += 1
+            original(off)
+
+        enc._restart = counting
+        return counter
+
+    def _enc_and_oracle(self, tmp_path):
+        gt = _varied_genotypes(
+            num_variants=self.NUM_VARIANTS, num_samples=self.NUM_SAMPLES
+        )
+        bed_oracle, _, _ = _write_plink_oracle(
+            tmp_path,
+            num_variants=self.NUM_VARIANTS,
+            num_samples=self.NUM_SAMPLES,
+            call_genotype=gt,
+            variants_chunk_size=self.CHUNK_SIZE,
+        )
+        enc = _build_encoder(
+            num_variants=self.NUM_VARIANTS,
+            num_samples=self.NUM_SAMPLES,
+            call_genotype=gt,
+            variants_chunk_size=self.CHUNK_SIZE,
+        )
+        return enc, bed_oracle
+
+    def test_in_chunk_forward_jump_no_restart(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        first = enc.read(3, 1)
+        second = enc.read(3 + 2 * bpv, 5)
+        assert first == oracle[3:4]
+        assert second == oracle[3 + 2 * bpv : 3 + 2 * bpv + 5]
+        assert counter["n"] == 1  # init only
+
+    def test_in_chunk_backward_jump_no_restart(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        first = enc.read(3 + 2 * bpv, 5)
+        second = enc.read(3 + bpv, 5)
+        assert first == oracle[3 + 2 * bpv : 3 + 2 * bpv + 5]
+        assert second == oracle[3 + bpv : 3 + bpv + 5]
+        assert counter["n"] == 1
+
+    def test_cross_one_boundary_no_restart(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        enc.read(3, 1)
+        # Read [3 + 3*bpv, 3 + 6*bpv): last variant of chunk 0 plus first
+        # two of chunk 1. Crosses one boundary; one advance, no restart.
+        actual = enc.read(3 + 3 * bpv, 3 * bpv)
+        assert actual == oracle[3 + 3 * bpv : 3 + 6 * bpv]
+        assert counter["n"] == 1
+
+    def test_off_exactly_at_next_chunk_start_no_restart(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        enc.read(3, 1)
+        # off == chunk 0's trailing edge. Advance via running iterator.
+        actual = enc.read(3 + 4 * bpv, 2 * bpv)
+        assert actual == oracle[3 + 4 * bpv : 3 + 6 * bpv]
+        assert counter["n"] == 1
+
+    def test_off_mid_next_chunk_no_restart(self, tmp_path):
+        # Off lands inside the next chunk past its start (not exactly at
+        # the boundary). The encoder must reach it via a single _advance
+        # rather than tearing down the iterator. This is the general
+        # form: anywhere in the next plan chunk should advance, not
+        # restart.
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        enc.read(3, 1)  # loads chunk 0; chunk 0 = [3, 3+4*bpv).
+        # off = 3 + 5*bpv: one variant into chunk 1 ([3+4*bpv, 3+8*bpv)).
+        # size = bpv: stays inside chunk 1.
+        actual = enc.read(3 + 5 * bpv, bpv)
+        assert actual == oracle[3 + 5 * bpv : 3 + 6 * bpv]
+        assert counter["n"] == 1
+
+    def test_span_all_chunks_in_one_read_no_restart(self, tmp_path):
+        # 20 variants / chunk_size=4 => 5 chunks. A single read covering
+        # the whole BED runs the advance loop end-to-end with no restart.
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        counter = self._wrap_restart(enc)
+        actual = enc.read(0, enc.bed_size)
+        assert actual == oracle
+        assert counter["n"] == 1
+
+    def test_jump_into_next_chunk_then_advance_through_more(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        enc.read(3, 1)  # loads chunk 0
+        # off lands mid chunk 1; request runs through chunks 1, 2, 3.
+        # Reachable end = end of next plan chunk = chunk 1's end, but
+        # the loop's `>=` boundary then advances through chunks 2 and 3
+        # one at a time. No restart at any point.
+        actual = enc.read(3 + 6 * bpv, 8 * bpv)
+        assert actual == oracle[3 + 6 * bpv : 3 + 14 * bpv]
+        assert counter["n"] == 1
+
+    def test_forward_skip_past_loaded_chunk_restarts(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        enc.read(3, 1)  # loads chunk 0
+        # Skip chunk 1 entirely: off in chunk 2.
+        actual = enc.read(3 + 8 * bpv, 5)
+        assert actual == oracle[3 + 8 * bpv : 3 + 8 * bpv + 5]
+        assert counter["n"] == 2
+
+    def test_backward_jump_past_loaded_chunk_restarts(self, tmp_path):
+        enc, oracle = self._enc_and_oracle(tmp_path)
+        bpv = enc.bytes_per_variant
+        counter = self._wrap_restart(enc)
+        enc.read(3 + 8 * bpv, 5)  # loads chunk 2
+        actual = enc.read(3 + bpv, 5)
+        assert actual == oracle[3 + bpv : 3 + bpv + 5]
+        assert counter["n"] == 2
+
+
 class TestBedEncoderRestartLogging:
     """``_restart`` emits a single DEBUG line per call: an "iterator init"
     on the first read and a "restart #N" on every subsequent offset
@@ -1104,7 +1247,7 @@ class TestBedEncoderRestartLogging:
         assert "BedEncoder restart" not in caplog.text
         assert "BedEncoder closed:" not in caplog.text
 
-    def test_forced_restart_logs_pending_and_delta(self, caplog):
+    def test_forced_restart_logs_plan_position_change(self, caplog):
         gt = _varied_genotypes(num_variants=20, num_samples=5)
         enc = _build_encoder(
             num_variants=20,
@@ -1114,9 +1257,9 @@ class TestBedEncoderRestartLogging:
         )
         bpv = enc.bytes_per_variant
         with caplog.at_level(logging.DEBUG, logger="vcztools.plink"):
-            # First read: init, partial drain leaves pending bytes.
+            # First read: init at chunk 0.
             enc.read(3, 1)
-            # Second read: forward jump into a later chunk.
+            # Second read: forward jump skipping chunk 1 into chunk 2.
             enc.read(3 + 8 * bpv, 5)
         restart_lines = [
             r.getMessage()
@@ -1126,16 +1269,8 @@ class TestBedEncoderRestartLogging:
         assert len(restart_lines) == 1
         msg = restart_lines[0]
         assert "BedEncoder restart #1:" in msg
-        assert "cur_offset=" in msg
-        assert "→ off=" in msg
-        assert "delta=+" in msg
-        assert "discarding pending=" in msg
-        assert "plan_pos=" in msg
-        assert "first_chunk_skip=" in msg
-        # The first read at off=3, size=1 leaves a partial chunk's worth
-        # of encoded bytes in _pending; the restart message must report
-        # a non-zero discard.
-        assert "discarding pending=0 bytes" not in msg
+        assert f"off={3 + 8 * bpv}" in msg
+        assert "plan_pos=0 → 2" in msg
 
     def test_close_summary_only_when_restarts_happened(self, caplog):
         gt = _varied_genotypes(num_variants=12, num_samples=5)

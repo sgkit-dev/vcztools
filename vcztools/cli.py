@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -441,6 +442,108 @@ def make_reader(
     return reader
 
 
+@dataclasses.dataclass(frozen=True)
+class ViewBedOptions:
+    """Bundled options that drive ``make_reader`` for view-bed-shaped
+    consumers (``vcztools view-bed``, ``biofuse mount-plink``).
+
+    Field names match ``make_reader``'s keyword arguments 1:1; adding a new
+    filtering option to ``make_reader`` means adding a field here and an
+    option to :func:`view_bed_options`.
+    """
+
+    regions: str | None = None
+    regions_file: str | None = None
+    targets: str | None = None
+    targets_file: str | None = None
+    samples: str | None = None
+    samples_file: str | None = None
+    force_samples: bool = False
+    include: str | None = None
+    exclude: str | None = None
+    types: str | None = None
+    exclude_types: str | None = None
+    min_alleles: int | None = None
+    max_alleles: int | None = None
+    backend_storage: str | None = None
+    storage_options: dict | None = None
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewBedOptions":
+        """Pop the recognised view-bed option fields out of ``kwargs`` and
+        return a populated :class:`ViewBedOptions`.
+
+        ``storage_options`` is parsed from Click's repeatable ``KEY=VALUE``
+        tuple at this seam so consumers always get a ``dict | None``.
+        """
+        field_names = {f.name for f in dataclasses.fields(cls)}
+        raw = {k: kwargs.pop(k) for k in list(kwargs) if k in field_names}
+        raw["storage_options"] = _parse_storage_options(raw.get("storage_options", ()))
+        return cls(**raw)
+
+
+def view_bed_options(f):
+    """Stack every Click option needed to build a :class:`ViewBedOptions`.
+
+    Order matches ``vcztools view-bed --help`` so help-text rows stay
+    identical between ``vcztools view-bed`` and any consumer that applies
+    this decorator.
+    """
+    decorators = [
+        regions,
+        regions_file,
+        force_samples,
+        samples,
+        samples_file,
+        targets,
+        targets_file,
+        include,
+        exclude,
+        types_opt,
+        exclude_types_opt,
+        min_alleles_opt,
+        max_alleles_opt,
+        backend_storage,
+        storage_option,
+    ]
+    for d in reversed(decorators):
+        f = d(f)
+    return f
+
+
+@dataclasses.dataclass(frozen=True)
+class LogConfig:
+    """Bundled logging options corresponding to :func:`log_options`."""
+
+    log_level: str = "WARNING"
+    log_file: str | None = None
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "LogConfig":
+        return cls(
+            log_level=kwargs.pop("log_level", "WARNING"),
+            log_file=kwargs.pop("log_file", None),
+        )
+
+    def apply(self) -> None:
+        setup_logging(self.log_level, self.log_file)
+
+
+def log_options(f):
+    """Stack ``--log-level`` + ``--log-file``."""
+    return log_level(log_file(f))
+
+
+def make_reader_from_options(path: str, options: ViewBedOptions) -> retrieval.VczReader:
+    """Construct a :class:`VczReader` from a :class:`ViewBedOptions`.
+
+    Single seam between the bundled dataclass and :func:`make_reader`; new
+    fields added to :class:`ViewBedOptions` flow through here without
+    callers needing to update.
+    """
+    return make_reader(path, **dataclasses.asdict(options))
+
+
 class NaturalOrderGroup(click.Group):
     """
     List commands in the order they are provided in the help text.
@@ -735,50 +838,15 @@ def view(
 
 @click.command
 @click.argument("path", type=click.Path())
-@regions
-@regions_file
-@force_samples
-@samples
-@samples_file
-@targets
-@targets_file
-@include
-@exclude
-@types_opt
-@exclude_types_opt
-@min_alleles_opt
-@max_alleles_opt
+@view_bed_options
 @click.option(
     "--out",
     default="plink",
     help="Output prefix for the .bed/.bim/.fam fileset.",
 )
-@backend_storage
-@storage_option
-@log_level
-@log_file
+@log_options
 @handle_exception
-def view_bed(
-    path,
-    regions,
-    regions_file,
-    force_samples,
-    samples,
-    samples_file,
-    targets,
-    targets_file,
-    include,
-    exclude,
-    types,
-    exclude_types,
-    min_alleles,
-    max_alleles,
-    out,
-    backend_storage,
-    storage_options,
-    log_level,
-    log_file,
-):
+def view_bed(path, out, **kwargs):
     """
     Generate a PLINK 1 binary fileset (.bed/.bim/.fam) from a VCZ
     dataset.
@@ -795,27 +863,10 @@ def view_bed(
     (``--keep-allele-order``), REGENIE, BOLT-LMM, and other
     downstream tools.
     """
-    setup_logging(log_level, log_file)
-
-    reader = make_reader(
-        path,
-        regions=regions,
-        regions_file=regions_file,
-        targets=targets,
-        targets_file=targets_file,
-        samples=samples,
-        samples_file=samples_file,
-        force_samples=force_samples,
-        include=include,
-        exclude=exclude,
-        types=types,
-        exclude_types=exclude_types,
-        min_alleles=min_alleles,
-        max_alleles=max_alleles,
-        backend_storage=backend_storage,
-        storage_options=_parse_storage_options(storage_options),
-    )
-    with reader:
+    LogConfig.pop_from_click_kwargs(kwargs).apply()
+    options = ViewBedOptions.pop_from_click_kwargs(kwargs)
+    assert kwargs == {}, kwargs
+    with make_reader_from_options(path, options) as reader:
         plink.write_plink(reader, out)
 
 

@@ -837,3 +837,86 @@ class TestDeprecatedZarrBackendStorageAlias:
             w for w in recwarn.list if issubclass(w.category, DeprecationWarning)
         ]
         assert deprecation_warnings == []
+
+
+class TestViewBedOptions:
+    """Unit tests for the bundled ViewBedOptions / make_reader_from_options
+    reuse surface — exercised end-to-end by ``view-bed`` and intended for
+    downstream consumers (e.g. biofuse mount-plink)."""
+
+    def test_pop_populates_fields(self):
+        kwargs = {
+            "regions": "1:100-200",
+            "samples": "s1,s2",
+            "force_samples": True,
+            "min_alleles": 2,
+            "max_alleles": 4,
+            "backend_storage": "fsspec",
+            "storage_options": ("k1=42", "k2=foo"),
+            # Unrelated keys must be left in the dict for the caller.
+            "out": "plink",
+            "log_level": "INFO",
+        }
+        options = cli.ViewBedOptions.pop_from_click_kwargs(kwargs)
+        assert options.regions == "1:100-200"
+        assert options.samples == "s1,s2"
+        assert options.force_samples is True
+        assert options.min_alleles == 2
+        assert options.max_alleles == 4
+        assert options.backend_storage == "fsspec"
+        assert options.storage_options == {"k1": 42, "k2": "foo"}
+        assert kwargs == {"out": "plink", "log_level": "INFO"}
+
+    def test_pop_defaults_when_unset(self):
+        # An empty kwargs (no view-bed options collected) still yields a
+        # well-formed ViewBedOptions populated entirely with defaults; the
+        # raw empty storage_options tuple parses to None.
+        kwargs = {}
+        options = cli.ViewBedOptions.pop_from_click_kwargs(kwargs)
+        assert options == cli.ViewBedOptions()
+        assert options.storage_options is None
+
+    def test_make_reader_from_options_matches_make_reader(self, monkeypatch):
+        captured_args = []
+
+        def spy(path, **kwargs):
+            captured_args.append((path, kwargs))
+            return object()
+
+        monkeypatch.setattr(cli, "make_reader", spy)
+        options = cli.ViewBedOptions(
+            regions="1:100-200",
+            samples="s1,s2",
+            force_samples=True,
+            min_alleles=2,
+            backend_storage="fsspec",
+            storage_options={"k": 1},
+        )
+        cli.make_reader_from_options("/tmp/x.vcz", options)
+        assert len(captured_args) == 1
+        path, kwargs = captured_args[0]
+        assert path == "/tmp/x.vcz"
+        # The shim forwards every dataclass field as a kwarg.
+        for field in [
+            "regions",
+            "samples",
+            "force_samples",
+            "min_alleles",
+            "backend_storage",
+            "storage_options",
+        ]:
+            assert kwargs[field] == getattr(options, field)
+
+
+class TestLogConfig:
+    def test_pop_populates_fields(self):
+        kwargs = {"log_level": "DEBUG", "log_file": "/tmp/log", "out": "plink"}
+        config = cli.LogConfig.pop_from_click_kwargs(kwargs)
+        assert config.log_level == "DEBUG"
+        assert config.log_file == "/tmp/log"
+        assert kwargs == {"out": "plink"}
+
+    def test_pop_defaults(self):
+        kwargs = {}
+        config = cli.LogConfig.pop_from_click_kwargs(kwargs)
+        assert config == cli.LogConfig()

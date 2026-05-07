@@ -172,13 +172,20 @@ def write_plink(reader, out):
 
 def _stream_bed_to_file(reader, bed_path):
     start = time.perf_counter()
+    encode_seconds = 0.0
+    write_seconds = 0.0
     bytes_written = 0
     block_size = 1 << 20  # 1 MiB
     with BedEncoder(reader) as encoder, open(bed_path, "wb") as bed_file:
         off = 0
         while off < encoder.bed_size:
+            t0 = time.perf_counter()
             buf = encoder.read(off, block_size)
+            t1 = time.perf_counter()
             bed_file.write(buf)
+            t2 = time.perf_counter()
+            encode_seconds += t1 - t0
+            write_seconds += t2 - t1
             off += len(buf)
             bytes_written += len(buf)
     elapsed = time.perf_counter() - start
@@ -186,7 +193,8 @@ def _stream_bed_to_file(reader, bed_path):
     rate = mib / elapsed if elapsed > 0 else 0.0
     logger.info(
         f"write_plink: wrote {mib:.1f} MiB to {bed_path} in "
-        f"{elapsed:.2f}s ({rate:.1f} MiB/s)"
+        f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
+        f"encode={encode_seconds:.2f}s, write={write_seconds:.2f}s"
     )
 
 

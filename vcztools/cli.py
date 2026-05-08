@@ -8,6 +8,7 @@ import warnings
 from functools import wraps
 
 import click
+import humanfriendly
 
 from . import bcftools_filter, plink, provenance, retrieval, vcf_writer
 from . import query as query_module
@@ -158,6 +159,43 @@ log_file = click.option(
     type=click.Path(dir_okay=False, writable=True),
     default=None,
     help="Write log output to FILE instead of stderr.",
+)
+
+
+class _SizeParam(click.ParamType):
+    name = "size"
+
+    # binary=True so '256M' == '256MB' == '256MiB' == 2**28, matching
+    # the underlying VczReader default of 256 MiB.
+    def convert(self, value, param, ctx):
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            return humanfriendly.parse_size(value, binary=True)
+        except humanfriendly.InvalidSize as e:
+            self.fail(str(e), param, ctx)
+
+
+SIZE = _SizeParam()
+
+readahead_workers = click.option(
+    "--readahead-workers",
+    type=int,
+    default=None,
+    help=("Worker threads servicing the cross-chunk readahead pool. Default: 32."),
+)
+readahead_buffer_size = click.option(
+    "--readahead-buffer-size",
+    "readahead_bytes",
+    type=SIZE,
+    default=None,
+    help=(
+        "Cap on the readahead window. Accepts a byte count or a "
+        "size string with suffix (e.g. '100M', '2G', '256MiB'). "
+        "Default: 256MiB."
+    ),
 )
 
 
@@ -329,6 +367,8 @@ def make_reader(
     drop_genotypes=False,
     backend_storage=None,
     storage_options=None,
+    readahead_workers=None,
+    readahead_bytes=None,
 ):
     """Resolve file arguments and create a VczReader."""
     if regions is not None and regions_file is not None:
@@ -377,7 +417,11 @@ def make_reader(
         backend_storage=backend_storage,
         storage_options=storage_options,
     )
-    reader = retrieval.VczReader(root)
+    reader = retrieval.VczReader(
+        root,
+        readahead_workers=readahead_workers,
+        readahead_bytes=readahead_bytes,
+    )
 
     variant_filter = None
     if include is not None or exclude is not None:
@@ -467,6 +511,8 @@ class ViewPlinkOptions:
     max_alleles: int | None = None
     backend_storage: str | None = None
     storage_options: dict | None = None
+    readahead_workers: int | None = None
+    readahead_bytes: int | None = None
 
     @classmethod
     def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewPlinkOptions":
@@ -505,6 +551,8 @@ def view_plink_options(f):
         max_alleles_opt,
         backend_storage,
         storage_option,
+        readahead_workers,
+        readahead_buffer_size,
     ]
     for d in reversed(decorators):
         f = d(f)
@@ -632,6 +680,8 @@ def index(path, nrecords, stats, backend_storage, storage_options, log_level, lo
 )
 @backend_storage
 @storage_option
+@readahead_workers
+@readahead_buffer_size
 @log_level
 @log_file
 @handle_exception
@@ -652,6 +702,8 @@ def query(
     disable_automatic_newline,
     backend_storage,
     storage_options,
+    readahead_workers,
+    readahead_bytes,
     log_level,
     log_file,
 ):
@@ -695,6 +747,8 @@ def query(
         force_samples=force_samples,
         backend_storage=backend_storage,
         storage_options=parsed_storage_options,
+        readahead_workers=readahead_workers,
+        readahead_bytes=readahead_bytes,
     )
     with reader, handle_broken_pipe(output):
         query_module.write_query(
@@ -752,6 +806,8 @@ def query(
 @max_alleles_opt
 @backend_storage
 @storage_option
+@readahead_workers
+@readahead_buffer_size
 @log_level
 @log_file
 @handle_exception
@@ -778,6 +834,8 @@ def view(
     max_alleles,
     backend_storage,
     storage_options,
+    readahead_workers,
+    readahead_bytes,
     log_level,
     log_file,
 ):
@@ -821,6 +879,8 @@ def view(
         drop_genotypes=drop_genotypes,
         backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
+        readahead_workers=readahead_workers,
+        readahead_bytes=readahead_bytes,
     )
     subsetting_samples = (
         samples is not None or samples_file is not None or drop_genotypes

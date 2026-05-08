@@ -3590,6 +3590,7 @@ name = "vcztools"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "humanfriendly" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyparsing" },
@@ -3682,6 +3683,7 @@ wheels = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
+    { name = "humanfriendly" },
     { name = "icechunk", marker = "extra == 'icechunk'" },
     { name = "numpy", specifier = ">=2" },
     { name = "obstore", marker = "extra == 'obstore'" },

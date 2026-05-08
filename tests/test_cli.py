@@ -920,3 +920,119 @@ class TestLogConfig:
         kwargs = {}
         config = cli.LogConfig.pop_from_click_kwargs(kwargs)
         assert config == cli.LogConfig()
+
+
+class TestReadaheadOptions:
+    """``--readahead-workers`` / ``--readahead-buffer-size`` wiring for
+    every ``make_reader`` consumer: ``query``, ``view``, ``view-plink``.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("0", 0),
+            ("1024", 1024),
+            ("100M", 100 * 1024 * 1024),
+            ("256MiB", 256 * 1024 * 1024),
+            ("2G", 2 * 1024**3),
+            ("1T", 1024**4),
+        ],
+    )
+    def test_size_param_parses_suffixes(self, text, expected):
+        assert cli.SIZE.convert(text, None, None) == expected
+
+    def test_size_param_passes_int_through(self):
+        assert cli.SIZE.convert(4096, None, None) == 4096
+
+    def test_size_param_passes_none_through(self):
+        assert cli.SIZE.convert(None, None, None) is None
+
+    def test_size_param_rejects_invalid(self):
+        with pytest.raises(click.UsageError):
+            cli.SIZE.convert("not-a-size", None, None)
+
+    def test_make_reader_forwards_workers(self, fx_vcz_path):
+        with cli.make_reader(fx_vcz_path, readahead_workers=4) as reader:
+            assert reader._readahead_workers == 4
+
+    def test_make_reader_forwards_bytes(self, fx_vcz_path):
+        with cli.make_reader(fx_vcz_path, readahead_bytes=1024) as reader:
+            assert reader.readahead_bytes == 1024
+
+    def test_make_reader_default_passes_none(self, fx_vcz_path):
+        # ``None`` is what flows from the CLI when the flags are
+        # omitted. ``VczReader`` then applies its own defaults.
+        with cli.make_reader(fx_vcz_path) as reader:
+            assert reader.readahead_bytes is None
+
+    @staticmethod
+    def _spy_vcz_reader_init(monkeypatch):
+        captured = {}
+        real_init = cli.retrieval.VczReader.__init__
+
+        def spy(self, root, **kw):
+            captured.update(kw)
+            real_init(self, root, **kw)
+
+        monkeypatch.setattr(cli.retrieval.VczReader, "__init__", spy)
+        return captured
+
+    def test_view_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
+        captured = self._spy_vcz_reader_init(monkeypatch)
+        output_path = tmp_path / "tmp.vcf"
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"view --no-version --readahead-workers 4 "
+            f"--readahead-buffer-size 100M {fx_vcz_path} "
+            f"-o {output_path.as_posix()}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert captured == {
+            "readahead_workers": 4,
+            "readahead_bytes": 100 * 1024 * 1024,
+        }
+
+    def test_query_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
+        captured = self._spy_vcz_reader_init(monkeypatch)
+        output_path = tmp_path / "tmp.txt"
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"query -f '%POS\n' --readahead-workers 2 "
+            f"--readahead-buffer-size 1024 {fx_vcz_path} "
+            f"-o {output_path.as_posix()}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert captured == {"readahead_workers": 2, "readahead_bytes": 1024}
+
+    def test_view_plink_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
+        captured = self._spy_vcz_reader_init(monkeypatch)
+        out = tmp_path / "p"
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"view-plink --max-alleles 2 -e 'CHROM==\"X\"' "
+            f"--readahead-workers 8 --readahead-buffer-size 2M "
+            f"{fx_vcz_path} --out {out.as_posix()}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert captured == {
+            "readahead_workers": 8,
+            "readahead_bytes": 2 * 1024 * 1024,
+        }
+
+    def test_view_invalid_buffer_size(self, tmp_path, fx_vcz_path):
+        output_path = tmp_path / "tmp.vcf"
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            f"view --readahead-buffer-size garbage {fx_vcz_path} "
+            f"-o {output_path.as_posix()}",
+            catch_exceptions=False,
+        )
+        assert result.exit_code != 0
+        assert "garbage" in result.stderr

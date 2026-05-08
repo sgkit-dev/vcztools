@@ -5,6 +5,8 @@ import logging
 import threading
 import time
 
+import anyio
+import anyio.from_thread
 import numpy as np
 import numpy.testing as nt
 import pandas as pd
@@ -15,7 +17,7 @@ from tests.utils import make_reader, to_vcz_icechunk
 from vcztools import regions as regions_mod
 from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
-from vcztools import utils
+from vcztools import utils, zarr_direct
 from vcztools.bcftools_filter import BcftoolsFilter
 from vcztools.retrieval import CachedVariantChunk, VczReader
 
@@ -265,6 +267,9 @@ def _make_pipeline(
     read_fields=None,
     n_chunks=None,
     executor=None,
+    portal=None,
+    decode_limiter=None,
+    block_readers=None,
 ):
     """Construct a ``ReadaheadPipeline`` directly against ``root``,
     matching the wiring ``VczReader.variant_chunks`` does (default
@@ -276,11 +281,31 @@ def _make_pipeline(
     block); ``None`` means "build a small pool here", which is the
     common case for tests that only need the pipeline to run once and
     don't share the executor with other pipelines.
+
+    ``portal`` and ``decode_limiter`` are the anyio primitives the
+    pipeline drives stores against. ``None`` for either falls back to
+    the module-level test fixtures so individual tests don't have to
+    plumb them through.
     """
     if read_fields is None:
         read_fields = ["variant_position"]
     if executor is None:
         executor = cf.ThreadPoolExecutor(max_workers=2)
+    if portal is None:
+        portal = _shared_test_portal()
+    if decode_limiter is None:
+        decode_limiter = anyio.CapacityLimiter(2)
+    if block_readers is None:
+        block_readers = {}
+
+    def get_block_reader(name):
+        cached = block_readers.get(name)
+        if cached is not None:
+            return cached
+        reader = zarr_direct.BlockReader(root[name])
+        block_readers[name] = reader
+        return reader
+
     samples_chunk_size = int(root["sample_id"].chunks[0])
     raw_sample_ids = root["sample_id"][:]
     samples_selection = np.flatnonzero(raw_sample_ids != "")
@@ -301,7 +326,33 @@ def _make_pipeline(
         read_fields,
         readahead_bytes=readahead_bytes,
         executor=executor,
+        portal=portal,
+        decode_limiter=decode_limiter,
+        get_block_reader=get_block_reader,
     )
+
+
+_TEST_PORTAL_LOCK = threading.Lock()
+_TEST_PORTAL_STATE: dict = {"cm": None, "portal": None}
+
+
+def _shared_test_portal() -> anyio.from_thread.BlockingPortal:
+    """Lazily start a single anyio portal shared across pipeline tests.
+
+    Building one BlockingPortal per test would multiply asyncio thread
+    starts across the suite; sharing one keeps the test run fast while
+    matching what ``VczReader`` does at production runtime (one portal
+    per reader). The portal is process-global and intentionally never
+    torn down — daemon threads exit with the interpreter.
+    """
+    with _TEST_PORTAL_LOCK:
+        if _TEST_PORTAL_STATE["portal"] is None:
+            cm = anyio.from_thread.start_blocking_portal(
+                backend="asyncio", name="vcztools-test-portal"
+            )
+            _TEST_PORTAL_STATE["cm"] = cm
+            _TEST_PORTAL_STATE["portal"] = cm.__enter__()
+    return _TEST_PORTAL_STATE["portal"]
 
 
 class _DepthTrackingPipeline(retrieval_mod.ReadaheadPipeline):
@@ -359,29 +410,47 @@ class TestCreateChunkReadList:
             non_null, samples_chunk_size=samples_chunk_size
         )
 
+    def _get_block_reader(self, root):
+        cache = {}
+
+        def get(name):
+            cached = cache.get(name)
+            if cached is not None:
+                return cached
+            reader = zarr_direct.BlockReader(root[name])
+            cache[name] = reader
+            return reader
+
+        return get
+
     def test_static_field_rejected(self):
         root = _vcz_for_template_tests()
         with pytest.raises(AssertionError, match="non-variants-axis"):
             retrieval_mod.create_chunk_read_list(
-                root, self._sample_plan(root), ["sample_id"]
+                root,
+                self._sample_plan(root),
+                ["sample_id"],
+                get_block_reader=self._get_block_reader(root),
             )
 
     def test_variant_axis_1d_field(self):
         root = _vcz_for_template_tests()
+        get = self._get_block_reader(root)
         templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["variant_position"]
+            root, self._sample_plan(root), ["variant_position"], get_block_reader=get
         )
         assert len(templates) == 1
         t = templates[0]
         assert t.key == ("variant_position",)
-        assert t.arr == root["variant_position"]
+        assert t.block_reader is get("variant_position")
         # 1-D variants axis → no extra dims after the variant chunk slot.
         assert t.block_index_suffix == ()
 
     def test_variant_axis_2d_field(self):
         root = _vcz_for_template_tests()
+        get = self._get_block_reader(root)
         templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["variant_allele"]
+            root, self._sample_plan(root), ["variant_allele"], get_block_reader=get
         )
         assert len(templates) == 1
         t = templates[0]
@@ -391,22 +460,28 @@ class TestCreateChunkReadList:
 
     def test_call_field_2d_fans_out_per_sample_chunk(self):
         root = _vcz_for_template_tests()
+        get = self._get_block_reader(root)
         plan = self._sample_plan(root)
         # 4 samples, samples_chunk_size=2 → 2 sample chunks.
         assert len(plan.chunk_reads) == 2
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_DP"])
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["call_DP"], get_block_reader=get
+        )
         assert len(templates) == 2
         assert [t.key for t in templates] == [("call_DP", 0), ("call_DP", 1)]
-        call_dp = root["call_DP"]
+        # All templates for call_DP share the same BlockReader instance.
+        assert templates[0].block_reader is templates[1].block_reader
         for t, cr in zip(templates, plan.chunk_reads):
-            assert t.arr == call_dp
             # 2-D (variants, samples) → suffix is (sci,), no trailing slices.
             assert t.block_index_suffix == (cr.index,)
 
     def test_call_field_3d_keeps_trailing_slice(self):
         root = _vcz_for_template_tests()
+        get = self._get_block_reader(root)
         plan = self._sample_plan(root)
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_genotype"])
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["call_genotype"], get_block_reader=get
+        )
         assert len(templates) == len(plan.chunk_reads)
         for t, cr in zip(templates, plan.chunk_reads):
             assert t.key == ("call_genotype", cr.index)
@@ -418,9 +493,13 @@ class TestCreateChunkReadList:
         # templates; ordering is "fields in input order, then sample
         # chunks within a call_*".
         root = _vcz_for_template_tests()
+        get = self._get_block_reader(root)
         plan = self._sample_plan(root)
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position", "call_DP", "variant_allele"]
+            root,
+            plan,
+            ["variant_position", "call_DP", "variant_allele"],
+            get_block_reader=get,
         )
         assert [t.key for t in templates] == [
             ("variant_position",),
@@ -436,6 +515,19 @@ class TestUpdateChunkReadList:
     list is reusable across every chunk in a query.
     """
 
+    def _get_block_reader(self, root):
+        cache = {}
+
+        def get(name):
+            cached = cache.get(name)
+            if cached is not None:
+                return cached
+            reader = zarr_direct.BlockReader(root[name])
+            cache[name] = reader
+            return reader
+
+        return get
+
     def test_variant_non_call_template_prepends_variant_chunk_index(self):
         root = _vcz_for_template_tests()
         plan = samples_mod.SampleChunkPlan(
@@ -443,7 +535,10 @@ class TestUpdateChunkReadList:
             permutation=None,
         )
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position", "variant_allele"]
+            root,
+            plan,
+            ["variant_position", "variant_allele"],
+            get_block_reader=self._get_block_reader(root),
         )
         reads = retrieval_mod.update_chunk_read_list(templates, 3)
         keys = [r[0] for r in reads]
@@ -456,7 +551,9 @@ class TestUpdateChunkReadList:
         plan = samples_mod.build_chunk_plan(
             np.array([0, 1, 2, 3], dtype=np.int64), samples_chunk_size=2
         )
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_DP"])
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["call_DP"], get_block_reader=self._get_block_reader(root)
+        )
         reads = retrieval_mod.update_chunk_read_list(templates, 5)
         assert [r[0] for r in reads] == [("call_DP", 0), ("call_DP", 1)]
         assert [r[2] for r in reads] == [(5, 0), (5, 1)]
@@ -471,7 +568,10 @@ class TestUpdateChunkReadList:
             permutation=None,
         )
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position"]
+            root,
+            plan,
+            ["variant_position"],
+            get_block_reader=self._get_block_reader(root),
         )
         reads_a = retrieval_mod.update_chunk_read_list(templates, 0)
         reads_b = retrieval_mod.update_chunk_read_list(templates, 4)
@@ -537,22 +637,40 @@ class TestReadaheadPipeline:
         assert pipeline._per_chunk_bytes == expected
         gen.close()
 
+    def _build_depth_tracking(self, root, *, readahead_bytes, executor):
+        cache: dict[str, zarr_direct.BlockReader] = {}
+
+        def get(name):
+            cached = cache.get(name)
+            if cached is not None:
+                return cached
+            reader = zarr_direct.BlockReader(root[name])
+            cache[name] = reader
+            return reader
+
+        return _DepthTrackingPipeline(
+            root,
+            [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
+            samples_mod.build_chunk_plan(
+                np.arange(2, dtype=np.int64), samples_chunk_size=2
+            ),
+            None,
+            ["variant_position"],
+            readahead_bytes=readahead_bytes,
+            executor=executor,
+            portal=_shared_test_portal(),
+            decode_limiter=anyio.CapacityLimiter(2),
+            get_block_reader=get,
+        )
+
     def test_readahead_bytes_zero_keeps_depth_one(self):
         # Budget=0 → after every refill, exactly one chunk is queued
         # ahead of the consumer (and zero on the final, plan-exhausted
         # refill).
         root = self._vcz(num_variants=12, variants_chunk_size=3)
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _DepthTrackingPipeline(
-                root,
-                [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
-                samples_mod.build_chunk_plan(
-                    np.arange(2, dtype=np.int64), samples_chunk_size=2
-                ),
-                None,
-                ["variant_position"],
-                readahead_bytes=0,
-                executor=executor,
+            pipeline = self._build_depth_tracking(
+                root, readahead_bytes=0, executor=executor
             )
             list(pipeline)
         # 4 chunks → 5 refills (one per consume + the post-final empty refill).
@@ -563,16 +681,8 @@ class TestReadaheadPipeline:
         # refill fills with every remaining chunk in one go.
         root = self._vcz(num_variants=12, variants_chunk_size=3)
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _DepthTrackingPipeline(
-                root,
-                [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
-                samples_mod.build_chunk_plan(
-                    np.arange(2, dtype=np.int64), samples_chunk_size=2
-                ),
-                None,
-                ["variant_position"],
-                readahead_bytes=10**9,
-                executor=executor,
+            pipeline = self._build_depth_tracking(
+                root, readahead_bytes=10**9, executor=executor
             )
             list(pipeline)
         # Bootstrap depth=1, then post-yield-1 schedules the remaining
@@ -1017,9 +1127,24 @@ def _make_cached_chunk(
         num_selected=variant_num_selected,
         selection=variant_selection,
     )
-    templates = retrieval_mod.create_chunk_read_list(root, sample_chunk_plan, fields)
+    block_readers: dict[str, zarr_direct.BlockReader] = {}
+
+    def get_block_reader(name):
+        cached = block_readers.get(name)
+        if cached is not None:
+            return cached
+        reader = zarr_direct.BlockReader(root[name])
+        block_readers[name] = reader
+        return reader
+
+    templates = retrieval_mod.create_chunk_read_list(
+        root, sample_chunk_plan, fields, get_block_reader=get_block_reader
+    )
     reads = retrieval_mod.update_chunk_read_list(templates, variant_chunk.index)
-    blocks = {key: retrieval_mod._read_block(arr, idx) for key, arr, idx in reads}
+    # Build expected blocks via Zarr's high-level path; the
+    # CachedVariantChunk under test consumes the dict shape, not the
+    # source of the bytes.
+    blocks = {key: root[key[0]].blocks[idx] for key, _reader, idx in reads}
     return CachedVariantChunk(
         root,
         variant_chunk,
@@ -2401,9 +2526,9 @@ class TestStaticFieldCache:
         seen_fields: list[str] = []
         original = retrieval_mod._read_block
 
-        def capturing_read_block(arr, block_index):
-            seen_fields.append(arr.path.rsplit("/", 1)[-1])
-            return original(arr, block_index)
+        def capturing_read_block(portal, reader, block_index, decode_limiter):
+            seen_fields.append(reader._path.rsplit("/", 1)[-1])
+            return original(portal, reader, block_index, decode_limiter)
 
         monkeypatch.setattr(retrieval_mod, "_read_block", capturing_read_block)
 

@@ -53,6 +53,9 @@ class BlockReader:
         self._prototype = default_buffer_prototype()
         self._shape = array.shape
         self._chunk_shape = array.chunks
+        self._cdata_shape = tuple(
+            (s + c - 1) // c for s, c in zip(array.shape, array.chunks)
+        )
         self._dtype = array.dtype
         # Zarr metadata may record fill_value=None (especially in v2);
         # fall back to the dtype's default scalar (0 for ints, "" for
@@ -61,6 +64,11 @@ class BlockReader:
         if fill is None:
             fill = array.metadata.dtype.default_scalar()
         self._fill_value = fill
+
+    @property
+    def cdata_shape(self) -> tuple[int, ...]:
+        """Number of chunks per axis (the size of the chunk grid)."""
+        return self._cdata_shape
 
     def chunk_key(self, coords: tuple[int, ...]) -> str:
         """Store key for the chunk at ``coords``."""

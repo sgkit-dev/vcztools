@@ -1,14 +1,19 @@
 import concurrent.futures as cf
 import dataclasses
 import functools
+import itertools
 import logging
+import os
+import threading
 import time
 
+import anyio
+import anyio.from_thread
 import numpy as np
 
 from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
-from vcztools import utils
+from vcztools import utils, zarr_direct
 from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
@@ -122,11 +127,67 @@ DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
 # so usable parallelism is dispatch-bound and GIL-capped rather than
 # scaling with cpu_count.
 DEFAULT_READAHEAD_WORKERS = 32
+# Default size of the per-reader decode thread pool. CPU-bound work
+# (zstd, blosc, etc. — all GIL-releasing C) runs in this pool inside
+# the reader's anyio portal.
+DEFAULT_DECODE_THREADS = os.cpu_count() or 1
 
 
-def _read_block(arr, block_index: tuple) -> np.ndarray:
-    """Fetch one Zarr block by block-index tuple."""
-    return arr.blocks[block_index]
+async def _read_block_async(
+    reader: zarr_direct.BlockReader,
+    block_index: tuple,
+    decode_limiter: anyio.CapacityLimiter,
+) -> np.ndarray:
+    """Fetch the chunks covered by ``block_index`` and assemble them
+    into a single ndarray, matching the result of ``arr.blocks[idx]``.
+
+    ``block_index`` may mix integer chunk indices with ``slice``
+    objects (typically ``slice(None)`` over a non-variants axis).
+    Slices are resolved to their concrete chunk-coord ranges via
+    :attr:`BlockReader.cdata_shape`, every chunk is fetched
+    concurrently inside an :func:`anyio.create_task_group`, and the
+    results are assembled with :func:`numpy.block`.
+    """
+    coord_ranges = []
+    for d, idx in enumerate(block_index):
+        if isinstance(idx, slice):
+            n_chunks = reader.cdata_shape[d]
+            coord_ranges.append(list(range(*idx.indices(n_chunks))))
+        else:
+            coord_ranges.append([idx])
+    coords_list = list(itertools.product(*coord_ranges))
+    if len(coords_list) == 1:
+        return await reader.read_chunk(coords_list[0], decode_limiter)
+    fetched: dict[tuple, np.ndarray] = {}
+    async with anyio.create_task_group() as tg:
+        for coords in coords_list:
+
+            async def one(c=coords):
+                fetched[c] = await reader.read_chunk(c, decode_limiter)
+
+            tg.start_soon(one)
+
+    def build(axis, prefix):
+        if axis == len(coord_ranges):
+            return fetched[tuple(prefix)]
+        return [build(axis + 1, prefix + [c]) for c in coord_ranges[axis]]
+
+    return np.block(build(0, []))
+
+
+def _read_block(
+    portal: anyio.from_thread.BlockingPortal,
+    reader: zarr_direct.BlockReader,
+    block_index: tuple,
+    decode_limiter: anyio.CapacityLimiter,
+) -> np.ndarray:
+    """Synchronous wrapper around :func:`_read_block_async`.
+
+    Submitted to the readahead thread pool. Each worker thread blocks
+    on a single ``portal.call`` while the portal's anyio loop drives
+    the underlying ``store.get`` and codec decode concurrently.
+    """
+    return portal.call(_read_block_async, reader, block_index, decode_limiter)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -188,7 +249,7 @@ class BlockReadTemplate:
     """
 
     key: tuple
-    arr: object
+    block_reader: zarr_direct.BlockReader
     block_index_suffix: tuple
 
 
@@ -196,16 +257,19 @@ def create_chunk_read_list(
     root,
     sample_chunk_plan: "samples_mod.SampleChunkPlan",
     fields,
+    *,
+    get_block_reader,
 ) -> list[BlockReadTemplate]:
     """Resolve ``fields`` to a list of :class:`BlockReadTemplate`
     once per query, before any variant chunk is visited.
 
     Each template carries the variant-chunk-independent parts of one
-    block read — the cache key, the resolved Zarr array, and the
-    suffix of ``block_index`` that follows the variant chunk index
-    slot. :func:`update_chunk_read_list` substitutes a specific
-    variant chunk index to produce executor-ready
-    ``(key, arr, block_index)`` tuples.
+    block read — the cache key, a :class:`vcztools.zarr_direct.BlockReader`
+    bound to the field's array, and the suffix of ``block_index``
+    that follows the variant chunk index slot.
+    :func:`update_chunk_read_list` substitutes a specific variant
+    chunk index to produce executor-ready
+    ``(key, block_reader, block_index)`` tuples.
 
     For a ``call_*`` field the template list fans out one entry per
     sample chunk in ``sample_chunk_plan.chunk_reads``; for any other
@@ -213,22 +277,31 @@ def create_chunk_read_list(
 
     Every field must be variant-axis. Static (no-variants-axis) fields
     are handled by the reader's static-field cache, not the pipeline.
+
+    ``get_block_reader`` is a callable ``str -> BlockReader`` that
+    typically routes through :meth:`VczReader._get_block_reader` so
+    BlockReader instances are cached for the reader's lifetime.
     """
     templates = []
     for field in fields:
         arr = root[field]
         assert _has_variants_axis(arr), f"non-variants-axis field in pipeline: {field}"
+        reader = get_block_reader(field)
         if not field.startswith("call_"):
             suffix = (slice(None),) * (arr.ndim - 1)
             templates.append(
-                BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=suffix)
+                BlockReadTemplate(
+                    key=(field,), block_reader=reader, block_index_suffix=suffix
+                )
             )
         else:
             for cr in sample_chunk_plan.chunk_reads:
                 suffix = (cr.index,) + (slice(None),) * (arr.ndim - 2)
                 templates.append(
                     BlockReadTemplate(
-                        key=(field, cr.index), arr=arr, block_index_suffix=suffix
+                        key=(field, cr.index),
+                        block_reader=reader,
+                        block_index_suffix=suffix,
                     )
                 )
     return templates
@@ -239,14 +312,14 @@ def update_chunk_read_list(
     variant_chunk_index: int,
 ) -> list[tuple]:
     """Substitute ``variant_chunk_index`` into each template, returning
-    the ``[(key, arr, block_index), ...]`` list that
+    the ``[(key, block_reader, block_index), ...]`` list that
     :class:`ReadaheadPipeline` submits to the thread pool. The
     template list itself is unchanged.
     """
     reads = []
     for t in templates:
         block_index = (variant_chunk_index,) + t.block_index_suffix
-        reads.append((t.key, t.arr, block_index))
+        reads.append((t.key, t.block_reader, block_index))
     return reads
 
 
@@ -306,14 +379,19 @@ class ReadaheadPipeline:
         *,
         readahead_bytes: int,
         executor: cf.ThreadPoolExecutor,
+        portal: anyio.from_thread.BlockingPortal,
+        decode_limiter: anyio.CapacityLimiter,
+        get_block_reader,
     ):
         self.root = root
         self._variant_chunk_plan_iter = iter(variant_chunk_plan)
         self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
         self._read_templates = create_chunk_read_list(
-            root, sample_chunk_plan, read_fields
+            root, sample_chunk_plan, read_fields, get_block_reader=get_block_reader
         )
+        self._portal = portal
+        self._decode_limiter = decode_limiter
         self._readahead_bytes = readahead_bytes
         # Set on the first chunk's completion in __iter__.
         self._per_chunk_bytes: int | None = None
@@ -348,8 +426,17 @@ class ReadaheadPipeline:
             return False
         reads = update_chunk_read_list(self._read_templates, variant_chunk.index)
         futures = [
-            (key, self._executor.submit(_read_block, arr, block_index))
-            for key, arr, block_index in reads
+            (
+                key,
+                self._executor.submit(
+                    _read_block,
+                    self._portal,
+                    reader,
+                    block_index,
+                    self._decode_limiter,
+                ),
+            )
+            for key, reader, block_index in reads
         ]
         self._in_flight.append((variant_chunk, futures))
         if len(self._in_flight) > self.max_in_flight:
@@ -672,6 +759,10 @@ class VczReader:
         (default) uses :data:`DEFAULT_READAHEAD_BYTES` (256 MiB).
         ``0`` pins pipeline depth at 1 (one chunk prefetched ahead of
         the consumer); the pipeline cannot go lower.
+    decode_threads
+        Size of the decode thread pool that runs codec ``_decode_sync``
+        calls inside the reader's anyio portal. ``None`` (default)
+        uses :data:`DEFAULT_DECODE_THREADS` (``os.cpu_count()``).
     """
 
     def __init__(
@@ -680,6 +771,7 @@ class VczReader:
         *,
         readahead_workers: int | None = None,
         readahead_bytes: int | None = None,
+        decode_threads: int | None = None,
     ):
         self.root = root
         self.readahead_bytes = readahead_bytes
@@ -693,6 +785,19 @@ class VczReader:
             thread_name_prefix="vcztools-readahead",
         )
         self._readahead_workers = workers
+        self._decode_threads = (
+            decode_threads if decode_threads is not None else DEFAULT_DECODE_THREADS
+        )
+        # Portal + limiter are started lazily on first variant_chunks()
+        # call — readers that only consume static metadata never pay
+        # the asyncio-thread cost. Concurrent variant_chunks() callers
+        # racing to start the portal would otherwise leak event-loop
+        # threads, so the bring-up is guarded by ``_portal_lock``.
+        self._portal_lock = threading.Lock()
+        self._portal_cm = None
+        self._portal: anyio.from_thread.BlockingPortal | None = None
+        self._decode_limiter: anyio.CapacityLimiter | None = None
+        self._block_readers: dict[str, zarr_direct.BlockReader] = {}
         self._sample_chunk_plan = None
         self._variant_chunk_plan = None
         self._samples_selection = None
@@ -709,14 +814,51 @@ class VczReader:
             f"variants_chunk_size={self.variants_chunk_size}, "
             f"samples_chunk_size={self.samples_chunk_size}, "
             f"readahead_workers={workers}, "
+            f"decode_threads={self._decode_threads}, "
             f"readahead_bytes={readahead_bytes}"
         )
+
+    def _ensure_portal(
+        self,
+    ) -> tuple[anyio.from_thread.BlockingPortal, anyio.CapacityLimiter]:
+        """Start the anyio portal and decode-thread limiter on first
+        access; return both for use by :class:`ReadaheadPipeline`.
+        Idempotent and thread-safe — concurrent first callers see the
+        same portal.
+        """
+        with self._portal_lock:
+            if self._portal is None:
+                self._portal_cm = anyio.from_thread.start_blocking_portal(
+                    backend="asyncio", name="vcztools-portal"
+                )
+                self._portal = self._portal_cm.__enter__()
+                self._decode_limiter = anyio.CapacityLimiter(self._decode_threads)
+            return self._portal, self._decode_limiter
+
+    def _get_block_reader(self, name: str) -> zarr_direct.BlockReader:
+        """Lazily construct and cache one :class:`BlockReader` per field."""
+        cached = self._block_readers.get(name)
+        if cached is not None:
+            return cached
+        reader = zarr_direct.BlockReader(self.root[name])
+        self._block_readers[name] = reader
+        return reader
+
+    def close(self) -> None:
+        """Tear down owned resources: the readahead thread pool and
+        the anyio portal (if started)."""
+        self._executor.shutdown(wait=True)
+        if self._portal_cm is not None:
+            self._portal_cm.__exit__(None, None, None)
+            self._portal_cm = None
+            self._portal = None
+            self._decode_limiter = None
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._executor.shutdown(wait=True)
+        self.close()
         return False
 
     def _load_static_field(self, name: str) -> np.ndarray:
@@ -1225,6 +1367,7 @@ class VczReader:
             f"read_fields={read_fields}"
         )
 
+        portal, decode_limiter = self._ensure_portal()
         pipeline = ReadaheadPipeline(
             self.root,
             variant_chunk_plan,
@@ -1233,6 +1376,9 @@ class VczReader:
             read_fields,
             readahead_bytes=readahead_bytes,
             executor=self._executor,
+            portal=portal,
+            decode_limiter=decode_limiter,
+            get_block_reader=self._get_block_reader,
         )
         chunks_visited = 0
         chunks_yielded = 0

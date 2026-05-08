@@ -4,5 +4,6 @@ chapters:
 - file: installation
 - file: cli_ref
 - file: plink
+- file: bgen
 - file: python_api
 - file: storage_backends

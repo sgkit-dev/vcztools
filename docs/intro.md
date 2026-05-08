@@ -10,6 +10,12 @@ We aim for 100% compatibility — if you notice a difference between the
 output of vcztools and bcftools please
 [open an issue](https://github.com/sgkit-dev/vcztools/issues).
 
+In addition to the bcftools-shaped commands, `vcztools` ships
+non-bcftools format exporters for common downstream tools:
+
+- `view-plink` — PLINK 1 binary (`.bed`/`.bim`/`.fam`); see {ref}`sec-plink`.
+- `view-bgen` — Oxford BGEN (`.bgen`/`.sample`/`.bgen.bgi`); see {ref}`sec-bgen`.
+
 To create VCZ files from VCF, see the
 [bio2zarr](https://sgkit-dev.github.io/bio2zarr/) project.
 

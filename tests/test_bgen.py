@@ -4,19 +4,17 @@ Unit tests for vcztools.bgen.
 These exercise the encoder layers (header, sample-id block, genotype
 block, variant block, .sample text, .bgi index, end-to-end write_bgen)
 directly against in-memory VCZ groups built with
-:func:`tests.vcz_builder.make_vcz`. No external BGEN tooling.
+:func:`tests.vcz_builder.make_vcz`.
 
-Round-trip checks parse the bytes produced by ``write_bgen`` with a
-small in-test reader (see :func:`_read_bgen_back`) so the tests do not
-depend on a third-party BGEN library.
+Round-trip checks parse the bytes produced by ``write_bgen`` with the
+``bgen-reader`` reference reader.
 """
 
 import logging
 import sqlite3
 import struct
-import tempfile
-import zlib
 
+import bgen_reader as br
 import numpy as np
 import pytest
 
@@ -35,123 +33,6 @@ def _build_reader(*, num_variants=2, num_samples=3, **overrides):
     defaults.update(overrides)
     root = vcz_builder.make_vcz(**defaults)
     return retrieval.VczReader(root)
-
-
-# ---------------------------------------------------------------------------
-# Tiny in-test BGEN reader for round-trip verification.
-# Sufficient for layout-2/zlib/8-bit/biallelic/diploid output; not a
-# general-purpose BGEN parser.
-# ---------------------------------------------------------------------------
-
-
-def _read_bgen_back(path):
-    with open(path, "rb") as f:
-        data = f.read()
-    pos = 0
-    (offset,) = struct.unpack_from("<I", data, pos)
-    pos += 4
-    header_start = pos
-    (header_length, n_variants, n_samples) = struct.unpack_from("<III", data, pos)
-    pos += 12
-    magic = data[pos : pos + 4]
-    assert magic == b"bgen"
-    pos += 4
-    (flags,) = struct.unpack_from("<I", data, pos)
-    pos += 4
-    assert pos - header_start == header_length
-
-    sample_ids = []
-    if flags & bgen.SAMPLE_IDS_PRESENT:
-        (block_length, n_samples_check) = struct.unpack_from("<II", data, pos)
-        block_end = pos + block_length
-        pos += 8
-        assert n_samples_check == n_samples
-        for _ in range(n_samples):
-            (id_len,) = struct.unpack_from("<H", data, pos)
-            pos += 2
-            sample_ids.append(data[pos : pos + id_len].decode("utf-8"))
-            pos += id_len
-        assert pos == block_end
-
-    variants = []
-    first_variant_pos = 4 + offset
-    assert pos == first_variant_pos
-
-    for _ in range(n_variants):
-        block_start = pos
-        (id_len,) = struct.unpack_from("<H", data, pos)
-        pos += 2
-        varid = data[pos : pos + id_len].decode("utf-8")
-        pos += id_len
-        (rsid_len,) = struct.unpack_from("<H", data, pos)
-        pos += 2
-        rsid = data[pos : pos + rsid_len].decode("utf-8")
-        pos += rsid_len
-        (chr_len,) = struct.unpack_from("<H", data, pos)
-        pos += 2
-        chrom = data[pos : pos + chr_len].decode("utf-8")
-        pos += chr_len
-        (position,) = struct.unpack_from("<I", data, pos)
-        pos += 4
-        (k,) = struct.unpack_from("<H", data, pos)
-        pos += 2
-        alleles = []
-        for _ in range(k):
-            (a_len,) = struct.unpack_from("<I", data, pos)
-            pos += 4
-            alleles.append(data[pos : pos + a_len].decode("utf-8"))
-            pos += a_len
-        (c_size, d_size) = struct.unpack_from("<II", data, pos)
-        pos += 8
-        compressed = data[pos : pos + (c_size - 4)]
-        pos += c_size - 4
-        decompressed = zlib.decompress(compressed)
-        assert len(decompressed) == d_size
-
-        gpos = 0
-        (n_geno_samples,) = struct.unpack_from("<I", decompressed, gpos)
-        gpos += 4
-        (n_alleles,) = struct.unpack_from("<H", decompressed, gpos)
-        gpos += 2
-        p_min = decompressed[gpos]
-        gpos += 1
-        p_max = decompressed[gpos]
-        gpos += 1
-        ploidy_bytes = decompressed[gpos : gpos + n_geno_samples]
-        gpos += n_geno_samples
-        phased = decompressed[gpos]
-        gpos += 1
-        bits = decompressed[gpos]
-        gpos += 1
-        prob_bytes = decompressed[gpos : gpos + 2 * n_geno_samples]
-
-        variants.append(
-            {
-                "varid": varid,
-                "rsid": rsid,
-                "chrom": chrom,
-                "position": position,
-                "alleles": alleles,
-                "n_samples": n_geno_samples,
-                "n_alleles": n_alleles,
-                "p_min": p_min,
-                "p_max": p_max,
-                "ploidy": ploidy_bytes,
-                "phased": phased,
-                "bits": bits,
-                "probs": prob_bytes,
-                "block_start": block_start,
-                "block_size": pos - block_start,
-            }
-        )
-
-    return {
-        "n_variants": n_variants,
-        "n_samples": n_samples,
-        "flags": flags,
-        "sample_ids": sample_ids,
-        "variants": variants,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +198,7 @@ class TestEncodeGenotypeBlock:
 
 
 class TestEncodeVariantBlock:
-    def test_round_trip(self):
+    def test_round_trip(self, tmp_path):
         G = np.array([[0, 0], [0, 1]], dtype=np.int8)
         block = bgen._encode_variant_block(
             varid="rs1",
@@ -330,25 +211,22 @@ class TestEncodeVariantBlock:
             genotypes=G,
             phased=False,
         )
-        # Parse it back via the in-test reader, by faking a one-variant
-        # file: header + this block.
         sample_block = bgen._build_sample_id_block(["s0", "s1"])
         header = bgen._build_header(1, 2, sample_block)
-        with tempfile.NamedTemporaryFile(suffix=".bgen", delete=False) as f:
-            f.write(header)
-            f.write(block)
-            path = f.name
-        parsed = _read_bgen_back(path)
-        v = parsed["variants"][0]
-        assert v["varid"] == "rs1"
-        assert v["rsid"] == "rs1"
-        assert v["chrom"] == "chr1"
-        assert v["position"] == 12345
-        assert v["alleles"] == ["A", "T"]
-        assert v["n_samples"] == 2
-        assert v["n_alleles"] == 2
-        assert v["phased"] == 0
-        assert v["bits"] == 8
+        path = tmp_path / "x.bgen"
+        path.write_bytes(header + block)
+        with br.open_bgen(path, verbose=False) as bgen_file:
+            assert list(bgen_file.samples) == ["s0", "s1"]
+            assert bgen_file.nvariants == 1
+            assert bgen_file.chromosomes[0] == "chr1"
+            assert int(bgen_file.positions[0]) == 12345
+            assert str(bgen_file.allele_ids[0]).split(",") == ["A", "T"]
+            assert not bool(bgen_file.phased[0])
+            probs = bgen_file.read()
+        # G=[[0,0],[0,1]] unphased: hom-ref → P(00,01,11)=[1,0,0],
+        # het → [0,1,0].
+        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
 
 
 class TestChecks:
@@ -455,20 +333,6 @@ class TestBgiIndex:
 # ---------------------------------------------------------------------------
 
 
-def _decode_unphased_hard_call(b0, b1):
-    """Inverse of the unphased hard-call mapping: returns (a, b) for
-    the called genotype, or (-1, -1) if both bytes are zero (which we
-    treat as "ambiguous"; missing samples are detected via the ploidy
-    byte, not the probability bytes)."""
-    if b0 == 0xFF and b1 == 0x00:
-        return (0, 0)
-    if b0 == 0x00 and b1 == 0xFF:
-        return (0, 1)
-    if b0 == 0x00 and b1 == 0x00:
-        return (1, 1)
-    raise ValueError(f"unexpected probability bytes: {b0!r} {b1!r}")
-
-
 class TestWriteBgenEndToEnd:
     def test_minimal_round_trip(self, tmp_path):
         # 3 variants, 4 samples, biallelic, diploid; varied genotypes.
@@ -496,34 +360,37 @@ class TestWriteBgenEndToEnd:
         assert sample_path.exists()
         assert bgi_path.exists()
 
-        parsed = _read_bgen_back(bgen_path)
-        assert parsed["n_variants"] == 3
-        assert parsed["n_samples"] == 4
-        assert parsed["sample_ids"] == ["sample_0", "sample_1", "sample_2", "sample_3"]
-        assert len(parsed["variants"]) == 3
+        with br.open_bgen(bgen_path, verbose=False) as bgen_file:
+            assert bgen_file.nvariants == 3
+            assert bgen_file.nsamples == 4
+            assert list(bgen_file.samples) == [
+                "sample_0",
+                "sample_1",
+                "sample_2",
+                "sample_3",
+            ]
+            assert bgen_file.chromosomes[0] == "chr1"
+            assert int(bgen_file.positions[0]) == 100
+            assert str(bgen_file.allele_ids[0]).split(",") == ["A", "T"]
+            probs, missing = bgen_file.read(return_missings=True)
 
-        v0 = parsed["variants"][0]
-        assert v0["chrom"] == "chr1"
-        assert v0["position"] == 100
-        assert v0["alleles"] == ["A", "T"]
-        # Ploidy: sample 3 was missing.
-        assert list(v0["ploidy"]) == [0x02, 0x02, 0x02, 0x82]
-        probs = list(v0["probs"])
-        assert _decode_unphased_hard_call(probs[0], probs[1]) == (0, 0)
-        assert _decode_unphased_hard_call(probs[2], probs[3]) == (0, 1)
-        assert _decode_unphased_hard_call(probs[4], probs[5]) == (1, 1)
-        # Missing sample probs zeroed.
-        assert (probs[6], probs[7]) == (0, 0)
+        # Variant 0: hom-ref, het, hom-alt, missing. Unphased biallelic
+        # diploid stores P(00), P(01), P(11) per sample; missing samples
+        # are flagged in ``missing`` and have NaN probabilities.
+        np.testing.assert_array_equal(missing[:, 0], [False, False, False, True])
+        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
+        assert np.isnan(probs[3, 0]).all()
 
         # Variant 2 has reversed-order het (1,0) which is encoded
         # identically to (0,1) in the unphased path. Last sample is
         # half-missing and therefore fully missing.
-        v2 = parsed["variants"][2]
-        assert list(v2["ploidy"]) == [0x02, 0x02, 0x02, 0x82]
-        probs = list(v2["probs"])
-        assert _decode_unphased_hard_call(probs[0], probs[1]) == (1, 1)
-        assert _decode_unphased_hard_call(probs[2], probs[3]) == (0, 1)
-        assert _decode_unphased_hard_call(probs[4], probs[5]) == (0, 1)
+        np.testing.assert_array_equal(missing[:, 2], [False, False, False, True])
+        np.testing.assert_array_equal(probs[0, 2], [0.0, 0.0, 1.0])  # (1,1) hom-alt
+        np.testing.assert_array_equal(probs[1, 2], [0.0, 1.0, 0.0])  # (1,0) het
+        np.testing.assert_array_equal(probs[2, 2], [0.0, 1.0, 0.0])  # (0,1) het
+        assert np.isnan(probs[3, 2]).all()
 
     def test_sample_text_matches(self, tmp_path):
         reader = _build_reader(num_variants=1, num_samples=2)
@@ -540,7 +407,13 @@ class TestWriteBgenEndToEnd:
         bgen.write_bgen(reader, out)
         bgen_path = out.with_suffix(".bgen")
         bgi_path = bgen_path.with_suffix(".bgen.bgi")
-        parsed = _read_bgen_back(bgen_path)
+
+        # Header offset: first 4 bytes of the BGEN file give the byte
+        # offset (relative to byte 4) of the first variant block.
+        with open(bgen_path, "rb") as f:
+            (offset,) = struct.unpack("<I", f.read(4))
+        first_variant_pos = 4 + offset
+
         conn = sqlite3.connect(str(bgi_path))
         try:
             rows = conn.execute(
@@ -549,9 +422,13 @@ class TestWriteBgenEndToEnd:
             ).fetchall()
         finally:
             conn.close()
-        for v, (start, size) in zip(parsed["variants"], rows):
-            assert v["block_start"] == start
-            assert v["block_size"] == size
+
+        assert len(rows) == 3
+        assert rows[0][0] == first_variant_pos
+        for (start, size), (next_start, _) in zip(rows, rows[1:]):
+            assert next_start == start + size
+        last_start, last_size = rows[-1]
+        assert last_start + last_size == bgen_path.stat().st_size
 
     def test_phased_round_trip(self, tmp_path):
         # Phased: (0,1) and (1,0) must distinguish.
@@ -570,29 +447,24 @@ class TestWriteBgenEndToEnd:
         )
         out = tmp_path / "p"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        v = parsed["variants"][0]
-        assert v["phased"] == 1
-        # Per-haplotype P(allele 0):
-        # (0,1) -> [0xFF, 0x00]; (1,0) -> [0x00, 0xFF];
-        # (0,0) -> [0xFF, 0xFF]; (1,1) -> [0x00, 0x00]
-        assert list(v["probs"]) == [
-            0xFF,
-            0x00,
-            0x00,
-            0xFF,
-            0xFF,
-            0xFF,
-            0x00,
-            0x00,
-        ]
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            assert bool(bgen_file.phased[0])
+            probs = bgen_file.read()
+        # For phased biallelic diploid, bgen-reader returns shape
+        # (n_samples, n_variants, 4) storing per-haplotype
+        # [P(allele 0 | h1), P(allele 1 | h1), P(allele 0 | h2), P(allele 1 | h2)].
+        assert probs.shape == (4, 1, 4)
+        hap1 = np.argmax(probs[..., 0:2], axis=-1).T
+        hap2 = np.argmax(probs[..., 2:4], axis=-1).T
+        np.testing.assert_array_equal(hap1, G[..., 0])
+        np.testing.assert_array_equal(hap2, G[..., 1])
 
     def test_unphased_when_phased_field_absent(self, tmp_path):
         reader = _build_reader(num_variants=1, num_samples=2)
         out = tmp_path / "x"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        assert parsed["variants"][0]["phased"] == 0
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            assert not bool(bgen_file.phased[0])
 
     def test_mixed_phase_degrades_to_unphased(self, tmp_path, caplog):
         G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
@@ -606,8 +478,8 @@ class TestWriteBgenEndToEnd:
         out = tmp_path / "x"
         with caplog.at_level(logging.WARNING, logger="vcztools.bgen"):
             bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        assert parsed["variants"][0]["phased"] == 0
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            assert not bool(bgen_file.phased[0])
         assert any("mixed phase" in record.getMessage() for record in caplog.records)
 
     def test_multi_allelic_raises(self, tmp_path):
@@ -627,8 +499,8 @@ class TestWriteBgenEndToEnd:
         )
         out = tmp_path / "x"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        rsids = [v["rsid"] for v in parsed["variants"]]
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            rsids = [str(r) for r in bgen_file.rsids]
         assert rsids == ["rsX", "rsY"]
 
     def test_empty_variant_id_normalised_to_dot(self, tmp_path):
@@ -641,8 +513,8 @@ class TestWriteBgenEndToEnd:
         )
         out = tmp_path / "x"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        rsids = [v["rsid"] for v in parsed["variants"]]
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            rsids = [str(r) for r in bgen_file.rsids]
         assert rsids == [".", "rsY"]
 
     def test_monomorphic_alt_normalised_to_dot(self, tmp_path):
@@ -655,27 +527,26 @@ class TestWriteBgenEndToEnd:
         )
         out = tmp_path / "x"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        assert parsed["variants"][0]["alleles"] == ["A", "."]
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            assert str(bgen_file.allele_ids[0]) == "A,."
 
     def test_sample_subset(self, tmp_path):
         reader = _build_reader(num_variants=2, num_samples=4)
         reader.set_samples([0, 2])
         out = tmp_path / "x"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        assert parsed["sample_ids"] == ["sample_0", "sample_2"]
-        assert parsed["n_samples"] == 2
-        for v in parsed["variants"]:
-            assert v["n_samples"] == 2
-            assert len(v["ploidy"]) == 2
-            assert len(v["probs"]) == 4
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            assert list(bgen_file.samples) == ["sample_0", "sample_2"]
+            assert bgen_file.nsamples == 2
+            assert bgen_file.nvariants == 2
+            assert bgen_file.read().shape == (2, 2, 3)
 
     def test_sample_subset_to_empty_via_filter(self, tmp_path):
         # An empty axis isn't a configuration vcz_builder supports
-        # directly; but we can produce a reader-side empty axis by
-        # selecting no variants via set_variants. With zero variants
-        # the BGEN file should still be valid (header only).
+        # directly; produce a reader-side empty axis by selecting no
+        # variants via set_variants. With zero variants the BGEN file
+        # is just the header + sample-id block. bgen-reader can't open
+        # a 0-variant file, so check the header counts directly.
         reader = _build_reader(num_variants=2, num_samples=2)
         empty_plan = regions.chunk_plan_from_indexes(
             np.array([], dtype=np.int64),
@@ -684,7 +555,11 @@ class TestWriteBgenEndToEnd:
         reader.set_variants(empty_plan)
         out = tmp_path / "x"
         bgen.write_bgen(reader, out)
-        parsed = _read_bgen_back(out.with_suffix(".bgen"))
-        assert parsed["n_variants"] == 0
-        assert parsed["n_samples"] == 2
-        assert parsed["variants"] == []
+        bgen_path = out.with_suffix(".bgen")
+        data = bgen_path.read_bytes()
+        (offset,) = struct.unpack_from("<I", data, 0)
+        (_, n_variants, n_samples) = struct.unpack_from("<III", data, 4)
+        assert n_variants == 0
+        assert n_samples == 2
+        # File ends after the sample-id block.
+        assert bgen_path.stat().st_size == 4 + offset

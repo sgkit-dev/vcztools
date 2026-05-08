@@ -1818,6 +1818,84 @@ class TestMaterialiseVariantFilter:
             reader.materialise_variant_filter()
 
 
+class TestAbsoluteVariantIndexes:
+    """``retrieval._absolute_variant_indexes`` maps a
+    :class:`~vcztools.utils.ChunkRead` to the global variant indexes
+    it contributes. Three branches by ``ChunkRead.selection`` shape:
+    ``None`` (full chunk, length from ``num_selected``), ``slice``
+    (basic-indexing range), ``ndarray`` (fancy indexing). All branches
+    add ``index * variants_chunk_size`` and return ``int64``."""
+
+    def test_selection_none_full_chunk_at_origin(self):
+        entry = utils.ChunkRead(index=0, num_selected=4, selection=None)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        nt.assert_array_equal(out, [0, 1, 2, 3])
+        assert out.dtype == np.int64
+
+    def test_selection_none_offset_by_chunk_index(self):
+        # index=3, chunk_size=4 → offset 12 over a full chunk.
+        entry = utils.ChunkRead(index=3, num_selected=4, selection=None)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        nt.assert_array_equal(out, [12, 13, 14, 15])
+
+    def test_selection_none_partial_last_chunk(self):
+        # Partial last chunk: num_selected < chunk_size. Length must
+        # come from num_selected, not chunk_size.
+        entry = utils.ChunkRead(index=2, num_selected=2, selection=None)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        nt.assert_array_equal(out, [8, 9])
+
+    def test_selection_slice_full_chunk(self):
+        entry = utils.ChunkRead(index=1, num_selected=3, selection=slice(0, 3))
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=3)
+        nt.assert_array_equal(out, [3, 4, 5])
+        assert out.dtype == np.int64
+
+    def test_selection_slice_partial(self):
+        # slice(1, 3) inside chunk index 4 with chunk_size 4 → [17, 18].
+        entry = utils.ChunkRead(index=4, num_selected=2, selection=slice(1, 3))
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        nt.assert_array_equal(out, [17, 18])
+
+    def test_selection_slice_open_ended(self):
+        # slice(2, None) is normalised against chunk_size by sel.indices,
+        # producing [2, chunk_size).
+        entry = utils.ChunkRead(index=0, num_selected=2, selection=slice(2, None))
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        nt.assert_array_equal(out, [2, 3])
+
+    def test_selection_ndarray(self):
+        # Non-contiguous local indexes inside chunk index 2 (offset 6).
+        sel = np.array([0, 2, 3], dtype=np.int64)
+        entry = utils.ChunkRead(index=2, num_selected=3, selection=sel)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=3)
+        nt.assert_array_equal(out, [6, 8, 9])
+        assert out.dtype == np.int64
+
+    def test_selection_ndarray_promotes_to_int64(self):
+        # Helper coerces to int64 even when the input dtype is narrower.
+        sel = np.array([0, 2], dtype=np.int32)
+        entry = utils.ChunkRead(index=1, num_selected=2, selection=sel)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        nt.assert_array_equal(out, [4, 6])
+        assert out.dtype == np.int64
+
+    def test_selection_ndarray_empty(self):
+        sel = np.array([], dtype=np.int64)
+        entry = utils.ChunkRead(index=5, num_selected=0, selection=sel)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        assert out.shape == (0,)
+        assert out.dtype == np.int64
+
+    def test_selection_none_empty(self):
+        # num_selected=0 with selection=None: empty result, no offset
+        # added (np.arange(0) is empty so chunk_offset never broadcasts).
+        entry = utils.ChunkRead(index=7, num_selected=0, selection=None)
+        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        assert out.shape == (0,)
+        assert out.dtype == np.int64
+
+
 class TestVariantIndexPseudoField:
     """``VczReader.variant_chunks(fields=["variant_index"])`` emits the
     global (store-wide) variant index of each surviving variant in

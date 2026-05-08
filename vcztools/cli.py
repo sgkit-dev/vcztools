@@ -443,13 +443,13 @@ def make_reader(
 
 
 @dataclasses.dataclass(frozen=True)
-class ViewBedOptions:
-    """Bundled options that drive ``make_reader`` for view-bed-shaped
-    consumers (``vcztools view-bed``, ``biofuse mount-plink``).
+class ViewPlinkOptions:
+    """Bundled options that drive ``make_reader`` for view-plink-shaped
+    consumers (``vcztools view-plink``, ``biofuse mount-plink``).
 
     Field names match ``make_reader``'s keyword arguments 1:1; adding a new
     filtering option to ``make_reader`` means adding a field here and an
-    option to :func:`view_bed_options`.
+    option to :func:`view_plink_options`.
     """
 
     regions: str | None = None
@@ -469,9 +469,9 @@ class ViewBedOptions:
     storage_options: dict | None = None
 
     @classmethod
-    def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewBedOptions":
-        """Pop the recognised view-bed option fields out of ``kwargs`` and
-        return a populated :class:`ViewBedOptions`.
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewPlinkOptions":
+        """Pop the recognised view-plink option fields out of ``kwargs`` and
+        return a populated :class:`ViewPlinkOptions`.
 
         ``storage_options`` is parsed from Click's repeatable ``KEY=VALUE``
         tuple at this seam so consumers always get a ``dict | None``.
@@ -482,11 +482,11 @@ class ViewBedOptions:
         return cls(**raw)
 
 
-def view_bed_options(f):
-    """Stack every Click option needed to build a :class:`ViewBedOptions`.
+def view_plink_options(f):
+    """Stack every Click option needed to build a :class:`ViewPlinkOptions`.
 
-    Order matches ``vcztools view-bed --help`` so help-text rows stay
-    identical between ``vcztools view-bed`` and any consumer that applies
+    Order matches ``vcztools view-plink --help`` so help-text rows stay
+    identical between ``vcztools view-plink`` and any consumer that applies
     this decorator.
     """
     decorators = [
@@ -534,11 +534,13 @@ def log_options(f):
     return log_level(log_file(f))
 
 
-def make_reader_from_options(path: str, options: ViewBedOptions) -> retrieval.VczReader:
-    """Construct a :class:`VczReader` from a :class:`ViewBedOptions`.
+def make_reader_from_options(
+    path: str, options: ViewPlinkOptions
+) -> retrieval.VczReader:
+    """Construct a :class:`VczReader` from a :class:`ViewPlinkOptions`.
 
     Single seam between the bundled dataclass and :func:`make_reader`; new
-    fields added to :class:`ViewBedOptions` flow through here without
+    fields added to :class:`ViewPlinkOptions` flow through here without
     callers needing to update.
     """
     return make_reader(path, **dataclasses.asdict(options))
@@ -838,7 +840,7 @@ def view(
 
 @click.command
 @click.argument("path", type=click.Path())
-@view_bed_options
+@view_plink_options
 @click.option(
     "--out",
     default="plink",
@@ -846,7 +848,7 @@ def view(
 )
 @log_options
 @handle_exception
-def view_bed(path, out, **kwargs):
+def view_plink(path, out, **kwargs):
     """
     Generate a PLINK 1 binary fileset (.bed/.bim/.fam) from a VCZ
     dataset.
@@ -864,7 +866,7 @@ def view_bed(path, out, **kwargs):
     downstream tools.
     """
     LogConfig.pop_from_click_kwargs(kwargs).apply()
-    options = ViewBedOptions.pop_from_click_kwargs(kwargs)
+    options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
     with make_reader_from_options(path, options) as reader:
         plink.write_plink(reader, out)
@@ -879,4 +881,4 @@ def vcztools_main():
 vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
-vcztools_main.add_command(view_bed)
+vcztools_main.add_command(view_plink)

@@ -2,7 +2,7 @@
 Convert VCZ to PLINK 1 binary format (.bed/.bim/.fam) — the on-disk
 layout that PLINK 1, 1.9 and 2 all read.
 
-The CLI verb is ``view-bed``. A1 = ALT, A2 = REF (plink 2's
+The CLI verb is ``view-plink``. A1 = ALT, A2 = REF (plink 2's
 convention); the .bed payload is byte-identical to
 ``plink2 --vcf X --make-bed`` for biallelic variants.
 

@@ -5,16 +5,16 @@
 Features:
 
 - Add support for .vcz.zip files (#280).
-- Add `view-bed` command for PLINK 1 binary output (.bed/.bim/.fam)
+- Add `view-plink` command for PLINK 1 binary output (.bed/.bim/.fam)
   following the semantics of `plink2 --vcf X --make-bed`.
 - Add `-v/--types`, `-V/--exclude-types`, `-m/--min-alleles`, and
-  `-M/--max-alleles` to `view` and `view-bed`, matching bcftools
+  `-M/--max-alleles` to `view` and `view-plink`, matching bcftools
   view. The filter language exposes a new `N_ALT` identifier
   (count of non-empty ALT slots), so e.g. `-i 'N_ALT >= 2'` is now
-  valid. On `view-bed`, `--max-alleles` also gains a `-M` short flag.
+  valid. On `view-plink`, `--max-alleles` also gains a `-M` short flag.
 - `view`'s `--max-alleles` and `-v/-V/-m` now compose with
   sample-scope `-i 'FMT/...'` filters via axis-1 broadcasting in
-  the AND combinator (previously rejected). `view-bed` still
+  the AND combinator (previously rejected). `view-plink` still
   rejects sample-scope filters, since the .bed format has no
   per-sample channel to mask into.
 

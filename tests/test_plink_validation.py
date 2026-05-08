@@ -1,4 +1,4 @@
-"""End-to-end validation: vcztools view-bed vs plink 2 --make-bed."""
+"""End-to-end validation: vcztools view-plink vs plink 2 --make-bed."""
 
 import shutil
 import subprocess
@@ -94,22 +94,22 @@ def run_plink2_expect_error(args: str, vcf_path: Path, out_prefix: Path) -> str:
     )
 
 
-def run_view_bed(args: str, vcz_path: Path, out_prefix: Path) -> Path:
-    """Run ``vcztools view-bed`` and return the output prefix."""
-    cmd = f"view-bed {vcz_path.as_posix()} --out {out_prefix.as_posix()} {args}"
+def run_view_plink(args: str, vcz_path: Path, out_prefix: Path) -> Path:
+    """Run ``vcztools view-plink`` and return the output prefix."""
+    cmd = f"view-plink {vcz_path.as_posix()} --out {out_prefix.as_posix()} {args}"
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
     if result.exit_code != 0:
         raise AssertionError(
-            f"view-bed exited with code {result.exit_code}\n"
+            f"view-plink exited with code {result.exit_code}\n"
             f"command: {cmd}\n"
             f"stderr: {result.stderr}"
         )
     return out_prefix
 
 
-def run_view_bed_expect_error(args: str, vcz_path: Path, out_prefix: Path) -> str:
-    cmd = f"view-bed {vcz_path.as_posix()} --out {out_prefix.as_posix()} {args}"
+def run_view_plink_expect_error(args: str, vcz_path: Path, out_prefix: Path) -> str:
+    cmd = f"view-plink {vcz_path.as_posix()} --out {out_prefix.as_posix()} {args}"
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
     assert result.exit_code != 0
@@ -221,7 +221,7 @@ class TestBiallelicByteIdentical:
             fx.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             f"--max-alleles 2 {vcztools_args}",
             fx.zip_path,
             vcz_prefix,
@@ -249,7 +249,7 @@ class TestMultiallelicHandling:
     def test_default_rejection_vcztools(self, tmp_path, fx_chr22_vcz):
         # chr22 fixture has 4 multi-allelic variants. Without
         # --max-alleles 2 the vcztools writer raises.
-        err = run_view_bed_expect_error("", fx_chr22_vcz.zip_path, tmp_path / "p")
+        err = run_view_plink_expect_error("", fx_chr22_vcz.zip_path, tmp_path / "p")
         assert "Multi-allelic" in err
 
     def test_default_rejection_plink2(self, tmp_path, fx_chr22_vcz):
@@ -266,7 +266,7 @@ class TestMultiallelicHandling:
             fx_chr22_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             "--max-alleles 2",
             fx_chr22_vcz.zip_path,
             vcz_prefix,
@@ -292,7 +292,7 @@ class TestMultiallelicHandling:
         test_utils.copy_store(root.store, dest)
 
         vcz_prefix = tmp_path / "vcz"
-        run_view_bed("--max-alleles 2", vcz_dir, vcz_prefix)
+        run_view_plink("--max-alleles 2", vcz_dir, vcz_prefix)
         assert vcz_prefix.with_suffix(".bed").read_bytes() == b"\x6c\x1b\x01"
         assert vcz_prefix.with_suffix(".bim").read_text() == ""
         fam = _parse_fam(vcz_prefix.with_suffix(".fam"))
@@ -324,7 +324,7 @@ class TestSampleSubset:
             fx_chr22_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             f"--max-alleles 2 -s {','.join(iids)}",
             fx_chr22_vcz.zip_path,
             vcz_prefix,
@@ -346,7 +346,7 @@ class TestSampleSubset:
             fx_chr22_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             f"--max-alleles 2 -S {vcz_samples_file}",
             fx_chr22_vcz.zip_path,
             vcz_prefix,
@@ -365,7 +365,7 @@ class TestSampleSubset:
             fx_chr22_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             f"--max-alleles 2 -s ^{','.join(iids_to_drop)}",
             fx_chr22_vcz.zip_path,
             vcz_prefix,
@@ -465,7 +465,7 @@ class TestSubsetInducedEdgeCases:
             vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             f"--max-alleles 2 -s {','.join(keep_iids)}",
             vcz_dir,
             vcz_prefix,
@@ -521,7 +521,7 @@ class TestSubsetInducedEdgeCases:
             vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             f"--max-alleles 2 -s {','.join(keep_iids)}",
             vcz_dir,
             vcz_prefix,
@@ -567,7 +567,7 @@ class TestSubsetInducedEdgeCases:
             vcf_path,
             tmp_path / "p2",
         )
-        vcz_err = run_view_bed_expect_error(
+        vcz_err = run_view_plink_expect_error(
             f"-s {','.join(keep_iids)}",
             vcz_dir,
             tmp_path / "vcz",
@@ -598,7 +598,7 @@ class TestRegionSelection:
             fx_chr22_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             "--max-alleles 2 -r chr22:10510000-10511000",
             fx_chr22_vcz.zip_path,
             vcz_prefix,
@@ -614,7 +614,7 @@ class TestRegionSelection:
             fx_chr22_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             "--max-alleles 2 -r chr22",
             fx_chr22_vcz.zip_path,
             vcz_prefix,
@@ -638,7 +638,7 @@ class TestMonomorphicSites:
             fx_sample_split_alleles_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             "--max-alleles 2 -e 'CHROM==\"X\"'",
             fx_sample_split_alleles_vcz.zip_path,
             vcz_prefix,
@@ -681,7 +681,7 @@ class TestKnownDivergences:
             fx_sample_split_alleles_vcz.vcf_path,
             p2_prefix,
         )
-        run_view_bed(
+        run_view_plink(
             "--max-alleles 2",
             fx_sample_split_alleles_vcz.zip_path,
             vcz_prefix,

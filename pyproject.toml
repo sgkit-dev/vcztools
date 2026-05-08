@@ -56,6 +56,7 @@ icechunk = ["icechunk"]
 [dependency-groups]
 test = [
   "azure-storage-blob",
+  "bgen-reader",
   "bio2zarr",
   "cyvcf2 ; sys_platform != 'win32'",
   "hypothesis",

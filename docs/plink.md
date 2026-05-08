@@ -1,13 +1,13 @@
 (sec-plink)=
 # PLINK 1 binary output
 
-The `vcztools view-bed` command writes a PLINK 1 binary fileset
+The `vcztools view-plink` command writes a PLINK 1 binary fileset
 (`.bed`/`.bim`/`.fam`) from a VCZ store. The on-disk layout is the
 one PLINK 1, 1.9 and 2 all read; the `.bed` payload is byte-identical
 to `plink2 --vcf X --make-bed` for biallelic variants.
 
 ```bash
-vcztools view-bed sample.vcz --out sample
+vcztools view-plink sample.vcz --out sample
 # produces sample.bed, sample.bim, sample.fam
 ```
 
@@ -26,7 +26,7 @@ with `--keep-allele-order` (or `--real-ref-alleles`); the on-disk
 bytes are unchanged, but plink 1.9's outputs (e.g. `--freq`,
 `--assoc`) reflect the reordered labelling.
 
-## Reading `view-bed` output with downstream tools
+## Reading `view-plink` output with downstream tools
 
 | Tool | Works as-is? | Notes |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ variants"). Two ways to handle them:
 - **Skip** with `--max-alleles 2`:
 
   ```bash
-  vcztools view-bed sample.vcz --out sample --max-alleles 2
+  vcztools view-plink sample.vcz --out sample --max-alleles 2
   ```
 
   Drops every variant whose record lists more than two alleles. The
@@ -99,7 +99,7 @@ vcztools writes `.bim` chromosome names to match plink 2's
   vcztools writes the rows pass-through because it doesn't track
   sex. Use `--exclude 'CHROM=="X"'` (or `-e`) if you need
   plink-2-equivalent behaviour.
-- **Diploid only.** `view-bed` raises if `call_genotype` ploidy
+- **Diploid only.** `view-plink` raises if `call_genotype` ploidy
   is not 2.
 - **Whitespace in sample IDs.** Rejected with a clear error
   message — the `.fam` format is whitespace-separated.
@@ -109,7 +109,7 @@ vcztools writes `.bim` chromosome names to match plink 2's
 
 ## See also
 
-- {ref}`sec-cli-ref` for the full `view-bed` flag reference.
+- {ref}`sec-cli-ref` for the full `view-plink` flag reference.
 - [PLINK 2 `.bim` format](https://www.cog-genomics.org/plink/2.0/formats#bim)
   and [`.bed` / `.fam`](https://www.cog-genomics.org/plink/2.0/formats)
   specifications.

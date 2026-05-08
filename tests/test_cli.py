@@ -410,8 +410,8 @@ class TestQuery:
         assert output.exists()
 
 
-class TestViewBed:
-    """CLI surface for ``view-bed``. Exercises only the wiring
+class TestViewPlink:
+    """CLI surface for ``view-plink``. Exercises only the wiring
     (option parsing, reader assembly, output prefix handling, error
     surfacing). Byte-level parity with ``plink2 --make-bed`` lives in
     ``tests/test_plink_validation.py``.
@@ -430,7 +430,7 @@ class TestViewBed:
         # sample fixture contains multi-allelic variants.
         out = tmp_path / "p"
         result, _ = run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
         )
         assert (tmp_path / "p.bed").exists()
@@ -443,7 +443,7 @@ class TestViewBed:
         with runner.isolated_filesystem(tmp_path) as cwd:
             result = runner.invoke(
                 cli.vcztools_main,
-                f"view-bed {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
+                f"view-plink {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
                 catch_exceptions=False,
             )
             assert result.exit_code == 0
@@ -456,7 +456,7 @@ class TestViewBed:
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            "view-bed",
+            "view-plink",
             catch_exceptions=False,
         )
         assert result.exit_code != 0
@@ -465,7 +465,7 @@ class TestViewBed:
         # No --max-alleles: vcztools encounters a 3-ALT site and raises.
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-bed {fx_vcz_path} --out {out.as_posix()}",
+            f"view-plink {fx_vcz_path} --out {out.as_posix()}",
             expect_error=True,
         )
         assert "Multi-allelic" in err
@@ -473,7 +473,7 @@ class TestViewBed:
     def test_max_alleles_skips_multiallelic(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         result, _ = run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -486,7 +486,7 @@ class TestViewBed:
     def test_sample_subset(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -s NA00001,NA00003 --out {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
@@ -498,7 +498,7 @@ class TestViewBed:
     def test_sample_complement(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -s ^NA00002 --out {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
@@ -508,7 +508,7 @@ class TestViewBed:
     def test_samples_file(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -S tests/data/txt/samples.txt "
             f"--out {out.as_posix()}"
         )
@@ -519,7 +519,7 @@ class TestViewBed:
     def test_regions(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-r '20:1230237-' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -533,7 +533,7 @@ class TestViewBed:
         # Targets uses exact-position semantics (vs regions overlap).
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-t '20:1230237-' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -545,7 +545,7 @@ class TestViewBed:
     def test_targets_complement(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
+            f"view-plink {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         for line in bim_lines:
@@ -555,7 +555,7 @@ class TestViewBed:
     def test_include_filter(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-i 'POS>1000000' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -567,7 +567,7 @@ class TestViewBed:
         # AND-composition path through variant_filter.AndFilter.
         out = tmp_path / "p"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-i 'POS>1000000' --out {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
@@ -584,7 +584,7 @@ class TestViewBed:
         # the reader, not the AND composition).
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-i 'FMT/DP>3' --out {out.as_posix()}",
             expect_error=True,
         )
@@ -594,7 +594,7 @@ class TestViewBed:
         # Without -m, --max-alleles 2 alone keeps the two REF-only
         # sites at 20:1230237 and 20:1235237; -m 2 drops them.
         out = tmp_path / "p"
-        run_vcztools(f"view-bed {fx_vcz_path} -m 2 -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-plink {fx_vcz_path} -m 2 -M 2 --out {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
         positions = [int(line.split("\t")[3]) for line in bim_lines]
         assert 1230237 not in positions
@@ -604,7 +604,7 @@ class TestViewBed:
         # -v snps + -M 2 keeps only the biallelic SNP rows. The two
         # REF-only sites also drop (no SNP allele).
         out = tmp_path / "p"
-        run_vcztools(f"view-bed {fx_vcz_path} -v snps -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-plink {fx_vcz_path} -v snps -M 2 --out {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
         positions = [int(line.split("\t")[3]) for line in bim_lines]
         # 4 biallelic SNP sites in the fixture: 19:111, 19:112, 20:14370, 20:17330.
@@ -614,7 +614,7 @@ class TestViewBed:
         # -V snps drops SNP sites. With -M 2 to skip the multiallelics,
         # only the two monomorphic-REF sites survive.
         out = tmp_path / "p"
-        run_vcztools(f"view-bed {fx_vcz_path} -V snps -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-plink {fx_vcz_path} -V snps -M 2 --out {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
         positions = [int(line.split("\t")[3]) for line in bim_lines]
         assert sorted(positions) == [1230237, 1235237]
@@ -622,7 +622,7 @@ class TestViewBed:
     def test_unsupported_type_keyword(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-bed {fx_vcz_path} -v indels -M 2 --out {out.as_posix()}",
+            f"view-plink {fx_vcz_path} -v indels -M 2 --out {out.as_posix()}",
             expect_error=True,
         )
         assert "TYPE field" in err
@@ -630,7 +630,7 @@ class TestViewBed:
     def test_types_and_exclude_types_mutually_exclusive(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-bed {fx_vcz_path} -v snps -V refs --out {out.as_posix()}",
+            f"view-plink {fx_vcz_path} -v snps -V refs --out {out.as_posix()}",
             expect_error=True,
         )
         assert "Cannot use --types and --exclude-types together" in err
@@ -640,7 +640,7 @@ class TestViewBed:
         # writer drops/normalises the suffix).
         out = tmp_path / "p.bed"
         run_vcztools(
-            f"view-bed {fx_vcz_path} --max-alleles 2 "
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
         )
         assert (tmp_path / "p.bed").exists()
@@ -839,9 +839,9 @@ class TestDeprecatedZarrBackendStorageAlias:
         assert deprecation_warnings == []
 
 
-class TestViewBedOptions:
-    """Unit tests for the bundled ViewBedOptions / make_reader_from_options
-    reuse surface — exercised end-to-end by ``view-bed`` and intended for
+class TestViewPlinkOptions:
+    """Unit tests for the bundled ViewPlinkOptions / make_reader_from_options
+    reuse surface — exercised end-to-end by ``view-plink`` and intended for
     downstream consumers (e.g. biofuse mount-plink)."""
 
     def test_pop_populates_fields(self):
@@ -857,7 +857,7 @@ class TestViewBedOptions:
             "out": "plink",
             "log_level": "INFO",
         }
-        options = cli.ViewBedOptions.pop_from_click_kwargs(kwargs)
+        options = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
         assert options.regions == "1:100-200"
         assert options.samples == "s1,s2"
         assert options.force_samples is True
@@ -868,12 +868,12 @@ class TestViewBedOptions:
         assert kwargs == {"out": "plink", "log_level": "INFO"}
 
     def test_pop_defaults_when_unset(self):
-        # An empty kwargs (no view-bed options collected) still yields a
-        # well-formed ViewBedOptions populated entirely with defaults; the
+        # An empty kwargs (no view-plink options collected) still yields a
+        # well-formed ViewPlinkOptions populated entirely with defaults; the
         # raw empty storage_options tuple parses to None.
         kwargs = {}
-        options = cli.ViewBedOptions.pop_from_click_kwargs(kwargs)
-        assert options == cli.ViewBedOptions()
+        options = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+        assert options == cli.ViewPlinkOptions()
         assert options.storage_options is None
 
     def test_make_reader_from_options_matches_make_reader(self, monkeypatch):
@@ -884,7 +884,7 @@ class TestViewBedOptions:
             return object()
 
         monkeypatch.setattr(cli, "make_reader", spy)
-        options = cli.ViewBedOptions(
+        options = cli.ViewPlinkOptions(
             regions="1:100-200",
             samples="s1,s2",
             force_samples=True,

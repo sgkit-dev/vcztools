@@ -903,19 +903,23 @@ class VczReader:
                 "materialise_variant_filter; iterate variant_chunks() "
                 "to resolve them, or supply a variant-scope filter."
             )
-        surviving = [
-            chunk_data["variant_index"]
-            for chunk_data in self.variant_chunks(fields=["variant_index"])
-        ]
-        if len(surviving) == 0:
-            indexes = np.array([], dtype=np.int64)
-        else:
-            indexes = np.concatenate(surviving)
-        plan = regions_mod.chunk_plan_from_indexes(
-            indexes, variants_chunk_size=self.variants_chunk_size
-        )
+        chunk_size = self.variants_chunk_size
+        plan = []
+        surviving_total = 0
+        for chunk_data in self.variant_chunks(fields=["variant_index"]):
+            abs_idx = chunk_data["variant_index"]
+            chunk_idx = int(abs_idx[0]) // chunk_size
+            local_sel = abs_idx - chunk_idx * chunk_size
+            plan.append(
+                utils.ChunkRead(
+                    index=chunk_idx,
+                    num_selected=int(abs_idx.size),
+                    selection=utils.normalise_local_selection(local_sel, chunk_size),
+                )
+            )
+            surviving_total += int(abs_idx.size)
         logger.info(
-            f"materialise_variant_filter: {indexes.size} variants survive "
+            f"materialise_variant_filter: {surviving_total} variants survive "
             f"({len(plan)} chunks)"
         )
         self.set_variant_filter(None)

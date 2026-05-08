@@ -1818,6 +1818,148 @@ class TestMaterialiseVariantFilter:
             reader.materialise_variant_filter()
 
 
+class TestVariantIndexPseudoField:
+    """``VczReader.variant_chunks(fields=["variant_index"])`` emits the
+    global (store-wide) variant index of each surviving variant in
+    each chunk, without reading any variants-axis array. Used by
+    ``materialise_variant_filter`` to build a chunk plan from a
+    filter; available to any caller that needs to round-trip the
+    selection back to global indexes."""
+
+    @staticmethod
+    def _make(num_variants=10, variants_chunk_size=3):
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=1,
+            call_genotype=np.zeros((num_variants, 1, 2), dtype=np.int8),
+            info_fields={"DP": np.arange(num_variants, dtype=np.int32) * 10},
+            variants_chunk_size=variants_chunk_size,
+        )
+
+    def test_default_plan_yields_full_axis(self):
+        # No selection, no filter: concatenated indexes cover [0, N).
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        per_chunk = [
+            chunk["variant_index"]
+            for chunk in reader.variant_chunks(fields=["variant_index"])
+        ]
+        assert len(per_chunk) == 4  # 3, 3, 3, 1
+        assert per_chunk[0].dtype == np.int64
+        nt.assert_array_equal(np.concatenate(per_chunk), np.arange(10))
+
+    def test_default_plan_per_chunk_layout(self):
+        # Each chunk's array spans [k*chunk_size, (k+1)*chunk_size) up
+        # to the partial last chunk.
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        per_chunk = [
+            chunk["variant_index"]
+            for chunk in reader.variant_chunks(fields=["variant_index"])
+        ]
+        nt.assert_array_equal(per_chunk[0], [0, 1, 2])
+        nt.assert_array_equal(per_chunk[1], [3, 4, 5])
+        nt.assert_array_equal(per_chunk[2], [6, 7, 8])
+        nt.assert_array_equal(per_chunk[3], [9])
+
+    def test_set_variants_array_indexes_match(self):
+        # Sparse global indexes: each surviving variant's position in
+        # the original axis is recovered in the per-chunk arrays.
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        wanted = np.array([0, 1, 5, 7, 9], dtype=np.int64)
+        reader.set_variants(wanted)
+        emitted = np.concatenate(
+            [
+                chunk["variant_index"]
+                for chunk in reader.variant_chunks(fields=["variant_index"])
+            ]
+        )
+        nt.assert_array_equal(emitted, wanted)
+
+    def test_slice_selection_is_handled(self):
+        # A single contiguous range becomes a slice selection on the
+        # ChunkRead; the pseudo-field must produce the same global
+        # indexes.
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        reader.set_variants(np.array([3, 4], dtype=np.int64))
+        plan = reader.variant_chunk_plan
+        assert isinstance(plan[0].selection, slice)
+        emitted = np.concatenate(
+            [
+                chunk["variant_index"]
+                for chunk in reader.variant_chunks(fields=["variant_index"])
+            ]
+        )
+        nt.assert_array_equal(emitted, [3, 4])
+
+    def test_ndarray_selection_is_handled(self):
+        # Non-contiguous local indexes within a chunk keep the
+        # selection as an ndarray (no collapse to slice). The
+        # pseudo-field must use the ndarray branch of the helper.
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        reader.set_variants(np.array([0, 2, 4, 6, 7], dtype=np.int64))
+        plan = reader.variant_chunk_plan
+        # Chunk 0 has local selection [0, 2] — non-contiguous → ndarray.
+        assert isinstance(plan[0].selection, np.ndarray)
+        emitted = np.concatenate(
+            [
+                chunk["variant_index"]
+                for chunk in reader.variant_chunks(fields=["variant_index"])
+            ]
+        )
+        nt.assert_array_equal(emitted, [0, 2, 4, 6, 7])
+
+    def test_variant_filter_yields_surviving_indexes(self):
+        # DP = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]; include "DP>=40"
+        # keeps indexes 4..9.
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>=40")
+        )
+        emitted = np.concatenate(
+            [
+                chunk["variant_index"]
+                for chunk in reader.variant_chunks(fields=["variant_index"])
+            ]
+        )
+        nt.assert_array_equal(emitted, [4, 5, 6, 7, 8, 9])
+
+    def test_filter_excludes_chunk_skips_emit(self):
+        # When a whole chunk is filtered out, no entry is yielded for
+        # it (variant_chunks already skips empty chunks).
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>=70")
+        )
+        per_chunk = [
+            chunk["variant_index"]
+            for chunk in reader.variant_chunks(fields=["variant_index"])
+        ]
+        assert len(per_chunk) == 2
+        nt.assert_array_equal(per_chunk[0], [7, 8])
+        nt.assert_array_equal(per_chunk[1], [9])
+
+    def test_combined_with_real_field_lengths_match(self):
+        # Mixing variant_index with a Zarr-backed variants-axis field
+        # yields aligned arrays (same length per chunk).
+        reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="DP>=40")
+        )
+        for chunk in reader.variant_chunks(
+            fields=["variant_index", "variant_position"]
+        ):
+            indexes = chunk["variant_index"]
+            positions = chunk["variant_position"]
+            assert indexes.shape == positions.shape
+            nt.assert_array_equal(positions, indexes + 100)
+
+    def test_empty_fields_still_short_circuits(self):
+        reader = VczReader(self._make(num_variants=3, variants_chunk_size=3))
+        with pytest.raises(StopIteration):
+            next(reader.variant_chunks(fields=[]))
+
+
 class TestVariantCountsPerChunk:
     """``VczReader.variant_counts_per_chunk`` derives per-plan-entry
     variant counts from the chunk plan structure alone — no Zarr

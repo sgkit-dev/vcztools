@@ -152,6 +152,31 @@ def _has_variants_axis(arr) -> bool:
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
 
 
+# Query-only pseudo-fields recognised by :meth:`VczReader.variant_chunks`.
+# Each is emitted from per-chunk plan state, never from a Zarr array.
+_PSEUDO_QUERY_FIELDS = frozenset({"variant_index"})
+
+
+def _absolute_variant_indexes(
+    entry: utils.ChunkRead, variants_chunk_size: int
+) -> np.ndarray:
+    """Global variant indexes contributed by ``entry``.
+
+    Maps each variant the chunk read selects to its store-wide variant
+    index. Used to materialise the ``variant_index`` pseudo-field in
+    :meth:`VczReader.variant_chunks`.
+    """
+    chunk_offset = entry.index * variants_chunk_size
+    sel = entry.selection
+    if sel is None:
+        local = np.arange(entry.num_selected, dtype=np.int64)
+    elif isinstance(sel, slice):
+        local = np.arange(*sel.indices(variants_chunk_size), dtype=np.int64)
+    else:
+        local = np.asarray(sel, dtype=np.int64)
+    return chunk_offset + local
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class BlockReadTemplate:
     """Variant-chunk-independent read pattern for one block.
@@ -859,15 +884,15 @@ class VczReader:
     def materialise_variant_filter(self) -> None:
         """Resolve the configured variant filter into a fixed selection.
 
-        Walks ``variant_chunk_plan``, evaluates the filter, and replaces
-        ``(variant_filter, variant_chunk_plan)`` with a chunk plan over
-        the surviving variants. No-op if no filter is configured.
+        Iterates :meth:`variant_chunks` collecting the global indexes
+        of surviving variants, then replaces ``(variant_filter,
+        variant_chunk_plan)`` with a chunk plan over those variants.
+        No-op if no filter is configured.
 
         Only variant-scope filters are supported. Sample-scope filters
-        require reading on the filter sample axis and would duplicate
-        much of :meth:`variant_chunks`; resolve them by iterating
-        :meth:`variant_chunks` instead. Raises ``ValueError`` on a
-        sample-scope filter.
+        require the per-cell mask emitted during iteration; resolve
+        them by iterating :meth:`variant_chunks` directly. Raises
+        ``ValueError`` on a sample-scope filter.
         """
         variant_filter = self.variant_filter
         if variant_filter is None:
@@ -878,75 +903,23 @@ class VczReader:
                 "materialise_variant_filter; iterate variant_chunks() "
                 "to resolve them, or supply a variant-scope filter."
             )
-        plan = self._chunk_plan_from_filter(variant_filter)
+        surviving = [
+            chunk_data["variant_index"]
+            for chunk_data in self.variant_chunks(fields=["variant_index"])
+        ]
+        if len(surviving) == 0:
+            indexes = np.array([], dtype=np.int64)
+        else:
+            indexes = np.concatenate(surviving)
+        plan = regions_mod.chunk_plan_from_indexes(
+            indexes, variants_chunk_size=self.variants_chunk_size
+        )
+        logger.info(
+            f"materialise_variant_filter: {indexes.size} variants survive "
+            f"({len(plan)} chunks)"
+        )
         self.set_variant_filter(None)
         self.set_variants(plan)
-
-    def _chunk_plan_from_filter(self, variant_filter) -> list[utils.ChunkRead]:
-        """Walk ``variant_chunk_plan`` and evaluate ``variant_filter``,
-        returning a new chunk plan over the surviving variants.
-        Per-chunk selections are run through
-        :func:`vcztools.utils.normalise_local_selection` so that a
-        full surviving chunk collapses to ``None`` and a contiguous
-        run collapses to a ``slice``. Caller is responsible for
-        ensuring the filter is variant-scope.
-
-        Logs surviving/original variant counts at INFO. ``original``
-        is the count the filter actually evaluated against — i.e. the
-        post-prior-selection input to this pass — not the store-wide
-        total."""
-        chunk_size = self.variants_chunk_size
-        static_fields = {}
-        dynamic_fields = []
-        for name in variant_filter.referenced_fields:
-            arr = self.root[name]
-            if _has_variants_axis(arr):
-                dynamic_fields.append(name)
-            else:
-                static_fields[name] = arr[:]
-
-        plan = []
-        surviving_total = 0
-        original_total = 0
-        bytes_read = 0
-        start = time.perf_counter()
-        for entry in self.variant_chunk_plan:
-            chunk_data = dict(static_fields)
-            for name in dynamic_fields:
-                block = self.root[name].blocks[entry.index]
-                if entry.selection is not None:
-                    block = block[entry.selection]
-                chunk_data[name] = block
-                bytes_read += utils.array_memory_bytes(block)
-            result = variant_filter.evaluate(chunk_data)
-            original_total += result.size
-            local = np.flatnonzero(result)
-            if local.size == 0:
-                continue
-            surviving_total += local.size
-            if entry.selection is None:
-                chunk_local = local
-            elif isinstance(entry.selection, slice):
-                offsets = np.arange(*entry.selection.indices(chunk_size))
-                chunk_local = offsets[local]
-            else:
-                chunk_local = np.asarray(entry.selection)[local]
-            plan.append(
-                utils.ChunkRead(
-                    index=entry.index,
-                    num_selected=int(local.size),
-                    selection=utils.normalise_local_selection(chunk_local, chunk_size),
-                )
-            )
-        elapsed = time.perf_counter() - start
-        rate = bytes_read / elapsed / (1024 * 1024) if elapsed > 0 else 0.0
-        logger.info(
-            f"_chunk_plan_from_filter: {surviving_total} of {original_total} "
-            f"variants survive ({len(plan)} chunks) "
-            f"in {elapsed:.2f}s ({_fmt_bytes(bytes_read)} read, "
-            f"{rate:.1f} MiB/s)"
-        )
-        return plan
 
     def set_filter_samples(self, filter_samples) -> None:
         """Configure the sample axis that a sample-scope variant filter
@@ -1161,6 +1134,13 @@ class VczReader:
         release it. Argument validation is eager: ``start < 0`` and
         ``fields == []`` are detected on the call itself rather than
         on the first ``next()``.
+
+        The reserved name ``"variant_index"`` may be passed in
+        ``fields`` as a pseudo-field. It does not correspond to a Zarr
+        array; instead the yielded per-chunk array contains the global
+        (store-wide) variant index of each surviving variant in that
+        chunk, dtype ``int64``. Pseudo-fields are not auto-discovered
+        when ``fields`` is ``None``.
         """
         if start < 0:
             raise ValueError(f"start must be >= 0 (got {start})")
@@ -1204,8 +1184,12 @@ class VczReader:
             )
 
         # Split referenced fields into static (read once on the reader)
-        # and dynamic (prefetched per variant chunk).
-        referenced = list(dict.fromkeys([*filter_fields, *query_fields]))
+        # and dynamic (prefetched per variant chunk). Pseudo-fields
+        # (e.g. ``variant_index``) are query-only and never enter the
+        # Zarr-backed split; they are emitted directly from per-chunk
+        # plan state.
+        real_query_fields = [f for f in query_fields if f not in _PSEUDO_QUERY_FIELDS]
+        referenced = list(dict.fromkeys([*filter_fields, *real_query_fields]))
         referenced_static_fields = {
             name: self._load_static_field(name)
             for name in referenced
@@ -1318,7 +1302,12 @@ class VczReader:
                     if field in referenced_static_fields:
                         chunk_data[field] = referenced_static_fields[field]
                         continue
-                    value = chunk.output_view(field)
+                    if field == "variant_index":
+                        value = _absolute_variant_indexes(
+                            chunk.variant_chunk, self.variants_chunk_size
+                        )
+                    else:
+                        value = chunk.output_view(field)
                     if variants_selection is not None:
                         value = value[variants_selection]
                     chunk_data[field] = value

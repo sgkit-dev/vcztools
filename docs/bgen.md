@@ -95,6 +95,39 @@ missing flag is set, but zeroing keeps the output deterministic).
 - **Whitespace in sample IDs.** Rejected with a clear error message —
   the `.sample` format is whitespace-separated.
 
+## Validation
+
+`view-bgen` output is validated end-to-end against two external
+references:
+
+- **`bgen-reader`** (Limix) parses every test fixture's output and
+  recovers the source VCZ genotypes exactly at 8-bit precision. See
+  `tests/test_bgen_validation.py::TestBgenReaderRoundtrip`.
+- **PLINK 2** (`--export bgen-1.2 bits=8 ref-first --double-id`)
+  produces semantically equivalent BGEN — same variant count, same
+  positions, same alleles, same dosage matrix — for fixtures that
+  exercise plink2's BGEN export code path. See
+  `TestPlink2BgenCrossCheck`.
+
+Known field-level differences between `view-bgen` and `plink2 --export
+bgen-1.2`, observed in the cross-check tests:
+
+| Field | `view-bgen` | `plink2 --export bgen` |
+| --- | --- | --- |
+| Sample IDs (BGEN header) | bare IID (`HG00096`) | `FID_IID` (`HG00096_HG00096` or `0_NA00001`) |
+| Chromosome names | passes through (`chr22`) | normalises like `--make-bed` (`22`) |
+| Variant ID (rsid) | `.` if VCZ `variant_id` is empty | synthesises `chrom:pos:ref:alt` |
+| Compression bytes | zlib at Python's default level | zlib at plink2's level |
+
+Decoded probability matrices match exactly. Compression-byte and
+metadata-format differences are documented but not aligned.
+
+PLINK 2 v2.00a6 has a known assertion (`compressed_bytect`) that
+crashes on inputs with mixed-phase variants — `view-bgen` handles
+them cleanly (degrades to unphased per-variant with a warning). The
+test suite asserts this divergence on the bundled `sample.vcf.gz`
+fixture so a future plink2 release fixing the bug surfaces here.
+
 ## See also
 
 - {ref}`sec-cli-ref` for the full `view-bgen` flag reference.

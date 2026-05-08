@@ -10,7 +10,7 @@ from functools import wraps
 import click
 import humanfriendly
 
-from . import bcftools_filter, plink, provenance, retrieval, vcf_writer
+from . import bcftools_filter, bgen, plink, provenance, retrieval, vcf_writer
 from . import query as query_module
 from . import regions as regions_mod
 from . import samples as samples_mod
@@ -932,6 +932,44 @@ def view_plink(path, out, **kwargs):
         plink.write_plink(reader, out)
 
 
+# view_plink_options / ViewPlinkOptions are reused below: their option set
+# (regions/targets/samples/include/exclude/types/min-max-alleles + storage
+# /readahead) is format-agnostic and shared with view-bgen.
+@click.command
+@click.argument("path", type=click.Path())
+@view_plink_options
+@click.option(
+    "--out",
+    default="bgen",
+    help="Output prefix for the .bgen/.sample/.bgen.bgi fileset.",
+)
+@log_options
+@handle_exception
+def view_bgen(path, out, **kwargs):
+    """
+    Generate an Oxford BGEN fileset (.bgen / .sample / .bgen.bgi) from
+    a VCZ dataset.
+
+    Output profile: layout 2, zlib-compressed, 8 bits/probability,
+    biallelic, diploid, embedded sample IDs. Hard calls in
+    ``call_genotype`` are encoded as 1.0 probabilities (round-trips
+    exactly at 8-bit). Phase is propagated per-variant from
+    ``call_genotype_phased`` if present. Sample/region/filter selection
+    mirrors bcftools view (-s/-S/-r/-R/-t/-T/-i/-e/-v/-V/-m/-M).
+    Multi-allelic variants are rejected by default; pass ``-M 2`` (or
+    ``--max-alleles 2``) to skip them.
+
+    See the "BGEN output" documentation page for the full reference,
+    including downstream-tool compatibility (REGENIE, SAIGE,
+    BOLT-LMM, BGENIE, qctool, PLINK 2) and sidecar conventions.
+    """
+    LogConfig.pop_from_click_kwargs(kwargs).apply()
+    options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+    assert kwargs == {}, kwargs
+    with make_reader_from_options(path, options) as reader:
+        bgen.write_bgen(reader, out)
+
+
 @version
 @click.group(cls=NaturalOrderGroup, name="vcztools")
 def vcztools_main():
@@ -942,3 +980,4 @@ vcztools_main.add_command(index)
 vcztools_main.add_command(query)
 vcztools_main.add_command(view)
 vcztools_main.add_command(view_plink)
+vcztools_main.add_command(view_bgen)

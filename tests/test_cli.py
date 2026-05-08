@@ -1,4 +1,5 @@
 import pathlib
+import sqlite3
 import sys
 from unittest import mock
 
@@ -646,6 +647,152 @@ class TestViewPlink:
         assert (tmp_path / "p.bed").exists()
         assert (tmp_path / "p.bim").exists()
         assert (tmp_path / "p.fam").exists()
+
+
+class TestViewBgen:
+    """CLI surface for ``view-bgen``. Exercises wiring (option parsing,
+    reader assembly, output prefix handling, error surfacing). Byte-level
+    encoder checks live in ``tests/test_bgen.py``.
+    """
+
+    @staticmethod
+    def _read_sample(path):
+        return path.read_text().splitlines()
+
+    @staticmethod
+    def _bgi_variant_rows(path):
+        conn = sqlite3.connect(str(path))
+        try:
+            return conn.execute(
+                "SELECT chromosome, position, rsid, allele1, allele2 "
+                "FROM Variant ORDER BY position"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def test_minimum_invocation(self, tmp_path, fx_vcz_path):
+        # The sample fixture has multi-allelic variants — need --max-alleles 2.
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+        )
+        assert (tmp_path / "b.bgen").exists()
+        assert (tmp_path / "b.sample").exists()
+        assert (tmp_path / "b.bgen.bgi").exists()
+
+    def test_default_output_prefix(self, tmp_path, fx_vcz_path):
+        runner = ct.CliRunner()
+        with runner.isolated_filesystem(tmp_path) as cwd:
+            result = runner.invoke(
+                cli.vcztools_main,
+                f"view-bgen {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
+                catch_exceptions=False,
+            )
+            assert result.exit_code == 0
+            cwd_path = pathlib.Path(cwd)
+            assert (cwd_path / "bgen.bgen").exists()
+            assert (cwd_path / "bgen.sample").exists()
+            assert (cwd_path / "bgen.bgen.bgi").exists()
+
+    def test_path_required(self):
+        runner = ct.CliRunner()
+        result = runner.invoke(
+            cli.vcztools_main,
+            "view-bgen",
+            catch_exceptions=False,
+        )
+        assert result.exit_code != 0
+
+    def test_multiallelic_without_max_alleles_errors(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        _, err = run_vcztools(
+            f"view-bgen {fx_vcz_path} --out {out.as_posix()}",
+            expect_error=True,
+        )
+        assert "Multi-allelic" in err
+
+    def test_max_alleles_skips_multiallelic(self, tmp_path, fx_vcz_path):
+        # Same fixture, same expectations as view-plink: 6 surviving
+        # variants after -M 2 + -e 'CHROM=="X"'.
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+        )
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        assert len(rows) == 6
+
+    def test_sample_subset(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -s NA00001,NA00003 --out {out.as_posix()}"
+        )
+        sample_lines = self._read_sample(tmp_path / "b.sample")
+        # Drop the two header rows.
+        ids = [line.split()[0] for line in sample_lines[2:]]
+        assert ids == ["NA00001", "NA00003"]
+
+    def test_sample_complement(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -s ^NA00002 --out {out.as_posix()}"
+        )
+        sample_lines = self._read_sample(tmp_path / "b.sample")
+        ids = [line.split()[0] for line in sample_lines[2:]]
+        assert ids == ["NA00001", "NA00003"]
+
+    def test_regions(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-r '20:1230237-' --out {out.as_posix()}"
+        )
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        for chrom, pos, *_ in rows:
+            assert chrom == "20"
+            assert pos >= 1230237
+
+    def test_targets_complement(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
+        )
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        for chrom, *_ in rows:
+            assert chrom != "20"
+
+    def test_include_filter(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-i 'POS>1000000' --out {out.as_posix()}"
+        )
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        for _chrom, pos, *_ in rows:
+            assert pos > 1000000
+
+    def test_types_snps_only(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(f"view-bgen {fx_vcz_path} -v snps -M 2 --out {out.as_posix()}")
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        positions = sorted(pos for _chrom, pos, *_ in rows)
+        # Same 4 biallelic SNP sites the view-plink tests rely on.
+        assert positions == [111, 112, 14370, 17330]
+
+    def test_out_prefix_with_bgen_suffix(self, tmp_path, fx_vcz_path):
+        # `--out p.bgen` resolves to p.bgen/p.sample/p.bgen.bgi
+        # (``.with_suffix(".bgen")`` is idempotent).
+        out = tmp_path / "p.bgen"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+        )
+        assert (tmp_path / "p.bgen").exists()
+        assert (tmp_path / "p.sample").exists()
+        assert (tmp_path / "p.bgen.bgi").exists()
 
 
 class TestIndex:

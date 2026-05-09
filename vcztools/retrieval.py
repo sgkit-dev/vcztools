@@ -152,6 +152,58 @@ def _has_variants_axis(arr) -> bool:
     return dims is not None and len(dims) > 0 and dims[0] == "variants"
 
 
+def _compute_min_variants_chunk_size(root) -> int:
+    """Compute the minimum variants-axis chunk size.
+
+    By spec ``call_*`` fields define the floor; every variant-only
+    field must use a chunk size that is a positive integer multiple of
+    it. Two ``call_*`` fields with different chunk sizes are a writer
+    bug and raise ``ValueError`` here. When no ``call_*`` field is
+    present, falls back to the minimum chunk size across variant-axis
+    fields.
+    """
+    call_sizes: dict[str, int] = {}
+    other_sizes: list[int] = []
+    for name in root.array_keys():
+        arr = root[name]
+        if not _has_variants_axis(arr):
+            continue
+        chunk_size = int(arr.chunks[0])
+        if name.startswith("call_"):
+            call_sizes[name] = chunk_size
+        else:
+            other_sizes.append(chunk_size)
+    if len(call_sizes) > 0:
+        sizes_set = set(call_sizes.values())
+        if len(sizes_set) > 1:
+            raise ValueError(
+                f"call_* fields must share a single variants chunk size; "
+                f"found {call_sizes}"
+            )
+        return next(iter(sizes_set))
+    if len(other_sizes) > 0:
+        return min(other_sizes)
+    raise ValueError("no variant-axis fields in store")
+
+
+def _validate_variants_axis_chunking(root, min_chunk: int) -> None:
+    """Assert every variant-axis field's chunks[0] is a positive
+    integer multiple of ``min_chunk``. Raises ``ValueError`` otherwise.
+    """
+    if min_chunk <= 0:
+        raise ValueError(f"min_chunk must be positive (got {min_chunk})")
+    for name in root.array_keys():
+        arr = root[name]
+        if not _has_variants_axis(arr):
+            continue
+        chunk_size = int(arr.chunks[0])
+        if chunk_size <= 0 or chunk_size % min_chunk != 0:
+            raise ValueError(
+                f"{name}.chunks[0]={chunk_size} is not a positive multiple "
+                f"of min variants chunk size {min_chunk}"
+            )
+
+
 # Query-only pseudo-fields recognised by :meth:`VczReader.variant_chunks`.
 # Each is emitted from per-chunk plan state, never from a Zarr array.
 _PSEUDO_QUERY_FIELDS = frozenset({"variant_index"})
@@ -573,9 +625,9 @@ class CachedVariantChunk:
         if sel is not None:
             n_variants = int(sel.size)
         else:
-            chunk_size_v = int(arr.chunks[0])
-            chunk_start = self.variant_chunk.index * chunk_size_v
-            n_variants = min(chunk_size_v, int(arr.shape[0]) - chunk_start)
+            min_chunk = int(arr.chunks[0])
+            chunk_start = self.variant_chunk.index * min_chunk
+            n_variants = min(min_chunk, int(arr.shape[0]) - chunk_start)
         return np.empty((n_variants, 0) + tuple(arr.shape[2:]), dtype=arr.dtype)
 
 
@@ -682,6 +734,7 @@ class VczReader:
         readahead_bytes: int | None = None,
     ):
         self.root = root
+        _validate_variants_axis_chunking(root, _compute_min_variants_chunk_size(root))
         self.readahead_bytes = readahead_bytes
         workers = (
             readahead_workers
@@ -1018,8 +1071,15 @@ class VczReader:
 
     @functools.cached_property
     def variants_chunk_size(self) -> int:
-        """Chunk size along the variants axis."""
-        return int(self.root["variant_position"].chunks[0])
+        """Minimum chunk size on the variants axis: the iteration unit.
+
+        ``call_*`` fields define this minimum (they are the memory-budget
+        driver). Variant-only fields may have a chunk size that is a
+        positive integer multiple of it. When no ``call_*`` field is
+        present (e.g. a drop-genotypes-only store), falls back to the
+        minimum chunk size across variant-axis fields.
+        """
+        return _compute_min_variants_chunk_size(self.root)
 
     @functools.cached_property
     def samples_chunk_size(self) -> int:

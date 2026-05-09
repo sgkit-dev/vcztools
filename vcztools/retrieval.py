@@ -320,6 +320,14 @@ class ReadaheadPipeline:
     - Chunks can drift in content size across the iteration, especially
       when variable-length string fields are in the prefetch set, so
       later chunks may over- or under-shoot the budget.
+    - When variant-only fields use a chunk size larger than ``min_chunk``
+      (multiplier > 1), one Zarr block spans multiple logical chunks.
+      The pipeline keeps a per-block cache (``_block_futures``) so that
+      consecutive logical chunks within one field block share the read.
+      The bootstrap measurement counts only the *new* IOs scheduled for
+      a chunk; subsequent chunks that hit the cache report their
+      reused blocks but no fresh IO, so ``last_chunk_read_seconds``
+      reflects only the wait for newly-scheduled IOs.
 
     ``readahead_bytes=0`` pins pipeline depth at 1: the consumer's
     current chunk plus exactly one prefetched ahead. The pipeline
@@ -360,8 +368,18 @@ class ReadaheadPipeline:
         # accumulate retrieval-side throughput stats.
         self.last_chunk_bytes: int | None = None
         self._executor = executor
-        # in_flight: list of (variant_chunk, [(blocks_key, Future), ...]).
-        # The futures list is empty when the chunk needs no prefetch.
+        # _block_futures: cache_key -> [Future, refcount]. cache_key is
+        # ``(template.key, block_index)`` and uniquely identifies a Zarr
+        # block read. refcount is the number of in-flight chunks that
+        # still need this block; entries are evicted when refcount drops
+        # to zero. Sharing across in-flight chunks is what saves IO when
+        # multiple logical chunks reference one variant-only field block.
+        self._block_futures: dict[tuple, list] = {}
+        # _in_flight: list of (variant_chunk, refs) where refs is a list
+        # of (cache_key, intra_slice, dest_key, is_new). is_new flags
+        # whether this chunk's _schedule_one initiated the IO (i.e. the
+        # block was not already in the cache); used for byte-budget
+        # accounting so cached chunks don't double-count.
         self._in_flight: list = []
         # Peak ``len(_in_flight)`` observed across the iteration; the
         # consumer reads it after iteration to assess how effective
@@ -375,7 +393,9 @@ class ReadaheadPipeline:
 
     def _schedule_one(self) -> bool:
         """Plan the next variant chunk's reads and submit them to the
-        thread pool. Returns False once the plan is exhausted."""
+        thread pool. Reuses futures already in the block cache when a
+        prior chunk has scheduled the same field block. Returns False
+        once the plan is exhausted."""
         try:
             variant_chunk = next(self._variant_chunk_plan_iter)
         except StopIteration:
@@ -383,16 +403,26 @@ class ReadaheadPipeline:
         reads = update_chunk_read_list(
             self._read_templates, variant_chunk.index, min_chunk=self._min_chunk
         )
-        futures = [
-            (key, intra_slice, self._executor.submit(_read_block, arr, block_index))
-            for key, arr, block_index, intra_slice in reads
-        ]
-        self._in_flight.append((variant_chunk, futures))
+        refs = []
+        new_count = 0
+        for dest_key, arr, block_index, intra_slice in reads:
+            cache_key = (dest_key, block_index)
+            entry = self._block_futures.get(cache_key)
+            is_new = entry is None
+            if is_new:
+                fut = self._executor.submit(_read_block, arr, block_index)
+                entry = [fut, 0]
+                self._block_futures[cache_key] = entry
+                new_count += 1
+            entry[1] += 1
+            refs.append((cache_key, intra_slice, dest_key, is_new))
+        self._in_flight.append((variant_chunk, refs))
         if len(self._in_flight) > self.max_in_flight:
             self.max_in_flight = len(self._in_flight)
         logger.log(
             TRACE,
-            f"schedule chunk {variant_chunk.index}: {len(futures)} blocks submitted",
+            f"schedule chunk {variant_chunk.index}: {new_count} new blocks "
+            f"submitted ({len(refs) - new_count} reused from cache)",
         )
         return True
 
@@ -418,18 +448,22 @@ class ReadaheadPipeline:
         try:
             self._refill()
             while len(self._in_flight) > 0:
-                variant_chunk, futures = self._in_flight.pop(0)
+                variant_chunk, refs = self._in_flight.pop(0)
                 future_to_data = {
-                    fut: (key, intra_slice) for key, intra_slice, fut in futures
+                    self._block_futures[ck][0]: (ck, intra_slice, dest_key, is_new)
+                    for ck, intra_slice, dest_key, is_new in refs
                 }
                 blocks: dict[tuple, np.ndarray] = {}
                 chunk_bytes = 0
                 read_start = time.perf_counter()
                 for fut in cf.as_completed(future_to_data):
-                    key, intra_slice = future_to_data[fut]
+                    _ck, intra_slice, dest_key, is_new = future_to_data[fut]
                     block = fut.result()
-                    chunk_bytes += utils.array_memory_bytes(block)
-                    blocks[key] = block[intra_slice]
+                    if is_new:
+                        # Only count IO bytes paid for by this chunk; cached
+                        # blocks were already accounted for when first scheduled.
+                        chunk_bytes += utils.array_memory_bytes(block)
+                    blocks[dest_key] = block[intra_slice]
                 read_seconds = time.perf_counter() - read_start
                 self.last_chunk_read_seconds = read_seconds
                 self.last_chunk_bytes = chunk_bytes
@@ -471,15 +505,28 @@ class ReadaheadPipeline:
                     output_columns=self._output_columns,
                     blocks=blocks,
                 )
-                # After the consumer drops the previous chunk reference,
-                # top the pipeline back up.
+                # Refill BEFORE releasing this chunk's cache holds so
+                # the next chunks' _schedule_one can observe the still-
+                # alive entries and bump their refcounts. Without this
+                # ordering, the bootstrap chunk would evict its blocks
+                # before any later chunk had a chance to share them.
                 self._refill()
+                # Decrement refcounts for the cache entries this chunk
+                # used. A block that drops to refcount=0 is no longer
+                # needed by any in-flight chunk and is evicted; the
+                # underlying ndarray may still be alive via the views
+                # in CachedVariantChunk until the consumer drops it.
+                for ck, _intra, _dest, _is_new in refs:
+                    entry = self._block_futures[ck]
+                    entry[1] -= 1
+                    if entry[1] == 0:
+                        del self._block_futures[ck]
         finally:
             cancelled = 0
-            for _variant_chunk, futures in self._in_flight:
-                for _key, _intra_slice, fut in futures:
-                    if fut.cancel():
-                        cancelled += 1
+            for entry in self._block_futures.values():
+                fut = entry[0]
+                if fut.cancel():
+                    cancelled += 1
             if cancelled > 0:
                 logger.debug(f"cancelled {cancelled} pending futures")
 

@@ -2996,6 +2996,38 @@ class TestVariableChunkSizes:
             else None,
         )
 
+    def test_block_cache_dedups_reads_within_one_field_block(self, monkeypatch):
+        # variant_allele chunked at 4 * min_chunk; one field block spans
+        # 4 logical chunks. Iterating all 4 must issue the variant_allele
+        # block read exactly once.
+        num_variants = 8
+        min_chunk = 2
+        store = self._build(
+            num_variants=num_variants, min_chunk=min_chunk, allele_chunk=min_chunk * 4
+        )
+        # variant_allele has only one field block; call_genotype has 4
+        # min_chunk-sized blocks.
+        assert store["variant_allele"].cdata_shape[0] == 1
+        assert store["call_genotype"].cdata_shape[0] == 4
+
+        read_log: list[tuple] = []
+        original_read_block = retrieval_mod._read_block
+
+        def counting_read_block(arr, block_index):
+            arr_path = getattr(arr, "name", None) or repr(arr)
+            read_log.append((arr_path, block_index))
+            return original_read_block(arr, block_index)
+
+        monkeypatch.setattr(retrieval_mod, "_read_block", counting_read_block)
+
+        with retrieval_mod.VczReader(store) as r:
+            list(r.variant_chunks(fields=["variant_allele", "call_genotype"]))
+
+        variant_allele_reads = [k for k in read_log if "variant_allele" in k[0]]
+        # Exactly one read for the single variant_allele field block,
+        # despite 4 logical chunks consuming it.
+        assert len(variant_allele_reads) == 1
+
     @pytest.mark.parametrize("multiplier", [1, 2, 3, 5])
     def test_variant_allele_multiplier_matches_baseline(self, multiplier):
         # Build a baseline (multiplier=1) and a scaled-up store with the

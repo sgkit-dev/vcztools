@@ -1,3 +1,16 @@
+"""VCZ reader: chunked-iteration entry points for VCF Zarr stores.
+
+The variants axis is iterated in *logical* chunks of size ``min_chunk``,
+where ``min_chunk`` is the chunk size of the ``call_*`` fields (by spec,
+the minimum across the variants axis). Variant-only fields may use a
+chunk size that is a positive integer multiple of ``min_chunk``; for
+those, one Zarr block spans multiple logical chunks and
+:class:`BlockReadTemplate` translates the logical chunk index to a
+``(field_block_index, intra_slice)`` pair.
+:class:`ReadaheadPipeline` keeps a per-block cache so consecutive
+logical chunks within one variant-only field block share a single IO.
+"""
+
 import concurrent.futures as cf
 import dataclasses
 import functools
@@ -921,6 +934,10 @@ class VczReader:
         :func:`vcztools.regions.build_chunk_plan` to build one from
         region/target strings and a root) or a sorted 1-D array of
         global variant indexes (bucketed into a plan internally).
+        ``ChunkRead.index`` is in units of the minimum variants chunk
+        size — see :func:`vcztools.utils.compute_min_variants_chunk_size`
+        — which equals every variant-axis field's chunk size for stores
+        without scaled-up variant-only fields.
 
         May be called multiple times; each call replaces the prior
         selection. A ``variant_chunks()`` generator already iterating

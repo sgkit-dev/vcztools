@@ -1,14 +1,20 @@
 import concurrent.futures as cf
 import dataclasses
 import functools
+import itertools
 import logging
+import os
+import threading
 import time
+import weakref
 
+import anyio
+import anyio.from_thread
 import numpy as np
 
 from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
-from vcztools import utils
+from vcztools import utils, zarr_direct
 from vcztools import variant_filter as variant_filter_mod
 from vcztools.utils import (
     _as_fixed_length_string,
@@ -44,89 +50,63 @@ def _one_line_repr(obj) -> str:
     return " ".join(repr(obj).split())
 
 
-class _PrefetchIterator:
-    """One-deep prefetch wrapper around an iterator.
-
-    On every ``__next__`` returns the previously prefetched item and
-    submits the next ``__next__`` call on the underlying iterator to
-    a dedicated single-worker pool. While the consumer's per-item
-    work runs, the producer's next item is being computed in the
-    background. Exceptions raised by the underlying iterator surface
-    on the consumer's ``__next__`` call.
-
-    Lifetime: the worker pool is created in ``__init__`` and shut
-    down by ``close()`` (also called from ``__del__`` defensively to
-    prevent thread leaks if a caller forgets to close).
-    """
-
-    _SENTINEL = object()
-
-    def __init__(self, source):
-        self._source = source
-        self._executor = cf.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="vcztools-prefetch"
-        )
-        self._next_future = self._executor.submit(self._fetch)
-        self._closed = False
-
-    def _fetch(self):
-        try:
-            return next(self._source)
-        except StopIteration:
-            return self._SENTINEL
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._closed:
-            raise StopIteration
-        result = self._next_future.result()
-        if result is self._SENTINEL:
-            self._closed = True
-            self._executor.shutdown(wait=False)
-            raise StopIteration
-        self._next_future = self._executor.submit(self._fetch)
-        return result
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        # Drain the in-flight fetch so the worker isn't left producing
-        # into the void; the result (next item, sentinel, or
-        # exception) is no longer needed.
-        try:
-            self._next_future.result()
-        except BaseException:
-            pass
-        # Plain iterators (e.g. list_iterator) have no close(); only
-        # generators and similar resource-holding iterators do.
-        source_close = getattr(self._source, "close", None)
-        if source_close is not None:
-            source_close()
-        self._executor.shutdown(wait=True)
-
-    def __del__(self):
-        # Defensive: prevent thread leaks if a caller forgets close().
-        # Mirrors generator finalisation semantics.
-        try:
-            self.close()
-        except Exception:
-            pass
-
-
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
-# Fixed by design: these threads dispatch I/O to the Zarr backend
-# (which already handles its own async/decompression parallelism),
-# so usable parallelism is dispatch-bound and GIL-capped rather than
-# scaling with cpu_count.
-DEFAULT_READAHEAD_WORKERS = 32
+# Default cap on concurrent ``store.get`` calls per variant_chunks()
+# iteration. Stores are async-native so this is a coroutine count, not
+# a thread count.
+DEFAULT_IO_CONCURRENCY = 32
+# Default size of the per-reader decode thread pool. CPU-bound work
+# (zstd, blosc, etc. — all GIL-releasing C) runs in this pool inside
+# the reader's anyio portal.
+DEFAULT_DECODE_THREADS = os.cpu_count() or 1
 
 
-def _read_block(arr, block_index: tuple) -> np.ndarray:
-    """Fetch one Zarr block by block-index tuple."""
-    return arr.blocks[block_index]
+async def _read_block_async(
+    reader: zarr_direct.BlockReader,
+    block_index: tuple,
+    io_limiter: anyio.CapacityLimiter,
+    decode_limiter: anyio.CapacityLimiter,
+) -> np.ndarray:
+    """Fetch the chunks covered by ``block_index`` and assemble them
+    into a single ndarray, matching the result of ``arr.blocks[idx]``.
+
+    ``block_index`` may mix integer chunk indices with ``slice``
+    objects (typically ``slice(None)`` over a non-variants axis).
+    Slices are resolved to their concrete chunk-coord ranges via
+    :attr:`BlockReader.cdata_shape`, every chunk is fetched
+    concurrently inside an :func:`anyio.create_task_group`, and the
+    results are assembled with :func:`numpy.block`.
+    """
+    coord_ranges = []
+    for d, idx in enumerate(block_index):
+        if isinstance(idx, slice):
+            n_chunks = reader.cdata_shape[d]
+            coord_ranges.append(list(range(*idx.indices(n_chunks))))
+        else:
+            coord_ranges.append([idx])
+    coords_list = list(itertools.product(*coord_ranges))
+
+    async def fetch_one(coords):
+        async with io_limiter:
+            return await reader.read_chunk(coords, decode_limiter)
+
+    if len(coords_list) == 1:
+        return await fetch_one(coords_list[0])
+    fetched: dict[tuple, np.ndarray] = {}
+    async with anyio.create_task_group() as tg:
+        for coords in coords_list:
+
+            async def one(c=coords):
+                fetched[c] = await fetch_one(c)
+
+            tg.start_soon(one)
+
+    def build(axis, prefix):
+        if axis == len(coord_ranges):
+            return fetched[tuple(prefix)]
+        return [build(axis + 1, prefix + [c]) for c in coord_ranges[axis]]
+
+    return np.block(build(0, []))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -188,7 +168,7 @@ class BlockReadTemplate:
     """
 
     key: tuple
-    arr: object
+    block_reader: zarr_direct.BlockReader
     block_index_suffix: tuple
 
 
@@ -196,16 +176,19 @@ def create_chunk_read_list(
     root,
     sample_chunk_plan: "samples_mod.SampleChunkPlan",
     fields,
+    *,
+    get_block_reader,
 ) -> list[BlockReadTemplate]:
     """Resolve ``fields`` to a list of :class:`BlockReadTemplate`
     once per query, before any variant chunk is visited.
 
     Each template carries the variant-chunk-independent parts of one
-    block read — the cache key, the resolved Zarr array, and the
-    suffix of ``block_index`` that follows the variant chunk index
-    slot. :func:`update_chunk_read_list` substitutes a specific
-    variant chunk index to produce executor-ready
-    ``(key, arr, block_index)`` tuples.
+    block read — the cache key, a :class:`vcztools.zarr_direct.BlockReader`
+    bound to the field's array, and the suffix of ``block_index``
+    that follows the variant chunk index slot.
+    :func:`update_chunk_read_list` substitutes a specific variant
+    chunk index to produce executor-ready
+    ``(key, block_reader, block_index)`` tuples.
 
     For a ``call_*`` field the template list fans out one entry per
     sample chunk in ``sample_chunk_plan.chunk_reads``; for any other
@@ -213,22 +196,31 @@ def create_chunk_read_list(
 
     Every field must be variant-axis. Static (no-variants-axis) fields
     are handled by the reader's static-field cache, not the pipeline.
+
+    ``get_block_reader`` is a callable ``str -> BlockReader`` that
+    typically routes through :meth:`VczReader._get_block_reader` so
+    BlockReader instances are cached for the reader's lifetime.
     """
     templates = []
     for field in fields:
         arr = root[field]
         assert _has_variants_axis(arr), f"non-variants-axis field in pipeline: {field}"
+        reader = get_block_reader(field)
         if not field.startswith("call_"):
             suffix = (slice(None),) * (arr.ndim - 1)
             templates.append(
-                BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=suffix)
+                BlockReadTemplate(
+                    key=(field,), block_reader=reader, block_index_suffix=suffix
+                )
             )
         else:
             for cr in sample_chunk_plan.chunk_reads:
                 suffix = (cr.index,) + (slice(None),) * (arr.ndim - 2)
                 templates.append(
                     BlockReadTemplate(
-                        key=(field, cr.index), arr=arr, block_index_suffix=suffix
+                        key=(field, cr.index),
+                        block_reader=reader,
+                        block_index_suffix=suffix,
                     )
                 )
     return templates
@@ -239,215 +231,369 @@ def update_chunk_read_list(
     variant_chunk_index: int,
 ) -> list[tuple]:
     """Substitute ``variant_chunk_index`` into each template, returning
-    the ``[(key, arr, block_index), ...]`` list that
-    :class:`ReadaheadPipeline` submits to the thread pool. The
+    the ``[(key, block_reader, block_index), ...]`` list that
+    :func:`_produce_variant_chunks` issues fetches against. The
     template list itself is unchanged.
     """
     reads = []
     for t in templates:
         block_index = (variant_chunk_index,) + t.block_index_suffix
-        reads.append((t.key, t.arr, block_index))
+        reads.append((t.key, t.block_reader, block_index))
     return reads
 
 
-class ReadaheadPipeline:
-    """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
-
-    Resolves the per-field read pattern once at init via
-    :func:`create_chunk_read_list`, then for each entry in
-    ``variant_chunk_plan``: substitute the variant chunk index via
-    :func:`update_chunk_read_list`, submit the resulting block reads
-    to the reader-owned thread pool, collect results into a
-    ``blocks`` dict, then construct a :class:`CachedVariantChunk`
-    over those prefetched blocks and yield it. Cross-chunk readahead
-    overlaps later chunks' reads with the current chunk's processing
-    in the consumer.
-
-    The executor is supplied by the caller (typically
-    :class:`VczReader`) and lives across pipelines. Multiple pipelines
-    on the same reader — for example the BedEncoder shared-reader
-    fanout — submit to a single shared pool. When iteration is
-    abandoned mid-stream (consumer breaks early, generator closed,
-    exception propagates), the pipeline cancels its own pending
-    futures only; the executor itself outlives the pipeline.
-
-    The window is sized by a byte budget rather than a chunk count:
-    one variant-chunk prefetch can vary from a few MB (single
-    sample-chunk read for a partial subset) to >1 GB (every
-    sample chunk for a wide call_* field), so a count-based depth
-    would either starve fan-out or blow RSS.
-
-    Per-chunk byte cost is *measured*, not predicted: the first chunk
-    is scheduled solo, and once its prefetched blocks land we sum
-    their :func:`vcztools.utils.array_memory_bytes` and use that as
-    the window-sizing estimate for every later chunk. The estimate is
-    approximate —
-
-    - The bootstrap chunk runs even when its prefetch alone exceeds
-      ``readahead_bytes`` (the alternative is to never make progress).
-    - Chunks can drift in content size across the iteration, especially
-      when variable-length string fields are in the prefetch set, so
-      later chunks may over- or under-shoot the budget.
-
-    ``readahead_bytes=0`` pins pipeline depth at 1: the consumer's
-    current chunk plus exactly one prefetched ahead. The pipeline
-    never goes below depth 1 (the consumer would have to wait for
-    every chunk's I/O on the request thread), so this is the
-    smallest readahead the caller can ask for.
+@dataclasses.dataclass(frozen=True, slots=True)
+class _VariantChunksContext:
+    """Frozen snapshot of every per-iteration parameter for the
+    variant_chunks producer. Built on the calling thread; consumed by
+    the producer task running on the reader's anyio portal so that
+    mid-iteration mutations of reader state do not affect the
+    in-flight iteration.
     """
 
-    def __init__(
-        self,
-        root,
-        variant_chunk_plan: list[utils.ChunkRead],
-        sample_chunk_plan: "samples_mod.SampleChunkPlan",
-        output_columns: np.ndarray | None,
-        read_fields,
-        *,
-        readahead_bytes: int,
-        executor: cf.ThreadPoolExecutor,
-    ):
-        self.root = root
-        self._variant_chunk_plan_iter = iter(variant_chunk_plan)
-        self._sample_chunk_plan = sample_chunk_plan
-        self._output_columns = output_columns
-        self._read_templates = create_chunk_read_list(
-            root, sample_chunk_plan, read_fields
-        )
-        self._readahead_bytes = readahead_bytes
-        # Set on the first chunk's completion in __iter__.
-        self._per_chunk_bytes: int | None = None
-        # Wall-clock seconds spent on the most recent chunk's block reads;
-        # consumed by VczReader.variant_chunks to attribute per-chunk time
-        # into "read" vs. "assemble".
-        self.last_chunk_read_seconds: float | None = None
-        # Sum of utils.array_memory_bytes() over the most recent chunk's
-        # decompressed blocks; consumed by VczReader.variant_chunks to
-        # accumulate retrieval-side throughput stats.
-        self.last_chunk_bytes: int | None = None
-        self._executor = executor
-        # in_flight: list of (variant_chunk, [(blocks_key, Future), ...]).
-        # The futures list is empty when the chunk needs no prefetch.
-        self._in_flight: list = []
-        # Peak ``len(_in_flight)`` observed across the iteration; the
-        # consumer reads it after iteration to assess how effective
-        # the readahead window was at staying ahead of demand.
-        self.max_in_flight = 0
-        logger.debug(
-            f"ReadaheadPipeline init: {len(read_fields)} read_fields, "
-            f"{len(self._read_templates)} templates, "
-            f"readahead_bytes={_fmt_bytes(readahead_bytes)}"
-        )
+    root: object
+    variant_chunk_plan: list
+    sample_chunk_plan: "samples_mod.SampleChunkPlan"
+    output_columns: np.ndarray | None
+    read_fields: tuple
+    query_fields: tuple
+    filter_fields: frozenset
+    referenced_static_fields: dict
+    variant_filter: variant_filter_mod.VariantFilter | None
+    variants_chunk_size: int
+    io_limiter: anyio.CapacityLimiter
+    decode_limiter: anyio.CapacityLimiter
+    get_block_reader: object
+    readahead_bytes: int
 
-    def _schedule_one(self) -> bool:
-        """Plan the next variant chunk's reads and submit them to the
-        thread pool. Returns False once the plan is exhausted."""
-        try:
-            variant_chunk = next(self._variant_chunk_plan_iter)
-        except StopIteration:
-            return False
-        reads = update_chunk_read_list(self._read_templates, variant_chunk.index)
-        futures = [
-            (key, self._executor.submit(_read_block, arr, block_index))
-            for key, arr, block_index in reads
-        ]
-        self._in_flight.append((variant_chunk, futures))
-        if len(self._in_flight) > self.max_in_flight:
-            self.max_in_flight = len(self._in_flight)
-        logger.log(
-            TRACE,
-            f"schedule chunk {variant_chunk.index}: {len(futures)} blocks submitted",
-        )
-        return True
 
-    def _refill(self) -> None:
-        # Until the first chunk has been measured we can't size the
-        # window — schedule exactly one chunk and wait for its reads
-        # to land. Subsequent refills fall through to the budget loop.
-        if self._per_chunk_bytes is None:
-            if len(self._in_flight) == 0:
-                self._schedule_one()
-            return
-        # Always keep at least one chunk in flight; otherwise honour the
-        # byte budget (use an effective per-chunk cost of at least 1 to
-        # avoid an infinite loop when read_fields is empty).
-        per_chunk = max(1, self._per_chunk_bytes)
-        while len(self._in_flight) == 0 or (
-            len(self._in_flight) * per_chunk < self._readahead_bytes
-        ):
-            if not self._schedule_one():
-                return
+async def _create_memory_channel(buffer_size: int):
+    """Return an anyio (send, recv) pair sized to ``buffer_size``."""
+    return anyio.create_memory_object_stream[dict](max_buffer_size=buffer_size)
 
-    def __iter__(self):
-        try:
-            self._refill()
-            while len(self._in_flight) > 0:
-                variant_chunk, futures = self._in_flight.pop(0)
-                future_to_key = {fut: key for key, fut in futures}
+
+def _close_portal_cm(portal_cm) -> None:
+    """Exit the BlockingPortal context manager, swallowing any
+    teardown error so a misbehaving portal can't wedge GC. Used both
+    by :meth:`VczReader.close` and by the weakref finalizer that
+    arms close on garbage collection.
+    """
+    try:
+        portal_cm.__exit__(None, None, None)
+    except Exception:
+        pass
+
+
+async def _produce_variant_chunks(send_channel, ctx, telemetry):
+    """Async producer for :meth:`VczReader.variant_chunks`.
+
+    Iterates ``ctx.variant_chunk_plan`` in order, fetching every
+    chunk's blocks concurrently inside an inner task group, applying
+    the variant filter, materialising the output dict, and sending it
+    through ``send_channel``. Backpressure is byte-budget controlled:
+    the in-flight window expands until measured per-chunk bytes times
+    in-flight count would exceed ``ctx.readahead_bytes``.
+
+    ``telemetry`` is a shared dict that the iterator reads after
+    iteration completes. Updated keys: ``max_in_flight``,
+    ``last_chunk_bytes``, ``chunks_visited``, ``chunks_yielded``,
+    ``variants_yielded``, ``bytes_yielded``, ``producer_assemble_total``,
+    ``producer_read_total``.
+    """
+    templates = create_chunk_read_list(
+        ctx.root,
+        ctx.sample_chunk_plan,
+        ctx.read_fields,
+        get_block_reader=ctx.get_block_reader,
+    )
+    plan_iter = iter(ctx.variant_chunk_plan)
+    in_flight: list[dict] = []
+    per_chunk_bytes: int | None = None
+    iter_start = time.perf_counter()
+
+    try:
+        async with send_channel, anyio.create_task_group() as tg:
+
+            async def fetch_one(slot):
+                vc = slot["vc"]
+                t0 = time.perf_counter()
                 blocks: dict[tuple, np.ndarray] = {}
-                read_start = time.perf_counter()
-                for fut in cf.as_completed(future_to_key):
-                    blocks[future_to_key[fut]] = fut.result()
-                read_seconds = time.perf_counter() - read_start
-                self.last_chunk_read_seconds = read_seconds
-                chunk_bytes = sum(utils.array_memory_bytes(v) for v in blocks.values())
-                self.last_chunk_bytes = chunk_bytes
-                if self._per_chunk_bytes is None:
-                    self._per_chunk_bytes = chunk_bytes
-                    if self._readahead_bytes > 0 and chunk_bytes > 0:
+                async with anyio.create_task_group() as inner:
+                    for key, reader, block_index in update_chunk_read_list(
+                        templates, vc.index
+                    ):
+
+                        async def one(k=key, r=reader, bi=block_index):
+                            blocks[k] = await _read_block_async(
+                                r, bi, ctx.io_limiter, ctx.decode_limiter
+                            )
+
+                        inner.start_soon(one)
+                slot["blocks"] = blocks
+                slot["read_seconds"] = time.perf_counter() - t0
+                slot["bytes"] = sum(
+                    utils.array_memory_bytes(v) for v in blocks.values()
+                )
+                slot["done"].set()
+
+            def schedule_one() -> bool:
+                try:
+                    vc = next(plan_iter)
+                except StopIteration:
+                    return False
+                slot = {"vc": vc, "done": anyio.Event()}
+                in_flight.append(slot)
+                if len(in_flight) > telemetry["max_in_flight"]:
+                    telemetry["max_in_flight"] = len(in_flight)
+                tg.start_soon(fetch_one, slot)
+                logger.log(
+                    TRACE,
+                    f"schedule chunk {vc.index}: {len(templates)} blocks submitted",
+                )
+                return True
+
+            def refill():
+                # Until the first chunk has been measured we can't size the
+                # window — schedule exactly one chunk and wait for its reads
+                # to land. Subsequent refills fall through to the budget loop.
+                if per_chunk_bytes is None:
+                    if not in_flight:
+                        schedule_one()
+                    return
+                # Always keep at least one chunk in flight; otherwise honour
+                # the byte budget (use an effective per-chunk cost of at
+                # least 1 to avoid an infinite loop when read_fields is
+                # empty).
+                pcb = max(1, per_chunk_bytes)
+                while not in_flight or (len(in_flight) * pcb < ctx.readahead_bytes):
+                    if not schedule_one():
+                        return
+
+            refill()
+            while in_flight:
+                slot = in_flight.pop(0)
+                await slot["done"].wait()
+                vc = slot["vc"]
+                blocks = slot["blocks"]
+                chunk_bytes = slot["bytes"]
+                read_seconds = slot["read_seconds"]
+                telemetry["last_chunk_bytes"] = chunk_bytes
+                telemetry["bytes_yielded"] += chunk_bytes
+                telemetry["producer_read_total"] += read_seconds
+                telemetry["chunks_visited"] += 1
+                if per_chunk_bytes is None:
+                    per_chunk_bytes = chunk_bytes
+                    if ctx.readahead_bytes > 0 and chunk_bytes > 0:
                         window_chunks = max(
-                            1, self._readahead_bytes // max(1, chunk_bytes)
+                            1, ctx.readahead_bytes // max(1, chunk_bytes)
                         )
                     else:
                         window_chunks = 1
                     logger.info(
                         f"Per-chunk read size: {_fmt_bytes(chunk_bytes)} "
-                        f"(chunk {variant_chunk.index}); window will hold "
+                        f"(chunk {vc.index}); window will hold "
                         f"~{window_chunks} chunks under budget "
-                        f"{_fmt_bytes(self._readahead_bytes)}"
+                        f"{_fmt_bytes(ctx.readahead_bytes)}"
                     )
                     if (
-                        self._readahead_bytes > 0
-                        and chunk_bytes > self._readahead_bytes / 2
+                        ctx.readahead_bytes > 0
+                        and chunk_bytes > ctx.readahead_bytes / 2
                     ):
                         logger.warning(
                             f"Readahead budget is single-chunk-bound: "
                             f"per-chunk {_fmt_bytes(chunk_bytes)} > "
-                            f"half of {_fmt_bytes(self._readahead_bytes)}; "
+                            f"half of {_fmt_bytes(ctx.readahead_bytes)}; "
                             f"the prefetch window will be capped at ~1 "
                             f"in flight regardless of worker count. "
                             f"Increase readahead_bytes to widen the window."
                         )
                 logger.debug(
-                    f"chunk {variant_chunk.index} read complete in "
-                    f"{read_seconds:.2f}s ({len(blocks)} blocks, "
-                    f"{_fmt_bytes(chunk_bytes)})"
+                    f"chunk {vc.index} read complete in {read_seconds:.2f}s "
+                    f"({len(blocks)} blocks, {_fmt_bytes(chunk_bytes)})"
                 )
-                yield CachedVariantChunk(
-                    self.root,
-                    variant_chunk,
-                    sample_chunk_plan=self._sample_chunk_plan,
-                    output_columns=self._output_columns,
+
+                assemble_start = time.perf_counter()
+                cached = CachedVariantChunk(
+                    ctx.root,
+                    vc,
+                    sample_chunk_plan=ctx.sample_chunk_plan,
+                    output_columns=ctx.output_columns,
                     blocks=blocks,
                 )
-                # After the consumer drops the previous chunk reference,
-                # top the pipeline back up.
-                self._refill()
-        finally:
-            cancelled = 0
-            for _variant_chunk, futures in self._in_flight:
-                for _key, fut in futures:
-                    if fut.cancel():
-                        cancelled += 1
-            if cancelled > 0:
-                logger.debug(f"cancelled {cancelled} pending futures")
+
+                variants_selection = None
+                sample_filter_pass = None
+                if ctx.variant_filter is not None:
+                    filter_data = {
+                        f: ctx.referenced_static_fields[f]
+                        if f in ctx.referenced_static_fields
+                        else cached.filter_view(f)
+                        for f in ctx.filter_fields
+                    }
+                    filter_result = ctx.variant_filter.evaluate(filter_data)
+                    if filter_result.ndim == 1:
+                        variants_selection = filter_result
+                        logger.debug(
+                            f"chunk {vc.index}: filter pass "
+                            f"{int(filter_result.sum())}/{filter_result.size} "
+                            f"variants"
+                        )
+                    else:
+                        variants_selection = filter_result.any(axis=1)
+                        sample_filter_pass = filter_result[variants_selection]
+                        if ctx.output_columns is not None:
+                            sample_filter_pass = sample_filter_pass[
+                                :, ctx.output_columns
+                            ]
+                        logger.debug(
+                            f"chunk {vc.index}: filter pass "
+                            f"{int(variants_selection.sum())}/"
+                            f"{variants_selection.size} variants, "
+                            f"{int(filter_result.sum())}/{filter_result.size} "
+                            f"sample cells"
+                        )
+
+                if variants_selection is not None and not variants_selection.any():
+                    telemetry["producer_assemble_total"] += (
+                        time.perf_counter() - assemble_start
+                    )
+                    refill()
+                    continue
+
+                chunk_data: dict[str, np.ndarray] = {}
+                for field in ctx.query_fields:
+                    if field in ctx.referenced_static_fields:
+                        chunk_data[field] = ctx.referenced_static_fields[field]
+                        continue
+                    if field == "variant_index":
+                        value = _absolute_variant_indexes(vc, ctx.variants_chunk_size)
+                    else:
+                        value = cached.output_view(field)
+                    if variants_selection is not None:
+                        value = value[variants_selection]
+                    chunk_data[field] = value
+                if sample_filter_pass is not None:
+                    chunk_data["sample_filter_pass"] = sample_filter_pass
+
+                non_static_query = [
+                    f for f in ctx.query_fields if f not in ctx.referenced_static_fields
+                ]
+                if len(non_static_query) > 0:
+                    chunk_variants = len(chunk_data[non_static_query[0]])
+                elif variants_selection is not None:
+                    chunk_variants = int(variants_selection.sum())
+                else:
+                    chunk_variants = 0
+                telemetry["variants_yielded"] += chunk_variants
+                telemetry["chunks_yielded"] += 1
+
+                assemble_seconds = time.perf_counter() - assemble_start
+                telemetry["producer_assemble_total"] += assemble_seconds
+                logger.debug(
+                    f"chunk {vc.index}: assembled {chunk_variants} variants in "
+                    f"{assemble_seconds:.2f}s"
+                )
+
+                await send_channel.send(chunk_data)
+                refill()
+    finally:
+        elapsed = time.perf_counter() - iter_start
+        mib = telemetry["bytes_yielded"] / (1024 * 1024)
+        rate = mib / elapsed if elapsed > 0 else 0.0
+        logger.info(
+            f"variant_chunks: iteration done in {elapsed:.2f}s "
+            f"({telemetry['chunks_visited']} chunks visited, "
+            f"{telemetry['chunks_yielded']} yielded, "
+            f"{telemetry['variants_yielded']} variants, "
+            f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s, "
+            f"max readahead depth {telemetry['max_in_flight']}); "
+            f"producer_assemble={telemetry['producer_assemble_total']:.2f}s, "
+            f"producer_read_wait={telemetry['producer_read_total']:.2f}s"
+        )
+
+
+class _AsyncBackedIterator:
+    """Sync iterator over an anyio memory channel populated by
+    :func:`_produce_variant_chunks` running on the reader's portal.
+
+    Bridges async → sync via ``portal.call(recv.receive)``. ``close()``
+    cancels the producer and shuts the channel; ``__del__`` closes
+    defensively. Producer exceptions surface on ``__next__`` once the
+    channel is drained.
+
+    ``max_in_flight`` and ``last_chunk_bytes`` expose telemetry the
+    producer updates as it runs; they are intended for diagnostics
+    and tests, not for the user-facing chunk dicts themselves.
+    """
+
+    def __init__(self, portal, recv, fut, telemetry):
+        self._portal = portal
+        self._recv = recv
+        self._fut = fut
+        self._telemetry = telemetry
+        self._closed = False
+
+    @property
+    def max_in_flight(self) -> int:
+        return self._telemetry["max_in_flight"]
+
+    @property
+    def last_chunk_bytes(self) -> int | None:
+        return self._telemetry["last_chunk_bytes"]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+        try:
+            return self._portal.call(self._recv.receive)
+        except anyio.EndOfStream:
+            self._closed = True
+            try:
+                self._fut.result()
+            except BaseExceptionGroup as eg:
+                # anyio wraps every producer-side error in an
+                # ExceptionGroup via the task group's __aexit__. Unwrap
+                # a single-exception group so callers see the original
+                # error type (handle_exception in cli.py matches against
+                # ValueError, not BaseExceptionGroup).
+                if len(eg.exceptions) == 1:
+                    raise eg.exceptions[0] from None
+                raise
+            raise StopIteration from None
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        # Cancel the producer; close the receive end so a producer that's
+        # blocked on send.send() unblocks via BrokenResourceError; wait
+        # (bounded) for the task to actually finish so __del__ can't wedge
+        # interpreter shutdown.
+        self._fut.cancel()
+        try:
+            self._portal.call(self._recv.aclose)
+        except Exception:
+            pass
+        try:
+            self._fut.result(timeout=5)
+        except (cf.CancelledError, cf.TimeoutError, BaseException):
+            pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class CachedVariantChunk:
     """View assembler over prefetched blocks for one variant chunk visit.
 
-    Constructed by :class:`ReadaheadPipeline` once its block reads have
-    completed; performs no I/O itself. The constructor takes:
+    Constructed by :func:`_produce_variant_chunks` once its block reads
+    have completed; performs no I/O itself. The constructor takes:
 
     - ``blocks`` — ``{key: ndarray}`` of prefetched Zarr blocks keyed by
       ``(field,)`` for variants-axis non-``call_*`` reads and
@@ -646,14 +792,14 @@ class VczReader:
     resolved by reading the corresponding property during default
     iteration.
 
-    The reader owns a single :class:`concurrent.futures.ThreadPoolExecutor`
-    that every :class:`ReadaheadPipeline` it spawns submits work to.
-    Use as a context manager (``with VczReader(root) as reader:``) so
-    the pool is torn down deterministically on exit. Multiple
-    pipelines (e.g. several :class:`vcztools.plink.BedEncoder`
-    instances driven concurrently against the same reader, or
-    repeated ``variant_chunks()`` calls) share the pool — submission
-    is thread-safe at the executor level.
+    The reader owns a single anyio :class:`BlockingPortal` (started
+    lazily on first ``variant_chunks()``) plus two
+    :class:`anyio.CapacityLimiter` knobs sized by ``io_concurrency``
+    and ``decode_threads``. Use as a context manager
+    (``with VczReader(root) as reader:``) so the portal is shut down
+    deterministically on exit. Multiple concurrent
+    ``variant_chunks()`` callers share the portal — startup is
+    guarded by an internal lock.
 
     Parameters
     ----------
@@ -662,37 +808,50 @@ class VczReader:
         dataset. Use :func:`vcztools.open_zarr` to open a path
         (local, remote, or zip) with the desired backend before
         constructing the reader.
-    readahead_workers
-        Worker count for the readahead thread pool. ``None``
-        (default) uses :data:`DEFAULT_READAHEAD_WORKERS` (``32``).
-        The pool is created at construction; this parameter has no
-        post-init knob.
+    io_concurrency
+        Cap on concurrent ``store.get`` calls per iteration. ``None``
+        (default) uses :data:`DEFAULT_IO_CONCURRENCY` (``32``). Each
+        store fetch is async-native, so this is a coroutine count,
+        not a thread count.
     readahead_bytes
         Cap, in bytes, on the cross-chunk readahead window. ``None``
         (default) uses :data:`DEFAULT_READAHEAD_BYTES` (256 MiB).
-        ``0`` pins pipeline depth at 1 (one chunk prefetched ahead of
-        the consumer); the pipeline cannot go lower.
+        ``0`` pins window depth at 1 (one chunk prefetched ahead of
+        the consumer).
+    decode_threads
+        Size of the decode thread pool that runs codec ``_decode_sync``
+        calls inside the reader's portal. ``None`` (default) uses
+        :data:`DEFAULT_DECODE_THREADS` (``os.cpu_count()``).
     """
 
     def __init__(
         self,
         root,
         *,
-        readahead_workers: int | None = None,
+        io_concurrency: int | None = None,
         readahead_bytes: int | None = None,
+        decode_threads: int | None = None,
     ):
         self.root = root
         self.readahead_bytes = readahead_bytes
-        workers = (
-            readahead_workers
-            if readahead_workers is not None
-            else DEFAULT_READAHEAD_WORKERS
+        self._io_concurrency = (
+            io_concurrency if io_concurrency is not None else DEFAULT_IO_CONCURRENCY
         )
-        self._executor = cf.ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="vcztools-readahead",
+        self._decode_threads = (
+            decode_threads if decode_threads is not None else DEFAULT_DECODE_THREADS
         )
-        self._readahead_workers = workers
+        # Portal + limiters are started lazily on first variant_chunks()
+        # call — readers that only consume static metadata never pay
+        # the asyncio-thread cost. Concurrent variant_chunks() callers
+        # racing to start the portal would otherwise leak event-loop
+        # threads, so the bring-up is guarded by ``_portal_lock``.
+        self._portal_lock = threading.Lock()
+        self._portal_cm = None
+        self._portal: anyio.from_thread.BlockingPortal | None = None
+        self._io_limiter: anyio.CapacityLimiter | None = None
+        self._decode_limiter: anyio.CapacityLimiter | None = None
+        self._finalizer: weakref.finalize | None = None
+        self._block_readers: dict[str, zarr_direct.BlockReader] = {}
         self._sample_chunk_plan = None
         self._variant_chunk_plan = None
         self._samples_selection = None
@@ -708,15 +867,64 @@ class VczReader:
             f"num_variants={self.num_variants}, num_samples={self.num_samples}, "
             f"variants_chunk_size={self.variants_chunk_size}, "
             f"samples_chunk_size={self.samples_chunk_size}, "
-            f"readahead_workers={workers}, "
+            f"io_concurrency={self._io_concurrency}, "
+            f"decode_threads={self._decode_threads}, "
             f"readahead_bytes={readahead_bytes}"
         )
+
+    def _ensure_portal(self):
+        """Start the anyio portal and limiter pair on first access;
+        return ``(portal, io_limiter, decode_limiter)``. Idempotent and
+        thread-safe — concurrent first callers see the same portal.
+
+        A :func:`weakref.finalize` arms ``close`` so the portal thread
+        is shut down even if the caller doesn't use the reader as a
+        context manager — without it, the portal's daemon thread stays
+        alive past interpreter shutdown and joins on the asyncio
+        default executor's non-daemon workers can wedge process exit.
+        """
+        with self._portal_lock:
+            if self._portal is None:
+                self._portal_cm = anyio.from_thread.start_blocking_portal(
+                    backend="asyncio", name="vcztools-portal"
+                )
+                self._portal = self._portal_cm.__enter__()
+                self._io_limiter = anyio.CapacityLimiter(self._io_concurrency)
+                self._decode_limiter = anyio.CapacityLimiter(self._decode_threads)
+                if self._finalizer is None:
+                    self._finalizer = weakref.finalize(
+                        self,
+                        _close_portal_cm,
+                        self._portal_cm,
+                    )
+            return self._portal, self._io_limiter, self._decode_limiter
+
+    def _get_block_reader(self, name: str) -> zarr_direct.BlockReader:
+        """Lazily construct and cache one :class:`BlockReader` per field."""
+        cached = self._block_readers.get(name)
+        if cached is not None:
+            return cached
+        reader = zarr_direct.BlockReader(self.root[name])
+        self._block_readers[name] = reader
+        return reader
+
+    def close(self) -> None:
+        """Tear down owned resources: the anyio portal (if started)."""
+        if self._finalizer is not None:
+            self._finalizer.detach()
+            self._finalizer = None
+        if self._portal_cm is not None:
+            _close_portal_cm(self._portal_cm)
+            self._portal_cm = None
+            self._portal = None
+            self._io_limiter = None
+            self._decode_limiter = None
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self._executor.shutdown(wait=True)
+        self.close()
         return False
 
     def _load_static_field(self, name: str) -> np.ndarray:
@@ -1151,21 +1359,8 @@ class VczReader:
         if fields is not None and len(fields) == 0:
             return iter(())
 
-        return _PrefetchIterator(self._variant_chunks_gen(fields=fields, start=start))
-
-    def _variant_chunks_gen(
-        self,
-        *,
-        fields: list[str] | None = None,
-        start: int = 0,
-    ):
-        """Inner generator backing :meth:`variant_chunks`. The public
-        entry point validates arguments eagerly and wraps this
-        generator in a one-deep prefetch iterator; tests that need
-        the raw single-threaded behaviour (e.g. for deterministic
-        in-thread state inspection) can drive this directly."""
         # Snapshot the filter so a mid-iteration set_variant_filter
-        # can't change behaviour for this generator.
+        # can't change behaviour for this iteration.
         variant_filter = self.variant_filter
         query_fields = self._resolve_query_fields(fields)
         filter_fields = frozenset(
@@ -1220,142 +1415,42 @@ class VczReader:
             f"{len(variant_chunk_plan)} variant chunks, "
             f"{len(sample_chunk_plan.chunk_reads)} sample chunks, "
             f"readahead_bytes={_fmt_bytes(readahead_bytes)}, "
-            f"workers={self._readahead_workers}); "
+            f"io_concurrency={self._io_concurrency}, "
+            f"decode_threads={self._decode_threads}); "
             f"query_fields={list(query_fields)}, "
             f"read_fields={read_fields}"
         )
 
-        pipeline = ReadaheadPipeline(
-            self.root,
-            variant_chunk_plan,
-            sample_chunk_plan,
-            output_columns,
-            read_fields,
+        portal, io_limiter, decode_limiter = self._ensure_portal()
+        ctx = _VariantChunksContext(
+            root=self.root,
+            variant_chunk_plan=variant_chunk_plan,
+            sample_chunk_plan=sample_chunk_plan,
+            output_columns=output_columns,
+            read_fields=tuple(read_fields),
+            query_fields=tuple(query_fields),
+            filter_fields=filter_fields,
+            referenced_static_fields=referenced_static_fields,
+            variant_filter=variant_filter,
+            variants_chunk_size=self.variants_chunk_size,
+            io_limiter=io_limiter,
+            decode_limiter=decode_limiter,
+            get_block_reader=self._get_block_reader,
             readahead_bytes=readahead_bytes,
-            executor=self._executor,
         )
-        chunks_visited = 0
-        chunks_yielded = 0
-        variants_yielded = 0
-        bytes_yielded = 0
-        # Per-iteration time accounting. consumer_wait isolates the gap
-        # between yielding chunk N and the consumer pulling chunk N+1
-        # (minus the producer's own read wait for N+1), exposing the
-        # downstream encoder/writer cost which the iterator otherwise
-        # can't see.
-        producer_assemble_total = 0.0
-        producer_read_total = 0.0
-        consumer_wait_total = 0.0
-        last_yield_t: float | None = None
-        iter_start = time.perf_counter()
-        try:
-            for chunk in pipeline:
-                chunks_visited += 1
-                chunk_start = time.perf_counter()
-                read_seconds = pipeline.last_chunk_read_seconds or 0.0
-                producer_read_total += read_seconds
-                if last_yield_t is not None:
-                    gap = chunk_start - last_yield_t
-                    consumer_wait_total += max(0.0, gap - read_seconds)
-                bytes_yielded += pipeline.last_chunk_bytes or 0
-                # variants_selection: 1-D bool over the chunk's variant axis, or
-                # None meaning "no filter, keep every variant".
-                # sample_filter_pass: 2-D bool over (surviving variants, output
-                # samples) for sample-scope filters only; published so query.py
-                # can emit only matching samples in FORMAT-loop queries.
-                variants_selection = None
-                sample_filter_pass = None
-                if variant_filter is not None:
-                    filter_data = {
-                        f: referenced_static_fields[f]
-                        if f in referenced_static_fields
-                        else chunk.filter_view(f)
-                        for f in filter_fields
-                    }
-                    filter_result = variant_filter.evaluate(filter_data)
-                    if filter_result.ndim == 1:
-                        # Variant-scope filter: one bool per variant.
-                        variants_selection = filter_result
-                        logger.debug(
-                            f"chunk {chunk.variant_chunk.index}: filter pass "
-                            f"{int(filter_result.sum())}/{filter_result.size} variants"
-                        )
-                    else:
-                        # Sample-scope filter: a variant survives if at least one
-                        # sample matched; the surviving rows are kept so the query
-                        # layer can emit only matching samples.
-                        variants_selection = filter_result.any(axis=1)
-                        sample_filter_pass = filter_result[variants_selection]
-                        if output_columns is not None:
-                            # Filter ran on the real-sample axis but output is
-                            # the user's subset axis; reindex columns to match.
-                            sample_filter_pass = sample_filter_pass[:, output_columns]
-                        logger.debug(
-                            f"chunk {chunk.variant_chunk.index}: filter pass "
-                            f"{int(variants_selection.sum())}/"
-                            f"{variants_selection.size} variants, "
-                            f"{int(filter_result.sum())}/{filter_result.size} "
-                            f"sample cells"
-                        )
-
-                if variants_selection is not None and not variants_selection.any():
-                    continue
-
-                chunk_data = {}
-                for field in query_fields:
-                    if field in referenced_static_fields:
-                        chunk_data[field] = referenced_static_fields[field]
-                        continue
-                    if field == "variant_index":
-                        value = _absolute_variant_indexes(
-                            chunk.variant_chunk, self.variants_chunk_size
-                        )
-                    else:
-                        value = chunk.output_view(field)
-                    if variants_selection is not None:
-                        value = value[variants_selection]
-                    chunk_data[field] = value
-                if sample_filter_pass is not None:
-                    chunk_data["sample_filter_pass"] = sample_filter_pass
-
-                # Count surviving variants from a dynamic (variants-axis)
-                # query field if there is one; static fields have the
-                # store-wide axis length, not the per-chunk variant count.
-                non_static_query = [
-                    f for f in query_fields if f not in referenced_static_fields
-                ]
-                if len(non_static_query) > 0:
-                    chunk_variants = len(chunk_data[non_static_query[0]])
-                elif variants_selection is not None:
-                    chunk_variants = int(variants_selection.sum())
-                else:
-                    chunk_variants = 0
-                variants_yielded += chunk_variants
-                chunks_yielded += 1
-                total_seconds = time.perf_counter() - chunk_start + read_seconds
-                assemble_seconds = max(0.0, total_seconds - read_seconds)
-                producer_assemble_total += assemble_seconds
-                logger.debug(
-                    f"chunk {chunk.variant_chunk.index}: yielded {chunk_variants} "
-                    f"variants in {total_seconds:.2f}s "
-                    f"(read {read_seconds:.2f}s, assemble {assemble_seconds:.2f}s)"
-                )
-                last_yield_t = time.perf_counter()
-                yield chunk_data
-        finally:
-            elapsed = time.perf_counter() - iter_start
-            mib = bytes_yielded / (1024 * 1024)
-            rate = mib / elapsed if elapsed > 0 else 0.0
-            logger.info(
-                f"variant_chunks: iteration done in {elapsed:.2f}s "
-                f"({chunks_visited} chunks visited, {chunks_yielded} yielded, "
-                f"{variants_yielded} variants, "
-                f"{mib:.1f} MiB retrieved, {rate:.1f} MiB/s, "
-                f"max readahead depth {pipeline.max_in_flight}); "
-                f"producer_assemble={producer_assemble_total:.2f}s, "
-                f"producer_read_wait={producer_read_total:.2f}s, "
-                f"consumer_wait={consumer_wait_total:.2f}s"
-            )
+        telemetry: dict = {
+            "max_in_flight": 0,
+            "last_chunk_bytes": None,
+            "chunks_visited": 0,
+            "chunks_yielded": 0,
+            "variants_yielded": 0,
+            "bytes_yielded": 0,
+            "producer_assemble_total": 0.0,
+            "producer_read_total": 0.0,
+        }
+        send, recv = portal.call(_create_memory_channel, 1)
+        fut = portal.start_task_soon(_produce_variant_chunks, send, ctx, telemetry)
+        return _AsyncBackedIterator(portal, recv, fut, telemetry)
 
     def _resolve_query_fields(self, fields):
         if fields is not None:

@@ -16,6 +16,7 @@ authors = [
   {name = "sgkit Developers", email = "project@sgkit.dev"},
 ]
 dependencies = [
+  "anyio>=4",
   "numpy>=2",
   "zarr>=3.1",
   "click>=8.2.0",
@@ -139,6 +140,7 @@ unfixable = []
 
 [tool.ruff.lint.isort]
 known-third-party = [
+  "anyio",
   "bio2zarr",
   "click",
   "cyvcf2",

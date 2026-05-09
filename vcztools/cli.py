@@ -180,11 +180,23 @@ class _SizeParam(click.ParamType):
 
 SIZE = _SizeParam()
 
-readahead_workers = click.option(
-    "--readahead-workers",
+io_concurrency = click.option(
+    "--io-concurrency",
     type=int,
     default=None,
-    help=("Worker threads servicing the cross-chunk readahead pool. Default: 32."),
+    help=(
+        "Cap on concurrent store.get calls per iteration. Default: 32. "
+        "Stores are async-native, so this is a coroutine count."
+    ),
+)
+decode_threads = click.option(
+    "--decode-threads",
+    type=int,
+    default=None,
+    help=(
+        "Size of the decode thread pool that runs codec decode (zstd, "
+        "blosc, etc.). Default: os.cpu_count()."
+    ),
 )
 readahead_buffer_size = click.option(
     "--readahead-buffer-size",
@@ -367,7 +379,8 @@ def make_reader(
     drop_genotypes=False,
     backend_storage=None,
     storage_options=None,
-    readahead_workers=None,
+    io_concurrency=None,
+    decode_threads=None,
     readahead_bytes=None,
 ):
     """Resolve file arguments and create a VczReader."""
@@ -419,7 +432,8 @@ def make_reader(
     )
     reader = retrieval.VczReader(
         root,
-        readahead_workers=readahead_workers,
+        io_concurrency=io_concurrency,
+        decode_threads=decode_threads,
         readahead_bytes=readahead_bytes,
     )
 
@@ -511,7 +525,8 @@ class ViewPlinkOptions:
     max_alleles: int | None = None
     backend_storage: str | None = None
     storage_options: dict | None = None
-    readahead_workers: int | None = None
+    io_concurrency: int | None = None
+    decode_threads: int | None = None
     readahead_bytes: int | None = None
 
     @classmethod
@@ -551,7 +566,8 @@ def view_plink_options(f):
         max_alleles_opt,
         backend_storage,
         storage_option,
-        readahead_workers,
+        io_concurrency,
+        decode_threads,
         readahead_buffer_size,
     ]
     for d in reversed(decorators):
@@ -680,7 +696,8 @@ def index(path, nrecords, stats, backend_storage, storage_options, log_level, lo
 )
 @backend_storage
 @storage_option
-@readahead_workers
+@io_concurrency
+@decode_threads
 @readahead_buffer_size
 @log_level
 @log_file
@@ -702,7 +719,8 @@ def query(
     disable_automatic_newline,
     backend_storage,
     storage_options,
-    readahead_workers,
+    io_concurrency,
+    decode_threads,
     readahead_bytes,
     log_level,
     log_file,
@@ -747,7 +765,8 @@ def query(
         force_samples=force_samples,
         backend_storage=backend_storage,
         storage_options=parsed_storage_options,
-        readahead_workers=readahead_workers,
+        io_concurrency=io_concurrency,
+        decode_threads=decode_threads,
         readahead_bytes=readahead_bytes,
     )
     with reader, handle_broken_pipe(output):
@@ -806,7 +825,8 @@ def query(
 @max_alleles_opt
 @backend_storage
 @storage_option
-@readahead_workers
+@io_concurrency
+@decode_threads
 @readahead_buffer_size
 @log_level
 @log_file
@@ -834,7 +854,8 @@ def view(
     max_alleles,
     backend_storage,
     storage_options,
-    readahead_workers,
+    io_concurrency,
+    decode_threads,
     readahead_bytes,
     log_level,
     log_file,
@@ -879,7 +900,8 @@ def view(
         drop_genotypes=drop_genotypes,
         backend_storage=backend_storage,
         storage_options=_parse_storage_options(storage_options),
-        readahead_workers=readahead_workers,
+        io_concurrency=io_concurrency,
+        decode_threads=decode_threads,
         readahead_bytes=readahead_bytes,
     )
     subsetting_samples = (

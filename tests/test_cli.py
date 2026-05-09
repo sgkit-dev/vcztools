@@ -951,9 +951,13 @@ class TestReadaheadOptions:
         with pytest.raises(click.UsageError):
             cli.SIZE.convert("not-a-size", None, None)
 
-    def test_make_reader_forwards_workers(self, fx_vcz_path):
-        with cli.make_reader(fx_vcz_path, readahead_workers=4) as reader:
-            assert reader._readahead_workers == 4
+    def test_make_reader_forwards_io_concurrency(self, fx_vcz_path):
+        with cli.make_reader(fx_vcz_path, io_concurrency=4) as reader:
+            assert reader._io_concurrency == 4
+
+    def test_make_reader_forwards_decode_threads(self, fx_vcz_path):
+        with cli.make_reader(fx_vcz_path, decode_threads=2) as reader:
+            assert reader._decode_threads == 2
 
     def test_make_reader_forwards_bytes(self, fx_vcz_path):
         with cli.make_reader(fx_vcz_path, readahead_bytes=1024) as reader:
@@ -983,14 +987,15 @@ class TestReadaheadOptions:
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            f"view --no-version --readahead-workers 4 "
+            f"view --no-version --io-concurrency 4 --decode-threads 3 "
             f"--readahead-buffer-size 100M {fx_vcz_path} "
             f"-o {output_path.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 0
         assert captured == {
-            "readahead_workers": 4,
+            "io_concurrency": 4,
+            "decode_threads": 3,
             "readahead_bytes": 100 * 1024 * 1024,
         }
 
@@ -1000,13 +1005,17 @@ class TestReadaheadOptions:
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            f"query -f '%POS\n' --readahead-workers 2 "
+            f"query -f '%POS\n' --io-concurrency 2 --decode-threads 1 "
             f"--readahead-buffer-size 1024 {fx_vcz_path} "
             f"-o {output_path.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 0
-        assert captured == {"readahead_workers": 2, "readahead_bytes": 1024}
+        assert captured == {
+            "io_concurrency": 2,
+            "decode_threads": 1,
+            "readahead_bytes": 1024,
+        }
 
     def test_view_plink_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
         captured = self._spy_vcz_reader_init(monkeypatch)
@@ -1015,13 +1024,14 @@ class TestReadaheadOptions:
         result = runner.invoke(
             cli.vcztools_main,
             f"view-plink --max-alleles 2 -e 'CHROM==\"X\"' "
-            f"--readahead-workers 8 --readahead-buffer-size 2M "
+            f"--io-concurrency 8 --decode-threads 5 --readahead-buffer-size 2M "
             f"{fx_vcz_path} --out {out.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 0
         assert captured == {
-            "readahead_workers": 8,
+            "io_concurrency": 8,
+            "decode_threads": 5,
             "readahead_bytes": 2 * 1024 * 1024,
         }
 

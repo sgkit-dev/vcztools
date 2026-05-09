@@ -1,12 +1,6 @@
 import concurrent.futures as cf
-import contextlib
-import gc
 import logging
-import threading
-import time
 
-import anyio
-import anyio.from_thread
 import numpy as np
 import numpy.testing as nt
 import pandas as pd
@@ -260,116 +254,6 @@ class TestReadaheadBudgetSweep:
         )
 
 
-def _make_pipeline(
-    root,
-    *,
-    readahead_bytes=10**9,
-    read_fields=None,
-    n_chunks=None,
-    executor=None,
-    portal=None,
-    decode_limiter=None,
-    block_readers=None,
-):
-    """Construct a ``ReadaheadPipeline`` directly against ``root``,
-    matching the wiring ``VczReader.variant_chunks`` does (default
-    sample-chunk plan over non-null samples; one ``ChunkRead`` per
-    variant chunk; no view-mode column remap).
-
-    ``executor`` is the thread pool the pipeline submits reads to. The
-    caller is responsible for shutting it down (e.g. via a ``with``
-    block); ``None`` means "build a small pool here", which is the
-    common case for tests that only need the pipeline to run once and
-    don't share the executor with other pipelines.
-
-    ``portal`` and ``decode_limiter`` are the anyio primitives the
-    pipeline drives stores against. ``None`` for either falls back to
-    the module-level test fixtures so individual tests don't have to
-    plumb them through.
-    """
-    if read_fields is None:
-        read_fields = ["variant_position"]
-    if executor is None:
-        executor = cf.ThreadPoolExecutor(max_workers=2)
-    if portal is None:
-        portal = _shared_test_portal()
-    if decode_limiter is None:
-        decode_limiter = anyio.CapacityLimiter(2)
-    if block_readers is None:
-        block_readers = {}
-
-    def get_block_reader(name):
-        cached = block_readers.get(name)
-        if cached is not None:
-            return cached
-        reader = zarr_direct.BlockReader(root[name])
-        block_readers[name] = reader
-        return reader
-
-    samples_chunk_size = int(root["sample_id"].chunks[0])
-    raw_sample_ids = root["sample_id"][:]
-    samples_selection = np.flatnonzero(raw_sample_ids != "")
-    sample_chunk_plan = samples_mod.build_chunk_plan(
-        samples_selection, samples_chunk_size=samples_chunk_size
-    )
-    if n_chunks is None:
-        n_chunks = int(root["variant_position"].cdata_shape[0])
-    variants_chunk_size = int(root["variant_position"].chunks[0])
-    num_variants = int(root["variant_position"].shape[0])
-    plan_length = min(n_chunks * variants_chunk_size, num_variants)
-    variant_chunk_plan = utils.ChunkRead.simple_plan(plan_length, variants_chunk_size)
-    return retrieval_mod.ReadaheadPipeline(
-        root,
-        variant_chunk_plan,
-        sample_chunk_plan,
-        None,
-        read_fields,
-        readahead_bytes=readahead_bytes,
-        executor=executor,
-        portal=portal,
-        decode_limiter=decode_limiter,
-        get_block_reader=get_block_reader,
-    )
-
-
-_TEST_PORTAL_LOCK = threading.Lock()
-_TEST_PORTAL_STATE: dict = {"cm": None, "portal": None}
-
-
-def _shared_test_portal() -> anyio.from_thread.BlockingPortal:
-    """Lazily start a single anyio portal shared across pipeline tests.
-
-    Building one BlockingPortal per test would multiply asyncio thread
-    starts across the suite; sharing one keeps the test run fast while
-    matching what ``VczReader`` does at production runtime (one portal
-    per reader). The portal is process-global and intentionally never
-    torn down — daemon threads exit with the interpreter.
-    """
-    with _TEST_PORTAL_LOCK:
-        if _TEST_PORTAL_STATE["portal"] is None:
-            cm = anyio.from_thread.start_blocking_portal(
-                backend="asyncio", name="vcztools-test-portal"
-            )
-            _TEST_PORTAL_STATE["cm"] = cm
-            _TEST_PORTAL_STATE["portal"] = cm.__enter__()
-    return _TEST_PORTAL_STATE["portal"]
-
-
-class _DepthTrackingPipeline(retrieval_mod.ReadaheadPipeline):
-    """Pipeline subclass that records ``len(_in_flight)`` after each
-    ``_refill`` call. Used to assert depth-control behaviour under
-    different ``readahead_bytes`` values without observing the executor
-    directly."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.depths = []
-
-    def _refill(self):
-        super()._refill()
-        self.depths.append(len(self._in_flight))
-
-
 def _vcz_for_template_tests():
     """Small VCZ exposing all four field shapes in the templates:
 
@@ -578,185 +462,6 @@ class TestUpdateChunkReadList:
         assert reads_a is not reads_b
         assert reads_a[0][2] == (0,)
         assert reads_b[0][2] == (4,)
-
-
-class TestReadaheadPipeline:
-    """Direct unit tests for ``retrieval.ReadaheadPipeline``.
-
-    The end-to-end suites cover correctness; this class targets the
-    pipeline's own state machine — bootstrap, budget-driven scheduling
-    depth, executor cleanup, and behaviour at the edges (empty plan,
-    empty read columns).
-    """
-
-    @staticmethod
-    def _vcz(num_variants=12, variants_chunk_size=3, num_samples=2):
-        return vcz_builder.make_vcz(
-            variant_contig=[0] * num_variants,
-            variant_position=list(range(100, 100 + num_variants)),
-            alleles=[("A", "T")] * num_variants,
-            num_samples=num_samples,
-            variants_chunk_size=variants_chunk_size,
-        )
-
-    def test_yields_one_chunk_per_plan_entry_in_order(self):
-        root = self._vcz()
-        pipeline = _make_pipeline(root)
-        indexes = [chunk.variant_chunk.index for chunk in pipeline]
-        assert indexes == [0, 1, 2, 3]
-
-    def test_empty_plan_yields_nothing(self):
-        root = self._vcz()
-        pipeline = _make_pipeline(root, n_chunks=0)
-        assert list(pipeline) == []
-        # No pending futures left after a clean drain.
-        assert pipeline._in_flight == []
-
-    def test_single_chunk_plan(self):
-        root = self._vcz(num_variants=3, variants_chunk_size=3)
-        pipeline = _make_pipeline(root)
-        chunks = list(pipeline)
-        assert len(chunks) == 1
-        assert chunks[0].variant_chunk.index == 0
-
-    def test_bootstrap_runs_first_chunk_solo(self):
-        # Until the first chunk's prefetch lands the pipeline can't
-        # measure per-chunk bytes, so _refill must schedule exactly one
-        # chunk on the bootstrap path.
-        root = self._vcz()
-        pipeline = _make_pipeline(root, readahead_bytes=10**9)
-        gen = iter(pipeline)
-        # Generator hasn't run yet — no scheduling, no measurement.
-        assert pipeline._per_chunk_bytes is None
-        chunk = next(gen)
-        # After bootstrap the measurement is recorded and matches the
-        # prefetched blocks' content.
-        assert isinstance(pipeline._per_chunk_bytes, int)
-        assert pipeline._per_chunk_bytes > 0
-        expected = sum(utils.array_memory_bytes(v) for v in chunk._blocks.values())
-        assert pipeline._per_chunk_bytes == expected
-        gen.close()
-
-    def _build_depth_tracking(self, root, *, readahead_bytes, executor):
-        cache: dict[str, zarr_direct.BlockReader] = {}
-
-        def get(name):
-            cached = cache.get(name)
-            if cached is not None:
-                return cached
-            reader = zarr_direct.BlockReader(root[name])
-            cache[name] = reader
-            return reader
-
-        return _DepthTrackingPipeline(
-            root,
-            [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
-            samples_mod.build_chunk_plan(
-                np.arange(2, dtype=np.int64), samples_chunk_size=2
-            ),
-            None,
-            ["variant_position"],
-            readahead_bytes=readahead_bytes,
-            executor=executor,
-            portal=_shared_test_portal(),
-            decode_limiter=anyio.CapacityLimiter(2),
-            get_block_reader=get,
-        )
-
-    def test_readahead_bytes_zero_keeps_depth_one(self):
-        # Budget=0 → after every refill, exactly one chunk is queued
-        # ahead of the consumer (and zero on the final, plan-exhausted
-        # refill).
-        root = self._vcz(num_variants=12, variants_chunk_size=3)
-        with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = self._build_depth_tracking(
-                root, readahead_bytes=0, executor=executor
-            )
-            list(pipeline)
-        # 4 chunks → 5 refills (one per consume + the post-final empty refill).
-        assert pipeline.depths == [1, 1, 1, 1, 0]
-
-    def test_large_readahead_schedules_all_remaining_after_bootstrap(self):
-        # Budget of 10**9 dwarfs the per-chunk cost, so the second
-        # refill fills with every remaining chunk in one go.
-        root = self._vcz(num_variants=12, variants_chunk_size=3)
-        with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = self._build_depth_tracking(
-                root, readahead_bytes=10**9, executor=executor
-            )
-            list(pipeline)
-        # Bootstrap depth=1, then post-yield-1 schedules the remaining
-        # 3, then drains.
-        assert pipeline.depths == [1, 3, 2, 1, 0]
-
-    def test_max_in_flight_tracks_peak_depth(self):
-        # Budget large enough to fit every remaining chunk after the
-        # bootstrap; peak depth should be (plan length - 1) reached at
-        # the post-yield refill that schedules every remaining chunk.
-        root = self._vcz(num_variants=12, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, readahead_bytes=10**9)
-        assert pipeline.max_in_flight == 0
-        list(pipeline)
-        assert pipeline.max_in_flight == 3
-
-    def test_max_in_flight_pinned_at_one_with_zero_budget(self):
-        root = self._vcz(num_variants=12, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, readahead_bytes=0)
-        list(pipeline)
-        assert pipeline.max_in_flight == 1
-
-    def test_empty_read_fields_does_not_infinite_loop(self):
-        # With no fields to prefetch the bootstrap measurement is 0
-        # bytes; without the ``max(1, per_chunk_bytes)`` guard the
-        # budget loop would never exit. List materialises the full
-        # sequence.
-        root = self._vcz(num_variants=6, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, read_fields=[], readahead_bytes=10**9)
-        chunks = list(pipeline)
-        assert len(chunks) == 2
-        for chunk in chunks:
-            assert chunk._blocks == {}
-
-    def test_chunks_have_prefetched_blocks(self):
-        # Every (key, future) submitted lands in chunk._blocks before
-        # the consumer receives the chunk.
-        root = self._vcz(num_variants=6, variants_chunk_size=3, num_samples=2)
-        pipeline = _make_pipeline(
-            root,
-            read_fields=["variant_position", "variant_contig"],
-            readahead_bytes=0,
-        )
-        for chunk in pipeline:
-            assert ("variant_position",) in chunk._blocks
-            assert ("variant_contig",) in chunk._blocks
-
-    def test_executor_outlives_full_iteration(self):
-        # The pipeline does not own the executor; full drain leaves
-        # the pool alive and ready to serve another pipeline.
-        root = self._vcz()
-        with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _make_pipeline(root, executor=executor)
-            list(pipeline)
-            assert executor._shutdown is False
-            # Pool is still usable for a second pipeline.
-            second = _make_pipeline(root, executor=executor)
-            assert len(list(second)) > 0
-
-    def test_pending_futures_cancelled_on_early_break(self):
-        # Abandoning iteration cancels still-pending futures (those
-        # that hadn't started); the executor itself stays alive.
-        root = self._vcz(num_variants=24, variants_chunk_size=3)
-        with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _make_pipeline(root, executor=executor, readahead_bytes=10**9)
-            gen = iter(pipeline)
-            next(gen)
-            in_flight_snapshot = [
-                fut for _, futures in pipeline._in_flight for _, fut in futures
-            ]
-            gen.close()
-            assert executor._shutdown is False
-            for fut in in_flight_snapshot:
-                assert fut.cancelled() or fut.done()
 
 
 class TestVczReaderBackendsEndToEnd:
@@ -2520,23 +2225,23 @@ class TestStaticFieldCache:
             assert chunk["filter_id"] is first_filter_id
 
     def test_filter_referenced_static_field_not_in_pipeline(self, monkeypatch):
-        # When a FILTER expression references filter_id the readahead
-        # pipeline must NOT submit a (filter_id,) read — the value
-        # comes from the reader's static cache.
+        # When a FILTER expression references filter_id the producer
+        # must NOT submit a (filter_id,) fetch — the value comes from
+        # the reader's static cache.
         seen_fields: list[str] = []
-        original = retrieval_mod._read_block
+        original = retrieval_mod._read_block_async
 
-        def capturing_read_block(portal, reader, block_index, decode_limiter):
+        async def capturing_read_block(reader, block_index, io_lim, decode_lim):
             seen_fields.append(reader._path.rsplit("/", 1)[-1])
-            return original(portal, reader, block_index, decode_limiter)
+            return await original(reader, block_index, io_lim, decode_lim)
 
-        monkeypatch.setattr(retrieval_mod, "_read_block", capturing_read_block)
+        monkeypatch.setattr(retrieval_mod, "_read_block_async", capturing_read_block)
 
         root = _make_filter_vcz(num_variants=9, variants_chunk_size=3)
         reader = make_reader(root, include='FILTER="PASS"')
         list(reader.variant_chunks(fields=["variant_position"]))
         # filter_id is referenced by the FILTER expression but is read
-        # from the reader cache, never via _read_block.
+        # from the reader cache, never via _read_block_async.
         assert "filter_id" not in seen_fields
         assert "variant_position" in seen_fields
         assert "variant_filter" in seen_fields
@@ -2649,9 +2354,8 @@ class TestLogging:
         reader = VczReader(fx_sample_vcz.group)
         with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
             list(reader.variant_chunks(fields=["variant_position"]))
-        assert "ReadaheadPipeline init:" in caplog.text
         assert "read complete in" in caplog.text
-        assert "yielded" in caplog.text
+        assert "assembled" in caplog.text
 
     def test_trace_schedule_chunk(self, fx_sample_vcz, caplog):
         # schedule chunk lines fire once per chunk and are too noisy
@@ -2733,287 +2437,78 @@ class TestLogging:
         assert "Readahead budget is single-chunk-bound" in caplog.text
 
 
-class TestVariantChunksPrefetch:
-    """``variant_chunks`` returns a one-deep prefetch iterator that
-    drives the inner generator in a background thread so the
-    consumer's per-chunk work overlaps with the producer's
-    per-chunk assembly. These cases lock in the wrapper's contract:
-    eager validation, empty-iterator short-circuit, exception
-    propagation, and clean worker-thread teardown."""
-
-    def _prefetch_threads(self):
-        return [t for t in threading.enumerate() if "vcztools-prefetch" in t.name]
+class TestVariantChunksIterator:
+    """``variant_chunks()`` returns an :class:`_AsyncBackedIterator`
+    over a memory channel produced by the reader's anyio portal.
+    These cases lock in the wrapper's contract: eager validation,
+    empty-iterator short-circuit, exception propagation, and clean
+    teardown on close().
+    """
 
     def test_eager_negative_start_validation(self, fx_sample_vcz):
-        # Was previously raised on first next() (lazy generator);
-        # the wrapper validates eagerly on the call itself.
         reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(ValueError, match="start must be >= 0"):
             reader.variant_chunks(start=-1)
 
-    def test_empty_fields_starts_no_worker(self, fx_sample_vcz):
-        # fields=[] short-circuits to iter(()) without spinning up
-        # the prefetch worker — exhausting the iterator must not
-        # leave a vcztools-prefetch thread alive.
+    def test_empty_fields_does_not_start_portal(self, fx_sample_vcz):
+        # fields=[] short-circuits to iter(()) before _ensure_portal().
         reader = VczReader(fx_sample_vcz.group)
-        before = len(self._prefetch_threads())
         result = list(reader.variant_chunks(fields=[]))
         assert result == []
-        assert len(self._prefetch_threads()) == before
+        assert reader._portal is None
 
-    def test_exception_in_inner_gen_surfaces_to_consumer(
+    def test_exception_in_producer_surfaces_to_consumer(
         self, fx_sample_vcz, monkeypatch
     ):
-        # The wrapper retrieves each item from the worker future via
-        # result(); an exception raised by the inner generator must
-        # re-raise on the consumer's next() call rather than be
-        # swallowed.
-        sentinel = RuntimeError("boom from inner generator")
+        # A producer that raises mid-iteration must surface its exception
+        # on the consumer's next() call once the channel is drained. Use
+        # a synthetic producer (rather than wrapping the real one) so the
+        # test isolates the iterator's exception-surfacing behaviour from
+        # the byte-budget and refill machinery.
+        sentinel = RuntimeError("boom from producer")
 
-        def faulty_gen(self, *, fields=None, start=0):
-            yield {"variant_position": np.array([0])}
-            raise sentinel
+        async def faulty_producer(send_channel, ctx, telemetry):
+            async with send_channel:
+                await send_channel.send({"variant_position": np.array([42])})
+                raise sentinel
 
-        monkeypatch.setattr(VczReader, "_variant_chunks_gen", faulty_gen)
-        reader = VczReader(fx_sample_vcz.group)
-        it = reader.variant_chunks(fields=["variant_position"])
-        # First chunk arrives normally.
-        next(it)
-        with pytest.raises(RuntimeError, match="boom from inner generator"):
-            next(it)
-        it.close()
-
-    def test_close_terminates_worker_thread(self, fx_sample_vcz):
-        # After close(), no vcztools-prefetch thread should remain
-        # running — confirms the wrapper joins its worker pool.
-        reader = VczReader(fx_sample_vcz.group)
-        before = self._prefetch_threads()
-        it = reader.variant_chunks(fields=["variant_position"])
-        # Pull one chunk so the worker is definitely live.
-        next(it)
-        it.close()
-        # Pools shut down asynchronously; allow the worker a brief
-        # window to exit before asserting absence.
-        deadline = time.time() + 1.0
-        while time.time() < deadline:
-            after = self._prefetch_threads()
-            if len(after) <= len(before):
-                break
-            time.sleep(0.01)
-        assert len(self._prefetch_threads()) <= len(before)
-
-
-def _prefetch_threads():
-    return [t for t in threading.enumerate() if "vcztools-prefetch" in t.name]
-
-
-def _wait_for_thread_count(target, timeout=1.0):
-    """Block briefly while the executor's worker threads exit."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if len(_prefetch_threads()) <= target:
-            return
-        time.sleep(0.01)
-
-
-class TestPrefetchIteratorDirect:
-    """Direct unit tests for ``_PrefetchIterator`` decoupled from
-    :class:`VczReader`.
-
-    Locks in the wrapper's contract using plain Python iterables and
-    a controllable iterator: ordered yields, ``StopIteration``
-    handling, exception propagation, ``close()`` /``__del__``
-    cleanup, source-iterator close-through, and the actual
-    background-overlap behaviour the prefetch is meant to provide.
-    """
-
-    def test_yields_items_in_order(self):
-        with contextlib.closing(retrieval_mod._PrefetchIterator(iter([1, 2, 3]))) as it:
-            assert list(it) == [1, 2, 3]
-
-    def test_iter_returns_self(self):
-        it = retrieval_mod._PrefetchIterator(iter([1]))
-        try:
-            assert iter(it) is it
-        finally:
+        monkeypatch.setattr(retrieval_mod, "_produce_variant_chunks", faulty_producer)
+        with VczReader(fx_sample_vcz.group) as reader:
+            it = reader.variant_chunks(fields=["variant_position"])
+            chunk = next(it)
+            assert list(chunk["variant_position"]) == [42]
+            with pytest.raises(RuntimeError, match="boom from producer"):
+                next(it)
             it.close()
 
-    def test_empty_source(self):
-        with contextlib.closing(retrieval_mod._PrefetchIterator(iter([]))) as it:
-            with pytest.raises(StopIteration):
-                next(it)
-
-    def test_single_item_then_stopiteration(self):
-        with contextlib.closing(retrieval_mod._PrefetchIterator(iter([42]))) as it:
-            assert next(it) == 42
-            with pytest.raises(StopIteration):
-                next(it)
-
-    def test_repeated_stopiteration_after_exhaustion(self):
-        # Exhausted iterators are expected to keep raising; the
-        # _closed flag must not turn StopIteration into something
-        # else on a second pull.
-        with contextlib.closing(retrieval_mod._PrefetchIterator(iter([1]))) as it:
-            assert next(it) == 1
-            for _ in range(3):
-                with pytest.raises(StopIteration):
-                    next(it)
-
-    def test_exception_on_first_item(self):
-        sentinel = RuntimeError("boom on first")
-
-        def gen():
-            raise sentinel
-            yield  # pragma: no cover
-
-        with contextlib.closing(retrieval_mod._PrefetchIterator(gen())) as it:
-            with pytest.raises(RuntimeError, match="boom on first"):
-                next(it)
-
-    def test_exception_mid_iteration(self):
-        sentinel = RuntimeError("boom mid")
-
-        def gen():
-            yield 1
-            yield 2
-            raise sentinel
-
-        with contextlib.closing(retrieval_mod._PrefetchIterator(gen())) as it:
-            assert next(it) == 1
-            assert next(it) == 2
-            with pytest.raises(RuntimeError, match="boom mid"):
-                next(it)
-
-    def test_close_idempotent(self):
-        it = retrieval_mod._PrefetchIterator(iter([1, 2, 3]))
-        it.close()
-        it.close()  # second call must not raise
-
-    def test_next_after_close_raises_stopiteration(self):
-        it = retrieval_mod._PrefetchIterator(iter([1, 2, 3]))
-        it.close()
-        with pytest.raises(StopIteration):
-            next(it)
-
-    def test_source_close_called_on_wrapper_close(self):
-        # The wrapper must close the underlying iterator (mirroring
-        # the generator-finalisation contract that variant_chunks
-        # callers rely on for the ``iteration done`` log).
-        events = []
-
-        class TrackingIter:
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                return 1
-
-            def close(self):
-                events.append("closed")
-
-        it = retrieval_mod._PrefetchIterator(TrackingIter())
-        next(it)  # ensure the worker is live
-        it.close()
-        assert events == ["closed"]
-
-    def test_close_drains_pending_exception(self):
-        # If the in-flight prefetch was about to raise, close()
-        # must drain it without re-raising (the user has explicitly
-        # given up on the iterator).
-        def gen():
-            yield 1
-            raise RuntimeError("would-be uncaught")
-
-        it = retrieval_mod._PrefetchIterator(gen())
-        # Pull the first item so the worker is now computing the
-        # second (which will raise).
-        assert next(it) == 1
-        # Give the worker a moment to evaluate the second next().
-        deadline = time.time() + 0.5
-        while time.time() < deadline and not it._next_future.done():
-            time.sleep(0.005)
-        # close() must not propagate the worker's exception.
-        it.close()
-
-    def test_close_terminates_worker_thread(self):
-        # Block the source long enough to confirm the worker is alive,
-        # then unblock and assert close() joins it.
-        gate = threading.Event()
-
-        def gen():
-            gate.wait(timeout=2.0)
-            yield 1
-
-        before = len(_prefetch_threads())
-        it = retrieval_mod._PrefetchIterator(gen())
-        # Worker is now blocked inside _fetch waiting on gate.
-        assert len(_prefetch_threads()) >= before + 1
-        gate.set()
-        it.close()
-        _wait_for_thread_count(before)
-        assert len(_prefetch_threads()) <= before
-
-    def test_del_without_close_cleans_up_worker(self):
-        # __del__ must defensively close the iterator even if the
-        # caller never called close(). Locks in the no-thread-leak
-        # contract under garbage collection.
-        before = len(_prefetch_threads())
-        it = retrieval_mod._PrefetchIterator(iter([1, 2, 3]))
+    def test_close_cancels_in_progress_iteration(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        it = reader.variant_chunks(fields=["variant_position"])
         next(it)
-        del it
-        gc.collect()
-        _wait_for_thread_count(before)
-        assert len(_prefetch_threads()) <= before
-
-    def test_prefetch_runs_in_background(self):
-        # While the consumer holds item N, the worker should already
-        # have produced item N+1. Verified by recording each
-        # production timestamp and asserting item 1 is produced
-        # before the consumer pulls it.
-        produced_at: list[float] = []
-
-        def gen():
-            for i in range(3):
-                produced_at.append(time.perf_counter())
-                yield i
-
-        with contextlib.closing(retrieval_mod._PrefetchIterator(gen())) as it:
-            t0 = time.perf_counter()
-            assert next(it) == 0
-            # By now the worker has been told to compute item 1; it
-            # should land before the consumer next()s for it.
-            deadline = time.time() + 0.5
-            while time.time() < deadline and len(produced_at) < 2:
-                time.sleep(0.001)
-            assert len(produced_at) >= 2
-            # The second item must have been produced *after* the
-            # iterator started but before we ask for it.
-            t_pull_1 = time.perf_counter()
-            assert next(it) == 1
-            assert produced_at[1] >= t0
-            assert produced_at[1] <= t_pull_1 + 1e-3
-
-    def test_source_runs_on_worker_thread_not_caller(self):
-        # Sanity: confirm the source iterator is being driven by the
-        # prefetch worker, not the calling thread.
-        seen_threads: list[str] = []
-
-        def gen():
-            for i in range(3):
-                seen_threads.append(threading.current_thread().name)
-                yield i
-
-        with contextlib.closing(retrieval_mod._PrefetchIterator(gen())) as it:
-            list(it)
-        assert all("vcztools-prefetch" in name for name in seen_threads)
-
-    def test_close_called_multiple_times_after_exhaustion(self):
-        # After the iterator is naturally exhausted, the wrapper
-        # has already shut its executor. Subsequent close() calls
-        # must remain no-ops.
-        it = retrieval_mod._PrefetchIterator(iter([1, 2]))
-        list(it)  # exhaust
         it.close()
-        it.close()
+        # After close, subsequent next() returns StopIteration cleanly.
         with pytest.raises(StopIteration):
             next(it)
+
+    def test_max_in_flight_is_one_with_zero_budget(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group, readahead_bytes=0)
+        it = reader.variant_chunks(fields=["variant_position"])
+        list(it)
+        assert it.max_in_flight == 1
+
+    def test_max_in_flight_grows_with_large_budget(self):
+        # Synthetic VCZ with many chunks; a generous budget should let
+        # the producer schedule several chunks ahead of the consumer.
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * 12,
+            variant_position=list(range(100, 112)),
+            alleles=[("A", "T")] * 12,
+            num_samples=2,
+            variants_chunk_size=3,
+        )
+        reader = VczReader(root, readahead_bytes=10**9)
+        it = reader.variant_chunks(fields=["variant_position"])
+        list(it)
+        # 4 chunks; budget is huge, so by the post-bootstrap refill
+        # every remaining chunk gets scheduled immediately.
+        assert it.max_in_flight >= 2

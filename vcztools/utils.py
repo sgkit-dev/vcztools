@@ -23,6 +23,15 @@ class ChunkRead:
     contiguous range (basic indexing returns a view), or an ndarray of
     local indices for arbitrary fancy-index gather/permutation.
 
+    On the variants axis, ``index`` is in units of *minimum* chunk
+    size (see :func:`compute_min_variants_chunk_size`). When every
+    variant-axis field shares one chunk size — the historical case —
+    that minimum equals every field's chunk size, so the index is the
+    Zarr block index for every variant-axis field. When variant-only
+    fields have larger chunks, the pipeline translates the logical
+    index to per-field block indexes (see
+    :class:`vcztools.retrieval.BlockReadTemplate`).
+
     ``num_selected`` is the number of entries this chunk contributes
     to its plan — equal to ``len(selection)`` for the ndarray form,
     ``stop - start`` for ``slice``, and the chunk's actual size for

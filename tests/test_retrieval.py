@@ -2996,6 +2996,57 @@ class TestVariableChunkSizes:
             else None,
         )
 
+    def test_block_read_for_multiplier_one(self):
+        # multiplier=1 → field block index == logical chunk index;
+        # intra_slice is always slice(0, min_chunk).
+        t = retrieval_mod.BlockReadTemplate(
+            key=("variant_position",), arr=None, block_index_suffix=(), multiplier=1
+        )
+        for logical_idx in (0, 1, 5, 99):
+            block_index, intra_slice = t.block_read_for(logical_idx, min_chunk=4)
+            assert block_index == (logical_idx,)
+            assert intra_slice == slice(0, 4)
+
+    def test_block_read_for_multiplier_three_interior(self):
+        # multiplier=3, min_chunk=2: each field block holds 6 variants.
+        # Logical chunks 0..2 map into field block 0; 3..5 into block 1.
+        t = retrieval_mod.BlockReadTemplate(
+            key=("variant_allele",),
+            arr=None,
+            block_index_suffix=(slice(None),),
+            multiplier=3,
+        )
+        cases = {
+            0: ((0, slice(None)), slice(0, 2)),
+            1: ((0, slice(None)), slice(2, 4)),
+            2: ((0, slice(None)), slice(4, 6)),
+            3: ((1, slice(None)), slice(0, 2)),
+            4: ((1, slice(None)), slice(2, 4)),
+            5: ((1, slice(None)), slice(4, 6)),
+        }
+        for logical_idx, (expected_block, expected_intra) in cases.items():
+            block_index, intra_slice = t.block_read_for(logical_idx, min_chunk=2)
+            assert block_index == expected_block
+            assert intra_slice == expected_intra
+
+    def test_block_read_for_partial_last_chunk(self):
+        # When num_variants is not a multiple of (min_chunk * multiplier),
+        # the last field block is partial. Python slice semantics clamp
+        # automatically; block_read_for produces the unclipped slice and
+        # downstream slicing returns whatever rows actually exist.
+        # 17 variants, min_chunk=5, multiplier=2: blocks of 10 rows
+        # (rows 0-9) and 7 rows (rows 10-16). Logical chunk 3 = rows
+        # 15-16 (only 2 rows). intra_slice produced is slice(5, 10);
+        # numpy slicing on a 7-row block clamps to slice(5, 7) → 2 rows.
+        t = retrieval_mod.BlockReadTemplate(
+            key=("variant_id",), arr=None, block_index_suffix=(), multiplier=2
+        )
+        block_index, intra_slice = t.block_read_for(3, min_chunk=5)
+        assert block_index == (1,)
+        assert intra_slice == slice(5, 10)
+        partial_block = np.arange(7)
+        nt.assert_array_equal(partial_block[intra_slice], np.array([5, 6]))
+
     def test_block_cache_dedups_reads_within_one_field_block(self, monkeypatch):
         # variant_allele chunked at 4 * min_chunk; one field block spans
         # 4 logical chunks. Iterating all 4 must issue the variant_allele
@@ -3058,5 +3109,47 @@ class TestVariableChunkSizes:
         assert len(base_chunks) == len(scaled_chunks)
         for base_c, scaled_c in zip(base_chunks, scaled_chunks):
             assert sorted(base_c.keys()) == sorted(scaled_c.keys())
+            for key in base_c:
+                nt.assert_array_equal(base_c[key], scaled_c[key])
+
+    @pytest.mark.parametrize(
+        ("num_variants", "min_chunk", "multiplier", "region"),
+        [
+            (17, 5, 2, None),
+            (17, 5, 2, "chr1:7-13"),
+            (20, 4, 5, None),
+            (20, 4, 5, "chr1:9-14"),
+            (1, 3, 2, None),
+            (6, 3, 2, "chr1:2-2"),
+        ],
+    )
+    def test_region_query_parity_with_partial_last_chunk(
+        self, num_variants, min_chunk, multiplier, region
+    ):
+        # Same logical content stored two ways; same region query.
+        # Covers partial last chunks (num_variants not a multiple of
+        # min_chunk * multiplier) and the no-region "iterate all" path.
+        baseline = self._build(
+            num_variants=num_variants, min_chunk=min_chunk, allele_chunk=min_chunk
+        )
+        scaled = self._build(
+            num_variants=num_variants,
+            min_chunk=min_chunk,
+            allele_chunk=min_chunk * multiplier,
+        )
+
+        def _read_with_region(root):
+            with retrieval_mod.VczReader(root) as r:
+                if region is not None:
+                    plan = regions_mod.build_chunk_plan(root, regions=region)
+                    r.set_variants(plan)
+                return list(
+                    r.variant_chunks(fields=["variant_allele", "call_genotype"])
+                )
+
+        base_chunks = _read_with_region(baseline)
+        scaled_chunks = _read_with_region(scaled)
+        assert len(base_chunks) == len(scaled_chunks)
+        for base_c, scaled_c in zip(base_chunks, scaled_chunks):
             for key in base_c:
                 nt.assert_array_equal(base_c[key], scaled_c[key])

@@ -95,6 +95,64 @@ def array_dims(arr):
     return arr.attrs.get("_ARRAY_DIMENSIONS", None) or arr.metadata.dimension_names
 
 
+def has_variants_axis(arr) -> bool:
+    """Whether ``arr``'s first dimension is the variants axis."""
+    dims = array_dims(arr)
+    return dims is not None and len(dims) > 0 and dims[0] == "variants"
+
+
+def compute_min_variants_chunk_size(root) -> int:
+    """Compute the minimum variants-axis chunk size in a VCZ root.
+
+    By spec ``call_*`` fields define the floor; every variant-only
+    field must use a chunk size that is a positive integer multiple of
+    it. Two ``call_*`` fields with different chunk sizes are a writer
+    bug and raise ``ValueError`` here. When no ``call_*`` field is
+    present, falls back to the minimum chunk size across variant-axis
+    fields.
+    """
+    call_sizes: dict[str, int] = {}
+    other_sizes: list[int] = []
+    for name in root.array_keys():
+        arr = root[name]
+        if not has_variants_axis(arr):
+            continue
+        chunk_size = int(arr.chunks[0])
+        if name.startswith("call_"):
+            call_sizes[name] = chunk_size
+        else:
+            other_sizes.append(chunk_size)
+    if len(call_sizes) > 0:
+        sizes_set = set(call_sizes.values())
+        if len(sizes_set) > 1:
+            raise ValueError(
+                f"call_* fields must share a single variants chunk size; "
+                f"found {call_sizes}"
+            )
+        return next(iter(sizes_set))
+    if len(other_sizes) > 0:
+        return min(other_sizes)
+    raise ValueError("no variant-axis fields in store")
+
+
+def validate_variants_axis_chunking(root, min_chunk: int) -> None:
+    """Assert every variant-axis field's chunks[0] is a positive
+    integer multiple of ``min_chunk``. Raises ``ValueError`` otherwise.
+    """
+    if min_chunk <= 0:
+        raise ValueError(f"min_chunk must be positive (got {min_chunk})")
+    for name in root.array_keys():
+        arr = root[name]
+        if not has_variants_axis(arr):
+            continue
+        chunk_size = int(arr.chunks[0])
+        if chunk_size <= 0 or chunk_size % min_chunk != 0:
+            raise ValueError(
+                f"{name}.chunks[0]={chunk_size} is not a positive multiple "
+                f"of min variants chunk size {min_chunk}"
+            )
+
+
 def search(a, v):
     """
     Finds the indices into an array a corresponding to the elements in v.

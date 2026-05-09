@@ -315,33 +315,56 @@ def _regions_input_to_df(value, *, arg_name: str) -> pd.DataFrame | None:
 def chunk_plan_from_indexes(
     variant_indexes: np.ndarray,
     *,
-    variants_chunk_size: int,
+    min_chunk: int,
 ) -> list[utils.ChunkRead]:
     """Build a plan from a sorted flat array of global variant indexes.
 
-    Buckets into chunks, producing one
-    :class:`~vcztools.utils.ChunkRead` per visited chunk. Per-chunk
-    local selections are collapsed via
+    Buckets into logical chunks of size ``min_chunk`` (the minimum
+    variants-axis chunk size — see
+    :func:`vcztools.utils.compute_min_variants_chunk_size`), producing
+    one :class:`~vcztools.utils.ChunkRead` per visited logical chunk.
+    Per-chunk local selections are collapsed via
     :func:`~vcztools.utils.normalise_local_selection` so a contiguous
     range becomes a ``slice`` (basic-index view) and a full chunk
     becomes ``None`` (raw block, no slicing).
     """
     variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
-    chunk_of_each = variant_indexes // variants_chunk_size
+    chunk_of_each = variant_indexes // min_chunk
     chunk_indexes = np.unique(chunk_of_each)
     plan = []
     for ci in chunk_indexes:
-        local_sel = variant_indexes[chunk_of_each == ci] - (ci * variants_chunk_size)
+        local_sel = variant_indexes[chunk_of_each == ci] - (ci * min_chunk)
         plan.append(
             utils.ChunkRead(
                 index=int(ci),
                 num_selected=int(local_sel.size),
-                selection=utils.normalise_local_selection(
-                    local_sel, variants_chunk_size
-                ),
+                selection=utils.normalise_local_selection(local_sel, min_chunk),
             )
         )
     return plan
+
+
+def _read_logical_chunk(
+    arr,
+    name: str,
+    multiplier: int,
+    min_chunk: int,
+    logical_chunk_idx: int,
+    block_cache: dict,
+) -> np.ndarray:
+    """Read the ``min_chunk``-sized slab of ``arr`` corresponding to
+    ``logical_chunk_idx`` (in ``min_chunk`` units), caching the
+    underlying field block so consecutive logical chunks within one
+    field block don't re-read it.
+    """
+    field_block_idx = logical_chunk_idx // multiplier
+    cache_key = (name, field_block_idx)
+    block = block_cache.get(cache_key)
+    if block is None:
+        block = arr.blocks[field_block_idx]
+        block_cache[cache_key] = block
+    intra_start = (logical_chunk_idx % multiplier) * min_chunk
+    return block[intra_start : intra_start + min_chunk]
 
 
 def build_chunk_plan(
@@ -352,23 +375,27 @@ def build_chunk_plan(
     targets_complement: bool = False,
 ) -> list[utils.ChunkRead]:
     """Build a list of :class:`~vcztools.utils.ChunkRead` from
-    region/target inputs and the Zarr root. When neither ``regions``
-    nor ``targets`` applies a filter, returns one
-    ``ChunkRead(index=i, selection=None)`` per chunk — meaning "read
-    every chunk in full".
+    region/target inputs and the Zarr root. ``ChunkRead.index`` values
+    are in units of the *minimum* variants chunk size — see
+    :func:`vcztools.utils.compute_min_variants_chunk_size`. When
+    neither ``regions`` nor ``targets`` applies a filter, returns one
+    ``ChunkRead(index=i, selection=None)`` per logical chunk — meaning
+    "read every chunk in full".
 
     Uses the ``region_index`` array to prune candidate chunks (only
     when ``regions`` is set — ``targets`` alone doesn't prune), then
-    scans each candidate chunk once to compute a local row selection.
-    Only non-empty chunks end up in the plan. Per-chunk local
-    selections are collapsed via
-    :func:`~vcztools.utils.normalise_local_selection` so a contiguous
-    range becomes a ``slice`` (basic-index view) and a full chunk
-    becomes ``None`` (raw block, no slicing).
+    scans each candidate logical chunk once to compute a local row
+    selection. Per-field block reads are cached locally so a
+    ``variant_position`` block chunked at ``K * min_chunk`` is read
+    once even when ``K`` consecutive logical chunks reference it.
+    Only non-empty chunks end up in the plan.
     """
     position_arr = root["variant_position"]
-    num_chunks = int(position_arr.cdata_shape[0])
-    variants_chunk_size = int(position_arr.chunks[0])
+    contig_arr = root["variant_contig"]
+    length_arr = root["variant_length"]
+    num_variants = int(position_arr.shape[0])
+    min_chunk = utils.compute_min_variants_chunk_size(root)
+    num_logical_chunks = (num_variants + min_chunk - 1) // min_chunk
 
     regions_df = _regions_input_to_df(regions, arg_name="regions")
     targets_df = _regions_input_to_df(targets, arg_name="targets")
@@ -380,24 +407,36 @@ def build_chunk_plan(
     )
 
     if regions_gr is None and targets_gr is None:
-        num_variants = int(position_arr.shape[0])
-        return utils.ChunkRead.simple_plan(num_variants, variants_chunk_size)
-
-    contig_arr = root["variant_contig"]
-    length_arr = root["variant_length"]
+        return utils.ChunkRead.simple_plan(num_variants, min_chunk)
 
     if regions_gr is not None:
         region_index = root["region_index"][:]
         candidate_chunks = regions_to_chunk_indexes(regions_gr, region_index)
     else:
-        candidate_chunks = np.arange(num_chunks, dtype=np.int64)
+        candidate_chunks = np.arange(num_logical_chunks, dtype=np.int64)
+
+    pos_mult = int(position_arr.chunks[0]) // min_chunk
+    contig_mult = int(contig_arr.chunks[0]) // min_chunk
+    length_mult = int(length_arr.chunks[0]) // min_chunk
+    block_cache: dict = {}
 
     plan = []
     for chunk_idx in candidate_chunks:
         chunk_idx = int(chunk_idx)
-        vc = contig_arr.blocks[chunk_idx]
-        vp = position_arr.blocks[chunk_idx]
-        vl = length_arr.blocks[chunk_idx]
+        vc = _read_logical_chunk(
+            contig_arr, "variant_contig", contig_mult, min_chunk, chunk_idx, block_cache
+        )
+        vp = _read_logical_chunk(
+            position_arr,
+            "variant_position",
+            pos_mult,
+            min_chunk,
+            chunk_idx,
+            block_cache,
+        )
+        vl = _read_logical_chunk(
+            length_arr, "variant_length", length_mult, min_chunk, chunk_idx, block_cache
+        )
         local_sel = regions_to_selection(regions_gr, targets_gr, vc, vp, vl)
         if local_sel is None:
             continue
@@ -408,9 +447,7 @@ def build_chunk_plan(
             utils.ChunkRead(
                 index=chunk_idx,
                 num_selected=int(local_sel.size),
-                selection=utils.normalise_local_selection(
-                    local_sel, variants_chunk_size
-                ),
+                selection=utils.normalise_local_selection(local_sel, min_chunk),
             )
         )
 

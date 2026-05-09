@@ -39,13 +39,19 @@ def _create_array(group, name, data, *, chunks, dimension_names):
     return arr
 
 
-def _compute_region_index(variant_contig, variant_position, variant_length, v_chunk):
+def _compute_region_index(variant_contig, variant_position, variant_length, min_chunk):
+    """Compute the region index, with one row per logical (``min_chunk``-
+    sized) chunk. ``min_chunk`` is the minimum variants-axis chunk
+    size (driven by ``call_*`` fields); variant-only fields may have
+    larger chunks but the region index always indexes at logical-
+    chunk granularity.
+    """
     num_variants = variant_contig.shape[0]
-    num_chunks = (num_variants + v_chunk - 1) // v_chunk
+    num_chunks = (num_variants + min_chunk - 1) // min_chunk
     rows = []
     for chunk_idx in range(num_chunks):
-        start = chunk_idx * v_chunk
-        stop = min(start + v_chunk, num_variants)
+        start = chunk_idx * min_chunk
+        stop = min(start + min_chunk, num_variants)
         chunk_contigs = variant_contig[start:stop]
         chunk_positions = variant_position[start:stop]
         chunk_ends = chunk_positions + variant_length[start:stop]
@@ -89,6 +95,7 @@ def make_vcz(
     filter_descriptions=None,
     variants_chunk_size=None,
     samples_chunk_size=None,
+    field_chunk_overrides=None,
     call_genotype=None,
     call_fields=None,
     info_fields=None,
@@ -104,6 +111,16 @@ def make_vcz(
 
     All parameters are keyword-only. ``variant_contig``, ``variant_position``
     and ``alleles`` are required; everything else has a sensible default.
+
+    ``field_chunk_overrides`` is an optional ``dict[str, int]`` mapping
+    a variant-axis array name (e.g. ``"variant_allele"``,
+    ``"variant_id"``) to a chunk size that overrides the default
+    ``variants_chunk_size`` for that field. Each override must be a
+    positive integer multiple of ``variants_chunk_size`` (the minimum
+    chunk size on the variants axis); ``call_*`` fields cannot be
+    overridden. Used to build fixtures that exercise the variable-
+    chunk-size code paths in :mod:`vcztools.regions` and
+    :mod:`vcztools.retrieval`.
     """
     variant_contig = np.asarray(variant_contig, dtype=np.int32)
     variant_position = np.asarray(variant_position, dtype=np.int32)
@@ -132,6 +149,22 @@ def make_vcz(
     s_chunk = (
         samples_chunk_size if samples_chunk_size is not None else max(num_samples, 1)
     )
+
+    overrides = dict(field_chunk_overrides) if field_chunk_overrides is not None else {}
+    for name, size in overrides.items():
+        if name.startswith("call_"):
+            raise ValueError(
+                f"field_chunk_overrides[{name!r}]: call_* fields define the "
+                f"minimum variants chunk size and cannot be overridden"
+            )
+        if size <= 0 or size % v_chunk != 0:
+            raise ValueError(
+                f"field_chunk_overrides[{name!r}]={size} must be a positive "
+                f"multiple of variants_chunk_size={v_chunk}"
+            )
+
+    def _vc(name: str) -> int:
+        return overrides.get(name, v_chunk)
 
     if region_index is None:
         region_index = _compute_region_index(
@@ -198,35 +231,35 @@ def make_vcz(
             root,
             "variant_contig",
             variant_contig,
-            chunks=(v_chunk,),
+            chunks=(_vc("variant_contig"),),
             dimension_names=("variants",),
         )
         _create_array(
             root,
             "variant_position",
             variant_position,
-            chunks=(v_chunk,),
+            chunks=(_vc("variant_position"),),
             dimension_names=("variants",),
         )
         _create_array(
             root,
             "variant_length",
             variant_length,
-            chunks=(v_chunk,),
+            chunks=(_vc("variant_length"),),
             dimension_names=("variants",),
         )
         _create_array(
             root,
             "variant_allele",
             allele_array,
-            chunks=(v_chunk, max_alleles),
+            chunks=(_vc("variant_allele"), max_alleles),
             dimension_names=("variants", "alleles"),
         )
         _create_array(
             root,
             "variant_filter",
             variant_filter,
-            chunks=(v_chunk, len(filters)),
+            chunks=(_vc("variant_filter"), len(filters)),
             dimension_names=("variants", "filters"),
         )
         _create_array(
@@ -242,7 +275,7 @@ def make_vcz(
                 root,
                 "variant_id",
                 np.asarray(variant_id, dtype="<U16"),
-                chunks=(v_chunk,),
+                chunks=(_vc("variant_id"),),
                 dimension_names=("variants",),
             )
         if variant_quality is not None:
@@ -250,7 +283,7 @@ def make_vcz(
                 root,
                 "variant_quality",
                 np.asarray(variant_quality, dtype=np.float32),
-                chunks=(v_chunk,),
+                chunks=(_vc("variant_quality"),),
                 dimension_names=("variants",),
             )
 
@@ -294,7 +327,8 @@ def make_vcz(
                     if data.ndim == 1
                     else ("variants", f"INFO_{name}_dim")
                 )
-                chunks = (v_chunk,) if data.ndim == 1 else (v_chunk, data.shape[1])
+                field_v = _vc(f"variant_{name}")
+                chunks = (field_v,) if data.ndim == 1 else (field_v, data.shape[1])
                 _create_array(
                     root,
                     f"variant_{name}",
@@ -326,7 +360,13 @@ _COPY_BUILTIN_ARRAYS = frozenset(
 )
 
 
-def copy_vcz(source, *, variants_chunk_size=None, samples_chunk_size=None):
+def copy_vcz(
+    source,
+    *,
+    variants_chunk_size=None,
+    samples_chunk_size=None,
+    field_chunk_overrides=None,
+):
     """
     Copy a zarr root group into a fresh in-memory VCZ group by
     delegating to :func:`make_vcz`, optionally rewriting chunk sizes.
@@ -337,6 +377,11 @@ def copy_vcz(source, *, variants_chunk_size=None, samples_chunk_size=None):
     arrays (other than ``call_genotype``) are passed through as
     ``call_fields``. ``region_index`` is recomputed from the copied
     inputs so chunk-size overrides produce a correct index.
+
+    When ``field_chunk_overrides`` is omitted, per-field chunk sizes
+    on the variants axis are preserved from the source — so a source
+    with ``variant_allele.chunks[0] = K * call_genotype.chunks[0]``
+    round-trips exactly. Pass an explicit dict to rewrite them.
 
     Raises :class:`ValueError` if ``source`` contains an array
     :func:`make_vcz` does not know how to construct.
@@ -386,20 +431,44 @@ def copy_vcz(source, *, variants_chunk_size=None, samples_chunk_size=None):
         ploidy = call_genotype.shape[2]
 
     # When the caller does not override a chunk size, default to the
-    # source's chunk size so the copy is byte-for-byte equivalent. Only
-    # when chunks are overridden do we let make_vcz pick fresh defaults
-    # (and recompute region_index accordingly).
+    # source's call_* chunk size (the minimum). Only when chunks are
+    # overridden do we let make_vcz pick fresh defaults (and recompute
+    # region_index accordingly).
+    if "call_genotype" in source:
+        source_min_chunk = int(source["call_genotype"].chunks[0])
+    else:
+        source_min_chunk = int(source["variant_position"].chunks[0])
     if variants_chunk_size is None:
-        variants_chunk_size = int(source["variant_position"].chunks[0])
+        variants_chunk_size = source_min_chunk
     if samples_chunk_size is None and "sample_id" in source:
         samples_chunk_size = int(source["sample_id"].chunks[0])
+
+    # Default per-field chunk overrides: preserve any source field whose
+    # chunks[0] differs from the (new) min_chunk. The caller may pass an
+    # explicit dict to override this.
+    if field_chunk_overrides is None and variants_chunk_size == source_min_chunk:
+        derived_overrides: dict[str, int] = {}
+        for name in source.array_keys():
+            if name.startswith("call_"):
+                continue
+            arr = source[name]
+            dims = (
+                arr.attrs.get("_ARRAY_DIMENSIONS", None) or arr.metadata.dimension_names
+            )
+            if dims is None or len(dims) == 0 or dims[0] != "variants":
+                continue
+            field_chunk = int(arr.chunks[0])
+            if field_chunk != variants_chunk_size:
+                derived_overrides[name] = field_chunk
+        field_chunk_overrides = derived_overrides or None
 
     # Preserve the source region_index when chunk sizes match the source
     # (i.e. no caller override); recompute (via make_vcz) when they are
     # overridden, since the chunk_idx column would otherwise be wrong.
-    source_v_chunk = int(source["variant_position"].chunks[0])
     keep_region_index = (
-        variants_chunk_size == source_v_chunk and "region_index" in source
+        variants_chunk_size == source_min_chunk
+        and field_chunk_overrides is None
+        and "region_index" in source
     )
 
     kwargs = dict(
@@ -413,6 +482,7 @@ def copy_vcz(source, *, variants_chunk_size=None, samples_chunk_size=None):
         filter_descriptions=filter_descriptions,
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
+        field_chunk_overrides=field_chunk_overrides,
         call_genotype=call_genotype,
         call_fields=call_fields or None,
         info_fields=info_fields or None,

@@ -344,9 +344,7 @@ class TestRegionsToChunkIndexes:
 
 class TestChunkPlanFromIndexes:
     def test_buckets_into_chunks(self):
-        plan = regions.chunk_plan_from_indexes(
-            np.array([0, 1, 3, 5, 7]), variants_chunk_size=3
-        )
+        plan = regions.chunk_plan_from_indexes(np.array([0, 1, 3, 5, 7]), min_chunk=3)
         # global indexes 0,1 → chunk 0 local [0,1] → contiguous → slice(0, 2)
         # global indexes 3,5 → chunk 1 local [0,2] → non-contiguous → ndarray
         # global index  7   → chunk 2 local [1]   → single elt → slice(1, 2)
@@ -357,31 +355,27 @@ class TestChunkPlanFromIndexes:
 
     def test_empty(self):
         plan = regions.chunk_plan_from_indexes(
-            np.array([], dtype=np.int64), variants_chunk_size=3
+            np.array([], dtype=np.int64), min_chunk=3
         )
         assert plan == []
 
     def test_full_chunk_collapses_to_none(self):
-        plan = regions.chunk_plan_from_indexes(
-            np.array([0, 1, 2]), variants_chunk_size=3
-        )
+        plan = regions.chunk_plan_from_indexes(np.array([0, 1, 2]), min_chunk=3)
         assert [cr.index for cr in plan] == [0]
         assert plan[0].selection is None
 
     def test_multiple_full_chunks_collapse_to_none(self):
-        plan = regions.chunk_plan_from_indexes(np.arange(6), variants_chunk_size=3)
+        plan = regions.chunk_plan_from_indexes(np.arange(6), min_chunk=3)
         assert [cr.index for cr in plan] == [0, 1]
         assert all(cr.selection is None for cr in plan)
 
     def test_offset_contiguous_collapses_to_slice(self):
-        plan = regions.chunk_plan_from_indexes(np.array([4, 5]), variants_chunk_size=3)
+        plan = regions.chunk_plan_from_indexes(np.array([4, 5]), min_chunk=3)
         assert [cr.index for cr in plan] == [1]
         assert plan[0].selection == slice(1, 3)
 
     def test_mixed_collapse_and_passthrough(self):
-        plan = regions.chunk_plan_from_indexes(
-            np.array([0, 2, 3, 4, 5]), variants_chunk_size=3
-        )
+        plan = regions.chunk_plan_from_indexes(np.array([0, 2, 3, 4, 5]), min_chunk=3)
         # chunk 0 local [0,2] → non-contiguous (ndarray passthrough)
         # chunk 1 local [0,1,2] → full chunk → None
         assert [cr.index for cr in plan] == [0, 1]
@@ -443,6 +437,57 @@ class TestBuildChunkPlan:
         # chunk 1 globals 5     → local [2]   → slice(2, 3)
         # chunk 2 globals 6,7,8 → full → None
         # chunk 3 global  9     → local [0]   → slice(0, 1)
+        assert [cr.index for cr in plan] == [0, 1, 2, 3]
+        assert plan[0].selection is None
+        assert plan[1].selection == slice(2, 3)
+        assert plan[2].selection is None
+        assert plan[3].selection == slice(0, 1)
+
+
+class TestBuildChunkPlanVariableChunks:
+    """build_chunk_plan against fixtures where variant-only fields
+    (variant_position / variant_contig / variant_length) have a chunk
+    size that's a multiple of the call_* chunk size."""
+
+    @staticmethod
+    def _vcz(field_chunk_overrides):
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 10,
+            variant_position=list(range(1, 11)),
+            alleles=[("A", "T")] * 10,
+            num_samples=2,
+            call_genotype=np.zeros((10, 2, 2), dtype=np.int8),
+            contigs=("chr1",),
+            variants_chunk_size=3,
+            field_chunk_overrides=field_chunk_overrides,
+        )
+
+    def test_position_at_2x_min_chunk_no_filter(self):
+        # variant_position chunked at 6 (2 * min_chunk=3); min_chunk=3
+        # is set by call_genotype. 4 logical chunks total.
+        root = self._vcz(
+            {"variant_position": 6, "variant_contig": 6, "variant_length": 6}
+        )
+        plan = regions.build_chunk_plan(root)
+        assert [cr.index for cr in plan] == [0, 1, 2, 3]
+        assert all(cr.selection is None for cr in plan)
+
+    def test_position_at_2x_min_chunk_region(self):
+        root = self._vcz(
+            {"variant_position": 6, "variant_contig": 6, "variant_length": 6}
+        )
+        # chr1:4-5 → globals 3,4 → logical chunk 1 (in min_chunk=3 units).
+        plan = regions.build_chunk_plan(root, regions="chr1:4-5")
+        assert [cr.index for cr in plan] == [1]
+        assert plan[0].selection == slice(0, 2)
+
+    def test_position_at_2x_min_chunk_targets_complement(self):
+        root = self._vcz(
+            {"variant_position": 6, "variant_contig": 6, "variant_length": 6}
+        )
+        plan = regions.build_chunk_plan(
+            root, targets="chr1:4-5", targets_complement=True
+        )
         assert [cr.index for cr in plan] == [0, 1, 2, 3]
         assert plan[0].selection is None
         assert plan[1].selection == slice(2, 3)

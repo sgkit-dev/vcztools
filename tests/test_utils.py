@@ -96,7 +96,7 @@ class TestChunkRead:
         # (None / slice / ndarray) it produces.
         plan = regions_mod.chunk_plan_from_indexes(
             np.array([0, 1, 2, 5, 7, 8], dtype=np.int64),
-            variants_chunk_size=3,
+            min_chunk=3,
         )
         # chunk 0: contiguous 0..2 → selection=None (full chunk)
         # chunk 1: index 5 → selection=slice or ndarray of size 1

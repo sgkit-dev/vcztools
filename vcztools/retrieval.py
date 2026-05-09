@@ -176,30 +176,55 @@ class BlockReadTemplate:
     """Variant-chunk-independent read pattern for one block.
 
     ``block_index_suffix`` is the part of the Zarr ``block_index``
-    *after* the variant chunk index slot — empty tuple for a 1-D
+    *after* the variants-axis slot — empty tuple for a 1-D
     variant-axis field, ``(slice(None),) * (ndim - 1)`` for higher-D
     non-call fields, ``(sci, slice(None) * (ndim - 2))`` for ``call_*``.
+
+    ``multiplier`` is ``arr.chunks[0] // min_chunk`` (always
+    ``1`` for ``call_*``; can be ``>1`` for variant-only fields). When
+    ``multiplier > 1``, one Zarr block spans ``multiplier`` consecutive
+    logical chunks and must be sliced on the variants axis to extract
+    the rows for the current logical chunk.
     """
 
     key: tuple
     arr: object
     block_index_suffix: tuple
+    multiplier: int
+
+    def block_read_for(
+        self, logical_chunk_index: int, min_chunk: int
+    ) -> tuple[tuple, slice]:
+        """Resolve a logical chunk to ``(block_index, intra_slice)``.
+
+        ``block_index`` is the Zarr ``arr.blocks[block_index]`` tuple;
+        ``intra_slice`` extracts the rows for ``logical_chunk_index``
+        from the returned block (``slice(0, min_chunk)`` when
+        ``multiplier == 1`` — the block IS the logical chunk).
+        """
+        field_block_idx = logical_chunk_index // self.multiplier
+        intra_start = (logical_chunk_index % self.multiplier) * min_chunk
+        block_index = (field_block_idx,) + self.block_index_suffix
+        return block_index, slice(intra_start, intra_start + min_chunk)
 
 
 def create_chunk_read_list(
     root,
     sample_chunk_plan: "samples_mod.SampleChunkPlan",
     fields,
+    *,
+    min_chunk: int,
 ) -> list[BlockReadTemplate]:
     """Resolve ``fields`` to a list of :class:`BlockReadTemplate`
     once per query, before any variant chunk is visited.
 
     Each template carries the variant-chunk-independent parts of one
-    block read — the cache key, the resolved Zarr array, and the
-    suffix of ``block_index`` that follows the variant chunk index
-    slot. :func:`update_chunk_read_list` substitutes a specific
-    variant chunk index to produce executor-ready
-    ``(key, arr, block_index)`` tuples.
+    block read — the cache key, the resolved Zarr array, the suffix of
+    ``block_index`` that follows the variants-axis slot, and the field's
+    chunk-multiplier over ``min_chunk``.
+    :func:`update_chunk_read_list` substitutes a specific logical chunk
+    index to produce executor-ready ``(key, arr, block_index,
+    intra_slice)`` tuples.
 
     For a ``call_*`` field the template list fans out one entry per
     sample chunk in ``sample_chunk_plan.chunk_reads``; for any other
@@ -214,17 +239,26 @@ def create_chunk_read_list(
         assert utils.has_variants_axis(arr), (
             f"non-variants-axis field in pipeline: {field}"
         )
+        multiplier = int(arr.chunks[0]) // min_chunk
         if not field.startswith("call_"):
             suffix = (slice(None),) * (arr.ndim - 1)
             templates.append(
-                BlockReadTemplate(key=(field,), arr=arr, block_index_suffix=suffix)
+                BlockReadTemplate(
+                    key=(field,),
+                    arr=arr,
+                    block_index_suffix=suffix,
+                    multiplier=multiplier,
+                )
             )
         else:
             for cr in sample_chunk_plan.chunk_reads:
                 suffix = (cr.index,) + (slice(None),) * (arr.ndim - 2)
                 templates.append(
                     BlockReadTemplate(
-                        key=(field, cr.index), arr=arr, block_index_suffix=suffix
+                        key=(field, cr.index),
+                        arr=arr,
+                        block_index_suffix=suffix,
+                        multiplier=multiplier,
                     )
                 )
     return templates
@@ -232,17 +266,19 @@ def create_chunk_read_list(
 
 def update_chunk_read_list(
     templates: list[BlockReadTemplate],
-    variant_chunk_index: int,
+    logical_chunk_index: int,
+    *,
+    min_chunk: int,
 ) -> list[tuple]:
-    """Substitute ``variant_chunk_index`` into each template, returning
-    the ``[(key, arr, block_index), ...]`` list that
+    """Substitute ``logical_chunk_index`` into each template, returning
+    the ``[(key, arr, block_index, intra_slice), ...]`` list that
     :class:`ReadaheadPipeline` submits to the thread pool. The
     template list itself is unchanged.
     """
     reads = []
     for t in templates:
-        block_index = (variant_chunk_index,) + t.block_index_suffix
-        reads.append((t.key, t.arr, block_index))
+        block_index, intra_slice = t.block_read_for(logical_chunk_index, min_chunk)
+        reads.append((t.key, t.arr, block_index, intra_slice))
     return reads
 
 
@@ -302,13 +338,15 @@ class ReadaheadPipeline:
         *,
         readahead_bytes: int,
         executor: cf.ThreadPoolExecutor,
+        min_chunk: int,
     ):
         self.root = root
         self._variant_chunk_plan_iter = iter(variant_chunk_plan)
         self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
+        self._min_chunk = min_chunk
         self._read_templates = create_chunk_read_list(
-            root, sample_chunk_plan, read_fields
+            root, sample_chunk_plan, read_fields, min_chunk=min_chunk
         )
         self._readahead_bytes = readahead_bytes
         # Set on the first chunk's completion in __iter__.
@@ -342,10 +380,12 @@ class ReadaheadPipeline:
             variant_chunk = next(self._variant_chunk_plan_iter)
         except StopIteration:
             return False
-        reads = update_chunk_read_list(self._read_templates, variant_chunk.index)
+        reads = update_chunk_read_list(
+            self._read_templates, variant_chunk.index, min_chunk=self._min_chunk
+        )
         futures = [
-            (key, self._executor.submit(_read_block, arr, block_index))
-            for key, arr, block_index in reads
+            (key, intra_slice, self._executor.submit(_read_block, arr, block_index))
+            for key, arr, block_index, intra_slice in reads
         ]
         self._in_flight.append((variant_chunk, futures))
         if len(self._in_flight) > self.max_in_flight:
@@ -379,14 +419,19 @@ class ReadaheadPipeline:
             self._refill()
             while len(self._in_flight) > 0:
                 variant_chunk, futures = self._in_flight.pop(0)
-                future_to_key = {fut: key for key, fut in futures}
+                future_to_data = {
+                    fut: (key, intra_slice) for key, intra_slice, fut in futures
+                }
                 blocks: dict[tuple, np.ndarray] = {}
+                chunk_bytes = 0
                 read_start = time.perf_counter()
-                for fut in cf.as_completed(future_to_key):
-                    blocks[future_to_key[fut]] = fut.result()
+                for fut in cf.as_completed(future_to_data):
+                    key, intra_slice = future_to_data[fut]
+                    block = fut.result()
+                    chunk_bytes += utils.array_memory_bytes(block)
+                    blocks[key] = block[intra_slice]
                 read_seconds = time.perf_counter() - read_start
                 self.last_chunk_read_seconds = read_seconds
-                chunk_bytes = sum(utils.array_memory_bytes(v) for v in blocks.values())
                 self.last_chunk_bytes = chunk_bytes
                 if self._per_chunk_bytes is None:
                     self._per_chunk_bytes = chunk_bytes
@@ -432,7 +477,7 @@ class ReadaheadPipeline:
         finally:
             cancelled = 0
             for _variant_chunk, futures in self._in_flight:
-                for _key, fut in futures:
+                for _key, _intra_slice, fut in futures:
                     if fut.cancel():
                         cancelled += 1
             if cancelled > 0:
@@ -1239,6 +1284,7 @@ class VczReader:
             read_fields,
             readahead_bytes=readahead_bytes,
             executor=self._executor,
+            min_chunk=self.variants_chunk_size,
         )
         chunks_visited = 0
         chunks_yielded = 0

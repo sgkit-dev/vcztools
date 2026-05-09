@@ -301,6 +301,7 @@ def _make_pipeline(
         read_fields,
         readahead_bytes=readahead_bytes,
         executor=executor,
+        min_chunk=variants_chunk_size,
     )
 
 
@@ -363,13 +364,13 @@ class TestCreateChunkReadList:
         root = _vcz_for_template_tests()
         with pytest.raises(AssertionError, match="non-variants-axis"):
             retrieval_mod.create_chunk_read_list(
-                root, self._sample_plan(root), ["sample_id"]
+                root, self._sample_plan(root), ["sample_id"], min_chunk=2
             )
 
     def test_variant_axis_1d_field(self):
         root = _vcz_for_template_tests()
         templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["variant_position"]
+            root, self._sample_plan(root), ["variant_position"], min_chunk=2
         )
         assert len(templates) == 1
         t = templates[0]
@@ -377,24 +378,28 @@ class TestCreateChunkReadList:
         assert t.arr == root["variant_position"]
         # 1-D variants axis → no extra dims after the variant chunk slot.
         assert t.block_index_suffix == ()
+        assert t.multiplier == 1
 
     def test_variant_axis_2d_field(self):
         root = _vcz_for_template_tests()
         templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["variant_allele"]
+            root, self._sample_plan(root), ["variant_allele"], min_chunk=2
         )
         assert len(templates) == 1
         t = templates[0]
         assert t.key == ("variant_allele",)
         # 2-D (variants, alleles) → one trailing slice(None).
         assert t.block_index_suffix == (slice(None),)
+        assert t.multiplier == 1
 
     def test_call_field_2d_fans_out_per_sample_chunk(self):
         root = _vcz_for_template_tests()
         plan = self._sample_plan(root)
         # 4 samples, samples_chunk_size=2 → 2 sample chunks.
         assert len(plan.chunk_reads) == 2
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_DP"])
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["call_DP"], min_chunk=2
+        )
         assert len(templates) == 2
         assert [t.key for t in templates] == [("call_DP", 0), ("call_DP", 1)]
         call_dp = root["call_DP"]
@@ -402,16 +407,20 @@ class TestCreateChunkReadList:
             assert t.arr == call_dp
             # 2-D (variants, samples) → suffix is (sci,), no trailing slices.
             assert t.block_index_suffix == (cr.index,)
+            assert t.multiplier == 1
 
     def test_call_field_3d_keeps_trailing_slice(self):
         root = _vcz_for_template_tests()
         plan = self._sample_plan(root)
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_genotype"])
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["call_genotype"], min_chunk=2
+        )
         assert len(templates) == len(plan.chunk_reads)
         for t, cr in zip(templates, plan.chunk_reads):
             assert t.key == ("call_genotype", cr.index)
             # 3-D (variants, samples, ploidy) → suffix carries (sci, slice).
             assert t.block_index_suffix == (cr.index, slice(None))
+            assert t.multiplier == 1
 
     def test_multiple_fields_in_input_order(self):
         # call_DP fans out into 2 entries between the two scalar
@@ -420,7 +429,10 @@ class TestCreateChunkReadList:
         root = _vcz_for_template_tests()
         plan = self._sample_plan(root)
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position", "call_DP", "variant_allele"]
+            root,
+            plan,
+            ["variant_position", "call_DP", "variant_allele"],
+            min_chunk=2,
         )
         assert [t.key for t in templates] == [
             ("variant_position",),
@@ -429,9 +441,30 @@ class TestCreateChunkReadList:
             ("variant_allele",),
         ]
 
+    def test_multiplier_for_scaled_up_variant_field(self):
+        # variant_allele chunked at 2 * min_chunk; variant_position at min_chunk.
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * 4,
+            variant_position=[1, 2, 3, 4],
+            alleles=[("A", "T")] * 4,
+            num_samples=2,
+            sample_id=["s0", "s1"],
+            variants_chunk_size=2,
+            samples_chunk_size=2,
+            call_genotype=np.zeros((4, 2, 2), dtype=np.int8),
+            field_chunk_overrides={"variant_allele": 4},
+        )
+        templates = retrieval_mod.create_chunk_read_list(
+            root,
+            self._sample_plan(root),
+            ["variant_position", "variant_allele"],
+            min_chunk=2,
+        )
+        assert [t.multiplier for t in templates] == [1, 2]
+
 
 class TestUpdateChunkReadList:
-    """``update_chunk_read_list`` substitutes the variant chunk index
+    """``update_chunk_read_list`` substitutes the logical chunk index
     into each template, leaving the templates unchanged so the same
     list is reusable across every chunk in a query.
     """
@@ -443,41 +476,72 @@ class TestUpdateChunkReadList:
             permutation=None,
         )
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position", "variant_allele"]
+            root, plan, ["variant_position", "variant_allele"], min_chunk=2
         )
-        reads = retrieval_mod.update_chunk_read_list(templates, 3)
+        reads = retrieval_mod.update_chunk_read_list(templates, 3, min_chunk=2)
         keys = [r[0] for r in reads]
         block_indexes = [r[2] for r in reads]
+        intra_slices = [r[3] for r in reads]
         assert keys == [("variant_position",), ("variant_allele",)]
         assert block_indexes == [(3,), (3, slice(None))]
+        # multiplier=1 for both fields → intra_slice is slice(0, min_chunk).
+        assert intra_slices == [slice(0, 2), slice(0, 2)]
 
     def test_call_template_keeps_sample_chunk_index_after_variant(self):
         root = _vcz_for_template_tests()
         plan = samples_mod.build_chunk_plan(
             np.array([0, 1, 2, 3], dtype=np.int64), samples_chunk_size=2
         )
-        templates = retrieval_mod.create_chunk_read_list(root, plan, ["call_DP"])
-        reads = retrieval_mod.update_chunk_read_list(templates, 5)
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["call_DP"], min_chunk=2
+        )
+        reads = retrieval_mod.update_chunk_read_list(templates, 5, min_chunk=2)
         assert [r[0] for r in reads] == [("call_DP", 0), ("call_DP", 1)]
         assert [r[2] for r in reads] == [(5, 0), (5, 1)]
 
     def test_two_calls_yield_independent_lists(self):
         # Reusing a template list across chunks must not have any
         # cross-talk: each call returns a fresh list of fresh tuples
-        # against the supplied variant chunk index.
+        # against the supplied logical chunk index.
         root = _vcz_for_template_tests()
         plan = samples_mod.SampleChunkPlan(
             chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
             permutation=None,
         )
         templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position"]
+            root, plan, ["variant_position"], min_chunk=2
         )
-        reads_a = retrieval_mod.update_chunk_read_list(templates, 0)
-        reads_b = retrieval_mod.update_chunk_read_list(templates, 4)
+        reads_a = retrieval_mod.update_chunk_read_list(templates, 0, min_chunk=2)
+        reads_b = retrieval_mod.update_chunk_read_list(templates, 4, min_chunk=2)
         assert reads_a is not reads_b
         assert reads_a[0][2] == (0,)
         assert reads_b[0][2] == (4,)
+
+    def test_scaled_up_field_translates_block_and_intra_slice(self):
+        # variant_allele has multiplier=3 over min_chunk=2.
+        # logical chunk 5 → field block 5//3 = 1, intra start (5%3)*2 = 4.
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * 18,
+            variant_position=list(range(1, 19)),
+            alleles=[("A", "T")] * 18,
+            num_samples=2,
+            sample_id=["s0", "s1"],
+            variants_chunk_size=2,
+            samples_chunk_size=2,
+            call_genotype=np.zeros((18, 2, 2), dtype=np.int8),
+            field_chunk_overrides={"variant_allele": 6},
+        )
+        plan = samples_mod.SampleChunkPlan(
+            chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
+            permutation=None,
+        )
+        templates = retrieval_mod.create_chunk_read_list(
+            root, plan, ["variant_allele"], min_chunk=2
+        )
+        reads = retrieval_mod.update_chunk_read_list(templates, 5, min_chunk=2)
+        assert reads[0][0] == ("variant_allele",)
+        assert reads[0][2] == (1, slice(None))
+        assert reads[0][3] == slice(4, 6)
 
 
 class TestReadaheadPipeline:
@@ -553,6 +617,7 @@ class TestReadaheadPipeline:
                 ["variant_position"],
                 readahead_bytes=0,
                 executor=executor,
+                min_chunk=3,
             )
             list(pipeline)
         # 4 chunks → 5 refills (one per consume + the post-final empty refill).
@@ -573,6 +638,7 @@ class TestReadaheadPipeline:
                 ["variant_position"],
                 readahead_bytes=10**9,
                 executor=executor,
+                min_chunk=3,
             )
             list(pipeline)
         # Bootstrap depth=1, then post-yield-1 schedules the remaining
@@ -1017,9 +1083,16 @@ def _make_cached_chunk(
         num_selected=variant_num_selected,
         selection=variant_selection,
     )
-    templates = retrieval_mod.create_chunk_read_list(root, sample_chunk_plan, fields)
-    reads = retrieval_mod.update_chunk_read_list(templates, variant_chunk.index)
-    blocks = {key: retrieval_mod._read_block(arr, idx) for key, arr, idx in reads}
+    templates = retrieval_mod.create_chunk_read_list(
+        root, sample_chunk_plan, fields, min_chunk=variants_chunk_size
+    )
+    reads = retrieval_mod.update_chunk_read_list(
+        templates, variant_chunk.index, min_chunk=variants_chunk_size
+    )
+    blocks = {
+        key: retrieval_mod._read_block(arr, idx)[intra]
+        for key, arr, idx, intra in reads
+    }
     return CachedVariantChunk(
         root,
         variant_chunk,
@@ -2892,3 +2965,66 @@ class TestPrefetchIteratorDirect:
         it.close()
         with pytest.raises(StopIteration):
             next(it)
+
+
+class TestVariableChunkSizes:
+    """End-to-end correctness when variant-only fields use a chunk
+    size that is a multiple of the call_* (= min_chunk) chunk size."""
+
+    @staticmethod
+    def _build(*, num_variants, min_chunk, allele_chunk, num_samples=2):
+        rng = np.random.default_rng(0)
+        alleles = [
+            (chr(ord("A") + i % 4), chr(ord("T") + i % 4)) for i in range(num_variants)
+        ]
+        call_genotype = rng.integers(
+            0, 2, size=(num_variants, num_samples, 2), dtype=np.int8
+        )
+        call_dp = rng.integers(0, 100, size=(num_variants, num_samples), dtype=np.int32)
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(1, num_variants + 1)),
+            alleles=alleles,
+            num_samples=num_samples,
+            sample_id=[f"s{i}" for i in range(num_samples)],
+            variants_chunk_size=min_chunk,
+            samples_chunk_size=num_samples,
+            call_genotype=call_genotype,
+            call_fields={"DP": call_dp},
+            field_chunk_overrides={"variant_allele": allele_chunk}
+            if allele_chunk != min_chunk
+            else None,
+        )
+
+    @pytest.mark.parametrize("multiplier", [1, 2, 3, 5])
+    def test_variant_allele_multiplier_matches_baseline(self, multiplier):
+        # Build a baseline (multiplier=1) and a scaled-up store with the
+        # same logical content; assert variant_chunks() yields the same
+        # arrays after concatenation.
+        num_variants = 17
+        min_chunk = 3
+        baseline = self._build(
+            num_variants=num_variants, min_chunk=min_chunk, allele_chunk=min_chunk
+        )
+        scaled = self._build(
+            num_variants=num_variants,
+            min_chunk=min_chunk,
+            allele_chunk=min_chunk * multiplier,
+        )
+        assert baseline["variant_allele"].chunks[0] == min_chunk
+        assert scaled["variant_allele"].chunks[0] == min_chunk * multiplier
+
+        with retrieval_mod.VczReader(baseline) as r:
+            base_chunks = list(
+                r.variant_chunks(fields=["variant_allele", "call_genotype", "call_DP"])
+            )
+        with retrieval_mod.VczReader(scaled) as r:
+            scaled_chunks = list(
+                r.variant_chunks(fields=["variant_allele", "call_genotype", "call_DP"])
+            )
+
+        assert len(base_chunks) == len(scaled_chunks)
+        for base_c, scaled_c in zip(base_chunks, scaled_chunks):
+            assert sorted(base_c.keys()) == sorted(scaled_c.keys())
+            for key in base_c:
+                nt.assert_array_equal(base_c[key], scaled_c[key])

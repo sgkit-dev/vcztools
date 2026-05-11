@@ -733,7 +733,7 @@ class LocalHttpOpener(BackendOpener):
         )
         self._wait_for_server(port, vcz_path.name)
         url = f"http://localhost:{port}/{vcz_path.name}/"
-        root = vcz_utils.open_zarr(url)
+        root = vcz_utils.open_zarr(url, backend_storage="fsspec")
 
         def cleanup():
             proc.terminate()

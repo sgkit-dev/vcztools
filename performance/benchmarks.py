@@ -134,16 +134,16 @@ def _build_vcz(
     )
 
 
-def _variant_dp_values(num_variants: int) -> np.ndarray:
-    return (np.arange(num_variants) % 101).astype(np.int16)
+def _variant_dp_slab(v0: int, v1: int) -> np.ndarray:
+    return (np.arange(v0, v1) % 101).astype(np.int16)
 
 
-def _variant_qual_values(num_variants: int) -> np.ndarray:
-    return (np.arange(num_variants) % 101).astype(np.float32)
+def _variant_qual_slab(v0: int, v1: int) -> np.ndarray:
+    return (np.arange(v0, v1) % 101).astype(np.float32)
 
 
-def _variant_impact_values(num_variants: int) -> np.ndarray:
-    return IMPACT_CYCLE[np.arange(num_variants) % IMPACT_CYCLE.size]
+def _variant_impact_slab(v0: int, v1: int) -> np.ndarray:
+    return IMPACT_CYCLE[np.arange(v0, v1) % IMPACT_CYCLE.size]
 
 
 def _delete_if_present(root, name: str) -> None:
@@ -151,17 +151,33 @@ def _delete_if_present(root, name: str) -> None:
         del root[name]
 
 
-def _add_variant_array(root, name, data, *, chunks):
-    zarr_utils.create_group_array(
+def _add_chunked_variant_array(
+    root,
+    name: str,
+    *,
+    num_variants: int,
+    variants_chunk: int,
+    dtype,
+    compute_slab,
+) -> None:
+    """Create a 1-D variant-only array and fill it one variant-chunk at
+    a time. ``compute_slab(v0, v1)`` returns the slab covering rows
+    ``[v0, v1)``, so peak memory is bounded to ``variants_chunk``
+    elements rather than the full ``num_variants``."""
+    zarr_utils.create_empty_group_array(
         root,
         name,
-        data=data,
-        shape=data.shape,
-        dtype=data.dtype.str,
-        chunks=chunks,
+        shape=(num_variants,),
+        dtype=np.dtype(dtype).str,
+        chunks=(variants_chunk,),
         compressor=zarr_utils.DEFAULT_COMPRESSOR_CONFIG,
         dimension_names=["variants"],
     )
+    arr = root[name]
+    starts = range(0, num_variants, variants_chunk)
+    for v0 in tqdm.tqdm(starts, desc=f"augment {name}", unit="chunk"):
+        v1 = min(v0 + variants_chunk, num_variants)
+        arr[v0:v1] = compute_slab(v0, v1)
 
 
 def _call_slab(v0: int, v1: int, num_samples: int, modulo: int, dtype) -> np.ndarray:
@@ -208,26 +224,32 @@ def _augment_vcz(root) -> None:
     variants_chunk = int(root["variant_position"].chunks[0])
     samples_chunk = int(root["sample_id"].chunks[0])
 
-    _add_variant_array(
+    _add_chunked_variant_array(
         root,
         "variant_DP",
-        _variant_dp_values(num_variants),
-        chunks=(variants_chunk,),
+        num_variants=num_variants,
+        variants_chunk=variants_chunk,
+        dtype=np.int16,
+        compute_slab=_variant_dp_slab,
     )
 
     _delete_if_present(root, "variant_QUAL")
-    _add_variant_array(
+    _add_chunked_variant_array(
         root,
         "variant_QUAL",
-        _variant_qual_values(num_variants),
-        chunks=(variants_chunk,),
+        num_variants=num_variants,
+        variants_chunk=variants_chunk,
+        dtype=np.float32,
+        compute_slab=_variant_qual_slab,
     )
 
-    _add_variant_array(
+    _add_chunked_variant_array(
         root,
         "variant_IMPACT",
-        _variant_impact_values(num_variants),
-        chunks=(variants_chunk,),
+        num_variants=num_variants,
+        variants_chunk=variants_chunk,
+        dtype="<U8",
+        compute_slab=_variant_impact_slab,
     )
 
     _add_chunked_call_array(
@@ -532,6 +554,11 @@ def _generate(
             samples_chunk_size=samples_chunk_size,
             worker_processes=worker_processes,
         )
+    # The tree sequence is only needed by the convert stage; drop it
+    # before augment so its tables (sites + mutations dominate at
+    # high variant counts) don't sit alongside the augment buffers.
+    del ts
+
     with _stage("augment"):
         _augment_vcz(root)
 
@@ -598,6 +625,11 @@ def _generate_long(
             samples_chunk_size=samples_chunk_size,
             worker_processes=worker_processes,
         )
+    # The tree sequence is only needed by the convert stage; drop it
+    # before augment so its tables (sites + mutations dominate at
+    # high variant counts) don't sit alongside the augment buffers.
+    del ts
+
     with _stage("augment"):
         _augment_vcz(root)
 

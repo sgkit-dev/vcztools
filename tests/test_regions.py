@@ -444,7 +444,7 @@ class TestBuildChunkPlan:
         assert plan[3].selection == slice(0, 1)
 
 
-class TestBuildChunkPlanVariableChunks:
+class TestBuildChunkPlanProportionalChunks:
     """build_chunk_plan against fixtures where variant-only fields
     (variant_position / variant_contig / variant_length) have a chunk
     size that's a multiple of the call_* chunk size."""

@@ -118,7 +118,7 @@ def make_vcz(
     ``variants_chunk_size`` for that field. Each override must be a
     positive integer multiple of ``variants_chunk_size`` (the minimum
     chunk size on the variants axis); ``call_*`` fields cannot be
-    overridden. Used to build fixtures that exercise the variable-
+    overridden. Used to build fixtures that exercise the proportional-
     chunk-size code paths in :mod:`vcztools.regions` and
     :mod:`vcztools.retrieval`.
     """

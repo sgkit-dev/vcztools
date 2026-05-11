@@ -2967,7 +2967,7 @@ class TestPrefetchIteratorDirect:
             next(it)
 
 
-class TestVariableChunkSizes:
+class TestProportionalChunkSizes:
     """End-to-end correctness when variant-only fields use a chunk
     size that is a multiple of the call_* (= min_chunk) chunk size."""
 

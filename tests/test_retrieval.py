@@ -17,7 +17,7 @@ from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
-from vcztools.retrieval import CachedVariantChunk, VczReader
+from vcztools.retrieval import CachedStreamChunk, VczReader
 
 
 def test_variant_chunks(fx_sample_vcz):
@@ -258,24 +258,25 @@ class TestReadaheadBudgetSweep:
         )
 
 
-def _make_pipeline(
+def _make_stream_reader(
     root,
     *,
     readahead_bytes=10**9,
     read_fields=None,
     n_chunks=None,
     executor=None,
+    stream_chunk_size=None,
 ):
-    """Construct a ``ReadaheadPipeline`` directly against ``root``,
+    """Construct a :class:`StreamReader` directly against ``root``,
     matching the wiring ``VczReader.variant_chunks`` does (default
     sample-chunk plan over non-null samples; one ``ChunkRead`` per
-    variant chunk; no view-mode column remap).
+    stream chunk; no view-mode column remap).
 
-    ``executor`` is the thread pool the pipeline submits reads to. The
+    ``executor`` is the thread pool the reader submits reads to. The
     caller is responsible for shutting it down (e.g. via a ``with``
     block); ``None`` means "build a small pool here", which is the
-    common case for tests that only need the pipeline to run once and
-    don't share the executor with other pipelines.
+    common case for tests that only need the reader to run once and
+    don't share the executor with other readers.
     """
     if read_fields is None:
         read_fields = ["variant_position"]
@@ -287,37 +288,43 @@ def _make_pipeline(
     sample_chunk_plan = samples_mod.build_chunk_plan(
         samples_selection, samples_chunk_size=samples_chunk_size
     )
-    if n_chunks is None:
-        n_chunks = int(root["variant_position"].cdata_shape[0])
-    variants_chunk_size = int(root["variant_position"].chunks[0])
+    min_chunk = utils.compute_min_variants_chunk_size(root)
+    if stream_chunk_size is None:
+        stream_chunk_size = utils.compute_stream_chunk_size(
+            root, read_fields, min_chunk
+        )
     num_variants = int(root["variant_position"].shape[0])
-    plan_length = min(n_chunks * variants_chunk_size, num_variants)
-    variant_chunk_plan = utils.ChunkRead.simple_plan(plan_length, variants_chunk_size)
-    return retrieval_mod.ReadaheadPipeline(
+    full_stream_chunks = (num_variants + stream_chunk_size - 1) // stream_chunk_size
+    if n_chunks is None:
+        n_chunks = full_stream_chunks
+    n_chunks = min(n_chunks, full_stream_chunks)
+    plan_length = min(n_chunks * stream_chunk_size, num_variants)
+    stream_plan = utils.ChunkRead.simple_plan(plan_length, stream_chunk_size)
+    return retrieval_mod.StreamReader(
         root,
-        variant_chunk_plan,
+        stream_plan,
         sample_chunk_plan,
         None,
         read_fields,
         readahead_bytes=readahead_bytes,
         executor=executor,
-        min_chunk=variants_chunk_size,
+        stream_chunk_size=stream_chunk_size,
     )
 
 
-class _DepthTrackingPipeline(retrieval_mod.ReadaheadPipeline):
-    """Pipeline subclass that records ``len(_in_flight)`` after each
-    ``_refill`` call. Used to assert depth-control behaviour under
+class _DepthTrackingStreamReader(retrieval_mod.StreamReader):
+    """StreamReader subclass that records ``len(_live)`` after each
+    ``_submit_more`` call. Used to assert depth-control behaviour under
     different ``readahead_bytes`` values without observing the executor
     directly."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.depths = []
+        self.depths: list[int] = []
 
-    def _refill(self):
-        super()._refill()
-        self.depths.append(len(self._in_flight))
+    def _submit_more(self):
+        super()._submit_more()
+        self.depths.append(len(self._live))
 
 
 def _vcz_for_template_tests():
@@ -347,102 +354,56 @@ def _vcz_for_template_tests():
     )
 
 
-class TestCreateChunkReadList:
-    """``create_chunk_read_list`` resolves each requested field to a
-    template once: one template per non-``call_*`` field, one per
-    ``(field, sample_chunk)`` pair for ``call_*``.
-    """
-
-    def _sample_plan(self, root):
-        samples_chunk_size = int(root["sample_id"].chunks[0])
-        non_null = np.flatnonzero(root["sample_id"][:] != "")
-        return samples_mod.build_chunk_plan(
-            non_null, samples_chunk_size=samples_chunk_size
-        )
+class TestMakeFieldSpecs:
+    """``_make_field_specs`` records the per-field constants the
+    stream reader needs to derive blocks on the fly: the field's array,
+    its chunk multiplier over the stream chunk, whether it's a
+    ``call_*`` field, an upper-bound block-size estimate, and the
+    trailing block-index suffix tuple."""
 
     def test_static_field_rejected(self):
         root = _vcz_for_template_tests()
         with pytest.raises(AssertionError, match="non-variants-axis"):
-            retrieval_mod.create_chunk_read_list(
-                root, self._sample_plan(root), ["sample_id"], min_chunk=2
-            )
+            retrieval_mod._make_field_specs(root, ["sample_id"], stream_chunk_size=2)
 
     def test_variant_axis_1d_field(self):
         root = _vcz_for_template_tests()
-        templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["variant_position"], min_chunk=2
+        [spec] = retrieval_mod._make_field_specs(
+            root, ["variant_position"], stream_chunk_size=2
         )
-        assert len(templates) == 1
-        t = templates[0]
-        assert t.key == ("variant_position",)
-        assert t.arr == root["variant_position"]
+        assert spec.field == "variant_position"
+        assert spec.arr == root["variant_position"]
+        assert spec.is_call is False
+        assert spec.multiplier == 1
         # 1-D variants axis → no extra dims after the variant chunk slot.
-        assert t.block_index_suffix == ()
-        assert t.multiplier == 1
+        assert spec.block_index_suffix == ()
 
     def test_variant_axis_2d_field(self):
         root = _vcz_for_template_tests()
-        templates = retrieval_mod.create_chunk_read_list(
-            root, self._sample_plan(root), ["variant_allele"], min_chunk=2
+        [spec] = retrieval_mod._make_field_specs(
+            root, ["variant_allele"], stream_chunk_size=2
         )
-        assert len(templates) == 1
-        t = templates[0]
-        assert t.key == ("variant_allele",)
         # 2-D (variants, alleles) → one trailing slice(None).
-        assert t.block_index_suffix == (slice(None),)
-        assert t.multiplier == 1
+        assert spec.block_index_suffix == (slice(None),)
 
-    def test_call_field_2d_fans_out_per_sample_chunk(self):
+    def test_call_field_2d_suffix(self):
         root = _vcz_for_template_tests()
-        plan = self._sample_plan(root)
-        # 4 samples, samples_chunk_size=2 → 2 sample chunks.
-        assert len(plan.chunk_reads) == 2
-        templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["call_DP"], min_chunk=2
-        )
-        assert len(templates) == 2
-        assert [t.key for t in templates] == [("call_DP", 0), ("call_DP", 1)]
-        call_dp = root["call_DP"]
-        for t, cr in zip(templates, plan.chunk_reads):
-            assert t.arr == call_dp
-            # 2-D (variants, samples) → suffix is (sci,), no trailing slices.
-            assert t.block_index_suffix == (cr.index,)
-            assert t.multiplier == 1
+        [spec] = retrieval_mod._make_field_specs(root, ["call_DP"], stream_chunk_size=2)
+        assert spec.is_call is True
+        # 2-D (variants, samples) → suffix is empty: sample-chunk index
+        # is the second slot, no trailing slice.
+        assert spec.block_index_suffix == ()
 
-    def test_call_field_3d_keeps_trailing_slice(self):
+    def test_call_field_3d_suffix(self):
         root = _vcz_for_template_tests()
-        plan = self._sample_plan(root)
-        templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["call_genotype"], min_chunk=2
+        [spec] = retrieval_mod._make_field_specs(
+            root, ["call_genotype"], stream_chunk_size=2
         )
-        assert len(templates) == len(plan.chunk_reads)
-        for t, cr in zip(templates, plan.chunk_reads):
-            assert t.key == ("call_genotype", cr.index)
-            # 3-D (variants, samples, ploidy) → suffix carries (sci, slice).
-            assert t.block_index_suffix == (cr.index, slice(None))
-            assert t.multiplier == 1
-
-    def test_multiple_fields_in_input_order(self):
-        # call_DP fans out into 2 entries between the two scalar
-        # templates; ordering is "fields in input order, then sample
-        # chunks within a call_*".
-        root = _vcz_for_template_tests()
-        plan = self._sample_plan(root)
-        templates = retrieval_mod.create_chunk_read_list(
-            root,
-            plan,
-            ["variant_position", "call_DP", "variant_allele"],
-            min_chunk=2,
-        )
-        assert [t.key for t in templates] == [
-            ("variant_position",),
-            ("call_DP", 0),
-            ("call_DP", 1),
-            ("variant_allele",),
-        ]
+        # 3-D (variants, samples, ploidy) → suffix carries one slice.
+        assert spec.block_index_suffix == (slice(None),)
 
     def test_multiplier_for_scaled_up_variant_field(self):
-        # variant_allele chunked at 2 * min_chunk; variant_position at min_chunk.
+        # variant_allele chunked at 2 * stream_chunk_size.
         root = vcz_builder.make_vcz(
             variant_contig=[0] * 4,
             variant_position=[1, 2, 3, 4],
@@ -454,72 +415,113 @@ class TestCreateChunkReadList:
             call_genotype=np.zeros((4, 2, 2), dtype=np.int8),
             field_chunk_overrides={"variant_allele": 4},
         )
-        templates = retrieval_mod.create_chunk_read_list(
+        specs = retrieval_mod._make_field_specs(
+            root, ["variant_position", "variant_allele"], stream_chunk_size=2
+        )
+        assert [s.multiplier for s in specs] == [1, 2]
+
+    def test_block_size_estimate_from_dtype_and_chunks(self):
+        # variant_position: chunks=(2,), dtype int32 → 2 * 4 = 8 bytes/block.
+        # call_genotype: chunks=(2, 2, 2), dtype int8 → 8 bytes/block.
+        # call_DP: chunks=(2, 2), dtype int32 → 16 bytes/block.
+        root = _vcz_for_template_tests()
+        specs = retrieval_mod._make_field_specs(
             root,
-            self._sample_plan(root),
-            ["variant_position", "variant_allele"],
-            min_chunk=2,
+            ["variant_position", "call_genotype", "call_DP"],
+            stream_chunk_size=2,
         )
-        assert [t.multiplier for t in templates] == [1, 2]
+        assert specs[0].block_size_estimate == 8
+        assert specs[1].block_size_estimate == 8
+        assert specs[2].block_size_estimate == 16
 
 
-class TestUpdateChunkReadList:
-    """``update_chunk_read_list`` substitutes the logical chunk index
-    into each template, leaving the templates unchanged so the same
-    list is reusable across every chunk in a query.
-    """
+class TestStreamReaderDeriveBlocks:
+    """``StreamReader._derive_blocks`` builds the per-stream-chunk
+    block records: one per non-``call_*`` field, one per
+    ``(call_*, sample_chunk)`` pair."""
 
-    def test_variant_non_call_template_prepends_variant_chunk_index(self):
-        root = _vcz_for_template_tests()
-        plan = samples_mod.SampleChunkPlan(
-            chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
-            permutation=None,
-        )
-        templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position", "variant_allele"], min_chunk=2
-        )
-        reads = retrieval_mod.update_chunk_read_list(templates, 3, min_chunk=2)
-        keys = [r[0] for r in reads]
-        block_indexes = [r[2] for r in reads]
-        intra_slices = [r[3] for r in reads]
-        assert keys == [("variant_position",), ("variant_allele",)]
-        assert block_indexes == [(3,), (3, slice(None))]
-        # multiplier=1 for both fields → intra_slice is slice(0, min_chunk).
-        assert intra_slices == [slice(0, 2), slice(0, 2)]
-
-    def test_call_template_keeps_sample_chunk_index_after_variant(self):
-        root = _vcz_for_template_tests()
+    def _make_reader(
+        self,
+        root,
+        fields,
+        *,
+        stream_chunk_size=None,
+        samples_selection=None,
+    ):
+        if stream_chunk_size is None:
+            stream_chunk_size = int(root["variant_position"].chunks[0])
+        samples_chunk_size = int(root["sample_id"].chunks[0])
+        if samples_selection is None:
+            non_null = np.flatnonzero(root["sample_id"][:] != "")
+            samples_selection = non_null
         plan = samples_mod.build_chunk_plan(
-            np.array([0, 1, 2, 3], dtype=np.int64), samples_chunk_size=2
+            samples_selection, samples_chunk_size=samples_chunk_size
         )
-        templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["call_DP"], min_chunk=2
+        executor = cf.ThreadPoolExecutor(max_workers=2)
+        return executor, retrieval_mod.StreamReader(
+            root,
+            utils.ChunkRead.simple_plan(
+                int(root["variant_position"].shape[0]), stream_chunk_size
+            ),
+            plan,
+            None,
+            fields,
+            readahead_bytes=0,
+            executor=executor,
+            stream_chunk_size=stream_chunk_size,
         )
-        reads = retrieval_mod.update_chunk_read_list(templates, 5, min_chunk=2)
-        assert [r[0] for r in reads] == [("call_DP", 0), ("call_DP", 1)]
-        assert [r[2] for r in reads] == [(5, 0), (5, 1)]
 
-    def test_two_calls_yield_independent_lists(self):
-        # Reusing a template list across chunks must not have any
-        # cross-talk: each call returns a fresh list of fresh tuples
-        # against the supplied logical chunk index.
+    def test_non_call_field_one_record_per_chunk(self):
         root = _vcz_for_template_tests()
-        plan = samples_mod.SampleChunkPlan(
-            chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
-            permutation=None,
-        )
-        templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_position"], min_chunk=2
-        )
-        reads_a = retrieval_mod.update_chunk_read_list(templates, 0, min_chunk=2)
-        reads_b = retrieval_mod.update_chunk_read_list(templates, 4, min_chunk=2)
-        assert reads_a is not reads_b
-        assert reads_a[0][2] == (0,)
-        assert reads_b[0][2] == (4,)
+        executor, reader = self._make_reader(root, ["variant_position"])
+        with executor:
+            records = reader._derive_blocks(utils.ChunkRead(index=3, num_selected=2))
+        assert len(records) == 1
+        rec = records[0]
+        assert rec.dest_key == ("variant_position",)
+        assert rec.block_key == (("variant_position",), 3)
+        assert rec.block_index == (3,)
+        assert rec.intra_slice == slice(0, 2)
 
-    def test_scaled_up_field_translates_block_and_intra_slice(self):
-        # variant_allele has multiplier=3 over min_chunk=2.
-        # logical chunk 5 → field block 5//3 = 1, intra start (5%3)*2 = 4.
+    def test_2d_non_call_field_keeps_trailing_slice(self):
+        root = _vcz_for_template_tests()
+        executor, reader = self._make_reader(root, ["variant_allele"])
+        with executor:
+            records = reader._derive_blocks(utils.ChunkRead(index=1, num_selected=2))
+        rec = records[0]
+        assert rec.dest_key == ("variant_allele",)
+        assert rec.block_index == (1, slice(None))
+
+    def test_call_field_fans_out_per_sample_chunk(self):
+        root = _vcz_for_template_tests()
+        # 4 samples, samples_chunk_size=2 → 2 sample chunks; 3-D call_genotype.
+        executor, reader = self._make_reader(root, ["call_genotype"])
+        with executor:
+            records = reader._derive_blocks(utils.ChunkRead(index=0, num_selected=2))
+        assert [r.dest_key for r in records] == [
+            ("call_genotype", 0),
+            ("call_genotype", 1),
+        ]
+        assert [r.block_index for r in records] == [
+            (0, 0, slice(None)),
+            (0, 1, slice(None)),
+        ]
+        for rec in records:
+            assert rec.block_key == (rec.dest_key, 0)
+            assert rec.intra_slice == slice(0, 2)
+
+    def test_call_field_2d_no_trailing_slice(self):
+        root = _vcz_for_template_tests()
+        executor, reader = self._make_reader(root, ["call_DP"])
+        with executor:
+            records = reader._derive_blocks(utils.ChunkRead(index=0, num_selected=2))
+        # 2-D call_DP → block_index slots are (variant, sample_chunk).
+        assert [r.block_index for r in records] == [(0, 0), (0, 1)]
+
+    def test_scaled_up_variant_field_translates_block_and_intra_slice(self):
+        # variant_allele has chunks[0] = 6 = 3 * stream_chunk_size(2).
+        # Stream chunk 5 → variant_block_idx = 5 // 3 = 1,
+        # intra_start = (5 % 3) * 2 = 4 → intra_slice = slice(4, 6).
         root = vcz_builder.make_vcz(
             variant_contig=[0] * 18,
             variant_position=list(range(1, 19)),
@@ -531,26 +533,24 @@ class TestUpdateChunkReadList:
             call_genotype=np.zeros((18, 2, 2), dtype=np.int8),
             field_chunk_overrides={"variant_allele": 6},
         )
-        plan = samples_mod.SampleChunkPlan(
-            chunk_reads=[utils.ChunkRead(index=0, num_selected=2)],
-            permutation=None,
+        executor, reader = self._make_reader(
+            root, ["variant_allele"], stream_chunk_size=2
         )
-        templates = retrieval_mod.create_chunk_read_list(
-            root, plan, ["variant_allele"], min_chunk=2
-        )
-        reads = retrieval_mod.update_chunk_read_list(templates, 5, min_chunk=2)
-        assert reads[0][0] == ("variant_allele",)
-        assert reads[0][2] == (1, slice(None))
-        assert reads[0][3] == slice(4, 6)
+        with executor:
+            records = reader._derive_blocks(utils.ChunkRead(index=5, num_selected=2))
+        assert records[0].block_index == (1, slice(None))
+        assert records[0].intra_slice == slice(4, 6)
+        # block_key is (dest_key, variant_block_idx).
+        assert records[0].block_key == (("variant_allele",), 1)
 
 
-class TestReadaheadPipeline:
-    """Direct unit tests for ``retrieval.ReadaheadPipeline``.
+class TestStreamReader:
+    """Direct unit tests for ``retrieval.StreamReader``.
 
     The end-to-end suites cover correctness; this class targets the
-    pipeline's own state machine — bootstrap, budget-driven scheduling
-    depth, executor cleanup, and behaviour at the edges (empty plan,
-    empty read columns).
+    reader's own state machine — submission ordering, byte-budget
+    depth control, single-future-per-block invariant, executor cleanup,
+    and behaviour at the edges (empty plan, empty read columns).
     """
 
     @staticmethod
@@ -565,49 +565,31 @@ class TestReadaheadPipeline:
 
     def test_yields_one_chunk_per_plan_entry_in_order(self):
         root = self._vcz()
-        pipeline = _make_pipeline(root)
-        indexes = [chunk.variant_chunk.index for chunk in pipeline]
+        reader = _make_stream_reader(root)
+        indexes = [chunk.variant_chunk.index for chunk in reader]
         assert indexes == [0, 1, 2, 3]
 
     def test_empty_plan_yields_nothing(self):
         root = self._vcz()
-        pipeline = _make_pipeline(root, n_chunks=0)
-        assert list(pipeline) == []
-        # No pending futures left after a clean drain.
-        assert pipeline._in_flight == []
+        reader = _make_stream_reader(root, n_chunks=0)
+        assert list(reader) == []
+        # No live blocks after a clean drain.
+        assert reader._live == {}
 
     def test_single_chunk_plan(self):
         root = self._vcz(num_variants=3, variants_chunk_size=3)
-        pipeline = _make_pipeline(root)
-        chunks = list(pipeline)
+        reader = _make_stream_reader(root)
+        chunks = list(reader)
         assert len(chunks) == 1
         assert chunks[0].variant_chunk.index == 0
 
-    def test_bootstrap_runs_first_chunk_solo(self):
-        # Until the first chunk's prefetch lands the pipeline can't
-        # measure per-chunk bytes, so _refill must schedule exactly one
-        # chunk on the bootstrap path.
-        root = self._vcz()
-        pipeline = _make_pipeline(root, readahead_bytes=10**9)
-        gen = iter(pipeline)
-        # Generator hasn't run yet — no scheduling, no measurement.
-        assert pipeline._per_chunk_bytes is None
-        chunk = next(gen)
-        # After bootstrap the measurement is recorded and matches the
-        # prefetched blocks' content.
-        assert isinstance(pipeline._per_chunk_bytes, int)
-        assert pipeline._per_chunk_bytes > 0
-        expected = sum(utils.array_memory_bytes(v) for v in chunk._blocks.values())
-        assert pipeline._per_chunk_bytes == expected
-        gen.close()
-
     def test_readahead_bytes_zero_keeps_depth_one(self):
-        # Budget=0 → after every refill, exactly one chunk is queued
-        # ahead of the consumer (and zero on the final, plan-exhausted
-        # refill).
+        # Budget=0 → after every submit, exactly one chunk's blocks are
+        # live ahead of the consumer (and zero on the final, plan-exhausted
+        # submit).
         root = self._vcz(num_variants=12, variants_chunk_size=3)
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _DepthTrackingPipeline(
+            reader = _DepthTrackingStreamReader(
                 root,
                 [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
                 samples_mod.build_chunk_plan(
@@ -617,18 +599,19 @@ class TestReadaheadPipeline:
                 ["variant_position"],
                 readahead_bytes=0,
                 executor=executor,
-                min_chunk=3,
+                stream_chunk_size=3,
             )
-            list(pipeline)
-        # 4 chunks → 5 refills (one per consume + the post-final empty refill).
-        assert pipeline.depths == [1, 1, 1, 1, 0]
+            list(reader)
+        # Initial submit + post-yield submit per chunk = 5 entries.
+        # Each leaves exactly one (or zero, at the end) block in flight.
+        assert reader.depths == [1, 1, 1, 1, 0]
 
-    def test_large_readahead_schedules_all_remaining_after_bootstrap(self):
-        # Budget of 10**9 dwarfs the per-chunk cost, so the second
-        # refill fills with every remaining chunk in one go.
+    def test_large_readahead_submits_all_remaining(self):
+        # Budget of 10**9 dwarfs the per-block cost, so the initial
+        # submit schedules every chunk's block in one go.
         root = self._vcz(num_variants=12, variants_chunk_size=3)
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _DepthTrackingPipeline(
+            reader = _DepthTrackingStreamReader(
                 root,
                 [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
                 samples_mod.build_chunk_plan(
@@ -638,81 +621,141 @@ class TestReadaheadPipeline:
                 ["variant_position"],
                 readahead_bytes=10**9,
                 executor=executor,
-                min_chunk=3,
+                stream_chunk_size=3,
             )
-            list(pipeline)
-        # Bootstrap depth=1, then post-yield-1 schedules the remaining
-        # 3, then drains.
-        assert pipeline.depths == [1, 3, 2, 1, 0]
+            list(reader)
+        # 4 blocks submitted initially, then yielded and evicted one at a time.
+        assert reader.depths == [4, 3, 2, 1, 0]
 
     def test_max_in_flight_tracks_peak_depth(self):
-        # Budget large enough to fit every remaining chunk after the
-        # bootstrap; peak depth should be (plan length - 1) reached at
-        # the post-yield refill that schedules every remaining chunk.
         root = self._vcz(num_variants=12, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, readahead_bytes=10**9)
-        assert pipeline.max_in_flight == 0
-        list(pipeline)
-        assert pipeline.max_in_flight == 3
+        reader = _make_stream_reader(root, readahead_bytes=10**9)
+        assert reader.max_in_flight == 0
+        list(reader)
+        assert reader.max_in_flight == 4
 
     def test_max_in_flight_pinned_at_one_with_zero_budget(self):
         root = self._vcz(num_variants=12, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, readahead_bytes=0)
-        list(pipeline)
-        assert pipeline.max_in_flight == 1
+        reader = _make_stream_reader(root, readahead_bytes=0)
+        list(reader)
+        assert reader.max_in_flight == 1
 
     def test_empty_read_fields_does_not_infinite_loop(self):
-        # With no fields to prefetch the bootstrap measurement is 0
-        # bytes; without the ``max(1, per_chunk_bytes)`` guard the
-        # budget loop would never exit. List materialises the full
-        # sequence.
+        # With no fields to prefetch each chunk derives zero records;
+        # the reader still advances the cursor and yields empty
+        # CachedStreamChunks.
         root = self._vcz(num_variants=6, variants_chunk_size=3)
-        pipeline = _make_pipeline(root, read_fields=[], readahead_bytes=10**9)
-        chunks = list(pipeline)
+        reader = _make_stream_reader(root, read_fields=[], readahead_bytes=10**9)
+        chunks = list(reader)
         assert len(chunks) == 2
         for chunk in chunks:
             assert chunk._blocks == {}
 
     def test_chunks_have_prefetched_blocks(self):
-        # Every (key, future) submitted lands in chunk._blocks before
-        # the consumer receives the chunk.
+        # Every dest_key for the read fields lands in chunk._blocks
+        # before the consumer receives it.
         root = self._vcz(num_variants=6, variants_chunk_size=3, num_samples=2)
-        pipeline = _make_pipeline(
+        reader = _make_stream_reader(
             root,
             read_fields=["variant_position", "variant_contig"],
             readahead_bytes=0,
         )
-        for chunk in pipeline:
+        for chunk in reader:
             assert ("variant_position",) in chunk._blocks
             assert ("variant_contig",) in chunk._blocks
 
     def test_executor_outlives_full_iteration(self):
-        # The pipeline does not own the executor; full drain leaves
-        # the pool alive and ready to serve another pipeline.
+        # The reader does not own the executor; full drain leaves
+        # the pool alive and ready to serve another reader.
         root = self._vcz()
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _make_pipeline(root, executor=executor)
-            list(pipeline)
+            reader = _make_stream_reader(root, executor=executor)
+            list(reader)
             assert executor._shutdown is False
-            # Pool is still usable for a second pipeline.
-            second = _make_pipeline(root, executor=executor)
+            # Pool is still usable for a second reader.
+            second = _make_stream_reader(root, executor=executor)
             assert len(list(second)) > 0
 
     def test_pending_futures_cancelled_on_early_break(self):
         # Abandoning iteration cancels still-pending futures (those
-        # that hadn't started); the executor itself stays alive.
+        # that hadn't started); the executor itself stays alive. A
+        # future that was already running when ``cancel()`` was called
+        # cannot be cancelled — wait briefly for it to drain so the
+        # final state is deterministic.
         root = self._vcz(num_variants=24, variants_chunk_size=3)
         with cf.ThreadPoolExecutor(max_workers=2) as executor:
-            pipeline = _make_pipeline(root, executor=executor, readahead_bytes=10**9)
-            gen = iter(pipeline)
+            reader = _make_stream_reader(root, executor=executor, readahead_bytes=10**9)
+            gen = iter(reader)
             next(gen)
-            in_flight_snapshot = [
-                fut for _, futures in pipeline._in_flight for _, fut in futures
-            ]
+            in_flight_snapshot = [fut for fut, _ in reader._live.values()]
             gen.close()
             assert executor._shutdown is False
+            cf.wait(in_flight_snapshot, timeout=5.0)
             for fut in in_flight_snapshot:
                 assert fut.cancelled() or fut.done()
+
+    def test_shared_block_submitted_once_across_stream_chunks(self, monkeypatch):
+        # variant_allele chunks span 4 stream chunks. The single block
+        # must be submitted exactly once even though 4 stream chunks
+        # reference it.
+        num_variants = 8
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(1, num_variants + 1)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=2,
+            sample_id=["s0", "s1"],
+            variants_chunk_size=2,
+            samples_chunk_size=2,
+            call_genotype=np.zeros((num_variants, 2, 2), dtype=np.int8),
+            field_chunk_overrides={"variant_allele": 8},
+        )
+        submitted: list[tuple] = []
+        original = retrieval_mod._read_block
+
+        def counting_read_block(arr, block_index):
+            submitted.append((getattr(arr, "name", repr(arr)), block_index))
+            return original(arr, block_index)
+
+        monkeypatch.setattr(retrieval_mod, "_read_block", counting_read_block)
+        reader = _make_stream_reader(
+            root,
+            read_fields=["variant_allele", "call_genotype"],
+            readahead_bytes=10**9,
+            stream_chunk_size=2,
+        )
+        list(reader)
+        variant_allele_submits = [s for s in submitted if "variant_allele" in s[0]]
+        # 4 stream chunks visit the same variant_allele block; the
+        # single-future-per-block invariant means we submit it once.
+        assert len(variant_allele_submits) == 1
+
+    def test_shared_block_evicted_after_last_use(self):
+        # Same layout as the dedup test; after each yield the next
+        # stream chunk's keys are peeked and current-only keys are
+        # dropped from _live. After the final stream chunk the live
+        # set must be empty.
+        num_variants = 8
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(1, num_variants + 1)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=2,
+            sample_id=["s0", "s1"],
+            variants_chunk_size=2,
+            samples_chunk_size=2,
+            call_genotype=np.zeros((num_variants, 2, 2), dtype=np.int8),
+            field_chunk_overrides={"variant_allele": 8},
+        )
+        reader = _make_stream_reader(
+            root,
+            read_fields=["variant_allele", "call_genotype"],
+            readahead_bytes=10**9,
+            stream_chunk_size=2,
+        )
+        list(reader)
+        assert reader._live == {}
+        assert reader._in_flight_bytes == 0
 
 
 class TestVczReaderBackendsEndToEnd:
@@ -1069,11 +1112,11 @@ def _make_cached_chunk(
     else:
         sample_chunk_plan = subset_plan
         output_columns = None
-    variants_chunk_size = int(root["variant_position"].chunks[0])
+    stream_chunk_size = int(root["variant_position"].chunks[0])
     num_variants = int(root["variant_position"].shape[0])
     if variant_selection is None:
-        base = variant_chunk_idx * variants_chunk_size
-        variant_num_selected = min(variants_chunk_size, num_variants - base)
+        base = variant_chunk_idx * stream_chunk_size
+        variant_num_selected = min(stream_chunk_size, num_variants - base)
     elif isinstance(variant_selection, slice):
         variant_num_selected = variant_selection.stop - variant_selection.start
     else:
@@ -1083,29 +1126,42 @@ def _make_cached_chunk(
         num_selected=variant_num_selected,
         selection=variant_selection,
     )
-    templates = retrieval_mod.create_chunk_read_list(
-        root, sample_chunk_plan, fields, min_chunk=variants_chunk_size
-    )
-    reads = retrieval_mod.update_chunk_read_list(
-        templates, variant_chunk.index, min_chunk=variants_chunk_size
-    )
-    blocks = {
-        key: retrieval_mod._read_block(arr, idx)[intra]
-        for key, arr, idx, intra in reads
-    }
-    return CachedVariantChunk(
+    # Build the same block records the StreamReader would, then read
+    # synchronously and intra-slice — mirrors the StreamReader's
+    # CachedStreamChunk handoff but without the executor.
+    executor = cf.ThreadPoolExecutor(max_workers=1)
+    with executor:
+        reader = retrieval_mod.StreamReader(
+            root,
+            [variant_chunk],
+            sample_chunk_plan,
+            output_columns,
+            list(fields),
+            readahead_bytes=0,
+            executor=executor,
+            stream_chunk_size=stream_chunk_size,
+        )
+        records = reader._derive_blocks(variant_chunk)
+        blocks = {
+            rec.dest_key: retrieval_mod._read_block(rec.arr, rec.block_index)[
+                rec.intra_slice
+            ]
+            for rec in records
+        }
+    return CachedStreamChunk(
         root,
         variant_chunk,
         sample_chunk_plan=sample_chunk_plan,
         output_columns=output_columns,
         blocks=blocks,
+        stream_chunk_size=stream_chunk_size,
     )
 
 
-class TestCachedVariantChunkCache:
-    """CachedVariantChunk consumes prefetched blocks and caches
-    assembled views so a field reused across filter_view / output_view
-    is materialized once."""
+class TestCachedStreamChunkCache:
+    """CachedStreamChunk consumes prefetched, intra-sliced blocks and
+    caches assembled views so a field reused across filter_view /
+    output_view is materialized once."""
 
     def test_view_mode_prefetch_covers_every_real_sample_chunk(self):
         # View-mode prefetch covers the whole real sample axis (so a
@@ -1139,7 +1195,7 @@ class TestCachedVariantChunkCache:
         assert first is second
 
 
-class TestCachedVariantChunkAxes:
+class TestCachedStreamChunkAxes:
     """filter_view and output_view return data in the right sample axis."""
 
     @staticmethod
@@ -1614,7 +1670,7 @@ def _basic_vcz(num_variants=3, num_samples=2, **kwargs):
 
 
 class TestEmptyCallArray:
-    """``CachedVariantChunk._empty_call_array`` produces a zero-column
+    """``CachedStreamChunk._empty_call_array`` produces a zero-column
     output for ``call_*`` fields when the sample chunk plan is empty
     (e.g. ``set_samples([])``). Both the explicit-selection branch and
     the full-chunk fallback need direct coverage.
@@ -1649,7 +1705,7 @@ class TestEmptyCallArray:
             num_selected = selection.stop - selection.start
         else:
             num_selected = len(selection)
-        return CachedVariantChunk(
+        return CachedStreamChunk(
             root,
             utils.ChunkRead(
                 index=variant_chunk_idx,
@@ -1659,6 +1715,7 @@ class TestEmptyCallArray:
             sample_chunk_plan=empty_plan,
             output_columns=None,
             blocks={},
+            stream_chunk_size=chunk_size,
         )
 
     def test_explicit_selection_uses_sel_size(self):
@@ -1901,47 +1958,47 @@ class TestAbsoluteVariantIndexes:
 
     def test_selection_none_full_chunk_at_origin(self):
         entry = utils.ChunkRead(index=0, num_selected=4, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [0, 1, 2, 3])
         assert out.dtype == np.int64
 
     def test_selection_none_offset_by_chunk_index(self):
         # index=3, chunk_size=4 → offset 12 over a full chunk.
         entry = utils.ChunkRead(index=3, num_selected=4, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [12, 13, 14, 15])
 
     def test_selection_none_partial_last_chunk(self):
         # Partial last chunk: num_selected < chunk_size. Length must
         # come from num_selected, not chunk_size.
         entry = utils.ChunkRead(index=2, num_selected=2, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [8, 9])
 
     def test_selection_slice_full_chunk(self):
         entry = utils.ChunkRead(index=1, num_selected=3, selection=slice(0, 3))
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=3)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=3)
         nt.assert_array_equal(out, [3, 4, 5])
         assert out.dtype == np.int64
 
     def test_selection_slice_partial(self):
         # slice(1, 3) inside chunk index 4 with chunk_size 4 → [17, 18].
         entry = utils.ChunkRead(index=4, num_selected=2, selection=slice(1, 3))
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [17, 18])
 
     def test_selection_slice_open_ended(self):
         # slice(2, None) is normalised against chunk_size by sel.indices,
         # producing [2, chunk_size).
         entry = utils.ChunkRead(index=0, num_selected=2, selection=slice(2, None))
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [2, 3])
 
     def test_selection_ndarray(self):
         # Non-contiguous local indexes inside chunk index 2 (offset 6).
         sel = np.array([0, 2, 3], dtype=np.int64)
         entry = utils.ChunkRead(index=2, num_selected=3, selection=sel)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=3)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=3)
         nt.assert_array_equal(out, [6, 8, 9])
         assert out.dtype == np.int64
 
@@ -1949,14 +2006,14 @@ class TestAbsoluteVariantIndexes:
         # Helper coerces to int64 even when the input dtype is narrower.
         sel = np.array([0, 2], dtype=np.int32)
         entry = utils.ChunkRead(index=1, num_selected=2, selection=sel)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [4, 6])
         assert out.dtype == np.int64
 
     def test_selection_ndarray_empty(self):
         sel = np.array([], dtype=np.int64)
         entry = utils.ChunkRead(index=5, num_selected=0, selection=sel)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         assert out.shape == (0,)
         assert out.dtype == np.int64
 
@@ -1964,7 +2021,7 @@ class TestAbsoluteVariantIndexes:
         # num_selected=0 with selection=None: empty result, no offset
         # added (np.arange(0) is empty so chunk_offset never broadcasts).
         entry = utils.ChunkRead(index=7, num_selected=0, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, variants_chunk_size=4)
+        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
         assert out.shape == (0,)
         assert out.dtype == np.int64
 
@@ -2577,7 +2634,7 @@ class TestLogging:
             list(reader.variant_chunks(fields=["variant_position"]))
         assert "variant_chunks: starting iteration" in caplog.text
         assert "variant_chunks: iteration done" in caplog.text
-        assert "Per-chunk read size:" in caplog.text
+        assert "stream_chunk_size=" in caplog.text
 
     def test_info_summary_includes_chunk_and_variant_counts(
         self, fx_sample_vcz, caplog
@@ -2597,17 +2654,17 @@ class TestLogging:
         reader = VczReader(fx_sample_vcz.group)
         with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
             list(reader.variant_chunks(fields=["variant_position"]))
-        assert "ReadaheadPipeline init:" in caplog.text
+        assert "StreamReader init:" in caplog.text
         assert "read complete in" in caplog.text
         assert "yielded" in caplog.text
 
     def test_trace_schedule_chunk(self, fx_sample_vcz, caplog):
-        # schedule chunk lines fire once per chunk and are too noisy
+        # Per-chunk submission lines fire once per chunk and are too noisy
         # for DEBUG; they live at the sub-DEBUG TRACE level.
         reader = VczReader(fx_sample_vcz.group)
         with caplog.at_level(retrieval_mod.TRACE, logger="vcztools.retrieval"):
             list(reader.variant_chunks(fields=["variant_position"]))
-        assert "schedule chunk 0:" in caplog.text
+        assert "submitted stream chunk 0:" in caplog.text
 
     def test_debug_static_field_load(self, fx_sample_vcz, caplog):
         # filter_id is a static (no variants axis) field; referencing it
@@ -2671,14 +2728,14 @@ class TestLogging:
         ]
         assert retrieval_records == []
 
-    def test_warn_single_chunk_bound_budget(self, fx_sample_vcz, caplog):
-        # When per-chunk bytes exceed half the readahead budget, the
-        # window collapses to ~1 in flight regardless of worker count;
-        # warn the operator so they can raise the budget.
+    def test_no_warning_for_undersized_budget(self, fx_sample_vcz, caplog):
+        # A readahead budget smaller than a single block silently pins
+        # depth at 1 (always submits at least one block ahead of the
+        # consumer); the iteration completes without any WARNING.
         reader = VczReader(fx_sample_vcz.group, readahead_bytes=1)
         with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
             list(reader.variant_chunks(fields=["variant_position"]))
-        assert "Readahead budget is single-chunk-bound" in caplog.text
+        assert caplog.text == ""
 
 
 class TestVariantChunksPrefetch:
@@ -2996,61 +3053,10 @@ class TestProportionalChunkSizes:
             else None,
         )
 
-    def test_block_read_for_multiplier_one(self):
-        # multiplier=1 → field block index == logical chunk index;
-        # intra_slice is always slice(0, min_chunk).
-        t = retrieval_mod.BlockReadTemplate(
-            key=("variant_position",), arr=None, block_index_suffix=(), multiplier=1
-        )
-        for logical_idx in (0, 1, 5, 99):
-            block_index, intra_slice = t.block_read_for(logical_idx, min_chunk=4)
-            assert block_index == (logical_idx,)
-            assert intra_slice == slice(0, 4)
-
-    def test_block_read_for_multiplier_three_interior(self):
-        # multiplier=3, min_chunk=2: each field block holds 6 variants.
-        # Logical chunks 0..2 map into field block 0; 3..5 into block 1.
-        t = retrieval_mod.BlockReadTemplate(
-            key=("variant_allele",),
-            arr=None,
-            block_index_suffix=(slice(None),),
-            multiplier=3,
-        )
-        cases = {
-            0: ((0, slice(None)), slice(0, 2)),
-            1: ((0, slice(None)), slice(2, 4)),
-            2: ((0, slice(None)), slice(4, 6)),
-            3: ((1, slice(None)), slice(0, 2)),
-            4: ((1, slice(None)), slice(2, 4)),
-            5: ((1, slice(None)), slice(4, 6)),
-        }
-        for logical_idx, (expected_block, expected_intra) in cases.items():
-            block_index, intra_slice = t.block_read_for(logical_idx, min_chunk=2)
-            assert block_index == expected_block
-            assert intra_slice == expected_intra
-
-    def test_block_read_for_partial_last_chunk(self):
-        # When num_variants is not a multiple of (min_chunk * multiplier),
-        # the last field block is partial. Python slice semantics clamp
-        # automatically; block_read_for produces the unclipped slice and
-        # downstream slicing returns whatever rows actually exist.
-        # 17 variants, min_chunk=5, multiplier=2: blocks of 10 rows
-        # (rows 0-9) and 7 rows (rows 10-16). Logical chunk 3 = rows
-        # 15-16 (only 2 rows). intra_slice produced is slice(5, 10);
-        # numpy slicing on a 7-row block clamps to slice(5, 7) → 2 rows.
-        t = retrieval_mod.BlockReadTemplate(
-            key=("variant_id",), arr=None, block_index_suffix=(), multiplier=2
-        )
-        block_index, intra_slice = t.block_read_for(3, min_chunk=5)
-        assert block_index == (1,)
-        assert intra_slice == slice(5, 10)
-        partial_block = np.arange(7)
-        nt.assert_array_equal(partial_block[intra_slice], np.array([5, 6]))
-
     def test_block_cache_dedups_reads_within_one_field_block(self, monkeypatch):
         # variant_allele chunked at 4 * min_chunk; one field block spans
-        # 4 logical chunks. Iterating all 4 must issue the variant_allele
-        # block read exactly once.
+        # 4 stream chunks. Iterating all 4 must issue the variant_allele
+        # block read exactly once (single-future-per-block invariant).
         num_variants = 8
         min_chunk = 2
         store = self._build(
@@ -3076,7 +3082,7 @@ class TestProportionalChunkSizes:
 
         variant_allele_reads = [k for k in read_log if "variant_allele" in k[0]]
         # Exactly one read for the single variant_allele field block,
-        # despite 4 logical chunks consuming it.
+        # despite 4 stream chunks consuming it.
         assert len(variant_allele_reads) == 1
 
     @pytest.mark.parametrize("multiplier", [1, 2, 3, 5])

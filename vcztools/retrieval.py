@@ -382,8 +382,13 @@ class ReadaheadPipeline:
         self.last_chunk_bytes: int | None = None
         self._executor = executor
         # _block_futures: cache_key -> [Future, refcount]. cache_key is
-        # ``(template.key, block_index)`` and uniquely identifies a Zarr
-        # block read. refcount is the number of in-flight chunks that
+        # ``(template.key, field_block_idx)`` and uniquely identifies a
+        # Zarr block read; ``template.key`` pins the template (and thus
+        # the constant ``block_index_suffix``), so the variants-axis
+        # block index alone disambiguates the remaining reads. (The full
+        # ``block_index`` is unsuitable as a dict key because its suffix
+        # contains ``slice`` objects, which are unhashable before
+        # Python 3.12.) refcount is the number of in-flight chunks that
         # still need this block; entries are evicted when refcount drops
         # to zero. Sharing across in-flight chunks is what saves IO when
         # multiple logical chunks reference one variant-only field block.
@@ -419,7 +424,7 @@ class ReadaheadPipeline:
         refs = []
         new_count = 0
         for dest_key, arr, block_index, intra_slice in reads:
-            cache_key = (dest_key, block_index)
+            cache_key = (dest_key, block_index[0])
             entry = self._block_futures.get(cache_key)
             is_new = entry is None
             if is_new:

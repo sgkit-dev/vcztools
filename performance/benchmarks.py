@@ -22,8 +22,7 @@ The wide dataset (100k samples × ~500k variants) uses a single uniform
 chunk size across every variant-axis array. The long dataset
 (10 samples × ~100M variants) keeps standard chunk sizes for ``call_*``
 fields but re-chunks each variant-only field to a proportional size
-whose uncompressed footprint is ~10 MiB per chunk — see
-``proportional-chunk-sizes.md`` for the design rationale.
+whose uncompressed footprint is ~10 MiB per chunk.
 
 Aiohttp / obstore / icechunk are assumed installed via the ``benchmark``
 dependency group.
@@ -70,8 +69,7 @@ DEFAULT_LONG_DATASET = pathlib.Path("performance/data/long_bench.vcz")
 # Target uncompressed bytes per variant-only-field chunk on long_bench.
 # Each variant-only array (variant_position, variant_allele, variant_DP,
 # ...) gets re-chunked to the largest multiple of the call-axis chunk
-# size whose uncompressed first-axis slice fits in this budget. See
-# proportional-chunk-sizes.md for the design rationale.
+# size whose uncompressed first-axis slice fits in this budget.
 PROPORTIONAL_TARGET_BYTES = 10 * 1024 * 1024
 
 # Simulation constants. Keep pop_size/mutation_rate deterministic across

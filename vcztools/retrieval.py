@@ -16,7 +16,7 @@ reader walks ``stream_plan`` in order, derives the per-(field,
 sample-chunk) block records for the current chunk on the fly, submits
 any block whose ``block_key`` is not already live, and evicts blocks
 once the next stream chunk no longer references them. The per-chunk
-``CachedStreamChunk`` view assembler receives blocks that have already
+``CachedLogicalVariantsChunk`` view assembler receives blocks that have already
 been intra-sliced to the stream chunk's variant rows.
 """
 
@@ -275,7 +275,7 @@ class _BlockRecord:
     Transient — built fresh each time :meth:`StreamReader._derive_blocks`
     runs (memoised per stream-chunk index in ``StreamReader._derived``).
     ``block_key`` deduplicates across stream chunks; ``dest_key`` is
-    the slot in :class:`CachedStreamChunk`'s blocks dict.
+    the slot in :class:`CachedLogicalVariantsChunk`'s blocks dict.
     """
 
     block_key: tuple
@@ -439,8 +439,11 @@ class StreamReader:
             records = self._get_derived(sc_idx)
             new_records = [r for r in records if r.block_key not in self._live]
             new_bytes = sum(r.size_estimate for r in new_records)
+            # Hold to the budget once at least one block is in flight;
+            # the first submit always goes through so we make progress
+            # even when one block already exceeds the budget.
             if (
-                self._live
+                len(self._live) > 0
                 and new_bytes > 0
                 and self._in_flight_bytes + new_bytes > self._readahead_bytes
             ):
@@ -483,7 +486,7 @@ class StreamReader:
                     f"{read_seconds:.2f}s ({len(blocks)} blocks, "
                     f"{_fmt_bytes(chunk_bytes)})"
                 )
-                yield CachedStreamChunk(
+                yield CachedLogicalVariantsChunk(
                     self.root,
                     stream_chunk,
                     sample_chunk_plan=self._sample_chunk_plan,
@@ -511,7 +514,7 @@ class StreamReader:
                 logger.debug(f"cancelled {cancelled} pending futures")
 
 
-class CachedStreamChunk:
+class CachedLogicalVariantsChunk:
     """View assembler over prefetched, intra-sliced blocks for one
     stream chunk visit.
 
@@ -1206,13 +1209,13 @@ class VczReader:
            :func:`vcztools.utils.rebucket_to_stream_plan`). Iterate
            ``stream_plan[start:]``; each entry's ``selection`` pre-
            slices the chunk's variant axis.
-        2. Construct a :class:`CachedStreamChunk` scoped to this stream
+        2. Construct a :class:`CachedLogicalVariantsChunk` scoped to this stream
            chunk over the prefetched, intra-sliced blocks.
-        3. Evaluate the filter against ``CachedStreamChunk.filter_view``
+        3. Evaluate the filter against ``CachedLogicalVariantsChunk.filter_view``
            for each referenced field. Collapse a 2-D sample-scope mask
            into a 1-D variant selection (with the surviving rows kept
            as ``sample_filter_pass`` on the subset axis).
-        4. Assemble output from ``CachedStreamChunk.output_view`` for
+        4. Assemble output from ``CachedLogicalVariantsChunk.output_view`` for
            each query field; apply the variant selection to variants-
            axis fields.
 
@@ -1267,7 +1270,8 @@ class VczReader:
             # Default: filter axis IS the subset axis. Covers non-empty
             # subsets, the no-subset default, and ``--drop-genotypes``
             # (empty subset collapses to an empty plan — no reads,
-            # zero-column call_* output via CachedStreamChunk._empty_call_array).
+            # zero-column call_* output via
+            # CachedLogicalVariantsChunk._empty_call_array).
             sample_chunk_plan = self.sample_chunk_plan
             output_columns = None
         else:

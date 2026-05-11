@@ -17,7 +17,7 @@ from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools.bcftools_filter import BcftoolsFilter
-from vcztools.retrieval import CachedStreamChunk, VczReader
+from vcztools.retrieval import CachedLogicalVariantsChunk, VczReader
 
 
 def test_variant_chunks(fx_sample_vcz):
@@ -643,7 +643,7 @@ class TestStreamReader:
     def test_empty_read_fields_does_not_infinite_loop(self):
         # With no fields to prefetch each chunk derives zero records;
         # the reader still advances the cursor and yields empty
-        # CachedStreamChunks.
+        # CachedLogicalVariantsChunks.
         root = self._vcz(num_variants=6, variants_chunk_size=3)
         reader = _make_stream_reader(root, read_fields=[], readahead_bytes=10**9)
         chunks = list(reader)
@@ -1135,7 +1135,7 @@ def _make_cached_chunk(
     )
     # Build the same block records the StreamReader would, then read
     # synchronously and intra-slice — mirrors the StreamReader's
-    # CachedStreamChunk handoff but without the executor.
+    # CachedLogicalVariantsChunk handoff but without the executor.
     executor = cf.ThreadPoolExecutor(max_workers=1)
     with executor:
         reader = retrieval_mod.StreamReader(
@@ -1155,7 +1155,7 @@ def _make_cached_chunk(
             ]
             for rec in records
         }
-    return CachedStreamChunk(
+    return CachedLogicalVariantsChunk(
         root,
         variant_chunk,
         sample_chunk_plan=sample_chunk_plan,
@@ -1165,8 +1165,8 @@ def _make_cached_chunk(
     )
 
 
-class TestCachedStreamChunkCache:
-    """CachedStreamChunk consumes prefetched, intra-sliced blocks and
+class TestCachedLogicalVariantsChunkCache:
+    """CachedLogicalVariantsChunk consumes prefetched, intra-sliced blocks and
     caches assembled views so a field reused across filter_view /
     output_view is materialized once."""
 
@@ -1202,7 +1202,7 @@ class TestCachedStreamChunkCache:
         assert first is second
 
 
-class TestCachedStreamChunkAxes:
+class TestCachedLogicalVariantsChunkAxes:
     """filter_view and output_view return data in the right sample axis."""
 
     @staticmethod
@@ -1675,7 +1675,7 @@ def _basic_vcz(num_variants=3, num_samples=2, **kwargs):
 
 
 class TestEmptyCallArray:
-    """``CachedStreamChunk._empty_call_array`` produces a zero-column
+    """``CachedLogicalVariantsChunk._empty_call_array`` produces a zero-column
     output for ``call_*`` fields when the sample chunk plan is empty
     (e.g. ``set_samples([])``). Both the explicit-selection branch and
     the full-chunk fallback need direct coverage.
@@ -1710,7 +1710,7 @@ class TestEmptyCallArray:
             num_selected = selection.stop - selection.start
         else:
             num_selected = len(selection)
-        return CachedStreamChunk(
+        return CachedLogicalVariantsChunk(
             root,
             utils.ChunkRead(
                 index=variant_chunk_idx,

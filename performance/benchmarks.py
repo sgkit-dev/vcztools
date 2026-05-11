@@ -1131,17 +1131,7 @@ def _biallelic_first_chunks_plan(root, num_chunks):
 
 def _plan_records(reader):
     """Count variants in the reader's current chunk plan (no filter)."""
-    chunk_size = reader.variants_chunk_size
-    num_variants = reader.num_variants
-    records = 0
-    for cr in reader.variant_chunk_plan:
-        if cr.selection is not None:
-            records += int(cr.selection.size)
-            continue
-        start = cr.index * chunk_size
-        stop = min(start + chunk_size, num_variants)
-        records += stop - start
-    return records
+    return sum(cr.num_selected for cr in reader.variant_chunk_plan)
 
 
 def _build_output_vcf(root, ctx):

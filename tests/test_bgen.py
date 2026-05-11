@@ -13,13 +13,14 @@ Round-trip checks parse the bytes produced by ``write_bgen`` with the
 import logging
 import sqlite3
 import struct
+import zlib
 
 import bgen_reader as br
 import numpy as np
 import pytest
 
 from tests import vcz_builder
-from vcztools import bgen, regions, retrieval
+from vcztools import bcftools_filter, bgen, regions, retrieval
 
 
 def _build_reader(*, num_variants=2, num_samples=3, **overrides):
@@ -605,3 +606,538 @@ class TestCompressionLevel:
         size_l0 = out0.with_suffix(".bgen").stat().st_size
         size_l9 = out9.with_suffix(".bgen").stat().st_size
         assert size_l9 < size_l0
+
+
+# ---------------------------------------------------------------------------
+# BgenEncoder: fixed-size random-access encoder.
+# ---------------------------------------------------------------------------
+
+
+def _varied_genotypes(num_variants, num_samples, seed=42):
+    """Deterministic genotypes covering hom-ref/het/hom-alt/missing."""
+    rng = np.random.default_rng(seed)
+    g = rng.integers(low=-1, high=2, size=(num_variants, num_samples, 2)).astype(
+        np.int8
+    )
+    # A sample is missing iff both alleles are missing; symmetrise so the
+    # half-missing case (which BGEN doesn't represent) never arises.
+    missing_mask = (g[:, :, 0] == -1) | (g[:, :, 1] == -1)
+    g[missing_mask, 0] = -1
+    g[missing_mask, 1] = -1
+    return g
+
+
+def _build_encoder(*, num_variants=2, num_samples=3, encoder_kwargs=None, **overrides):
+    """Return a BgenEncoder over an in-memory VCZ group."""
+    reader = _build_reader(
+        num_variants=num_variants, num_samples=num_samples, **overrides
+    )
+    return bgen.BgenEncoder(reader, **(encoder_kwargs or {}))
+
+
+def _drain(encoder, step=1 << 17):
+    out = bytearray()
+    off = 0
+    while off < encoder.bgen_size:
+        chunk = encoder.read(off, step)
+        assert len(chunk) > 0
+        out += chunk
+        off += len(chunk)
+    return bytes(out)
+
+
+class TestPadToFixedLength:
+    def test_pads_with_nul(self):
+        assert (
+            bgen._pad_to_fixed_length("rs1", 8, field_name="rsid")
+            == b"rs1\x00" * 1 + b"\x00" * 4
+        )
+
+    def test_exact_length(self):
+        assert bgen._pad_to_fixed_length("ABCD", 4, field_name="x") == b"ABCD"
+
+    def test_overflow_raises(self):
+        with pytest.raises(ValueError, match="rsid 'too_long'"):
+            bgen._pad_to_fixed_length("too_long", 4, field_name="rsid")
+
+    def test_overflow_message_names_field_and_max(self):
+        with pytest.raises(ValueError, match="exceeds configured max of 3"):
+            bgen._pad_to_fixed_length("abcd", 3, field_name="varid")
+
+    def test_unicode_multibyte_counts_bytes(self):
+        # "é" = 2 bytes in UTF-8; fits in 4 but not in 1.
+        assert bgen._pad_to_fixed_length("é", 4, field_name="x") == b"\xc3\xa9\x00\x00"
+        with pytest.raises(ValueError, match="exceeds configured max"):
+            bgen._pad_to_fixed_length("é", 1, field_name="x")
+
+
+class TestBgenEncoderMetadata:
+    def test_num_variants_and_samples(self):
+        with _build_encoder(num_variants=4, num_samples=5) as enc:
+            assert enc.num_variants == 4
+            assert enc.num_samples == 5
+
+    def test_bytes_per_variant_formula(self):
+        # bpv = 28 + vmax + rmax + cmax + 2*amax + zlib_stored(10 + 3*N)
+        with _build_encoder(num_variants=2, num_samples=4) as enc:
+            geno_size = 10 + 3 * 4
+            expected = 28 + 64 + 64 + 8 + 2 + len(zlib.compress(b"\x00" * geno_size, 0))
+            assert enc.bytes_per_variant == expected
+
+    def test_header_size_matches_serialised_header(self):
+        reader = _build_reader(num_variants=2, num_samples=3)
+        with bgen.BgenEncoder(reader) as enc:
+            sib = bgen._build_sample_id_block(reader.sample_ids)
+            expected = len(bgen._build_header(2, 3, sib))
+            assert enc.header_size == expected
+
+    def test_bgen_size_is_header_plus_variants(self):
+        with _build_encoder(num_variants=7, num_samples=5) as enc:
+            assert enc.bgen_size == enc.header_size + 7 * enc.bytes_per_variant
+
+    def test_custom_maxes_change_bytes_per_variant(self):
+        with _build_encoder(
+            num_variants=1,
+            num_samples=2,
+            encoder_kwargs=dict(varid_max=16, rsid_max=16, chrom_max=4, allele_max=2),
+        ) as enc:
+            geno_size = 10 + 3 * 2
+            expected = 28 + 16 + 16 + 4 + 4 + len(zlib.compress(b"\x00" * geno_size, 0))
+            assert enc.bytes_per_variant == expected
+
+
+class TestBgenEncoderSequential:
+    """Concatenated read(off, step) reassembles the full byte stream
+    and parses cleanly with bgen-reader."""
+
+    @pytest.mark.parametrize("step", [1, 7, 17, 4096, 1 << 17])
+    def test_step_sizes_reassemble_full_stream(self, step):
+        gt = _varied_genotypes(num_variants=11, num_samples=4)
+        with _build_encoder(
+            num_variants=11,
+            num_samples=4,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        ) as enc:
+            reference = _drain(enc)
+        # Re-drain at the given step and compare.
+        with _build_encoder(
+            num_variants=11,
+            num_samples=4,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        ) as enc:
+            out = bytearray()
+            off = 0
+            while off < enc.bgen_size:
+                chunk = enc.read(off, step)
+                assert len(chunk) > 0
+                out += chunk
+                off += len(chunk)
+            assert bytes(out) == reference
+
+    def test_full_stream_parses_with_bgen_reader(self, tmp_path):
+        gt = _varied_genotypes(num_variants=5, num_samples=3)
+        with _build_encoder(num_variants=5, num_samples=3, call_genotype=gt) as enc:
+            buf = _drain(enc)
+        path = tmp_path / "out.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nvariants == 5
+            assert bg.nsamples == 3
+
+
+class TestBgenEncoderRestart:
+    """Non-sequential reads restart the iterator at the chunk
+    containing the requested offset."""
+
+    def test_jump_back_then_forward(self):
+        gt = _varied_genotypes(num_variants=12, num_samples=4)
+        kwargs = dict(
+            num_variants=12,
+            num_samples=4,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        with _build_encoder(**kwargs) as enc:
+            reference = _drain(enc)
+        with _build_encoder(**kwargs) as enc:
+            bpv = enc.bytes_per_variant
+            hs = enc.header_size
+            a = enc.read(hs, 4 * bpv)
+            b = enc.read(hs + 4 * bpv, 4 * bpv)
+            c = enc.read(hs, 4 * bpv)  # backward jump
+            d = enc.read(hs + 8 * bpv, 4 * bpv)  # forward skip
+        assert a == reference[hs : hs + 4 * bpv]
+        assert b == reference[hs + 4 * bpv : hs + 8 * bpv]
+        assert c == reference[hs : hs + 4 * bpv]
+        assert d == reference[hs + 8 * bpv : hs + 12 * bpv]
+
+    def test_restart_into_partial_last_chunk(self):
+        gt = _varied_genotypes(num_variants=11, num_samples=4)
+        kwargs = dict(
+            num_variants=11,
+            num_samples=4,
+            call_genotype=gt,
+            variants_chunk_size=4,
+        )
+        with _build_encoder(**kwargs) as enc:
+            reference = _drain(enc)
+        with _build_encoder(**kwargs) as enc:
+            bpv = enc.bytes_per_variant
+            target = enc.header_size + 9 * bpv + 1
+            actual = enc.read(target, 5)
+        assert actual == reference[target : target + 5]
+
+
+class TestBgenEncoderEdges:
+    def test_header_only_read(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            hdr = enc.read(0, enc.header_size)
+            assert len(hdr) == enc.header_size
+            # First 4 bytes are the offset prefix; bytes 4-7 are header
+            # length (20); bytes 16-19 are BGEN magic.
+            assert hdr[16:20] == bgen.BGEN_MAGIC
+
+    def test_partial_header(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            full = enc.read(0, enc.header_size)
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            a = enc.read(0, 1)
+            b = enc.read(1, enc.header_size - 1)
+        assert a + b == full
+
+    def test_cross_header_into_data(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            reference = _drain(enc)
+            hs = enc.header_size
+            cross = enc.read(hs - 2, 4)
+        assert cross == reference[hs - 2 : hs + 2]
+
+    def test_tail_one_byte(self):
+        with _build_encoder(num_variants=4, num_samples=3) as enc:
+            reference = _drain(enc)
+            tail = enc.read(enc.bgen_size - 1, 1)
+        assert tail == reference[-1:]
+
+    def test_read_past_eof_returns_empty(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            assert enc.read(enc.bgen_size, 10) == b""
+            assert enc.read(enc.bgen_size + 100, 10) == b""
+
+    def test_zero_size_returns_empty(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            assert enc.read(0, 0) == b""
+            assert enc.read(10, 0) == b""
+
+    def test_size_clamped_to_end(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            tail_len = 7
+            target = enc.bgen_size - tail_len
+            assert len(enc.read(target, 1024)) == tail_len
+
+    def test_negative_off_raises(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            with pytest.raises(ValueError, match="off must be >= 0"):
+                enc.read(-1, 5)
+
+    def test_negative_size_raises(self):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            with pytest.raises(ValueError, match="size must be >= 0"):
+                enc.read(0, -1)
+
+
+class TestBgenEncoderEmptyStore:
+    """num_variants == 0 ⇒ stream is just the header bytes."""
+
+    def test_zero_variants_emits_header_only(self):
+        # vcz_builder.make_vcz infers region_index shape from row count,
+        # so for 0 variants we pass an explicit (0, 6) array.
+        root = vcz_builder.make_vcz(
+            variant_contig=np.zeros(0, dtype=np.int32),
+            variant_position=np.zeros(0, dtype=np.int32),
+            alleles=np.zeros((0, 2), dtype="<U16"),
+            num_samples=3,
+            sample_id=["s0", "s1", "s2"],
+            call_genotype=np.zeros((0, 3, 2), dtype=np.int8),
+            region_index=np.zeros((0, 6), dtype=np.int32),
+        )
+        with bgen.BgenEncoder(retrieval.VczReader(root)) as enc:
+            assert enc.num_variants == 0
+            assert enc.bgen_size == enc.header_size
+            full = enc.read(0, 4096)
+            assert len(full) == enc.header_size
+            assert enc.read(enc.header_size, 1) == b""
+
+
+class TestBgenEncoderLifecycle:
+    def test_context_manager(self):
+        reader = _build_reader(num_variants=2, num_samples=3)
+        with bgen.BgenEncoder(reader) as enc:
+            _drain(enc)
+        with pytest.raises(RuntimeError, match="encoder closed"):
+            enc.read(0, 1)
+
+    def test_close_is_idempotent(self):
+        reader = _build_reader(num_variants=2, num_samples=3)
+        enc = bgen.BgenEncoder(reader)
+        enc.close()
+        enc.close()  # no error
+
+    def test_close_does_not_close_reader(self):
+        reader = _build_reader(num_variants=2, num_samples=3)
+        with bgen.BgenEncoder(reader):
+            pass
+        # Reader still usable after encoder close.
+        assert reader.sample_ids.size == 3
+
+    def test_constructor_rejects_variant_filter(self):
+        reader = _build_reader(num_variants=3, num_samples=3)
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(field_names=set(), include="N_ALT <= 1")
+        )
+        with pytest.raises(NotImplementedError, match="set_variant_filter"):
+            bgen.BgenEncoder(reader)
+
+    def test_constructor_validates_args(self):
+        reader = _build_reader(num_variants=1, num_samples=1)
+        with pytest.raises(ValueError, match="encode_threads"):
+            bgen.BgenEncoder(reader, encode_threads=0)
+        with pytest.raises(ValueError, match="encode_block_bytes"):
+            bgen.BgenEncoder(reader, encode_block_bytes=0)
+        with pytest.raises(ValueError, match="varid_max"):
+            bgen.BgenEncoder(reader, varid_max=0)
+        with pytest.raises(ValueError, match="rsid_max"):
+            bgen.BgenEncoder(reader, rsid_max=0)
+        with pytest.raises(ValueError, match="chrom_max"):
+            bgen.BgenEncoder(reader, chrom_max=0)
+        with pytest.raises(ValueError, match="allele_max"):
+            bgen.BgenEncoder(reader, allele_max=0)
+
+    def test_constructor_rejects_oversized_maxes(self):
+        reader = _build_reader(num_variants=1, num_samples=1)
+        with pytest.raises(ValueError, match="varid_max=65536"):
+            bgen.BgenEncoder(reader, varid_max=0x10000)
+        with pytest.raises(ValueError, match="allele_max"):
+            bgen.BgenEncoder(reader, allele_max=0x100000000)
+
+
+class TestBgenEncoderSharedReader:
+    def test_two_encoders_share_one_reader(self):
+        gt = _varied_genotypes(num_variants=5, num_samples=3)
+        reader = _build_reader(num_variants=5, num_samples=3, call_genotype=gt)
+        with bgen.BgenEncoder(reader) as a, bgen.BgenEncoder(reader) as b:
+            buf_a = _drain(a)
+            buf_b = _drain(b)
+        assert buf_a == buf_b
+
+
+class TestBgenEncoderParallelEncoding:
+    """Parallel encoding produces byte-identical output regardless of
+    thread count or sub-block size."""
+
+    def test_parallel_matches_sequential(self):
+        gt = _varied_genotypes(num_variants=16, num_samples=8)
+        kwargs = dict(
+            num_variants=16,
+            num_samples=8,
+            call_genotype=gt,
+            variants_chunk_size=8,
+        )
+        with _build_encoder(**kwargs, encoder_kwargs=dict(encode_threads=1)) as enc:
+            seq = _drain(enc)
+        for threads in (2, 4):
+            with _build_encoder(
+                **kwargs,
+                encoder_kwargs=dict(encode_threads=threads),
+            ) as enc:
+                par = _drain(enc)
+            assert par == seq
+
+    def test_tiny_block_bytes_forces_subblocking(self):
+        gt = _varied_genotypes(num_variants=12, num_samples=6)
+        kwargs = dict(num_variants=12, num_samples=6, call_genotype=gt)
+        with _build_encoder(**kwargs, encoder_kwargs=dict(encode_threads=1)) as enc:
+            seq = _drain(enc)
+        with _build_encoder(
+            **kwargs,
+            encoder_kwargs=dict(encode_threads=4, encode_block_bytes=1),
+        ) as enc:
+            par = _drain(enc)
+        assert par == seq
+
+
+class TestBgenEncoderWithSetVariants:
+    def test_variant_subset_reflected_in_output(self, tmp_path):
+        gt = _varied_genotypes(num_variants=10, num_samples=4)
+        reader = _build_reader(num_variants=10, num_samples=4, call_genotype=gt)
+        indexes = np.array([1, 3, 5], dtype=np.int64)
+        reader.set_variants(indexes)
+        with bgen.BgenEncoder(reader) as enc:
+            assert enc.num_variants == 3
+            buf = _drain(enc)
+        path = tmp_path / "vs.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nvariants == 3
+            # Default reader builds variant_position = [100..109]; subset
+            # picks indices 1, 3, 5 → positions 101, 103, 105.
+            assert list(bg.positions) == [101, 103, 105]
+
+    def test_sample_subset_reflected_in_output(self, tmp_path):
+        gt = _varied_genotypes(num_variants=3, num_samples=6)
+        reader = _build_reader(num_variants=3, num_samples=6, call_genotype=gt)
+        reader.set_samples(np.array([0, 2, 4], dtype=np.int64))
+        with bgen.BgenEncoder(reader) as enc:
+            assert enc.num_samples == 3
+            buf = _drain(enc)
+        path = tmp_path / "out.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nsamples == 3
+            assert list(bg.samples) == ["sample_0", "sample_2", "sample_4"]
+
+
+class TestBgenEncoderOverflowRaises:
+    def test_varid_too_long(self):
+        reader = _build_reader(num_variants=1, num_samples=1, variant_id=["x" * 100])
+        with bgen.BgenEncoder(reader, varid_max=8) as enc:
+            with pytest.raises(ValueError, match="varid"):
+                enc.read(0, enc.bgen_size)
+
+    def test_chrom_too_long(self):
+        # Single contig with a long name; chrom_max=8 is the default.
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            contigs=("chr_with_a_very_long_name",),
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            with pytest.raises(ValueError, match="chrom"):
+                enc.read(0, enc.bgen_size)
+
+    def test_allele_too_long(self):
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            alleles=[("AT", "G")],
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            with pytest.raises(ValueError, match="allele1"):
+                enc.read(0, enc.bgen_size)
+
+
+class TestBgenEncoderRoundTripViaBgenReader:
+    """End-to-end: drain encoder to disk, open with bgen-reader,
+    verify metadata and probabilities round-trip."""
+
+    def test_round_trip(self, tmp_path):
+        # Cover hom-ref, het, hom-alt, missing, plus variant_id.
+        G = np.array(
+            [
+                [[0, 0], [0, 1], [1, 1], [-1, -1]],
+                [[1, 1], [0, 0], [-1, -1], [0, 1]],
+                [[1, 0], [1, 1], [0, 0], [0, 0]],
+            ],
+            dtype=np.int8,
+        )
+        reader = _build_reader(
+            num_variants=3,
+            num_samples=4,
+            call_genotype=G,
+            variant_id=["rs1", "rs2", "rs3"],
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            buf = _drain(enc)
+        path = tmp_path / "rt.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nvariants == 3
+            assert bg.nsamples == 4
+            assert list(bg.rsids) == ["rs1", "rs2", "rs3"]
+            assert list(bg.positions) == [100, 101, 102]
+            assert list(bg.allele_ids) == ["A,T", "A,T", "A,T"]
+            assert list(bg.samples) == [
+                "sample_0",
+                "sample_1",
+                "sample_2",
+                "sample_3",
+            ]
+            probs, missing = bg.read(return_missings=True)
+
+        # Variant 0: hom-ref, het, hom-alt, missing.
+        np.testing.assert_array_equal(missing[:, 0], [False, False, False, True])
+        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
+        assert np.isnan(probs[3, 0]).all()
+        # Variant 2: reversed-het (1,0) encodes identically to (0,1).
+        np.testing.assert_array_equal(probs[0, 2], [0.0, 1.0, 0.0])
+
+    def test_phased_round_trip(self, tmp_path):
+        G = np.array([[[0, 1], [1, 0], [0, 0], [1, 1]]], dtype=np.int8)
+        phased = np.ones((1, 4), dtype=bool)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=4,
+            call_genotype=G,
+            call_fields={"genotype_phased": phased},
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            buf = _drain(enc)
+        path = tmp_path / "p.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bool(bg.phased[0])
+            probs = bg.read()
+        # Phased biallelic diploid: per-haplotype probs.
+        hap1 = np.argmax(probs[..., 0:2], axis=-1).T
+        hap2 = np.argmax(probs[..., 2:4], axis=-1).T
+        np.testing.assert_array_equal(hap1, G[..., 0])
+        np.testing.assert_array_equal(hap2, G[..., 1])
+
+    def test_mixed_phase_degrades_to_unphased(self, tmp_path, caplog):
+        G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
+        phased = np.array([[True, False]], dtype=bool)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=2,
+            call_genotype=G,
+            call_fields={"genotype_phased": phased},
+        )
+        with caplog.at_level(logging.WARNING, logger="vcztools.bgen"):
+            with bgen.BgenEncoder(reader) as enc:
+                buf = _drain(enc)
+        path = tmp_path / "mp.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert not bool(bg.phased[0])
+        assert any("mixed phase" in record.getMessage() for record in caplog.records)
+
+    def test_empty_variant_id_normalised_to_dot(self, tmp_path):
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=2,
+            variant_id=["", "rs2"],
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            buf = _drain(enc)
+        path = tmp_path / "rsid.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert list(bg.rsids) == [".", "rs2"]
+
+    def test_monomorphic_alt_normalised_to_dot(self, tmp_path):
+        # An empty ALT slot becomes "." in the BGEN output, matching the
+        # write_bgen convention.
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=2,
+            alleles=[("A", "")],
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            buf = _drain(enc)
+        path = tmp_path / "mono.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert list(bg.allele_ids) == ["A,."]

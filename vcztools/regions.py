@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from vcztools import utils
+from vcztools import retrieval, utils
 from vcztools.utils import _as_fixed_length_unicode
 
 try:
@@ -344,29 +344,6 @@ def chunk_plan_from_indexes(
     return plan
 
 
-def _read_logical_chunk(
-    arr,
-    name: str,
-    multiplier: int,
-    min_chunk: int,
-    logical_chunk_idx: int,
-    block_cache: dict,
-) -> np.ndarray:
-    """Read the ``min_chunk``-sized slab of ``arr`` corresponding to
-    ``logical_chunk_idx`` (in ``min_chunk`` units), caching the
-    underlying field block so consecutive logical chunks within one
-    field block don't re-read it.
-    """
-    field_block_idx = logical_chunk_idx // multiplier
-    cache_key = (name, field_block_idx)
-    block = block_cache.get(cache_key)
-    if block is None:
-        block = arr.blocks[field_block_idx]
-        block_cache[cache_key] = block
-    intra_start = (logical_chunk_idx % multiplier) * min_chunk
-    return block[intra_start : intra_start + min_chunk]
-
-
 def build_chunk_plan(
     root,
     *,
@@ -384,16 +361,16 @@ def build_chunk_plan(
 
     Uses the ``region_index`` array to prune candidate chunks (only
     when ``regions`` is set — ``targets`` alone doesn't prune), then
-    scans each candidate logical chunk once to compute a local row
-    selection. Per-field block reads are cached locally so a
-    ``variant_position`` block chunked at ``K * min_chunk`` is read
-    once even when ``K`` consecutive logical chunks reference it.
-    Only non-empty chunks end up in the plan.
+    scans each candidate chunk once via the
+    :class:`vcztools.retrieval.VczReader.variant_chunks` pipeline to
+    compute the surviving local row indexes. Block-level dedup and
+    threaded I/O are inherited from the pipeline, so consecutive
+    candidates that share a Zarr block in any of the three referenced
+    variant-only fields share a single read; when the fields use a
+    chunk size larger than ``min_chunk`` the pipeline rebuckets the
+    candidate plan into stream chunks at that larger granularity.
     """
-    position_arr = root["variant_position"]
-    contig_arr = root["variant_contig"]
-    length_arr = root["variant_length"]
-    num_variants = int(position_arr.shape[0])
+    num_variants = int(root["variant_position"].shape[0])
     min_chunk = utils.compute_min_variants_chunk_size(root)
     num_logical_chunks = (num_variants + min_chunk - 1) // min_chunk
 
@@ -415,40 +392,42 @@ def build_chunk_plan(
     else:
         candidate_chunks = np.arange(num_logical_chunks, dtype=np.int64)
 
-    pos_mult = int(position_arr.chunks[0]) // min_chunk
-    contig_mult = int(contig_arr.chunks[0]) // min_chunk
-    length_mult = int(length_arr.chunks[0]) // min_chunk
-    block_cache: dict = {}
+    if candidate_chunks.size == 0:
+        return []
 
-    plan = []
-    for chunk_idx in candidate_chunks:
-        chunk_idx = int(chunk_idx)
-        vc = _read_logical_chunk(
-            contig_arr, "variant_contig", contig_mult, min_chunk, chunk_idx, block_cache
+    candidate_plan = [
+        utils.ChunkRead(
+            index=int(ci),
+            num_selected=min(min_chunk, num_variants - int(ci) * min_chunk),
         )
-        vp = _read_logical_chunk(
-            position_arr,
-            "variant_position",
-            pos_mult,
-            min_chunk,
-            chunk_idx,
-            block_cache,
-        )
-        vl = _read_logical_chunk(
-            length_arr, "variant_length", length_mult, min_chunk, chunk_idx, block_cache
-        )
-        local_sel = regions_to_selection(regions_gr, targets_gr, vc, vp, vl)
-        if local_sel is None:
-            continue
-        local_sel = np.asarray(local_sel, dtype=np.int64)
-        if local_sel.size == 0:
-            continue
-        plan.append(
-            utils.ChunkRead(
-                index=chunk_idx,
-                num_selected=int(local_sel.size),
-                selection=utils.normalise_local_selection(local_sel, min_chunk),
+        for ci in candidate_chunks
+    ]
+
+    read_fields = [
+        "variant_index",
+        "variant_position",
+        "variant_contig",
+        "variant_length",
+    ]
+    surviving = []
+    with retrieval.VczReader(root) as reader:
+        reader.set_variants(candidate_plan)
+        for chunk_data in reader.variant_chunks(fields=read_fields):
+            local_sel = regions_to_selection(
+                regions_gr,
+                targets_gr,
+                chunk_data["variant_contig"],
+                chunk_data["variant_position"],
+                chunk_data["variant_length"],
             )
-        )
+            if local_sel is None:
+                continue
+            local_sel = np.asarray(local_sel, dtype=np.int64)
+            if local_sel.size == 0:
+                continue
+            surviving.append(chunk_data["variant_index"][local_sel])
 
-    return plan
+    if len(surviving) == 0:
+        return []
+    indexes = np.concatenate(surviving)
+    return chunk_plan_from_indexes(indexes, min_chunk=min_chunk)

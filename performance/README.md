@@ -28,8 +28,8 @@ uv run python performance/benchmarks.py generate
 ```
 
 Defaults: 100 000 diploid samples, sequence length 1e7 (~80–160k
-sites), seed 42, written to `performance/data/bench.vcz`. Expect ~10
-minutes wall time on a modern laptop, dominated by
+sites), seed 42, written to `performance/data/wide_bench.vcz`. Expect
+~10 minutes wall time on a modern laptop, dominated by
 `bio2zarr.tskit.convert` and the Zarr v3 mirror. Each stage
 (`simulate`, `convert`, `augment`, `mirror_zv3`, `zip`,
 `mirror_icechunk`) is timed in the log so you can bisect if it
@@ -38,11 +38,14 @@ overshoots.
 The command writes four artefacts under `performance/data/`, all
 holding the same logical data:
 
-- `bench.vcz/` — Zarr v2 directory store (bio2zarr's default on-disk
-  format).
-- `bench.vcz3/` — Zarr v3 directory store, mirrored from the v2 copy.
-- `bench.vcz.zip` — Zarr v2 zipped via `bio2zarr.zarr_utils.zip_zarr`.
-- `bench.vcz.icechunk/` — icechunk repo mirrored from the v3 copy.
+- `wide_bench.vcz/` — Zarr v2 directory store (bio2zarr's default
+  on-disk format).
+- `wide_bench.vcz3/` — Zarr v3 directory store, mirrored from the v2
+  copy.
+- `wide_bench.vcz.zip` — Zarr v2 zipped via
+  `bio2zarr.zarr_utils.zip_zarr`.
+- `wide_bench.vcz.icechunk/` — icechunk repo mirrored from the v3
+  copy.
 
 For a tiny smoke run: `generate --num-samples 1000 --seq-length 200000`.
 
@@ -50,6 +53,18 @@ Pass `--worker-processes N` to parallelise the `bio2zarr.tskit.convert`
 stage. It defaults to 0 (main process only) because bio2zarr currently
 pickles the tree sequence to each worker, so peak memory scales with
 the worker count.
+
+For the complementary long dataset (10 samples × ~100M variants with
+proportional chunk sizes on variant-only fields):
+
+```
+uv run python performance/benchmarks.py generate-long
+```
+
+This adds a `rechunk_variant_only` stage after `augment` that rewrites
+each variant-only array with chunk size targeting ~10 MiB uncompressed
+per chunk. `call_*` fields keep the standard 1000-variant chunks. See
+`proportional-chunk-sizes.md` for design rationale.
 
 ## Run the matrix
 
@@ -68,9 +83,13 @@ sweeping backends adds no signal).
 
 Optional flags:
 
-- `--dataset PATH` — default `performance/data/bench.vcz`. The matrix
-  derives sibling paths (`<dataset>3/`, `<dataset>.zip`,
-  `<dataset>.icechunk/`) from this base.
+- `--dataset PATH` — default `performance/data/wide_bench.vcz`. The
+  matrix derives sibling paths (`<dataset>3/`, `<dataset>.zip`,
+  `<dataset>.icechunk/`) from this base. Pass
+  `performance/data/long_bench.vcz` (and `--shape long`) for the long
+  dataset.
+- `--shape {wide,long}` — filter tasks to those that make sense on the
+  given dataset shape. Default `wide`.
 - `--task NAME` (repeatable) — restrict to specific tasks.
 - `--backend NAME` (repeatable) — restrict to specific backends
   (`local-dir`, `local-dir-zv3`, `local-zip`, `local-http`,

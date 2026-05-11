@@ -11,6 +11,11 @@ Hard calls in ``call_genotype`` are encoded as 1.0/0.0 probabilities; at
 from ``call_genotype_phased`` if present (a variant emits phased iff
 every sample is phased for that variant).
 
+For FUSE / HTTP-range-serving applications that need random-access into
+the encoded byte stream, :class:`BgenEncoder` is a sibling of
+:class:`vcztools.plink.BedEncoder` that produces a fixed-size BGEN
+stream (Python API only).
+
 For the user-facing reference — multi-allelic policy, downstream-tool
 compatibility, sidecar conventions — see ``docs/bgen.md``.
 """

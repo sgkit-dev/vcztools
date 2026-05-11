@@ -551,7 +551,7 @@ class TestWriteBgenEndToEnd:
         reader = _build_reader(num_variants=2, num_samples=2)
         empty_plan = regions.chunk_plan_from_indexes(
             np.array([], dtype=np.int64),
-            variants_chunk_size=reader.variants_chunk_size,
+            min_chunk=reader.variants_chunk_size,
         )
         reader.set_variants(empty_plan)
         out = tmp_path / "x"

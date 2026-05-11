@@ -128,6 +128,68 @@ them cleanly (degrades to unphased per-variant with a warning). The
 test suite asserts this divergence on the bundled `sample.vcf.gz`
 fixture so a future plink2 release fixing the bug surfaces here.
 
+## Fixed-size random-access encoding (`BgenEncoder`)
+
+For applications that need to address arbitrary regions of the encoded
+`.bgen` byte stream without iterating from the start — FUSE
+filesystems, HTTP range serving, and similar — vcztools also exposes
+a Python-only `BgenEncoder` class, the sibling of `plink.BedEncoder`:
+
+```python
+from vcztools import bgen, retrieval
+
+reader = retrieval.VczReader("sample.vcz")
+with bgen.BgenEncoder(reader) as enc:
+    print(enc.bgen_size, enc.bytes_per_variant)
+    # POSIX-read semantics: enc.read(off, size) returns bytes
+    chunk = enc.read(0, 4096)
+```
+
+Every per-variant block is exactly `bytes_per_variant` bytes wide, so
+`byte offset → variant index` is O(1):
+
+```
+bytes_per_variant = 28 + varid_max + rsid_max + chrom_max
+                    + 2 * allele_max
+                    + zlib_stored_size(10 + 3 * num_samples)
+```
+
+The fixed width is achieved by NUL-padding the variable-length string
+fields (variant id, rsid, chromosome, alleles) to caller-configured
+maximum widths, and by emitting the genotype block as zlib **level 0**
+(stored, no DEFLATE) so its compressed length is a deterministic
+function of the uncompressed length. The bgen-reader reference reader
+strips trailing NULs from string fields, so padded values round-trip
+cleanly.
+
+Defaults target biobank biallelic SNP-array data:
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `varid_max` | 64 | uint16 length prefix limit is 65535 |
+| `rsid_max` | 64 | uint16 length prefix limit is 65535 |
+| `chrom_max` | 8 | uint16 length prefix limit is 65535 |
+| `allele_max` | 1 | SNP-only; uint32 length prefix limit |
+| `encode_threads` | 4 | thread pool size for parallel encode |
+| `encode_block_bytes` | 10 MiB | input target per sub-block |
+
+Overflowing any `*_max` raises `ValueError` lazily during `read()`,
+with a clear message naming the field and the configured limit. Indel
+or SV stores opt in by passing larger maxes (e.g. `allele_max=16`).
+
+The output `.bgen` is significantly larger than `view-bgen`'s
+zlib-compressed output — it carries the fixed-size padding for every
+string field and runs no real compression on genotype data — but the
+byte stream is addressable and bytes-per-variant is fully known up
+front. The encoder serves the `.bgen` stream only; `generate_sample()`
+remains the path for the `.sample` sidecar, and a `.bgi` index (if
+needed) can be built from the deterministic offsets
+(`header_size + i * bytes_per_variant`) without iterating the encoder.
+
+Unlike `write_bgen`, the encoder does not auto-materialise a configured
+`set_variant_filter` — it raises `NotImplementedError` at construction.
+Apply the filter externally or use `set_variants` first.
+
 ## See also
 
 - {ref}`sec-cli-ref` for the full `view-bgen` flag reference.

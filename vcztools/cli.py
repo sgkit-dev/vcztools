@@ -943,9 +943,20 @@ def view_plink(path, out, **kwargs):
     default="bgen",
     help="Output prefix for the .bgen/.sample/.bgen.bgi fileset.",
 )
+@click.option(
+    "--compression-level",
+    type=click.IntRange(-1, 9),
+    default=-1,
+    show_default=True,
+    help=(
+        "zlib compression level for the BGEN genotype probability "
+        "blocks. -1 = zlib default (~6); 0 = stored (no compression); "
+        "9 = max."
+    ),
+)
 @log_options
 @handle_exception
-def view_bgen(path, out, **kwargs):
+def view_bgen(path, out, compression_level, **kwargs):
     """
     Generate an Oxford BGEN fileset (.bgen / .sample / .bgen.bgi) from
     a VCZ dataset.
@@ -967,7 +978,7 @@ def view_bgen(path, out, **kwargs):
     options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
     with make_reader_from_options(path, options) as reader:
-        bgen.write_bgen(reader, out)
+        bgen.write_bgen(reader, out, compression_level=compression_level)
 
 
 @version

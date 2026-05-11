@@ -56,7 +56,7 @@ import tqdm
 import zarr
 from zarr.codecs import BloscCodec, BloscShuffle
 
-from vcztools import bcftools_filter, plink, retrieval, vcf_writer
+from vcztools import bcftools_filter, bgen, plink, retrieval, vcf_writer
 from vcztools import regions as regions_mod
 from vcztools import utils as vcz_utils
 
@@ -1044,6 +1044,11 @@ OUTPUT_BACKENDS = frozenset({"local-dir"})
 OUTPUT_VCF_CHUNKS = 1
 OUTPUT_PLINK_CHUNKS = 20
 OUTPUT_BED_STREAM_CHUNKS = 20
+# BGEN encoding is zlib-bound; start at 5 chunks to land in the ~10s
+# band on local-dir at the default compression level. Tune after the
+# first run.
+OUTPUT_BGEN_CHUNKS = 5
+OUTPUT_BGEN_COMPRESSION_LEVELS = (0, 1, 6, 9)
 
 
 class _CountingTextWriter:
@@ -1192,6 +1197,28 @@ def _run_output_bed_stream(reader, ctx):
             bytes_written += len(chunk)
             off += len(chunk)
     return RunStats(records=num_variants, bytes_written=bytes_written)
+
+
+def _build_output_bgen(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_first_chunks_plan(root, OUTPUT_BGEN_CHUNKS))
+    return reader
+
+
+def _run_output_bgen(reader, ctx, compression_level):
+    records = _plan_records(reader)
+    with tempfile.TemporaryDirectory(prefix="vcztools-bench-bgen-") as tmp:
+        out_prefix = pathlib.Path(tmp) / "out"
+        bgen.write_bgen(reader, out_prefix, compression_level=compression_level)
+        bgen_path = out_prefix.with_suffix(".bgen")
+        sample_path = out_prefix.with_suffix(".sample")
+        bgi_path = pathlib.Path(str(bgen_path) + ".bgi")
+        bytes_written = (
+            bgen_path.stat().st_size
+            + sample_path.stat().st_size
+            + bgi_path.stat().st_size
+        )
+    return RunStats(records=records, bytes_written=bytes_written)
 
 
 # ---------------------------------------------------------------------------
@@ -1344,6 +1371,15 @@ TASKS: list[Task] = [
         run=_run_output_bed_stream,
         backends=OUTPUT_BACKENDS,
     ),
+    *[
+        Task(
+            f"output_bgen_l{level}",
+            _build_output_bgen,
+            run=(lambda r, ctx, lvl=level: _run_output_bgen(r, ctx, lvl)),
+            backends=OUTPUT_BACKENDS,
+        )
+        for level in OUTPUT_BGEN_COMPRESSION_LEVELS
+    ],
     Task(
         "full_genotypes",
         _build_full_genotypes,

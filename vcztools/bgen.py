@@ -175,6 +175,7 @@ def _encode_variant_block(
     num_samples,
     genotypes,
     phased,
+    compression_level,
 ):
     """Encode one full BGEN variant data block (identifying data +
     compressed genotype block).
@@ -183,7 +184,7 @@ def _encode_variant_block(
     including the 4-byte ``D`` field) and ``D`` (uncompressed length).
     """
     geno_block = _encode_genotype_block(genotypes, phased)
-    compressed = zlib.compress(geno_block)
+    compressed = zlib.compress(geno_block, compression_level)
 
     out = bytearray()
     varid_b = str(varid).encode("utf-8")
@@ -324,7 +325,7 @@ def _write_bgi_index(bgi_path, bgen_path, entries):
         conn.close()
 
 
-def write_bgen(reader, out):
+def write_bgen(reader, out, *, compression_level: int = -1):
     """Write an Oxford BGEN fileset (``.bgen`` / ``.sample`` /
     ``.bgen.bgi``) for ``reader`` under prefix ``out``.
 
@@ -338,6 +339,12 @@ def write_bgen(reader, out):
     probability on the called genotype (8-bit precision round-trips
     exactly). Phase: per-variant from ``call_genotype_phased`` if the
     field exists in the store; otherwise unphased.
+
+    ``compression_level`` is forwarded to :func:`zlib.compress` for each
+    variant's genotype probability block; accepts ``-1..9`` (``-1`` =
+    zlib default ≈ level 6; ``0`` = stored, still framed as zlib;
+    ``9`` = maximum). The BGEN flag word always advertises
+    ``COMPRESSION_ZLIB`` regardless of level.
     """
     reader.materialise_variant_filter()
     out_prefix = pathlib.Path(out)
@@ -348,11 +355,13 @@ def write_bgen(reader, out):
     with open(sample_path, "w") as f:
         f.write(generate_sample(reader))
 
-    entries = _stream_bgen_to_file(reader, bgen_path)
+    entries = _stream_bgen_to_file(
+        reader, bgen_path, compression_level=compression_level
+    )
     _write_bgi_index(bgi_path, bgen_path, entries)
 
 
-def _stream_bgen_to_file(reader, bgen_path):
+def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
     start = time.perf_counter()
     encode_seconds = 0.0
     write_seconds = 0.0
@@ -429,6 +438,7 @@ def _stream_bgen_to_file(reader, bgen_path):
                     num_samples=num_samples,
                     genotypes=G[j],
                     phased=phased,
+                    compression_level=compression_level,
                 )
                 t1 = time.perf_counter()
                 bgen_file.write(block)
@@ -457,6 +467,7 @@ def _stream_bgen_to_file(reader, bgen_path):
     logger.info(
         f"write_bgen: wrote {mib:.1f} MiB to {bgen_path} in "
         f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
+        f"compression_level={compression_level}; "
         f"encode={encode_seconds:.2f}s, write={write_seconds:.2f}s"
     )
     if mixed_phase_count > 0:

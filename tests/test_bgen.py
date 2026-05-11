@@ -210,6 +210,7 @@ class TestEncodeVariantBlock:
             num_samples=2,
             genotypes=G,
             phased=False,
+            compression_level=-1,
         )
         sample_block = bgen._build_sample_id_block(["s0", "s1"])
         header = bgen._build_header(1, 2, sample_block)
@@ -563,3 +564,44 @@ class TestWriteBgenEndToEnd:
         assert n_samples == 2
         # File ends after the sample-id block.
         assert bgen_path.stat().st_size == 4 + offset
+
+
+class TestCompressionLevel:
+    @pytest.mark.parametrize("level", [0, 1, 6, 9])
+    def test_round_trip_at_level(self, tmp_path, level):
+        # G shape is (num_variants=2, num_samples=3, ploidy=2). Variant 0
+        # has hom-ref / het / hom-alt across the three samples.
+        G = np.array(
+            [[[0, 0], [0, 1], [1, 1]], [[1, 1], [0, 1], [0, 0]]], dtype=np.int8
+        )
+        reader = _build_reader(num_variants=2, num_samples=3, call_genotype=G)
+        out = tmp_path / f"out_l{level}"
+        bgen.write_bgen(reader, out, compression_level=level)
+        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+            probs = bgen_file.read()
+        # bgen-reader returns shape (n_samples, n_variants, 3).
+        assert probs.shape == (3, 2, 3)
+        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
+
+    def test_level_9_not_larger_than_level_0(self, tmp_path):
+        # All-zero genotypes give a highly compressible payload, so the
+        # difference between level 9 and level 0 dominates the per-variant
+        # framing overhead. write_bgen materialises the variant filter in
+        # place (bgen.py: ``materialise_variant_filter``), so each write
+        # gets its own freshly-built reader.
+        num_variants = 64
+        num_samples = 32
+        reader_kwargs = dict(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
+        )
+        out0 = tmp_path / "l0"
+        bgen.write_bgen(_build_reader(**reader_kwargs), out0, compression_level=0)
+        out9 = tmp_path / "l9"
+        bgen.write_bgen(_build_reader(**reader_kwargs), out9, compression_level=9)
+        size_l0 = out0.with_suffix(".bgen").stat().st_size
+        size_l9 = out9.with_suffix(".bgen").stat().st_size
+        assert size_l9 < size_l0

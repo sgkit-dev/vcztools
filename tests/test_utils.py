@@ -352,6 +352,146 @@ class TestRebucketToStreamPlan:
         assert result == []
 
 
+class TestValidateVariantsAxisChunking:
+    """``validate_variants_axis_chunking`` asserts that every
+    variant-axis field's ``chunks[0]`` is a positive integer multiple
+    of ``min_chunk``. The validator is scoped to the variants axis:
+    fields whose first dimension is not ``variants`` are skipped
+    entirely, and the samples-axis (``chunks[1]``) chunking of
+    ``call_*`` fields is not checked here.
+    """
+
+    @staticmethod
+    def _root():
+        store = zarr.storage.MemoryStore()
+        return zarr.group(store=store, zarr_format=3)
+
+    @staticmethod
+    def _add(root, name, shape, chunks, dims):
+        root.create_array(
+            name, shape=shape, chunks=chunks, dtype="i4", dimension_names=dims
+        )
+
+    def test_zero_min_chunk_raises(self):
+        with pytest.raises(ValueError, match="min_chunk must be positive"):
+            utils.validate_variants_axis_chunking(self._root(), 0)
+
+    def test_negative_min_chunk_raises(self):
+        with pytest.raises(ValueError, match="min_chunk must be positive"):
+            utils.validate_variants_axis_chunking(self._root(), -5)
+
+    def test_empty_root_passes(self):
+        # No variant-axis fields → vacuously valid.
+        utils.validate_variants_axis_chunking(self._root(), 3)
+
+    def test_uniform_variant_axis_chunks_pass(self):
+        root = self._root()
+        self._add(root, "variant_position", (12,), (3,), ("variants",))
+        self._add(
+            root,
+            "call_genotype",
+            (12, 4, 2),
+            (3, 4, 2),
+            ("variants", "samples", "ploidy"),
+        )
+        utils.validate_variants_axis_chunking(root, 3)
+
+    def test_variant_only_at_multiple_of_min_chunk_passes(self):
+        # variant_position chunked at 6 = 2 * min_chunk(3).
+        root = self._root()
+        self._add(root, "variant_position", (12,), (6,), ("variants",))
+        self._add(
+            root,
+            "call_genotype",
+            (12, 4, 2),
+            (3, 4, 2),
+            ("variants", "samples", "ploidy"),
+        )
+        utils.validate_variants_axis_chunking(root, 3)
+
+    def test_min_chunk_one_accepts_any_size(self):
+        # Every positive int is a multiple of 1 → all chunk sizes pass.
+        root = self._root()
+        self._add(root, "variant_position", (10,), (7,), ("variants",))
+        utils.validate_variants_axis_chunking(root, 1)
+
+    def test_variant_only_not_multiple_raises(self):
+        root = self._root()
+        self._add(root, "variant_position", (10,), (5,), ("variants",))
+        # min_chunk=3 does not divide 5.
+        with pytest.raises(ValueError, match=r"variant_position\.chunks\[0\]=5"):
+            utils.validate_variants_axis_chunking(root, 3)
+
+    def test_call_field_not_multiple_raises(self):
+        root = self._root()
+        self._add(root, "call_DP", (10, 4), (7, 4), ("variants", "samples"))
+        with pytest.raises(ValueError, match=r"call_DP\.chunks\[0\]=7"):
+            utils.validate_variants_axis_chunking(root, 5)
+
+    def test_static_fields_skipped(self):
+        # sample_id and contig_id have no variants axis; their chunking
+        # is ignored regardless of min_chunk.
+        root = self._root()
+        self._add(root, "sample_id", (4,), (1,), ("samples",))
+        self._add(root, "contig_id", (3,), (2,), ("contigs",))
+        utils.validate_variants_axis_chunking(root, 5)
+
+    def test_samples_only_field_alongside_variants_field_ignored(self):
+        # sample_id.chunks[0]=1 would fail the rule on the variants axis
+        # but lives on the samples axis, so it's skipped.
+        root = self._root()
+        self._add(root, "variant_position", (10,), (5,), ("variants",))
+        self._add(root, "sample_id", (4,), (1,), ("samples",))
+        utils.validate_variants_axis_chunking(root, 5)
+
+    def test_call_fields_with_distinct_samples_axis_chunks_pass(self):
+        # call_genotype samples chunk = 4; call_DP samples chunk = 2.
+        # Variants-axis chunks[0] match min_chunk; the validator does
+        # NOT cross-check the samples-axis chunks[1] across call_* fields.
+        root = self._root()
+        self._add(
+            root,
+            "call_genotype",
+            (9, 4, 2),
+            (3, 4, 2),
+            ("variants", "samples", "ploidy"),
+        )
+        self._add(root, "call_DP", (9, 4), (3, 2), ("variants", "samples"))
+        utils.validate_variants_axis_chunking(root, 3)
+
+    def test_call_fields_with_distinct_variant_chunks_pass_when_multiples(self):
+        # call_genotype.chunks[0]=3 (= min_chunk); call_DP.chunks[0]=6
+        # (= 2 * min_chunk). Both are multiples of min_chunk, so this
+        # passes. (compute_min_variants_chunk_size would still reject
+        # disagreeing call_* sizes, but that's a separate validator.)
+        root = self._root()
+        self._add(
+            root,
+            "call_genotype",
+            (12, 2, 2),
+            (3, 2, 2),
+            ("variants", "samples", "ploidy"),
+        )
+        self._add(root, "call_DP", (12, 2), (6, 2), ("variants", "samples"))
+        utils.validate_variants_axis_chunking(root, 3)
+
+    def test_call_field_violates_while_others_match_raises(self):
+        # call_DP has chunks[0]=7, which is not a multiple of min_chunk=3;
+        # the validator surfaces that specific field by name even though
+        # call_genotype is fine.
+        root = self._root()
+        self._add(
+            root,
+            "call_genotype",
+            (12, 2, 2),
+            (3, 2, 2),
+            ("variants", "samples", "ploidy"),
+        )
+        self._add(root, "call_DP", (12, 2), (7, 2), ("variants", "samples"))
+        with pytest.raises(ValueError, match=r"call_DP\.chunks\[0\]=7"):
+            utils.validate_variants_axis_chunking(root, 3)
+
+
 @pytest.mark.parametrize(
     ("vczs", "vcf", "expected_vcz_names"),
     [

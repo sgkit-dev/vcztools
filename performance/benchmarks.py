@@ -1044,11 +1044,13 @@ OUTPUT_BACKENDS = frozenset({"local-dir"})
 OUTPUT_VCF_CHUNKS = 1
 OUTPUT_PLINK_CHUNKS = 20
 OUTPUT_BED_STREAM_CHUNKS = 20
-# BGEN encoding is zlib-bound; start at 5 chunks to land in the ~10s
-# band on local-dir at the default compression level. Tune after the
-# first run.
+# BGEN encoding is zlib-bound; 5 chunks lands ~10s for level 0/1 and
+# ~30s for level 6 on local-dir. Level 9 is excluded from defaults: it
+# costs ~20x more wall time than level 6 for ~10% extra size reduction
+# (~11 min for 5 chunks on the wide dataset), out of band for the
+# regular benchmark sweep. Re-add to the tuple to measure it.
 OUTPUT_BGEN_CHUNKS = 5
-OUTPUT_BGEN_COMPRESSION_LEVELS = (0, 1, 6, 9)
+OUTPUT_BGEN_COMPRESSION_LEVELS = (0, 1, 6)
 
 
 class _CountingTextWriter:

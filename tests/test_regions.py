@@ -5,9 +5,17 @@ from numpy.testing import assert_array_equal
 from pandas.testing import assert_frame_equal
 
 from tests import vcz_builder
-from vcztools import regions
+from vcztools import regions, retrieval
 
 ALL_CONTIGS = ["chr1", "chr2", "chr3"]
+
+
+def _build_chunk_plan(root, **kwargs):
+    """Construct a one-off :class:`VczReader` for ``root`` and run
+    :func:`regions.build_chunk_plan` against it. The reader's executor
+    is torn down when the context manager exits."""
+    with retrieval.VczReader(root) as reader:
+        return regions.build_chunk_plan(reader, **kwargs)
 
 
 def _regions_df(rows):
@@ -397,13 +405,13 @@ class TestBuildChunkPlan:
     def test_no_filter_returns_full_plan(self):
         """No regions/targets: one ChunkRead per chunk with
         ``selection is None`` (the "read full chunk" sentinel)."""
-        plan = regions.build_chunk_plan(self._vcz())
+        plan = _build_chunk_plan(self._vcz())
         # 10 variants, chunk size 3 → 4 chunks
         assert [cr.index for cr in plan] == [0, 1, 2, 3]
         assert all(cr.selection is None for cr in plan)
 
     def test_regions_filter_selects_chunks(self):
-        plan = regions.build_chunk_plan(self._vcz(), regions="chr1:4-5")
+        plan = _build_chunk_plan(self._vcz(), regions="chr1:4-5")
         # positions 4,5 fall in chunk 1 (global indexes 3,4 → local 0,1).
         # Local [0, 1] in a chunk of size 3 → slice(0, 2).
         assert [cr.index for cr in plan] == [1]
@@ -412,14 +420,14 @@ class TestBuildChunkPlan:
     def test_full_chunk_collapses_to_none(self):
         """Region covering every variant in a chunk → selection=None."""
         # chr1:1-3 covers positions 1,2,3 = chunk 0 in full.
-        plan = regions.build_chunk_plan(self._vcz(), regions="chr1:1-3")
+        plan = _build_chunk_plan(self._vcz(), regions="chr1:1-3")
         assert [cr.index for cr in plan] == [0]
         assert plan[0].selection is None
 
     def test_offset_contiguous_collapses_to_slice(self):
         """Region matching a contiguous mid-chunk run → selection=slice."""
         # chr1:5-6 covers positions 5,6 = locals [1, 2] of chunk 1.
-        plan = regions.build_chunk_plan(self._vcz(), regions="chr1:5-6")
+        plan = _build_chunk_plan(self._vcz(), regions="chr1:5-6")
         assert [cr.index for cr in plan] == [1]
         assert plan[0].selection == slice(1, 3)
 
@@ -428,7 +436,7 @@ class TestBuildChunkPlan:
         through the candidate-chunk scan and produces a mix of full
         chunks (None), contiguous (slice), and sparse (ndarray)
         selections per the normalise-local collapse."""
-        plan = regions.build_chunk_plan(
+        plan = _build_chunk_plan(
             self._vcz(), targets="chr1:4-5", targets_complement=True
         )
         # Positions 4 and 5 (globals 3,4) excluded → keep
@@ -468,7 +476,7 @@ class TestBuildChunkPlanProportionalChunks:
         root = self._vcz(
             {"variant_position": 6, "variant_contig": 6, "variant_length": 6}
         )
-        plan = regions.build_chunk_plan(root)
+        plan = _build_chunk_plan(root)
         assert [cr.index for cr in plan] == [0, 1, 2, 3]
         assert all(cr.selection is None for cr in plan)
 
@@ -477,7 +485,7 @@ class TestBuildChunkPlanProportionalChunks:
             {"variant_position": 6, "variant_contig": 6, "variant_length": 6}
         )
         # chr1:4-5 → globals 3,4 → logical chunk 1 (in min_chunk=3 units).
-        plan = regions.build_chunk_plan(root, regions="chr1:4-5")
+        plan = _build_chunk_plan(root, regions="chr1:4-5")
         assert [cr.index for cr in plan] == [1]
         assert plan[0].selection == slice(0, 2)
 
@@ -485,9 +493,7 @@ class TestBuildChunkPlanProportionalChunks:
         root = self._vcz(
             {"variant_position": 6, "variant_contig": 6, "variant_length": 6}
         )
-        plan = regions.build_chunk_plan(
-            root, targets="chr1:4-5", targets_complement=True
-        )
+        plan = _build_chunk_plan(root, targets="chr1:4-5", targets_complement=True)
         assert [cr.index for cr in plan] == [0, 1, 2, 3]
         assert plan[0].selection is None
         assert plan[1].selection == slice(2, 3)

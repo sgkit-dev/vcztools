@@ -467,7 +467,7 @@ def make_reader(
 
     if regions is not None or targets is not None:
         variant_chunk_plan = regions_mod.build_chunk_plan(
-            root,
+            reader,
             regions=regions,
             targets=targets,
             targets_complement=targets_complement,

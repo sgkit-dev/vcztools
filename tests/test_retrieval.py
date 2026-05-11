@@ -821,6 +821,13 @@ class TestVczReaderRegions:
             return np.array([], dtype=np.int32)
         return np.concatenate([c["variant_position"] for c in chunks])
 
+    def _build_chunk_plan(self, **kwargs):
+        """Run :func:`regions.build_chunk_plan` against a fresh reader
+        built from :meth:`_vcz`. Used by the rejection-path tests that
+        only need to reach the input validator."""
+        with VczReader(self._vcz()) as reader:
+            return regions_mod.build_chunk_plan(reader, **kwargs)
+
     def test_regions_string(self):
         reader = make_reader(self._vcz(), regions="chr1:3-5")
         nt.assert_array_equal(self._positions(reader), [3, 4, 5])
@@ -857,32 +864,32 @@ class TestVczReaderRegions:
 
     def test_regions_rejects_caret_prefix(self):
         with pytest.raises(ValueError, match="targets_complement=True"):
-            regions_mod.build_chunk_plan(self._vcz(), regions="^chr1:1-3")
+            self._build_chunk_plan(regions="^chr1:1-3")
 
     def test_targets_rejects_caret_prefix(self):
         with pytest.raises(ValueError, match="targets_complement=True"):
-            regions_mod.build_chunk_plan(self._vcz(), targets="^chr1:1-3")
+            self._build_chunk_plan(targets="^chr1:1-3")
 
     def test_regions_rejects_comma(self):
         with pytest.raises(ValueError, match=r"regions string .* contains ','"):
-            regions_mod.build_chunk_plan(self._vcz(), regions="chr1:1-3,chr1:5-7")
+            self._build_chunk_plan(regions="chr1:1-3,chr1:5-7")
 
     def test_targets_rejects_comma(self):
         with pytest.raises(ValueError, match=r"targets string .* contains ','"):
-            regions_mod.build_chunk_plan(self._vcz(), targets="chr1:1-3,chr1:5-7")
+            self._build_chunk_plan(targets="chr1:1-3,chr1:5-7")
 
     def test_regions_invalid_type(self):
         with pytest.raises(TypeError, match="regions must be"):
-            regions_mod.build_chunk_plan(self._vcz(), regions=42)
+            self._build_chunk_plan(regions=42)
 
     def test_targets_invalid_type(self):
         with pytest.raises(TypeError, match="targets must be"):
-            regions_mod.build_chunk_plan(self._vcz(), targets=42)
+            self._build_chunk_plan(targets=42)
 
     def test_regions_dataframe_missing_columns(self):
         df = pd.DataFrame({"contig": ["chr1"], "start": pd.array([1], dtype="Int64")})
         with pytest.raises(ValueError, match="missing required columns.*end"):
-            regions_mod.build_chunk_plan(self._vcz(), regions=df)
+            self._build_chunk_plan(regions=df)
 
     def test_flat_index_array_accepted(self):
         """``set_variants(np.ndarray)`` buckets indexes into a plan."""
@@ -1281,10 +1288,8 @@ class TestVariantChunksFilterPlusSamples:
         # Position 1234567 (where NA00001 but not NA00002/NA00003
         # matched FMT/DP>3) is DROPPED.
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_variants(
-            regions_mod.build_chunk_plan(fx_sample_vcz.group, regions="20:1230236-")
-        )
         reader.set_samples([1, 2])
+        reader.set_variants(regions_mod.build_chunk_plan(reader, regions="20:1230236-"))
         reader.set_variant_filter(
             BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>3"),
         )
@@ -1301,7 +1306,7 @@ class TestVariantChunksFilterPlusSamples:
         def build(view_semantics):
             reader = VczReader(root)
             reader.set_variants(
-                regions_mod.build_chunk_plan(root, regions="20:1230236-")
+                regions_mod.build_chunk_plan(reader, regions="20:1230236-")
             )
             if view_semantics:
                 reader.set_filter_samples(reader.non_null_sample_indices)
@@ -3147,7 +3152,7 @@ class TestProportionalChunkSizes:
         def _read_with_region(root):
             with retrieval_mod.VczReader(root) as r:
                 if region is not None:
-                    plan = regions_mod.build_chunk_plan(root, regions=region)
+                    plan = regions_mod.build_chunk_plan(r, regions=region)
                     r.set_variants(plan)
                 return list(
                     r.variant_chunks(fields=["variant_allele", "call_genotype"])

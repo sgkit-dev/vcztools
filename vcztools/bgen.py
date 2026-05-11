@@ -639,11 +639,37 @@ class BgenEncoder:
         return self._encode_variants(G, inputs)
 
     def _encode_variants(self, G, inputs):
-        # Sequential encode path. Phase 3 will add the parallel path.
-        out = bytearray(len(inputs) * self._bytes_per_variant)
-        for j, (varid_p, rsid_p, chrom_p, position, a1_p, a2_p, phased) in enumerate(
-            inputs
-        ):
+        num_variants = len(inputs)
+        bpv = self._bytes_per_variant
+        # Sequential threshold mirrors BedEncoder: encode in one go on
+        # the calling thread when the chunk is too small to benefit from
+        # fan-out, or when the encoder is single-threaded.
+        if self._encode_threads <= 1 or num_variants * bpv <= self._encode_block_bytes:
+            return self._encode_variant_range(G, inputs, 0, num_variants)
+
+        # Split along the variant axis. Each sub-block produces a
+        # contiguous byte slice that can be copied into the chunk-level
+        # output buffer at a deterministic offset.
+        block_variants = max(1, self._encode_block_bytes // bpv)
+        output = bytearray(num_variants * bpv)
+        future_to_start = {}
+        for start in range(0, num_variants, block_variants):
+            end = min(start + block_variants, num_variants)
+            future = self._executor.submit(
+                self._encode_variant_range, G, inputs, start, end
+            )
+            future_to_start[future] = (start, end)
+
+        for future in cf.as_completed(future_to_start):
+            start, end = future_to_start[future]
+            output[start * bpv : end * bpv] = future.result()
+        return bytes(output)
+
+    def _encode_variant_range(self, G, inputs, start, end):
+        bpv = self._bytes_per_variant
+        out = bytearray((end - start) * bpv)
+        for j in range(start, end):
+            varid_p, rsid_p, chrom_p, position, a1_p, a2_p, phased = inputs[j]
             block = _encode_variant_block_fixed_size(
                 varid_padded=varid_p,
                 rsid_padded=rsid_p,
@@ -658,7 +684,8 @@ class BgenEncoder:
                 genotypes=G[j],
                 phased=phased,
             )
-            out[j * self._bytes_per_variant : (j + 1) * self._bytes_per_variant] = block
+            local = j - start
+            out[local * bpv : (local + 1) * bpv] = block
         return bytes(out)
 
     def _teardown_iterator(self) -> None:

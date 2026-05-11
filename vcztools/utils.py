@@ -24,13 +24,15 @@ class ChunkRead:
     local indices for arbitrary fancy-index gather/permutation.
 
     On the variants axis, ``index`` is in units of *minimum* chunk
-    size (see :func:`compute_min_variants_chunk_size`). When every
-    variant-axis field shares one chunk size — the historical case —
-    that minimum equals every field's chunk size, so the index is the
-    Zarr block index for every variant-axis field. When variant-only
-    fields have larger chunks, the pipeline translates the logical
-    index to per-field block indexes (see
-    :class:`vcztools.retrieval.BlockReadTemplate`).
+    size (see :func:`compute_min_variants_chunk_size`) for the
+    canonical plan held on :class:`vcztools.retrieval.VczReader`.
+    When every variant-axis field shares one chunk size — the
+    historical case — that minimum equals every field's chunk size,
+    so the index is the Zarr block index for every variant-axis
+    field. When variant-only fields have larger chunks, the per-query
+    stream plan (see :func:`rebucket_to_stream_plan`) re-expresses
+    selections in stream-chunk units and the retrieval pipeline
+    translates them to per-field block indexes.
 
     ``num_selected`` is the number of entries this chunk contributes
     to its plan — equal to ``len(selection)`` for the ndarray form,
@@ -160,6 +162,127 @@ def validate_variants_axis_chunking(root, min_chunk: int) -> None:
                 f"{name}.chunks[0]={chunk_size} is not a positive multiple "
                 f"of min variants chunk size {min_chunk}"
             )
+
+
+def compute_stream_chunk_size(root, read_fields, min_chunk: int) -> int:
+    """Stream-chunk size for a per-query iteration: minimum
+    ``chunks[0]`` across ``read_fields``, falling back to ``min_chunk``
+    when ``read_fields`` is empty.
+
+    By the variants-axis chunking invariant
+    (:func:`validate_variants_axis_chunking`) the result is always a
+    positive integer multiple of ``min_chunk``. Every field in
+    ``read_fields`` has a chunk size that is a positive integer
+    multiple of this stream chunk size — so each (stream chunk, field)
+    pair maps to exactly one Zarr block on the variants axis, possibly
+    with an intra-block slice.
+    """
+    if len(read_fields) == 0:
+        return min_chunk
+    return min(int(root[f].chunks[0]) for f in read_fields)
+
+
+def rebucket_to_stream_plan(
+    canonical_plan: list["ChunkRead"],
+    min_chunk: int,
+    stream_chunk_size: int,
+) -> list["ChunkRead"]:
+    """Rebucket a min-chunk-indexed plan into stream-chunk units.
+
+    Merges consecutive :class:`ChunkRead` entries that fall in the
+    same stream chunk; per-chunk selections are rebased into
+    stream-chunk-local coordinates and run through
+    :func:`normalise_local_selection` to collapse contiguous ranges
+    back to ``slice`` or ``None``. Returns the input list unchanged
+    when ``stream_chunk_size == min_chunk``.
+
+    ``stream_chunk_size`` must be a positive integer multiple of
+    ``min_chunk`` (the variants-axis chunking invariant).
+    """
+    if stream_chunk_size <= 0 or stream_chunk_size % min_chunk != 0:
+        raise ValueError(
+            f"stream_chunk_size={stream_chunk_size} must be a positive "
+            f"multiple of min_chunk={min_chunk}"
+        )
+    if stream_chunk_size == min_chunk:
+        return canonical_plan
+
+    multiplier = stream_chunk_size // min_chunk
+    out: list[ChunkRead] = []
+    i = 0
+    n = len(canonical_plan)
+    while i < n:
+        stream_idx = int(canonical_plan[i].index) // multiplier
+        j = i
+        while j < n and int(canonical_plan[j].index) // multiplier == stream_idx:
+            j += 1
+        group = canonical_plan[i:j]
+        i = j
+        out.append(
+            _merge_canonical_group(
+                group, stream_idx, multiplier, min_chunk, stream_chunk_size
+            )
+        )
+    return out
+
+
+def _merge_canonical_group(
+    group: list["ChunkRead"],
+    stream_idx: int,
+    multiplier: int,
+    min_chunk: int,
+    stream_chunk_size: int,
+) -> "ChunkRead":
+    """Merge canonical entries that fall in one stream chunk."""
+    base = stream_idx * multiplier
+    # Fast path: every entry is a full min-chunk and the indices are
+    # contiguous from ``base``. The merged selection is exactly
+    # ``[0, num_selected)`` of the stream chunk, so we can skip the
+    # ndarray construction and emit ``None`` / ``slice(0, k)`` directly.
+    if all(e.selection is None for e in group) and int(group[0].index) == base:
+        contiguous = True
+        for k, entry in enumerate(group):
+            if int(entry.index) != base + k:
+                contiguous = False
+                break
+        if contiguous:
+            num_selected = sum(e.num_selected for e in group)
+            selection = (
+                None if num_selected == stream_chunk_size else slice(0, num_selected)
+            )
+            return ChunkRead(
+                index=stream_idx, num_selected=num_selected, selection=selection
+            )
+
+    parts = []
+    num_selected = 0
+    for entry in group:
+        intra_offset = (int(entry.index) % multiplier) * min_chunk
+        sel = entry.selection
+        if sel is None:
+            parts.append(
+                np.arange(
+                    intra_offset,
+                    intra_offset + entry.num_selected,
+                    dtype=np.int64,
+                )
+            )
+        elif isinstance(sel, slice):
+            start = sel.start if sel.start is not None else 0
+            stop = sel.stop if sel.stop is not None else min_chunk
+            parts.append(
+                np.arange(intra_offset + start, intra_offset + stop, dtype=np.int64)
+            )
+        else:
+            parts.append(np.asarray(sel, dtype=np.int64) + intra_offset)
+        num_selected += entry.num_selected
+
+    merged = parts[0] if len(parts) == 1 else np.concatenate(parts)
+    return ChunkRead(
+        index=stream_idx,
+        num_selected=num_selected,
+        selection=normalise_local_selection(merged, stream_chunk_size),
+    )
 
 
 def search(a, v):

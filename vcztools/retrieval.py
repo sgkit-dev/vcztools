@@ -1,14 +1,23 @@
 """VCZ reader: chunked-iteration entry points for VCF Zarr stores.
 
-The variants axis is iterated in *logical* chunks of size ``min_chunk``,
-where ``min_chunk`` is the chunk size of the ``call_*`` fields (by spec,
-the minimum across the variants axis). Variant-only fields may use a
-chunk size that is a positive integer multiple of ``min_chunk``; for
-those, one Zarr block spans multiple logical chunks and
-:class:`BlockReadTemplate` translates the logical chunk index to a
-``(field_block_index, intra_slice)`` pair.
-:class:`ReadaheadPipeline` keeps a per-block cache so consecutive
-logical chunks within one variant-only field block share a single IO.
+The variants axis is iterated in *stream* chunks, sized per query as
+the minimum ``chunks[0]`` across the read fields (or ``min_chunk`` —
+the ``call_*`` chunk size — when no read fields are involved). For a
+query touching ``call_*``, the stream chunk size equals ``min_chunk``;
+for queries touching only variant-only fields with larger chunks, the
+stream chunk equals that field's chunk size. The canonical
+``variant_chunk_plan`` on :class:`VczReader` stays in ``min_chunk``
+units; per query, :func:`vcztools.utils.rebucket_to_stream_plan`
+re-expresses it in stream-chunk units.
+
+:class:`StreamReader` drives the per-query iteration. Each unique Zarr
+block is submitted to the reader's thread pool exactly once: the
+reader walks ``stream_plan`` in order, derives the per-(field,
+sample-chunk) block records for the current chunk on the fly, submits
+any block whose ``block_key`` is not already live, and evicts blocks
+once the next stream chunk no longer references them. The per-chunk
+``CachedStreamChunk`` view assembler receives blocks that have already
+been intra-sliced to the stream chunk's variant rows.
 """
 
 import concurrent.futures as cf
@@ -164,414 +173,371 @@ class FieldInfo:
 _PSEUDO_QUERY_FIELDS = frozenset({"variant_index"})
 
 
-def _absolute_variant_indexes(
-    entry: utils.ChunkRead, variants_chunk_size: int
-) -> np.ndarray:
+def _absolute_variant_indexes(entry: utils.ChunkRead, chunk_size: int) -> np.ndarray:
     """Global variant indexes contributed by ``entry``.
 
     Maps each variant the chunk read selects to its store-wide variant
-    index. Used to materialise the ``variant_index`` pseudo-field in
-    :meth:`VczReader.variant_chunks`.
+    index. ``chunk_size`` is the unit ``entry.index`` is measured in —
+    ``min_chunk`` for canonical plan entries, ``stream_chunk_size`` for
+    stream-plan entries. Used to materialise the ``variant_index``
+    pseudo-field in :meth:`VczReader.variant_chunks`.
     """
-    chunk_offset = entry.index * variants_chunk_size
+    chunk_offset = entry.index * chunk_size
     sel = entry.selection
     if sel is None:
         local = np.arange(entry.num_selected, dtype=np.int64)
     elif isinstance(sel, slice):
-        local = np.arange(*sel.indices(variants_chunk_size), dtype=np.int64)
+        local = np.arange(*sel.indices(chunk_size), dtype=np.int64)
     else:
         local = np.asarray(sel, dtype=np.int64)
     return chunk_offset + local
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class BlockReadTemplate:
-    """Variant-chunk-independent read pattern for one block.
+class FieldSpec:
+    """Per-query, per-field constants for stream-reader block derivation.
+
+    Built once at :class:`StreamReader` init from each entry in the
+    read-fields list. For non-``call_*`` fields one spec covers all
+    stream chunks; for ``call_*`` fields the same spec covers every
+    sample chunk (the sample chunk index is a runtime parameter of
+    :meth:`StreamReader._derive_blocks`).
+
+    ``multiplier`` is ``arr.chunks[0] // stream_chunk_size`` (always
+    ``1`` for ``call_*``, since ``stream_chunk_size`` is the minimum
+    over read fields and ``call_*`` defines that minimum; can be
+    ``>1`` for variant-only fields with bigger chunks). When
+    ``multiplier > 1``, one Zarr block spans ``multiplier`` consecutive
+    stream chunks and gets intra-sliced to the current chunk's rows.
+
+    ``block_size_estimate`` is ``dtype.itemsize * prod(arr.chunks)`` —
+    the full uncompressed block-shape footprint, used for the readahead
+    byte budget. Partial-edge blocks (last variant block, last sample
+    chunk) are smaller in practice and the budget over-estimates them.
+    Variable-length string fields (object / StringDType) report only
+    the cell-metadata size here, *not* the content bytes; the budget
+    under-counts those.
 
     ``block_index_suffix`` is the part of the Zarr ``block_index``
-    *after* the variants-axis slot — empty tuple for a 1-D
-    variant-axis field, ``(slice(None),) * (ndim - 1)`` for higher-D
-    non-call fields, ``(sci, slice(None) * (ndim - 2))`` for ``call_*``.
-
-    ``multiplier`` is ``arr.chunks[0] // min_chunk`` (always
-    ``1`` for ``call_*``; can be ``>1`` for variant-only fields). When
-    ``multiplier > 1``, one Zarr block spans ``multiplier`` consecutive
-    logical chunks and must be sliced on the variants axis to extract
-    the rows for the current logical chunk.
+    *after* the variants and (for ``call_*``) sample-chunk slots —
+    ``(slice(None),) * (ndim - 1)`` for non-``call_*`` fields and
+    ``(slice(None),) * (ndim - 2)`` for ``call_*`` fields.
     """
 
-    key: tuple
+    field: str
     arr: object
-    block_index_suffix: tuple
     multiplier: int
-
-    def block_read_for(
-        self, logical_chunk_index: int, min_chunk: int
-    ) -> tuple[tuple, slice]:
-        """Resolve a logical chunk to ``(block_index, intra_slice)``.
-
-        ``block_index`` is the Zarr ``arr.blocks[block_index]`` tuple;
-        ``intra_slice`` extracts the rows for ``logical_chunk_index``
-        from the returned block (``slice(0, min_chunk)`` when
-        ``multiplier == 1`` — the block IS the logical chunk).
-        """
-        field_block_idx = logical_chunk_index // self.multiplier
-        intra_start = (logical_chunk_index % self.multiplier) * min_chunk
-        block_index = (field_block_idx,) + self.block_index_suffix
-        return block_index, slice(intra_start, intra_start + min_chunk)
+    is_call: bool
+    block_size_estimate: int
+    block_index_suffix: tuple
 
 
-def create_chunk_read_list(
-    root,
-    sample_chunk_plan: "samples_mod.SampleChunkPlan",
-    fields,
-    *,
-    min_chunk: int,
-) -> list[BlockReadTemplate]:
-    """Resolve ``fields`` to a list of :class:`BlockReadTemplate`
-    once per query, before any variant chunk is visited.
+def _make_field_specs(root, read_fields, stream_chunk_size: int) -> list[FieldSpec]:
+    """Resolve ``read_fields`` to one :class:`FieldSpec` per field.
 
-    Each template carries the variant-chunk-independent parts of one
-    block read — the cache key, the resolved Zarr array, the suffix of
-    ``block_index`` that follows the variants-axis slot, and the field's
-    chunk-multiplier over ``min_chunk``.
-    :func:`update_chunk_read_list` substitutes a specific logical chunk
-    index to produce executor-ready ``(key, arr, block_index,
-    intra_slice)`` tuples.
-
-    For a ``call_*`` field the template list fans out one entry per
-    sample chunk in ``sample_chunk_plan.chunk_reads``; for any other
-    field exactly one entry is produced.
-
-    Every field must be variant-axis. Static (no-variants-axis) fields
-    are handled by the reader's static-field cache, not the pipeline.
+    Every field must be variants-axis. Static (no-variants-axis) fields
+    are handled by the reader's static-field cache and never reach the
+    stream reader.
     """
-    templates = []
-    for field in fields:
+    specs = []
+    for field in read_fields:
         arr = root[field]
         assert utils.has_variants_axis(arr), (
-            f"non-variants-axis field in pipeline: {field}"
+            f"non-variants-axis field in stream reader: {field}"
         )
-        multiplier = int(arr.chunks[0]) // min_chunk
-        if not field.startswith("call_"):
-            suffix = (slice(None),) * (arr.ndim - 1)
-            templates.append(
-                BlockReadTemplate(
-                    key=(field,),
-                    arr=arr,
-                    block_index_suffix=suffix,
-                    multiplier=multiplier,
-                )
-            )
+        chunks = arr.chunks
+        multiplier = int(chunks[0]) // stream_chunk_size
+        is_call = field.startswith("call_")
+        block_size = int(arr.dtype.itemsize)
+        for d in chunks:
+            block_size *= int(d)
+        if is_call:
+            suffix = (slice(None),) * (arr.ndim - 2)
         else:
-            for cr in sample_chunk_plan.chunk_reads:
-                suffix = (cr.index,) + (slice(None),) * (arr.ndim - 2)
-                templates.append(
-                    BlockReadTemplate(
-                        key=(field, cr.index),
-                        arr=arr,
-                        block_index_suffix=suffix,
-                        multiplier=multiplier,
-                    )
-                )
-    return templates
+            suffix = (slice(None),) * (arr.ndim - 1)
+        specs.append(
+            FieldSpec(
+                field=field,
+                arr=arr,
+                multiplier=multiplier,
+                is_call=is_call,
+                block_size_estimate=block_size,
+                block_index_suffix=suffix,
+            )
+        )
+    return specs
 
 
-def update_chunk_read_list(
-    templates: list[BlockReadTemplate],
-    logical_chunk_index: int,
-    *,
-    min_chunk: int,
-) -> list[tuple]:
-    """Substitute ``logical_chunk_index`` into each template, returning
-    the ``[(key, arr, block_index, intra_slice), ...]`` list that
-    :class:`ReadaheadPipeline` submits to the thread pool. The
-    template list itself is unchanged.
+@dataclasses.dataclass(frozen=True, slots=True)
+class _BlockRecord:
+    """One Zarr block needed by a stream chunk.
+
+    Transient — built fresh each time :meth:`StreamReader._derive_blocks`
+    runs (memoised per stream-chunk index in ``StreamReader._derived``).
+    ``block_key`` deduplicates across stream chunks; ``dest_key`` is
+    the slot in :class:`CachedStreamChunk`'s blocks dict.
     """
-    reads = []
-    for t in templates:
-        block_index, intra_slice = t.block_read_for(logical_chunk_index, min_chunk)
-        reads.append((t.key, t.arr, block_index, intra_slice))
-    return reads
+
+    block_key: tuple
+    dest_key: tuple
+    arr: object
+    block_index: tuple
+    intra_slice: slice
+    size_estimate: int
 
 
-class ReadaheadPipeline:
-    """Cross-chunk readahead controller for ``VczReader.variant_chunks``.
+class StreamReader:
+    """Cross-stream-chunk readahead controller for
+    ``VczReader.variant_chunks``.
 
-    Resolves the per-field read pattern once at init via
-    :func:`create_chunk_read_list`, then for each entry in
-    ``variant_chunk_plan``: substitute the variant chunk index via
-    :func:`update_chunk_read_list`, submit the resulting block reads
-    to the reader-owned thread pool, collect results into a
-    ``blocks`` dict, then construct a :class:`CachedVariantChunk`
-    over those prefetched blocks and yield it. Cross-chunk readahead
-    overlaps later chunks' reads with the current chunk's processing
-    in the consumer.
+    Walks ``stream_plan`` in order; for each stream chunk derives the
+    set of unique Zarr blocks needed (one per (field, sample-chunk)
+    pair) on the fly. Each unique block — identified by its
+    ``block_key`` — is submitted to the reader-owned thread pool
+    exactly once: blocks shared between consecutive stream chunks
+    (variant-only fields with ``multiplier > 1``) are reused, never
+    re-submitted. The consumer waits per-stream-chunk on the specific
+    futures it needs (no ``as_completed`` loop), so a shared block
+    contributes its bytes to ``last_chunk_bytes`` only the first time
+    it's read.
+
+    Memory bookkeeping is rolling:
+
+    - ``_live`` maps ``block_key`` to ``(Future, size_estimate)``.
+    - ``_in_flight_bytes`` is the running sum of live size_estimates.
+    - After each yield, blocks whose ``block_key`` is in the current
+      stream chunk's records but not in the next stream chunk's
+      records are dropped from ``_live`` (their last reference is
+      this chunk). For one field, ``stream_plan`` positions that
+      reference variant-block ``K`` form a contiguous range, so a
+      single peek at the next stream chunk's records is enough to
+      decide eviction.
 
     The executor is supplied by the caller (typically
-    :class:`VczReader`) and lives across pipelines. Multiple pipelines
-    on the same reader — for example the BedEncoder shared-reader
-    fanout — submit to a single shared pool. When iteration is
-    abandoned mid-stream (consumer breaks early, generator closed,
-    exception propagates), the pipeline cancels its own pending
-    futures only; the executor itself outlives the pipeline.
+    :class:`VczReader`) and lives across stream readers. When iteration
+    is abandoned mid-stream (consumer breaks early, generator closed,
+    exception propagates), the reader cancels its own pending futures;
+    the executor itself outlives the reader.
 
-    The window is sized by a byte budget rather than a chunk count:
-    one variant-chunk prefetch can vary from a few MB (single
-    sample-chunk read for a partial subset) to >1 GB (every
-    sample chunk for a wide call_* field), so a count-based depth
-    would either starve fan-out or blow RSS.
-
-    Per-chunk byte cost is *measured*, not predicted: the first chunk
-    is scheduled solo, and once its prefetched blocks land we sum
-    their :func:`vcztools.utils.array_memory_bytes` and use that as
-    the window-sizing estimate for every later chunk. The estimate is
-    approximate —
-
-    - The bootstrap chunk runs even when its prefetch alone exceeds
-      ``readahead_bytes`` (the alternative is to never make progress).
-    - Chunks can drift in content size across the iteration, especially
-      when variable-length string fields are in the prefetch set, so
-      later chunks may over- or under-shoot the budget.
-    - When variant-only fields use a chunk size larger than ``min_chunk``
-      (multiplier > 1), one Zarr block spans multiple logical chunks.
-      The pipeline keeps a per-block cache (``_block_futures``) so that
-      consecutive logical chunks within one field block share the read.
-      The bootstrap measurement counts only the *new* IOs scheduled for
-      a chunk; subsequent chunks that hit the cache report their
-      reused blocks but no fresh IO, so ``last_chunk_read_seconds``
-      reflects only the wait for newly-scheduled IOs.
-
-    ``readahead_bytes=0`` pins pipeline depth at 1: the consumer's
-    current chunk plus exactly one prefetched ahead. The pipeline
-    never goes below depth 1 (the consumer would have to wait for
-    every chunk's I/O on the request thread), so this is the
-    smallest readahead the caller can ask for.
+    ``readahead_bytes=0`` pins depth at 1: the consumer's current
+    stream chunk plus exactly one prefetched ahead. The reader never
+    goes below depth 1 (otherwise the consumer would wait for every
+    chunk's I/O on the request thread).
     """
 
     def __init__(
         self,
         root,
-        variant_chunk_plan: list[utils.ChunkRead],
+        stream_plan: list[utils.ChunkRead],
         sample_chunk_plan: "samples_mod.SampleChunkPlan",
         output_columns: np.ndarray | None,
         read_fields,
         *,
         readahead_bytes: int,
         executor: cf.ThreadPoolExecutor,
-        min_chunk: int,
+        stream_chunk_size: int,
     ):
         self.root = root
-        self._variant_chunk_plan_iter = iter(variant_chunk_plan)
+        self._stream_plan = stream_plan
         self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
-        self._min_chunk = min_chunk
-        self._read_templates = create_chunk_read_list(
-            root, sample_chunk_plan, read_fields, min_chunk=min_chunk
-        )
+        self._executor = executor
         self._readahead_bytes = readahead_bytes
-        # Set on the first chunk's completion in __iter__.
-        self._per_chunk_bytes: int | None = None
+        self._stream_chunk_size = stream_chunk_size
+        self._field_specs = _make_field_specs(root, read_fields, stream_chunk_size)
+        # block_key -> (Future, size_estimate).
+        self._live: dict[tuple, tuple[cf.Future, int]] = {}
+        self._in_flight_bytes = 0
+        self._submit_cursor = 0
+        # Memo of derived block records per stream-chunk index. Populated
+        # by _submit_more, popped by the yield loop after eviction is
+        # decided. Bounded by depth (submit_cursor - yield_idx + 1).
+        self._derived: dict[int, list[_BlockRecord]] = {}
+        # Block-keys whose actual bytes have been counted into a
+        # last_chunk_bytes report. Used to attribute per-chunk new-IO
+        # bytes correctly when a block is shared across stream chunks.
+        # Evicted alongside ``_live`` so growth is bounded by depth.
+        self._billed: set[tuple] = set()
         # Wall-clock seconds spent on the most recent chunk's block reads;
         # consumed by VczReader.variant_chunks to attribute per-chunk time
         # into "read" vs. "assemble".
         self.last_chunk_read_seconds: float | None = None
         # Sum of utils.array_memory_bytes() over the most recent chunk's
-        # decompressed blocks; consumed by VczReader.variant_chunks to
-        # accumulate retrieval-side throughput stats.
+        # *newly resolved* blocks; consumed by VczReader.variant_chunks
+        # to accumulate retrieval-side throughput stats.
         self.last_chunk_bytes: int | None = None
-        self._executor = executor
-        # _block_futures: cache_key -> [Future, refcount]. cache_key is
-        # ``(template.key, field_block_idx)`` and uniquely identifies a
-        # Zarr block read; ``template.key`` pins the template (and thus
-        # the constant ``block_index_suffix``), so the variants-axis
-        # block index alone disambiguates the remaining reads. (The full
-        # ``block_index`` is unsuitable as a dict key because its suffix
-        # contains ``slice`` objects, which are unhashable before
-        # Python 3.12.) refcount is the number of in-flight chunks that
-        # still need this block; entries are evicted when refcount drops
-        # to zero. Sharing across in-flight chunks is what saves IO when
-        # multiple logical chunks reference one variant-only field block.
-        self._block_futures: dict[tuple, list] = {}
-        # _in_flight: list of (variant_chunk, refs) where refs is a list
-        # of (cache_key, intra_slice, dest_key, is_new). is_new flags
-        # whether this chunk's _schedule_one initiated the IO (i.e. the
-        # block was not already in the cache); used for byte-budget
-        # accounting so cached chunks don't double-count.
-        self._in_flight: list = []
-        # Peak ``len(_in_flight)`` observed across the iteration; the
+        # Peak ``len(_live)`` observed across the iteration; the
         # consumer reads it after iteration to assess how effective
         # the readahead window was at staying ahead of demand.
         self.max_in_flight = 0
         logger.debug(
-            f"ReadaheadPipeline init: {len(read_fields)} read_fields, "
-            f"{len(self._read_templates)} templates, "
+            f"StreamReader init: {len(read_fields)} read_fields, "
+            f"stream_chunk_size={stream_chunk_size}, "
+            f"stream_plan_len={len(stream_plan)}, "
             f"readahead_bytes={_fmt_bytes(readahead_bytes)}"
         )
 
-    def _schedule_one(self) -> bool:
-        """Plan the next variant chunk's reads and submit them to the
-        thread pool. Reuses futures already in the block cache when a
-        prior chunk has scheduled the same field block. Returns False
-        once the plan is exhausted."""
-        try:
-            variant_chunk = next(self._variant_chunk_plan_iter)
-        except StopIteration:
-            return False
-        reads = update_chunk_read_list(
-            self._read_templates, variant_chunk.index, min_chunk=self._min_chunk
-        )
-        refs = []
-        new_count = 0
-        for dest_key, arr, block_index, intra_slice in reads:
-            cache_key = (dest_key, block_index[0])
-            entry = self._block_futures.get(cache_key)
-            is_new = entry is None
-            if is_new:
-                fut = self._executor.submit(_read_block, arr, block_index)
-                entry = [fut, 0]
-                self._block_futures[cache_key] = entry
-                new_count += 1
-            entry[1] += 1
-            refs.append((cache_key, intra_slice, dest_key, is_new))
-        self._in_flight.append((variant_chunk, refs))
-        if len(self._in_flight) > self.max_in_flight:
-            self.max_in_flight = len(self._in_flight)
-        logger.log(
-            TRACE,
-            f"schedule chunk {variant_chunk.index}: {new_count} new blocks "
-            f"submitted ({len(refs) - new_count} reused from cache)",
-        )
-        return True
+    def _derive_blocks(self, sc: utils.ChunkRead) -> list[_BlockRecord]:
+        """Build the per-(field, sample-chunk) block records for one
+        stream chunk. The derivation is field-spec driven and stateless:
+        the same ``sc`` produces the same list every time, modulo
+        identity of the returned objects."""
+        records: list[_BlockRecord] = []
+        stream_chunk_size = self._stream_chunk_size
+        sc_index = int(sc.index)
+        for spec in self._field_specs:
+            multiplier = spec.multiplier
+            variant_block_idx = sc_index // multiplier
+            intra_start = (sc_index % multiplier) * stream_chunk_size
+            intra_slice = slice(intra_start, intra_start + stream_chunk_size)
+            if spec.is_call:
+                for cr in self._sample_chunk_plan.chunk_reads:
+                    dest_key = (spec.field, cr.index)
+                    block_index = (
+                        variant_block_idx,
+                        cr.index,
+                    ) + spec.block_index_suffix
+                    records.append(
+                        _BlockRecord(
+                            block_key=(dest_key, variant_block_idx),
+                            dest_key=dest_key,
+                            arr=spec.arr,
+                            block_index=block_index,
+                            intra_slice=intra_slice,
+                            size_estimate=spec.block_size_estimate,
+                        )
+                    )
+            else:
+                dest_key = (spec.field,)
+                block_index = (variant_block_idx,) + spec.block_index_suffix
+                records.append(
+                    _BlockRecord(
+                        block_key=(dest_key, variant_block_idx),
+                        dest_key=dest_key,
+                        arr=spec.arr,
+                        block_index=block_index,
+                        intra_slice=intra_slice,
+                        size_estimate=spec.block_size_estimate,
+                    )
+                )
+        return records
 
-    def _refill(self) -> None:
-        # Until the first chunk has been measured we can't size the
-        # window — schedule exactly one chunk and wait for its reads
-        # to land. Subsequent refills fall through to the budget loop.
-        if self._per_chunk_bytes is None:
-            if len(self._in_flight) == 0:
-                self._schedule_one()
-            return
-        # Always keep at least one chunk in flight; otherwise honour the
-        # byte budget (use an effective per-chunk cost of at least 1 to
-        # avoid an infinite loop when read_fields is empty).
-        per_chunk = max(1, self._per_chunk_bytes)
-        while len(self._in_flight) == 0 or (
-            len(self._in_flight) * per_chunk < self._readahead_bytes
-        ):
-            if not self._schedule_one():
+    def _get_derived(self, sc_idx: int) -> list[_BlockRecord]:
+        cached = self._derived.get(sc_idx)
+        if cached is not None:
+            return cached
+        records = self._derive_blocks(self._stream_plan[sc_idx])
+        self._derived[sc_idx] = records
+        return records
+
+    def _submit_more(self) -> None:
+        """Submit unique blocks for upcoming stream chunks under the
+        byte budget. Always submits at least one stream chunk's blocks
+        when nothing is in flight (otherwise we'd never progress)."""
+        while self._submit_cursor < len(self._stream_plan):
+            sc_idx = self._submit_cursor
+            records = self._get_derived(sc_idx)
+            new_records = [r for r in records if r.block_key not in self._live]
+            new_bytes = sum(r.size_estimate for r in new_records)
+            if (
+                self._live
+                and new_bytes > 0
+                and self._in_flight_bytes + new_bytes > self._readahead_bytes
+            ):
                 return
+            for rec in new_records:
+                fut = self._executor.submit(_read_block, rec.arr, rec.block_index)
+                self._live[rec.block_key] = (fut, rec.size_estimate)
+                self._in_flight_bytes += rec.size_estimate
+            if len(self._live) > self.max_in_flight:
+                self.max_in_flight = len(self._live)
+            self._submit_cursor += 1
+            logger.log(
+                TRACE,
+                f"submitted stream chunk {sc_idx}: "
+                f"{len(new_records)} new blocks "
+                f"({len(records) - len(new_records)} already live)",
+            )
 
     def __iter__(self):
         try:
-            self._refill()
-            while len(self._in_flight) > 0:
-                variant_chunk, refs = self._in_flight.pop(0)
-                future_to_data = {
-                    self._block_futures[ck][0]: (ck, intra_slice, dest_key, is_new)
-                    for ck, intra_slice, dest_key, is_new in refs
-                }
+            self._submit_more()
+            for sc_idx in range(len(self._stream_plan)):
+                records = self._get_derived(sc_idx)
+                read_start = time.perf_counter()
                 blocks: dict[tuple, np.ndarray] = {}
                 chunk_bytes = 0
-                read_start = time.perf_counter()
-                for fut in cf.as_completed(future_to_data):
-                    _ck, intra_slice, dest_key, is_new = future_to_data[fut]
-                    block = fut.result()
-                    if is_new:
-                        # Only count IO bytes paid for by this chunk; cached
-                        # blocks were already accounted for when first scheduled.
-                        chunk_bytes += utils.array_memory_bytes(block)
-                    blocks[dest_key] = block[intra_slice]
+                for rec in records:
+                    fut, _ = self._live[rec.block_key]
+                    raw = fut.result()
+                    if rec.block_key not in self._billed:
+                        self._billed.add(rec.block_key)
+                        chunk_bytes += utils.array_memory_bytes(raw)
+                    blocks[rec.dest_key] = raw[rec.intra_slice]
                 read_seconds = time.perf_counter() - read_start
                 self.last_chunk_read_seconds = read_seconds
                 self.last_chunk_bytes = chunk_bytes
-                if self._per_chunk_bytes is None:
-                    self._per_chunk_bytes = chunk_bytes
-                    if self._readahead_bytes > 0 and chunk_bytes > 0:
-                        window_chunks = max(
-                            1, self._readahead_bytes // max(1, chunk_bytes)
-                        )
-                    else:
-                        window_chunks = 1
-                    logger.info(
-                        f"Per-chunk read size: {_fmt_bytes(chunk_bytes)} "
-                        f"(chunk {variant_chunk.index}); window will hold "
-                        f"~{window_chunks} chunks under budget "
-                        f"{_fmt_bytes(self._readahead_bytes)}"
-                    )
-                    if (
-                        self._readahead_bytes > 0
-                        and chunk_bytes > self._readahead_bytes / 2
-                    ):
-                        logger.warning(
-                            f"Readahead budget is single-chunk-bound: "
-                            f"per-chunk {_fmt_bytes(chunk_bytes)} > "
-                            f"half of {_fmt_bytes(self._readahead_bytes)}; "
-                            f"the prefetch window will be capped at ~1 "
-                            f"in flight regardless of worker count. "
-                            f"Increase readahead_bytes to widen the window."
-                        )
+                stream_chunk = self._stream_plan[sc_idx]
                 logger.debug(
-                    f"chunk {variant_chunk.index} read complete in "
+                    f"stream chunk {stream_chunk.index} read complete in "
                     f"{read_seconds:.2f}s ({len(blocks)} blocks, "
                     f"{_fmt_bytes(chunk_bytes)})"
                 )
-                yield CachedVariantChunk(
+                yield CachedStreamChunk(
                     self.root,
-                    variant_chunk,
+                    stream_chunk,
                     sample_chunk_plan=self._sample_chunk_plan,
                     output_columns=self._output_columns,
                     blocks=blocks,
+                    stream_chunk_size=self._stream_chunk_size,
                 )
-                # Refill BEFORE releasing this chunk's cache holds so
-                # the next chunks' _schedule_one can observe the still-
-                # alive entries and bump their refcounts. Without this
-                # ordering, the bootstrap chunk would evict its blocks
-                # before any later chunk had a chance to share them.
-                self._refill()
-                # Decrement refcounts for the cache entries this chunk
-                # used. A block that drops to refcount=0 is no longer
-                # needed by any in-flight chunk and is evicted; the
-                # underlying ndarray may still be alive via the views
-                # in CachedVariantChunk until the consumer drops it.
-                for ck, _intra, _dest, _is_new in refs:
-                    entry = self._block_futures[ck]
-                    entry[1] -= 1
-                    if entry[1] == 0:
-                        del self._block_futures[ck]
+                current_keys = {rec.block_key for rec in records}
+                if sc_idx + 1 < len(self._stream_plan):
+                    next_keys = {rec.block_key for rec in self._get_derived(sc_idx + 1)}
+                else:
+                    next_keys = set()
+                self._derived.pop(sc_idx, None)
+                for key in current_keys - next_keys:
+                    _, size = self._live.pop(key)
+                    self._in_flight_bytes -= size
+                    self._billed.discard(key)
+                self._submit_more()
         finally:
             cancelled = 0
-            for entry in self._block_futures.values():
-                fut = entry[0]
+            for fut, _ in self._live.values():
                 if fut.cancel():
                     cancelled += 1
             if cancelled > 0:
                 logger.debug(f"cancelled {cancelled} pending futures")
 
 
-class CachedVariantChunk:
-    """View assembler over prefetched blocks for one variant chunk visit.
+class CachedStreamChunk:
+    """View assembler over prefetched, intra-sliced blocks for one
+    stream chunk visit.
 
-    Constructed by :class:`ReadaheadPipeline` once its block reads have
-    completed; performs no I/O itself. The constructor takes:
+    Constructed by :class:`StreamReader` once its block reads have
+    completed and been intra-sliced to the stream chunk's variant
+    rows; performs no I/O itself.
 
-    - ``blocks`` — ``{key: ndarray}`` of prefetched Zarr blocks keyed by
-      ``(field,)`` for variants-axis non-``call_*`` reads and
-      ``(field, sci)`` for one ``call_*`` sample-chunk read. Keys are
-      assigned by :func:`create_chunk_read_list`. Static fields (no
-      variants axis) are not handled here — they live in the reader's
-      static-field cache and are seeded directly into the per-chunk
-      output by :meth:`VczReader.variant_chunks`.
-    - ``sample_chunk_plan`` — the sample chunks the prefetch covers for
-      every ``call_*`` field. In subset-mode this is the subset plan;
-      in view-mode it is the non-null-samples plan. An empty plan
-      (no ``chunk_reads``) is valid and produces zero-sample-column
-      arrays without any prefetched ``call_*`` blocks. Non-``call_*``
-      fields ignore it.
-    - ``output_columns`` — indices into the read-plan axis that produce
-      the subset axis. ``None`` when the read plan is already the
-      subset axis (subset-mode) — :meth:`output_view` returns the
+    Constructor inputs:
+
+    - ``blocks`` — ``{dest_key: ndarray}`` keyed by ``(field,)`` for
+      variants-axis non-``call_*`` reads and ``(field, sci)`` for one
+      ``call_*`` sample-chunk read. Each ndarray has already been
+      sliced to the stream chunk's variant rows; the caller does not
+      apply an additional intra-slice.
+    - ``sample_chunk_plan`` — the sample chunks the prefetch covers
+      for every ``call_*`` field. In subset-mode this is the subset
+      plan; in view-mode it is the non-null-samples plan. An empty
+      plan (no ``chunk_reads``) is valid and produces zero-sample-
+      column arrays without any prefetched ``call_*`` blocks.
+      Non-``call_*`` fields ignore it.
+    - ``output_columns`` — indices into the read-plan axis that
+      produce the subset axis. ``None`` when the read plan is already
+      the subset axis (subset-mode); :meth:`output_view` returns the
       assembled read untouched.
+    - ``stream_chunk_size`` — used by :meth:`_empty_call_array` when
+      the variant chunk's selection is ``None`` (raw block).
 
     Methods:
 
@@ -592,12 +558,14 @@ class CachedVariantChunk:
         sample_chunk_plan: samples_mod.SampleChunkPlan,
         output_columns: np.ndarray | None,
         blocks: dict[tuple, np.ndarray],
+        stream_chunk_size: int,
     ):
         self.root = root
         self.variant_chunk = variant_chunk
         self._sample_chunk_plan = sample_chunk_plan
         self._output_columns = output_columns
         self._blocks = blocks
+        self._stream_chunk_size = stream_chunk_size
         # Assembled read-axis arrays keyed by field.
         self._views: dict[str, np.ndarray] = {}
 
@@ -627,21 +595,20 @@ class CachedVariantChunk:
         return data[:, self._output_columns]
 
     def _materialize(self, field: str) -> np.ndarray:
-        arr = self.root[field]
         if field.startswith("call_"):
-            return self._assemble_call(field, arr)
+            return self._assemble_call(field)
         return self._slice_variants(self._blocks[(field,)])
 
-    def _slice_variants(self, block):
+    def _slice_variants(self, data):
         sel = self.variant_chunk.selection
         if sel is None:
-            return block
-        return block[sel]
+            return data
+        return data[sel]
 
-    def _assemble_call(self, field: str, arr) -> np.ndarray:
+    def _assemble_call(self, field: str) -> np.ndarray:
         plan = self._sample_chunk_plan
         if len(plan.chunk_reads) == 0:
-            return self._empty_call_array(arr)
+            return self._empty_call_array(field)
         parts = []
         for cr in plan.chunk_reads:
             raw = self._blocks[(field, cr.index)]
@@ -672,16 +639,16 @@ class CachedVariantChunk:
             data = data[:, plan.permutation]
         return data
 
-    def _empty_call_array(self, arr) -> np.ndarray:
+    def _empty_call_array(self, field: str) -> np.ndarray:
         """Zero-sample-column array for a call_* field, without I/O.
-        Used when the sample chunk plan is empty (e.g. set_samples([]))."""
+        Used when the sample chunk plan is empty (e.g. ``set_samples([])``)."""
+        arr = self.root[field]
         sel = self.variant_chunk.selection
-        if sel is not None:
-            n_variants = int(sel.size)
+        if sel is None:
+            chunk_start = self.variant_chunk.index * self._stream_chunk_size
+            n_variants = min(self._stream_chunk_size, int(arr.shape[0]) - chunk_start)
         else:
-            min_chunk = int(arr.chunks[0])
-            chunk_start = self.variant_chunk.index * min_chunk
-            n_variants = min(min_chunk, int(arr.shape[0]) - chunk_start)
+            n_variants = int(self.variant_chunk.num_selected)
         return np.empty((n_variants, 0) + tuple(arr.shape[2:]), dtype=arr.dtype)
 
 
@@ -753,10 +720,10 @@ class VczReader:
     iteration.
 
     The reader owns a single :class:`concurrent.futures.ThreadPoolExecutor`
-    that every :class:`ReadaheadPipeline` it spawns submits work to.
+    that every :class:`StreamReader` it spawns submits work to.
     Use as a context manager (``with VczReader(root) as reader:``) so
     the pool is torn down deterministically on exit. Multiple
-    pipelines (e.g. several :class:`vcztools.plink.BedEncoder`
+    stream readers (e.g. several :class:`vcztools.plink.BedEncoder`
     instances driven concurrently against the same reader, or
     repeated ``variant_chunks()`` calls) share the pool — submission
     is thread-safe at the executor level.
@@ -1016,23 +983,18 @@ class VczReader:
                 "materialise_variant_filter; iterate variant_chunks() "
                 "to resolve them, or supply a variant-scope filter."
             )
-        chunk_size = self.variants_chunk_size
-        plan = []
-        surviving_total = 0
+        surviving = []
         for chunk_data in self.variant_chunks(fields=["variant_index"]):
-            abs_idx = chunk_data["variant_index"]
-            chunk_idx = int(abs_idx[0]) // chunk_size
-            local_sel = abs_idx - chunk_idx * chunk_size
-            plan.append(
-                utils.ChunkRead(
-                    index=chunk_idx,
-                    num_selected=int(abs_idx.size),
-                    selection=utils.normalise_local_selection(local_sel, chunk_size),
-                )
-            )
-            surviving_total += int(abs_idx.size)
+            surviving.append(chunk_data["variant_index"])
+        if len(surviving) == 0:
+            indexes = np.empty(0, dtype=np.int64)
+        else:
+            indexes = np.concatenate(surviving)
+        plan = regions_mod.chunk_plan_from_indexes(
+            indexes, min_chunk=self.variants_chunk_size
+        )
         logger.info(
-            f"materialise_variant_filter: {surviving_total} variants survive "
+            f"materialise_variant_filter: {int(indexes.size)} variants survive "
             f"({len(plan)} chunks)"
         )
         self.set_variant_filter(None)
@@ -1237,18 +1199,28 @@ class VczReader:
 
         The per-chunk flow:
 
-        1. Iterate ``variant_chunk_plan[start:]``; each entry's
-           ``selection`` pre-slices the chunk's variant axis.
-        2. Construct a :class:`CachedVariantChunk` scoped to this variant
-           chunk. It owns the raw-block cache and the
-           subset-vs-real-axis decision.
-        3. Evaluate the filter against ``CachedVariantChunk.filter_view`` for
-           each referenced field. Collapse a 2-D sample-scope mask
+        1. Rebucket the canonical (``min_chunk``-unit) variant chunk
+           plan into stream chunks sized by the minimum chunk size
+           among the read fields (see
+           :func:`vcztools.utils.compute_stream_chunk_size` /
+           :func:`vcztools.utils.rebucket_to_stream_plan`). Iterate
+           ``stream_plan[start:]``; each entry's ``selection`` pre-
+           slices the chunk's variant axis.
+        2. Construct a :class:`CachedStreamChunk` scoped to this stream
+           chunk over the prefetched, intra-sliced blocks.
+        3. Evaluate the filter against ``CachedStreamChunk.filter_view``
+           for each referenced field. Collapse a 2-D sample-scope mask
            into a 1-D variant selection (with the surviving rows kept
            as ``sample_filter_pass`` on the subset axis).
-        4. Assemble output from ``CachedVariantChunk.output_view`` for each
-           query field; apply the variant selection to variants-axis
-           fields.
+        4. Assemble output from ``CachedStreamChunk.output_view`` for
+           each query field; apply the variant selection to variants-
+           axis fields.
+
+        ``start`` is interpreted in stream-chunk units after rebucketing,
+        so the offset semantics depend on the read-fields set passed in
+        the same call. For the historical single-chunk-size case
+        (all read fields share ``min_chunk``), stream chunks and
+        canonical chunks coincide and ``start`` matches its old meaning.
 
         The returned iterator runs the chunk pipeline in a dedicated
         background thread so that the consumer's per-chunk work and
@@ -1295,7 +1267,7 @@ class VczReader:
             # Default: filter axis IS the subset axis. Covers non-empty
             # subsets, the no-subset default, and ``--drop-genotypes``
             # (empty subset collapses to an empty plan — no reads,
-            # zero-column call_* output via CachedVariantChunk._empty_call_array).
+            # zero-column call_* output via CachedStreamChunk._empty_call_array).
             sample_chunk_plan = self.sample_chunk_plan
             output_columns = None
         else:
@@ -1308,7 +1280,7 @@ class VczReader:
             )
 
         # Split referenced fields into static (read once on the reader)
-        # and dynamic (prefetched per variant chunk). Pseudo-fields
+        # and dynamic (prefetched per stream chunk). Pseudo-fields
         # (e.g. ``variant_index``) are query-only and never enter the
         # Zarr-backed split; they are emitted directly from per-chunk
         # plan state.
@@ -1328,16 +1300,23 @@ class VczReader:
             else DEFAULT_READAHEAD_BYTES
         )
 
-        variant_chunk_plan = self.variant_chunk_plan
+        min_chunk = self.variants_chunk_size
+        stream_chunk_size = utils.compute_stream_chunk_size(
+            self.root, read_fields, min_chunk
+        )
+        stream_plan = utils.rebucket_to_stream_plan(
+            self.variant_chunk_plan, min_chunk, stream_chunk_size
+        )
         if start > 0:
-            variant_chunk_plan = variant_chunk_plan[start:]
+            stream_plan = stream_plan[start:]
 
         logger.info(
             f"variant_chunks: starting iteration "
             f"({len(query_fields)} query fields, {len(filter_fields)} filter fields, "
             f"{len(referenced_static_fields)} static fields, "
             f"{len(read_fields)} read fields, "
-            f"{len(variant_chunk_plan)} variant chunks, "
+            f"min_chunk={min_chunk}, stream_chunk_size={stream_chunk_size}, "
+            f"{len(stream_plan)} stream chunks, "
             f"{len(sample_chunk_plan.chunk_reads)} sample chunks, "
             f"readahead_bytes={_fmt_bytes(readahead_bytes)}, "
             f"workers={self._readahead_workers}); "
@@ -1345,15 +1324,15 @@ class VczReader:
             f"read_fields={read_fields}"
         )
 
-        pipeline = ReadaheadPipeline(
+        pipeline = StreamReader(
             self.root,
-            variant_chunk_plan,
+            stream_plan,
             sample_chunk_plan,
             output_columns,
             read_fields,
             readahead_bytes=readahead_bytes,
             executor=self._executor,
-            min_chunk=self.variants_chunk_size,
+            stream_chunk_size=stream_chunk_size,
         )
         chunks_visited = 0
         chunks_yielded = 0
@@ -1429,7 +1408,7 @@ class VczReader:
                         continue
                     if field == "variant_index":
                         value = _absolute_variant_indexes(
-                            chunk.variant_chunk, self.variants_chunk_size
+                            chunk.variant_chunk, stream_chunk_size
                         )
                     else:
                         value = chunk.output_view(field)

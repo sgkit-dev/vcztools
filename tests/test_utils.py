@@ -8,6 +8,7 @@ import pytest
 import zarr
 from numpy.testing import assert_array_equal
 
+from tests import vcz_builder
 from tests.utils import to_vcz_icechunk
 from vcztools import regions as regions_mod
 from vcztools import utils
@@ -163,6 +164,192 @@ class TestNormaliseLocalSelection:
         local_sel = np.array([1, 1, 3], dtype=np.int64)
         result = normalise_local_selection(local_sel, chunk_size=10)
         assert result is local_sel
+
+
+class TestComputeStreamChunkSize:
+    """``compute_stream_chunk_size`` returns the minimum ``chunks[0]``
+    among the read fields, with ``min_chunk`` as the fallback when no
+    read fields are involved."""
+
+    @staticmethod
+    def _vcz_with_overrides(overrides):
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 12,
+            variant_position=list(range(100, 112)),
+            alleles=[("A", "T")] * 12,
+            num_samples=2,
+            variants_chunk_size=3,
+            field_chunk_overrides=overrides,
+            call_genotype=np.zeros((12, 2, 2), dtype=np.int8),
+        )
+
+    def test_empty_read_fields_falls_back_to_min_chunk(self):
+        root = self._vcz_with_overrides(None)
+        assert utils.compute_stream_chunk_size(root, [], min_chunk=3) == 3
+
+    def test_single_call_field_returns_min_chunk(self):
+        root = self._vcz_with_overrides(None)
+        assert (
+            utils.compute_stream_chunk_size(root, ["call_genotype"], min_chunk=3) == 3
+        )
+
+    def test_single_variant_only_field_returns_field_chunk(self):
+        root = self._vcz_with_overrides({"variant_position": 12})
+        assert (
+            utils.compute_stream_chunk_size(root, ["variant_position"], min_chunk=3)
+            == 12
+        )
+
+    def test_mixed_fields_returns_minimum(self):
+        # variant_position chunked at 12, call_genotype at min_chunk=3 →
+        # stream chunk size pinned at min_chunk because the call_* field
+        # is referenced.
+        root = self._vcz_with_overrides({"variant_position": 12})
+        assert (
+            utils.compute_stream_chunk_size(
+                root, ["variant_position", "call_genotype"], min_chunk=3
+            )
+            == 3
+        )
+
+    def test_two_variant_only_with_distinct_chunks_returns_min(self):
+        # variant_position chunked at 12, variant_contig at 6 → stream
+        # chunk size is the minimum of the read fields' chunks[0].
+        root = self._vcz_with_overrides({"variant_position": 12, "variant_contig": 6})
+        assert (
+            utils.compute_stream_chunk_size(
+                root, ["variant_position", "variant_contig"], min_chunk=3
+            )
+            == 6
+        )
+
+
+class TestRebucketToStreamPlan:
+    """``rebucket_to_stream_plan`` merges canonical (min_chunk-unit)
+    chunk reads into stream-chunk-unit entries; selections become
+    stream-chunk-local."""
+
+    def test_identity_when_sizes_match(self):
+        canonical = [utils.ChunkRead(index=i, num_selected=4) for i in range(3)]
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=4, stream_chunk_size=4
+        )
+        assert result is canonical
+
+    def test_full_simple_plan_collapses_to_selection_none(self):
+        # 12 variants at min_chunk=3 → 4 canonical entries, all full.
+        # stream_chunk_size=12 → one stream chunk covering the whole axis.
+        canonical = utils.ChunkRead.simple_plan(length=12, chunk_size=3)
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=3, stream_chunk_size=12
+        )
+        assert len(result) == 1
+        assert result[0].index == 0
+        assert result[0].num_selected == 12
+        assert result[0].selection is None
+
+    def test_multiple_stream_chunks_full_coverage(self):
+        # 12 variants at min_chunk=3, stream_chunk_size=6 → 2 stream chunks,
+        # each covering two canonical chunks fully.
+        canonical = utils.ChunkRead.simple_plan(length=12, chunk_size=3)
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=3, stream_chunk_size=6
+        )
+        assert [(r.index, r.num_selected, r.selection) for r in result] == [
+            (0, 6, None),
+            (1, 6, None),
+        ]
+
+    def test_partial_last_stream_chunk(self):
+        # 10 variants at min_chunk=3 → canonical [3, 3, 3, 1].
+        # stream_chunk_size=6 → stream chunk 0 covers entries (0, 1) fully;
+        # stream chunk 1 covers (2, 3): 3 + 1 = 4 selected.
+        canonical = utils.ChunkRead.simple_plan(length=10, chunk_size=3)
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=3, stream_chunk_size=6
+        )
+        assert len(result) == 2
+        assert (result[0].index, result[0].num_selected, result[0].selection) == (
+            0,
+            6,
+            None,
+        )
+        # 4 of 6 stream-chunk rows selected; fast path emits slice(0, 4).
+        assert result[1].index == 1
+        assert result[1].num_selected == 4
+        assert result[1].selection == slice(0, 4)
+
+    def test_sparse_canonical_with_slice_selections(self):
+        # Region-style: canonical entries with explicit slice selections
+        # for two distinct min-chunks in one stream chunk.
+        canonical = [
+            utils.ChunkRead(index=0, num_selected=2, selection=slice(1, 3)),
+            utils.ChunkRead(index=1, num_selected=2, selection=slice(0, 2)),
+        ]
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=3, stream_chunk_size=6
+        )
+        assert len(result) == 1
+        entry = result[0]
+        assert entry.index == 0
+        assert entry.num_selected == 4
+        # Indices [1, 2, 3, 4] in stream-chunk-local coords → slice(1, 5).
+        assert entry.selection == slice(1, 5)
+
+    def test_sparse_canonical_with_ndarray_selection(self):
+        # Two non-contiguous local picks; rebase plus normalise leaves
+        # an ndarray (the contiguous-range collapser rejects).
+        canonical = [
+            utils.ChunkRead(
+                index=0,
+                num_selected=2,
+                selection=np.array([0, 2], dtype=np.int64),
+            ),
+            utils.ChunkRead(
+                index=1,
+                num_selected=1,
+                selection=np.array([1], dtype=np.int64),
+            ),
+        ]
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=3, stream_chunk_size=6
+        )
+        assert len(result) == 1
+        entry = result[0]
+        assert entry.num_selected == 3
+        # Rebased: chunk 0 → [0, 2], chunk 1 → [3+1] = [4]. Stream-local
+        # indices = [0, 2, 4] → non-contiguous → ndarray.
+        assert_array_equal(entry.selection, [0, 2, 4])
+
+    def test_sparse_canonical_skips_intermediate_min_chunks(self):
+        # User selection omits min-chunk 1; stream chunk 0 (covering
+        # min-chunks 0, 1, 2 when stream_chunk_size=9, min_chunk=3) keeps
+        # the rebased indices from 0 and 2.
+        canonical = [
+            utils.ChunkRead(index=0, num_selected=3),
+            utils.ChunkRead(index=2, num_selected=3),
+        ]
+        result = utils.rebucket_to_stream_plan(
+            canonical, min_chunk=3, stream_chunk_size=9
+        )
+        assert len(result) == 1
+        entry = result[0]
+        assert entry.num_selected == 6
+        # min-chunk 0 → [0, 1, 2]; min-chunk 2 → [6, 7, 8]; not contiguous.
+        assert isinstance(entry.selection, np.ndarray)
+        assert_array_equal(entry.selection, [0, 1, 2, 6, 7, 8])
+
+    def test_rejects_misaligned_stream_chunk_size(self):
+        with pytest.raises(ValueError, match="positive multiple"):
+            utils.rebucket_to_stream_plan([], min_chunk=3, stream_chunk_size=5)
+
+    def test_rejects_zero_stream_chunk_size(self):
+        with pytest.raises(ValueError, match="positive multiple"):
+            utils.rebucket_to_stream_plan([], min_chunk=3, stream_chunk_size=0)
+
+    def test_empty_input(self):
+        result = utils.rebucket_to_stream_plan([], min_chunk=3, stream_chunk_size=6)
+        assert result == []
 
 
 @pytest.mark.parametrize(

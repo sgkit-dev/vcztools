@@ -1,19 +1,29 @@
 """Benchmark suite for vcztools.
 
-One click entrypoint with four subcommands — ``generate`` (simulate a
-dataset), ``run`` (execute the task/backend matrix against the generated
-sibling layout), ``run-one`` (execute one task against an arbitrary Zarr
-path on a single storage backend), and ``compare`` (diff two JSONL runs).
-The dataset lives at ``performance/data/bench.vcz`` by default so
-``generate`` and ``run`` can be invoked without arguments.
+One click entrypoint with five subcommands — ``generate`` (simulate the
+wide dataset), ``generate-long`` (simulate the long dataset with
+proportional chunk sizes for variant-only fields), ``run`` (execute the
+task/backend matrix against the generated sibling layout), ``run-one``
+(execute one task against an arbitrary Zarr path on a single storage
+backend), and ``compare`` (diff two JSONL runs). The wide dataset lives
+at ``performance/data/wide_bench.vcz`` by default and the long dataset
+at ``performance/data/long_bench.vcz``, so ``generate`` / ``generate-long``
+and ``run`` can be invoked without arguments.
 
 The generator produces several on-disk copies of the same logical data
 so we can benchmark different storage backends apples-to-apples:
 
-- ``bench.vcz/`` — Zarr v2 directory (bio2zarr default output)
-- ``bench.vcz3/`` — Zarr v3 directory (mirrored from the v2 copy)
-- ``bench.vcz.zip`` — Zarr v2 zip
-- ``bench.vcz.icechunk/`` — icechunk repo mirrored from the v3 copy
+- ``wide_bench.vcz/`` (or ``long_bench.vcz/``) — Zarr v2 directory
+- ``wide_bench.vcz3/`` — Zarr v3 directory (mirrored from the v2 copy)
+- ``wide_bench.vcz.zip`` — Zarr v2 zip
+- ``wide_bench.vcz.icechunk/`` — icechunk repo mirrored from the v3 copy
+
+The wide dataset (100k samples × ~500k variants) uses a single uniform
+chunk size across every variant-axis array. The long dataset
+(10 samples × ~100M variants) keeps standard chunk sizes for ``call_*``
+fields but re-chunks each variant-only field to a proportional size
+whose uncompressed footprint is ~10 MiB per chunk — see
+``proportional-chunk-sizes.md`` for the design rationale.
 
 Aiohttp / obstore / icechunk are assumed installed via the ``benchmark``
 dependency group.
@@ -54,7 +64,15 @@ from vcztools import utils as vcz_utils
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_DATASET = pathlib.Path("performance/data/bench.vcz")
+DEFAULT_DATASET = pathlib.Path("performance/data/wide_bench.vcz")
+DEFAULT_LONG_DATASET = pathlib.Path("performance/data/long_bench.vcz")
+
+# Target uncompressed bytes per variant-only-field chunk on long_bench.
+# Each variant-only array (variant_position, variant_allele, variant_DP,
+# ...) gets re-chunked to the largest multiple of the call-axis chunk
+# size whose uncompressed first-axis slice fits in this budget. See
+# proportional-chunk-sizes.md for the design rationale.
+PROPORTIONAL_TARGET_BYTES = 10 * 1024 * 1024
 
 # Simulation constants. Keep pop_size/mutation_rate deterministic across
 # runs — the synthetic INFO/FORMAT values are derived from np.arange and
@@ -84,7 +102,7 @@ class DatasetSpec:
     seed: int
 
 
-def _simulate(spec: DatasetSpec):
+def _simulate(spec: DatasetSpec, model=None):
     """Run msprime with deterministic parameters and return a tskit
     TreeSequence. ``spec.num_samples`` is the diploid sample count."""
     ts = msprime.sim_ancestry(
@@ -93,6 +111,7 @@ def _simulate(spec: DatasetSpec):
         recombination_rate=RECOMBINATION_RATE,
         population_size=POPULATION_SIZE,
         random_seed=spec.seed,
+        model=model,
     )
     ts = msprime.sim_mutations(ts, rate=MUTATION_RATE, random_seed=spec.seed)
     return ts
@@ -233,6 +252,113 @@ def _augment_vcz(root) -> None:
         modulo=100,
         dtype=np.int8,
     )
+
+
+# ---------------------------------------------------------------------------
+# Proportional rechunking for variant-only fields (long_bench only)
+# ---------------------------------------------------------------------------
+
+
+def _proportional_chunk_size(
+    arr,
+    *,
+    target_bytes: int,
+    min_chunk: int,
+) -> int:
+    """Largest positive multiple of ``min_chunk`` whose uncompressed
+    first-axis slice of ``arr`` fits in ``target_bytes``, never larger
+    than the smallest multiple of ``min_chunk`` that fully covers the
+    array.
+
+    Used only for variant-only arrays (1-D over variants, or 2-D with
+    no samples axis). The result is constrained to be a positive
+    multiple of ``min_chunk`` so the per-store variants-axis chunking
+    invariant in ``vcztools.utils.validate_variants_axis_chunking``
+    holds (every variant-only field's chunks[0] divides cleanly into
+    the call-axis chunk size)."""
+    bytes_per_row = arr.dtype.itemsize
+    for d in arr.shape[1:]:
+        bytes_per_row *= d
+    rows_per_chunk = max(target_bytes // bytes_per_row, min_chunk)
+    rounded = (rows_per_chunk // min_chunk) * min_chunk
+    max_useful = math.ceil(arr.shape[0] / min_chunk) * min_chunk
+    capped = min(rounded, max_useful)
+    return max(capped, min_chunk)
+
+
+def _rechunk_in_place(
+    root,
+    store_path: pathlib.Path,
+    name: str,
+    *,
+    new_chunks: tuple[int, ...],
+) -> None:
+    """Rewrite ``root[name]`` with ``new_chunks``.
+
+    Stages the rewrite into a sibling array ``<name>__rechunk_tmp``,
+    streams the source by source-chunks (peak memory bounded to one old
+    row), then deletes the original via the Zarr API and renames the
+    sibling directory in place at the filesystem level. The rename is
+    necessary because Zarr 3's ``Group.move`` is not implemented.
+    Assumes a Zarr v2 ``LocalStore`` directory layout."""
+    src = root[name]
+    if src.chunks == new_chunks:
+        return
+    tmp_name = f"{name}__rechunk_tmp"
+    if tmp_name in root:
+        del root[tmp_name]
+    dim_names = vcz_utils.array_dims(src)
+    # bio2zarr's create_empty_group_array expects the string dtype name
+    # "T" for variable-length strings; numpy can't parse the StringDType
+    # repr that ``src.dtype.str`` returns.
+    dtype_name = "T" if src.dtype.kind == "T" else src.dtype.str
+    zarr_utils.create_empty_group_array(
+        root,
+        tmp_name,
+        shape=src.shape,
+        dtype=dtype_name,
+        chunks=new_chunks,
+        compressor=zarr_utils.get_compressor_config(src),
+        dimension_names=list(dim_names) if dim_names is not None else None,
+    )
+    dst = root[tmp_name]
+    for k, v in dict(src.attrs).items():
+        dst.attrs[k] = v
+    _copy_array_chunked(src, dst, desc=f"  rechunk {name}")
+    del root[name]
+    (store_path / tmp_name).rename(store_path / name)
+
+
+def _rechunk_variant_only(
+    root,
+    store_path: pathlib.Path,
+    *,
+    target_bytes: int,
+    min_chunk: int,
+) -> None:
+    """Rewrite every variant-only array under ``root`` with a proportional
+    chunk size.
+
+    A "variant-only" array is one whose first dimension is ``variants``
+    and whose remaining dimensions do not include ``samples`` —
+    ``variant_position``, ``variant_allele``, ``variant_DP`` etc. The
+    chunk-axis size becomes the largest multiple of ``min_chunk`` whose
+    uncompressed row footprint is at most ``target_bytes``. ``min_chunk``
+    is the call-axis variant chunk size, so the variant-only-to-call
+    multiplier is always a positive integer (the on-disk invariant the
+    read path in ``retrieval.py`` relies on)."""
+    arrays = list(root.arrays())
+    for name, arr in arrays:
+        dims = vcz_utils.array_dims(arr) or ()
+        if len(dims) == 0 or dims[0] != "variants" or "samples" in dims:
+            continue
+        target = _proportional_chunk_size(
+            arr,
+            target_bytes=target_bytes,
+            min_chunk=min_chunk,
+        )
+        new_chunks = (target,) + tuple(arr.chunks[1:])
+        _rechunk_in_place(root, store_path, name, new_chunks=new_chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +536,82 @@ def _generate(
         )
     with _stage("augment"):
         _augment_vcz(root)
+
+    with _stage("mirror_zv3"):
+        _mirror_to_v3_dir(root, _v3_path(output))
+
+    with _stage("zip"):
+        zip_path = _zip_path(output)
+        if zip_path.exists():
+            zip_path.unlink()
+        zarr_utils.zip_zarr(str(output), str(zip_path))
+
+    with _stage("mirror_icechunk"):
+        v3_root = zarr.open(_v3_path(output), mode="r")
+        _mirror_to_icechunk(v3_root, _icechunk_path(output))
+
+    return root
+
+
+def _generate_long(
+    *,
+    num_samples: int,
+    seq_length: float,
+    seed: int,
+    output: pathlib.Path,
+    variants_chunk_size: int | None,
+    samples_chunk_size: int | None,
+    worker_processes: int,
+    proportional_target_bytes: int,
+) -> zarr.Group:
+    """Generate the long benchmark dataset.
+
+    Same pipeline as :func:`_generate` plus a ``rechunk_variant_only``
+    stage between ``augment`` and the sibling-format mirrors: every
+    variant-only array is rewritten with a chunk size whose
+    uncompressed row footprint is at most ``proportional_target_bytes``
+    (rounded down to a multiple of the call-axis chunk size).
+    ``call_*`` fields keep the standard bio2zarr chunking, so the
+    call axis still stresses chunk-scheduler / readahead overhead at
+    high chunk counts. Sibling stores (Zarr v3 directory, zip,
+    icechunk) inherit the proportional chunking via
+    ``_mirror_group`` (it copies ``src.chunks`` verbatim)."""
+    spec = DatasetSpec(num_samples=num_samples, seq_length=seq_length, seed=seed)
+
+    with _stage("simulate"):
+        # Using the SMCK model substantially reduces simlation time in this
+        # small-sample large-genome case.
+        ts = _simulate(spec, model=msprime.SMCK(0))
+    if ts.num_sites == 0:
+        raise RuntimeError(
+            f"simulation produced 0 variants for spec={spec}; "
+            f"increase seq_length or sample count"
+        )
+
+    if output.exists():
+        shutil.rmtree(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    with _stage("convert"):
+        root = _build_vcz(
+            ts,
+            output,
+            variants_chunk_size=variants_chunk_size,
+            samples_chunk_size=samples_chunk_size,
+            worker_processes=worker_processes,
+        )
+    with _stage("augment"):
+        _augment_vcz(root)
+
+    with _stage("rechunk_variant_only"):
+        min_chunk = int(root["call_genotype"].chunks[0])
+        _rechunk_variant_only(
+            root,
+            output,
+            target_bytes=proportional_target_bytes,
+            min_chunk=min_chunk,
+        )
+        root = vcz_utils.open_zarr(str(output))
 
     with _stage("mirror_zv3"):
         _mirror_to_v3_dir(root, _v3_path(output))
@@ -612,6 +814,7 @@ class Task:
     fields: list[str] | None = None
     run: object = None
     backends: frozenset[str] | None = None
+    shapes: frozenset[str] = frozenset({"wide"})
 
 
 def _build_iter_no_fields(root, ctx):
@@ -626,7 +829,7 @@ def _build_region_info_and_format(root, ctx):
     reader = retrieval.VczReader(root)
     contig, start, end = ctx.region_spec
     region = f"{contig}:{start}-{end}"
-    plan = regions_mod.build_chunk_plan(root, regions=region)
+    plan = regions_mod.build_chunk_plan(reader, regions=region)
     reader.set_variants(plan)
     return reader
 
@@ -734,7 +937,7 @@ def _build_region_variant_position(root, ctx):
     reader = retrieval.VczReader(root)
     contig, start, end = ctx.region_spec
     region = f"{contig}:{start}-{end}"
-    plan = regions_mod.build_chunk_plan(root, regions=region)
+    plan = regions_mod.build_chunk_plan(reader, regions=region)
     reader.set_variants(plan)
     return reader
 
@@ -767,7 +970,7 @@ def _build_region_filter_format_gq_gt_50(root, ctx):
     reader = retrieval.VczReader(root)
     contig, start, end = ctx.region_spec
     region = f"{contig}:{start}-{end}"
-    plan = regions_mod.build_chunk_plan(root, regions=region)
+    plan = regions_mod.build_chunk_plan(reader, regions=region)
     reader.set_variants(plan)
     vf = bcftools_filter.BcftoolsFilter(
         field_names=reader.field_names, include="FMT/GQ>50"
@@ -786,7 +989,7 @@ def _build_region_and_sample_subset(root, ctx):
     reader.set_samples(np.arange(take))
     contig, start, end = ctx.region_spec
     region = f"{contig}:{start}-{end}"
-    plan = regions_mod.build_chunk_plan(root, regions=region)
+    plan = regions_mod.build_chunk_plan(reader, regions=region)
     reader.set_variants(plan)
     return reader
 
@@ -852,21 +1055,29 @@ def _biallelic_first_chunks_plan(root, num_chunks):
     ``set_variant_filter(BcftoolsFilter(include="N_ALT <= 1"))``) is
     required because :class:`vcztools.BedEncoder` rejects readers with
     a variant filter set; both write paths are happy with a chunk
-    plan."""
+    plan.
+
+    The discovery iterator yields stream chunks at the granularity of
+    ``variant_allele``'s own chunk size (which may be larger than the
+    call-axis ``min_chunk`` under proportional chunking on long_bench).
+    ``variant_index`` is requested alongside ``variant_allele`` so the
+    surviving local indices can be translated to absolute variant
+    indices and rebucketed into min-chunk-aligned ``ChunkRead`` entries
+    via :func:`regions.chunk_plan_from_indexes`."""
     with retrieval.VczReader(root) as discovery:
         num_variant_chunks = math.ceil(
             discovery.num_variants / discovery.variants_chunk_size
         )
         take_chunks = min(num_chunks, num_variant_chunks)
-        chunk_size = discovery.variants_chunk_size
+        min_chunk = discovery.variants_chunk_size
         num_variants = discovery.num_variants
-        plan_length = min(take_chunks * chunk_size, num_variants)
-        coarse_plan = vcz_utils.ChunkRead.simple_plan(plan_length, chunk_size)
+        plan_length = min(take_chunks * min_chunk, num_variants)
+        coarse_plan = vcz_utils.ChunkRead.simple_plan(plan_length, min_chunk)
         discovery.set_variants(coarse_plan)
 
-        fine_plan = []
-        for cr, chunk_data in zip(
-            coarse_plan, discovery.variant_chunks(fields=["variant_allele"])
+        fine_plan: list[vcz_utils.ChunkRead] = []
+        for chunk_data in discovery.variant_chunks(
+            fields=["variant_allele", "variant_index"]
         ):
             alleles = chunk_data["variant_allele"]
             if alleles.shape[1] <= 2:
@@ -876,20 +1087,10 @@ def _biallelic_first_chunks_plan(root, num_chunks):
             local_idx = np.flatnonzero(mask)
             if local_idx.size == 0:
                 continue
-            if local_idx.size == alleles.shape[0]:
-                fine_plan.append(
-                    vcz_utils.ChunkRead(
-                        index=cr.index, num_selected=int(alleles.shape[0])
-                    )
-                )
-            else:
-                fine_plan.append(
-                    vcz_utils.ChunkRead(
-                        index=cr.index,
-                        num_selected=int(local_idx.size),
-                        selection=local_idx,
-                    )
-                )
+            abs_idx = chunk_data["variant_index"][local_idx]
+            fine_plan.extend(
+                regions_mod.chunk_plan_from_indexes(abs_idx, min_chunk=min_chunk)
+            )
     return fine_plan
 
 
@@ -931,19 +1132,12 @@ def _build_output_plink(root, ctx):
 def _run_output_plink(reader, ctx):
     records = _plan_records(reader)
     with tempfile.TemporaryDirectory(prefix="vcztools-bench-plink-") as tmp:
-        tmp_dir = pathlib.Path(tmp)
-        bed_path = tmp_dir / "out.bed"
-        bim_path = tmp_dir / "out.bim"
-        fam_path = tmp_dir / "out.fam"
-        writer = plink.Writer(
-            reader,
-            bed_path=bed_path,
-            fam_path=fam_path,
-            bim_path=bim_path,
-        )
-        writer.run()
+        out_prefix = pathlib.Path(tmp) / "out"
+        plink.write_plink(reader, out_prefix)
         bytes_written = (
-            bed_path.stat().st_size + bim_path.stat().st_size + fam_path.stat().st_size
+            out_prefix.with_suffix(".bed").stat().st_size
+            + out_prefix.with_suffix(".bim").stat().st_size
+            + out_prefix.with_suffix(".fam").stat().st_size
         )
     return RunStats(records=records, bytes_written=bytes_written)
 
@@ -970,8 +1164,60 @@ def _run_output_bed_stream(reader, ctx):
     return RunStats(records=num_variants, bytes_written=bytes_written)
 
 
+# ---------------------------------------------------------------------------
+# Long-only tasks
+# ---------------------------------------------------------------------------
+#
+# These tasks make sense only on the long dataset (10 samples × ~100M
+# variants). The ``full_*`` outputs walk every variant chunk; on the
+# wide dataset the equivalent run would not terminate in a reasonable
+# time. They share encoder code with the wide ``output_*`` tasks.
+
+WIDE_LONG_SHAPES = frozenset({"wide", "long"})
+LONG_ONLY_SHAPES = frozenset({"long"})
+
+
+def _biallelic_full_plan(root):
+    """``_biallelic_first_chunks_plan`` extended to every variant chunk."""
+    with retrieval.VczReader(root) as discovery:
+        num_variant_chunks = math.ceil(
+            discovery.num_variants / discovery.variants_chunk_size
+        )
+    return _biallelic_first_chunks_plan(root, num_variant_chunks)
+
+
+def _build_full_genotypes(root, ctx):
+    """Read every (variant, sample) genotype on long_bench (~100M
+    variants × 10 samples × 2 ≈ 2 GB raw). Tests bulk variant-axis
+    throughput at the long dataset's high call-axis chunk count."""
+    return retrieval.VczReader(root)
+
+
+def _build_full_output_vcf(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_full_plan(root))
+    return reader
+
+
+def _build_full_output_plink(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_full_plan(root))
+    return reader
+
+
+def _build_full_output_bed_stream(root, ctx):
+    reader = retrieval.VczReader(root)
+    reader.set_variants(_biallelic_full_plan(root))
+    return reader
+
+
 TASKS: list[Task] = [
-    Task("iter_no_fields", _build_iter_no_fields, []),
+    Task(
+        "iter_no_fields",
+        _build_iter_no_fields,
+        [],
+        shapes=WIDE_LONG_SHAPES,
+    ),
     Task(
         "iter_info_only",
         _build_iter_info_only,
@@ -983,6 +1229,7 @@ TASKS: list[Task] = [
             "variant_QUAL",
             "variant_IMPACT",
         ],
+        shapes=WIDE_LONG_SHAPES,
     ),
     Task(
         "region_info_and_format",
@@ -997,6 +1244,7 @@ TASKS: list[Task] = [
             "call_GQ",
             "call_genotype",
         ],
+        shapes=WIDE_LONG_SHAPES,
     ),
     Task("first_samples_chunk", _build_first_samples_chunk, ["call_genotype"]),
     Task(
@@ -1014,16 +1262,23 @@ TASKS: list[Task] = [
         _build_first_samples_chunk_slice,
         ["call_genotype"],
     ),
-    Task("first_variant_chunks", _build_first_variant_chunks, ["call_genotype"]),
+    Task(
+        "first_variant_chunks",
+        _build_first_variant_chunks,
+        ["call_genotype"],
+        shapes=WIDE_LONG_SHAPES,
+    ),
     Task(
         "region_variant_position",
         _build_region_variant_position,
         ["variant_position"],
+        shapes=WIDE_LONG_SHAPES,
     ),
     Task(
         "filter_info_dp_gt_80",
         _build_filter_info_dp_gt_80,
         ["variant_position", "variant_DP"],
+        shapes=WIDE_LONG_SHAPES,
     ),
     Task(
         "filter_info_dp_gt_80_genotypes",
@@ -1034,6 +1289,7 @@ TASKS: list[Task] = [
         "region_filter_format_gq_gt_50",
         _build_region_filter_format_gq_gt_50,
         ["variant_position"],
+        shapes=WIDE_LONG_SHAPES,
     ),
     Task(
         "region_and_sample_subset",
@@ -1057,6 +1313,33 @@ TASKS: list[Task] = [
         _build_output_bed_stream,
         run=_run_output_bed_stream,
         backends=OUTPUT_BACKENDS,
+    ),
+    Task(
+        "full_genotypes",
+        _build_full_genotypes,
+        ["call_genotype"],
+        shapes=LONG_ONLY_SHAPES,
+    ),
+    Task(
+        "full_output_vcf",
+        _build_full_output_vcf,
+        run=_run_output_vcf,
+        backends=OUTPUT_BACKENDS,
+        shapes=LONG_ONLY_SHAPES,
+    ),
+    Task(
+        "full_output_plink",
+        _build_full_output_plink,
+        run=_run_output_plink,
+        backends=OUTPUT_BACKENDS,
+        shapes=LONG_ONLY_SHAPES,
+    ),
+    Task(
+        "full_output_bed_stream",
+        _build_full_output_bed_stream,
+        run=_run_output_bed_stream,
+        backends=OUTPUT_BACKENDS,
+        shapes=LONG_ONLY_SHAPES,
     ),
 ]
 
@@ -1429,6 +1712,74 @@ def generate_cmd(
     click.echo(f"generated {num_variants} variants x {num_samples} samples")
 
 
+@cli.command("generate-long")
+@verbosity_option
+@click.option("--num-samples", type=int, default=10, show_default=True)
+@click.option("--seq-length", type=float, default=2e9, show_default=True)
+@click.option("--seed", type=int, default=42, show_default=True)
+@click.option(
+    "--output",
+    type=click.Path(path_type=pathlib.Path),
+    default=DEFAULT_LONG_DATASET,
+    show_default=True,
+)
+@click.option(
+    "--variants-chunk-size",
+    type=int,
+    default=None,
+    help="Variants-axis chunk size passed to bio2zarr.tskit.convert. "
+    "None lets bio2zarr pick its default (1000). The proportional "
+    "rechunk pass rewrites variant-only fields after the convert "
+    "stage, so this controls only the call-axis chunk size.",
+)
+@click.option("--samples-chunk-size", type=int, default=None)
+@click.option(
+    "--worker-processes",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Worker processes for bio2zarr.tskit.convert.",
+)
+@click.option(
+    "--proportional-target-bytes",
+    type=int,
+    default=PROPORTIONAL_TARGET_BYTES,
+    show_default=True,
+    help="Target uncompressed bytes per variant-only-field chunk on "
+    "long_bench. Each variant-only array is rewritten with the largest "
+    "multiple of the call-axis chunk size whose row footprint fits in "
+    "this budget.",
+)
+def generate_long_cmd(
+    num_samples,
+    seq_length,
+    seed,
+    output,
+    variants_chunk_size,
+    samples_chunk_size,
+    worker_processes,
+    proportional_target_bytes,
+):
+    """Simulate and write the long benchmark dataset.
+
+    Variant-only fields are re-chunked to proportional sizes (~10 MiB
+    uncompressed per chunk by default); call_* fields keep the standard
+    bio2zarr chunk size."""
+    root = _generate_long(
+        num_samples=num_samples,
+        seq_length=seq_length,
+        seed=seed,
+        output=output,
+        variants_chunk_size=variants_chunk_size,
+        samples_chunk_size=samples_chunk_size,
+        worker_processes=worker_processes,
+        proportional_target_bytes=proportional_target_bytes,
+    )
+    num_variants = int(root["variant_position"].shape[0])
+    num_samples = int(root["sample_id"].shape[0])
+    click.echo(f"generated {num_variants} variants x {num_samples} samples")
+
+
 @cli.command("run")
 @verbosity_option
 @click.option(
@@ -1483,6 +1834,15 @@ def generate_cmd(
     "so region_info_and_format lands inside the target band on a "
     "100k-sample dataset.",
 )
+@click.option(
+    "--shape",
+    type=click.Choice(["wide", "long"]),
+    default="wide",
+    show_default=True,
+    help="Filter tasks to those tagged for the given dataset shape. "
+    "If --task is also passed, the named task must belong to the "
+    "requested shape.",
+)
 def run_cmd(
     dataset,
     output,
@@ -1492,9 +1852,17 @@ def run_cmd(
     skip_backends,
     profile,
     region_fraction,
+    shape,
 ):
     """Execute the task x backend matrix and write a JSONL row per run."""
     selected_tasks = _select_tasks(tasks)
+    if len(tasks) > 0:
+        bad_shape = [t.name for t in selected_tasks if shape not in t.shapes]
+        if len(bad_shape) > 0:
+            raise click.ClickException(
+                f"task(s) not tagged for shape={shape!r}: {bad_shape}"
+            )
+    selected_tasks = [t for t in selected_tasks if shape in t.shapes]
     selected_backends = _select_backends(backends, skip_backends)
 
     ctx = _build_run_context(dataset, ALL_BACKENDS["local-dir"], region_fraction)

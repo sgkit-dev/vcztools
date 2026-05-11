@@ -1,17 +1,20 @@
 # vcztools — current benchmark numbers
 
-Snapshot of the post-perf-work benchmark matrix.
+Snapshot of the post-perf-work benchmark matrix. All numbers here are
+on the **wide** dataset; the long-shape numbers will be tracked
+separately when the long-bench generation lands.
 
 ## Setup
 
 - **Source run:** `performance/reports/run-readerkwargs.jsonl`, recorded 2026-04-27 against the per-pipeline-executor implementation (final state of the `perf` branch).
 - **Hardware:** 4-CPU host `claude-worker1`.
-- **Dataset:** 100 000 diploid samples × 496 414 variants, chunk shape `(1000, 10000)`. Synthetic deterministic fields (`np.arange`- derived `variant_DP`, `variant_QUAL`, `variant_IMPACT`, `call_DP`, `call_GQ`); record counts asserted against `bench.vcz.benchmark_meta.json`.
+- **Dataset (wide):** 100 000 diploid samples × 496 414 variants, chunk shape `(1000, 10000)`. Synthetic deterministic fields (`np.arange`- derived `variant_DP`, `variant_QUAL`, `variant_IMPACT`, `call_DP`, `call_GQ`); record counts asserted against `wide_bench.vcz.benchmark_meta.json`.
 - **Matrix:** 11 tasks × 6 backends × 3 repeats = 198 runs. All record-count assertions passed.
 - **Reproduce:**
   ```
   uv run python performance/benchmarks.py run \
-      --dataset performance/data/bench.vcz \
+      --dataset performance/data/wide_bench.vcz \
+      --shape wide \
       --output performance/results/run.jsonl
   uv run python performance/benchmarks.py compare \
       performance/reports/run-phase0-baseline.jsonl \
@@ -116,7 +119,7 @@ differ by ~2× so a shared chunk count would over- or under-spend.
 
 - **Source run:** `performance/benchmarks.py run --task output_vcf
   --task output_plink --task output_bed_stream` against
-  `performance/bench.vcz`, recorded 2026-05-06.
+  `performance/wide_bench.vcz`, recorded 2026-05-06.
 - **Hardware:** 4-CPU host `claude-worker1`.
 - **Dataset:** 100 000 diploid samples, ~98 % biallelic (the rest
   dropped via per-chunk materialisation in
@@ -125,7 +128,7 @@ differ by ~2× so a shared chunk count would over- or under-spend.
 - **Reproduce:**
   ```
   uv run python performance/benchmarks.py run \
-      --dataset performance/bench.vcz \
+      --dataset performance/wide_bench.vcz \
       --task output_vcf --task output_plink --task output_bed_stream \
       --output /tmp/output.jsonl
   ```

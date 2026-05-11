@@ -168,5 +168,8 @@ cython_debug/
 vcz_test_cache/
 **/.DS_Store
 performance/results/
-performance/bench.vcz*
+performance/wide_bench.vcz*
+performance/long_bench.vcz*
+performance/data/wide_bench.vcz*
+performance/data/long_bench.vcz*
 performance/bench_biallelic.vcz*

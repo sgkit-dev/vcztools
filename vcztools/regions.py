@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from vcztools import retrieval, utils
+from vcztools import utils
 from vcztools.utils import _as_fixed_length_unicode
 
 try:
@@ -345,39 +345,50 @@ def chunk_plan_from_indexes(
 
 
 def build_chunk_plan(
-    root,
+    reader,
     *,
     regions=None,
     targets=None,
     targets_complement: bool = False,
 ) -> list[utils.ChunkRead]:
     """Build a list of :class:`~vcztools.utils.ChunkRead` from
-    region/target inputs and the Zarr root. ``ChunkRead.index`` values
-    are in units of the *minimum* variants chunk size — see
-    :func:`vcztools.utils.compute_min_variants_chunk_size`. When
-    neither ``regions`` nor ``targets`` applies a filter, returns one
-    ``ChunkRead(index=i, selection=None)`` per logical chunk — meaning
-    "read every chunk in full".
+    region/target inputs and a :class:`~vcztools.retrieval.VczReader`.
+    ``ChunkRead.index`` values are in units of the *minimum* variants
+    chunk size — see :func:`vcztools.utils.compute_min_variants_chunk_size`.
+    When neither ``regions`` nor ``targets`` applies a filter, returns
+    one ``ChunkRead(index=i, selection=None)`` per logical chunk —
+    meaning "read every chunk in full".
 
     Uses the ``region_index`` array to prune candidate chunks (only
     when ``regions`` is set — ``targets`` alone doesn't prune), then
-    scans each candidate chunk once via the
-    :class:`vcztools.retrieval.VczReader.variant_chunks` pipeline to
+    scans each candidate chunk once via the reader's
+    :meth:`~vcztools.retrieval.VczReader.variant_chunks` pipeline to
     compute the surviving local row indexes. Block-level dedup and
     threaded I/O are inherited from the pipeline, so consecutive
     candidates that share a Zarr block in any of the three referenced
     variant-only fields share a single read; when the fields use a
     chunk size larger than ``min_chunk`` the pipeline rebuckets the
     candidate plan into stream chunks at that larger granularity.
+
+    The reader's variant chunk plan is replaced as a side effect of
+    running this function (``set_variants`` is called internally). The
+    expected call pattern is to immediately follow with
+    ``reader.set_variants(build_chunk_plan(reader, ...))``, which is
+    what every caller does today.
+
+    Iterating ``reader.variant_chunks`` resolves the sample selection
+    on first access, so :meth:`~vcztools.retrieval.VczReader.set_samples`
+    must be called *before* this function (one-shot). The CLI and
+    :func:`tests.utils.make_reader` already follow this ordering.
     """
-    num_variants = int(root["variant_position"].shape[0])
-    min_chunk = utils.compute_min_variants_chunk_size(root)
+    num_variants = reader.num_variants
+    min_chunk = reader.variants_chunk_size
     num_logical_chunks = (num_variants + min_chunk - 1) // min_chunk
 
     regions_df = _regions_input_to_df(regions, arg_name="regions")
     targets_df = _regions_input_to_df(targets, arg_name="targets")
 
-    contigs_u = _as_fixed_length_unicode(root["contig_id"][:]).tolist()
+    contigs_u = _as_fixed_length_unicode(reader.contig_ids).tolist()
     regions_gr = dataframe_to_ranges(regions_df, contigs_u)
     targets_gr = dataframe_to_ranges(
         targets_df, contigs_u, complement=targets_complement
@@ -387,8 +398,7 @@ def build_chunk_plan(
         return utils.ChunkRead.simple_plan(num_variants, min_chunk)
 
     if regions_gr is not None:
-        region_index = root["region_index"][:]
-        candidate_chunks = regions_to_chunk_indexes(regions_gr, region_index)
+        candidate_chunks = regions_to_chunk_indexes(regions_gr, reader.region_index)
     else:
         candidate_chunks = np.arange(num_logical_chunks, dtype=np.int64)
 
@@ -410,22 +420,21 @@ def build_chunk_plan(
         "variant_length",
     ]
     surviving = []
-    with retrieval.VczReader(root) as reader:
-        reader.set_variants(candidate_plan)
-        for chunk_data in reader.variant_chunks(fields=read_fields):
-            local_sel = regions_to_selection(
-                regions_gr,
-                targets_gr,
-                chunk_data["variant_contig"],
-                chunk_data["variant_position"],
-                chunk_data["variant_length"],
-            )
-            if local_sel is None:
-                continue
-            local_sel = np.asarray(local_sel, dtype=np.int64)
-            if local_sel.size == 0:
-                continue
-            surviving.append(chunk_data["variant_index"][local_sel])
+    reader.set_variants(candidate_plan)
+    for chunk_data in reader.variant_chunks(fields=read_fields):
+        local_sel = regions_to_selection(
+            regions_gr,
+            targets_gr,
+            chunk_data["variant_contig"],
+            chunk_data["variant_position"],
+            chunk_data["variant_length"],
+        )
+        if local_sel is None:
+            continue
+        local_sel = np.asarray(local_sel, dtype=np.int64)
+        if local_sel.size == 0:
+            continue
+        surviving.append(chunk_data["variant_index"][local_sel])
 
     if len(surviving) == 0:
         return []

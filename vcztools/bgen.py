@@ -15,6 +15,7 @@ For the user-facing reference — multi-allelic policy, downstream-tool
 compatibility, sidecar conventions — see ``docs/bgen.md``.
 """
 
+import concurrent.futures as cf
 import dataclasses
 import logging
 import pathlib
@@ -22,8 +23,11 @@ import sqlite3
 import struct
 import time
 import zlib
+from typing import ClassVar
 
 import numpy as np
+
+from vcztools import retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -213,11 +217,484 @@ def _encode_variant_block(
     return bytes(out)
 
 
+def _pad_to_fixed_length(value, max_len, *, field_name):
+    """UTF-8 encode ``value`` and right-pad with NUL to exactly ``max_len``
+    bytes. Raise ``ValueError`` if the encoded form exceeds ``max_len``.
+
+    bgen-reader strips trailing NULs from variable string fields, so
+    a NUL-padded value round-trips as the original UTF-8 string.
+    """
+    encoded = str(value).encode("utf-8")
+    if len(encoded) > max_len:
+        raise ValueError(
+            f"{field_name} {value!r} encodes to {len(encoded)} UTF-8 bytes, "
+            f"exceeds configured max of {max_len}"
+        )
+    return encoded + b"\x00" * (max_len - len(encoded))
+
+
+def _encode_variant_block_fixed_size(
+    *,
+    varid_padded,
+    rsid_padded,
+    chrom_padded,
+    position,
+    allele1_padded,
+    allele2_padded,
+    varid_max,
+    rsid_max,
+    chrom_max,
+    allele_max,
+    genotypes,
+    phased,
+):
+    """Emit one fixed-size BGEN variant data block.
+
+    Layout (length prefixes are written as the configured *_max values;
+    string payloads are NUL-padded to those widths):
+
+        uint16 varid_max ; varid_max bytes (UTF-8, NUL-padded)
+        uint16 rsid_max  ; rsid_max  bytes (UTF-8, NUL-padded)
+        uint16 chrom_max ; chrom_max bytes (UTF-8, NUL-padded)
+        uint32 position
+        uint16 K = 2
+        uint32 allele_max ; allele_max bytes (UTF-8, NUL-padded)
+        uint32 allele_max ; allele_max bytes (UTF-8, NUL-padded)
+        uint32 C = 4 + len(compressed)
+        uint32 D = len(uncompressed_geno_block)
+        compressed: zlib level 0 (stored) of the uncompressed geno block
+
+    Compression flag is ``ZLIB`` but level is always ``0`` (stored, no
+    DEFLATE). Stored zlib output for an input of fixed length is itself
+    of fixed length, so every variant block is the same number of bytes.
+    The published BGEN spec also supports a ``compression == 0`` mode
+    that would save the 11+ bytes of zlib framing per variant, but the
+    reference cbgen/limix-bgen library has an inconsistency: its
+    ``bgen_variant_next`` always reads a uint32 length prefix, while
+    its layout-2 read-header for ``compression == 0`` does not consume
+    one. Using ``ZLIB`` with level 0 sidesteps this.
+    """
+    geno_block = _encode_genotype_block(genotypes, phased)
+    compressed = zlib.compress(geno_block, 0)
+    out = bytearray()
+    out += struct.pack("<H", varid_max)
+    out += varid_padded
+    out += struct.pack("<H", rsid_max)
+    out += rsid_padded
+    out += struct.pack("<H", chrom_max)
+    out += chrom_padded
+    out += struct.pack("<I", int(position))
+    out += struct.pack("<H", 2)
+    out += struct.pack("<I", allele_max)
+    out += allele1_padded
+    out += struct.pack("<I", allele_max)
+    out += allele2_padded
+    C = 4 + len(compressed)
+    D = len(geno_block)
+    out += struct.pack("<II", C, D)
+    out += compressed
+    return bytes(out)
+
+
 def _detect_variant_phase(phased_array_for_variant):
     """All samples True → phased. Otherwise (incl. all-False and mixed)
     → unphased. BGEN has one phase flag per variant; mixed-phase
     variants degrade silently to unphased."""
     return bool(phased_array_for_variant.all())
+
+
+class BgenEncoder:
+    """Random-access, fixed-size BGEN byte-stream encoder over a VCZ store.
+
+    Sibling of :class:`vcztools.plink.BedEncoder`: same construction
+    contract, same POSIX-style :meth:`read` interface, same per-instance
+    :class:`concurrent.futures.ThreadPoolExecutor` lifecycle. Intended
+    for FUSE / HTTP-range-serving consumers that need to address arbitrary
+    regions of the encoded byte stream without iterating from the start.
+
+    The byte stream is a valid BGEN layout-2 file with the compression
+    flag set to ``ZLIB``. Every variant block uses zlib **level 0**
+    (stored, no DEFLATE) so the compressed payload size is a deterministic
+    function of the uncompressed genotype block size — the variant block
+    is therefore exactly :attr:`bytes_per_variant` bytes wide and
+    ``byte offset → variant index`` is O(1):
+
+        bytes_per_variant
+          = 28 + varid_max + rsid_max + chrom_max
+              + 2 * allele_max + zlib_stored_size(10 + 3 * num_samples)
+
+    where the constant 28 = 3 * 2 (string length prefixes, uint16) + 4
+    (position) + 2 (K) + 2 * 4 (allele length prefixes, uint32) + 2 * 4
+    (C and D length prefixes, uint32).
+
+    Variable-length string fields (variant id, rsid, chromosome, alleles)
+    are NUL-padded to the configured ``*_max`` widths. The bgen-reader
+    reference reader strips trailing NULs from string fields, so the
+    padded values round-trip cleanly. Overflowing any configured max
+    raises :class:`ValueError` during chunk encoding, naming the field
+    and the offending value.
+
+    Defaults are tuned for biobank biallelic SNP arrays:
+    ``varid_max=64``, ``rsid_max=64``, ``chrom_max=8``, ``allele_max=1``.
+    Indel or SV stores must opt in by passing larger ``*_max`` values.
+
+    Variant scope: biallelic and diploid (multi-allelic / non-diploid
+    raises ``ValueError`` lazily as chunks are decoded — same cadence
+    as :class:`~vcztools.plink.BedEncoder`).
+
+    The encoder serves only the ``.bgen`` byte stream. The ``.sample``
+    sidecar is produced by :func:`generate_sample`; a ``.bgi`` index, if
+    desired, can be built from the fixed-size offsets
+    (``header_size + i * bytes_per_variant``) without iterating the
+    encoder.
+
+    Concurrency: a single :class:`BgenEncoder` instance is **not**
+    thread-safe — :meth:`read` and :meth:`close` must be serialised by
+    the caller. Multiple :class:`BgenEncoder` instances may share one
+    :class:`~vcztools.retrieval.VczReader` safely; each runs an
+    independent variant-chunk iteration. The caller owns the reader's
+    lifetime — :meth:`close` tears down the encoder's iterator only.
+
+    :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
+    supported and raises ``NotImplementedError`` at construction;
+    materialise the filter or use ``set_variants`` first. Unlike
+    :func:`write_bgen`, the encoder is I/O-free in ``__init__``.
+    """
+
+    HEADER_FLAGS: ClassVar[int] = _flags_word()
+
+    def __init__(
+        self,
+        reader: retrieval.VczReader,
+        *,
+        varid_max: int = 64,
+        rsid_max: int = 64,
+        chrom_max: int = 8,
+        allele_max: int = 1,
+        encode_threads: int | None = None,
+        encode_block_bytes: int | None = None,
+    ):
+        if encode_threads is None:
+            encode_threads = 4
+        if encode_block_bytes is None:
+            encode_block_bytes = 10 * 1024 * 1024
+
+        if reader.variant_filter is not None:
+            raise NotImplementedError(
+                "BgenEncoder does not support readers with a "
+                "set_variant_filter() configured. Apply the filter "
+                "externally and pass the resulting reader, or use "
+                "set_variants() to materialise the surviving indices."
+            )
+        if encode_threads < 1:
+            raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
+        if encode_block_bytes < 1:
+            raise ValueError(
+                f"encode_block_bytes must be >= 1 (got {encode_block_bytes})"
+            )
+        for name, value, ceiling in (
+            ("varid_max", varid_max, 0xFFFF),
+            ("rsid_max", rsid_max, 0xFFFF),
+            ("chrom_max", chrom_max, 0xFFFF),
+            ("allele_max", allele_max, 0xFFFFFFFF),
+        ):
+            if value < 1:
+                raise ValueError(f"{name} must be >= 1 (got {value})")
+            if value > ceiling:
+                raise ValueError(
+                    f"{name}={value} exceeds BGEN length-prefix width {ceiling}"
+                )
+
+        self._reader = reader
+        self._closed = False
+        self._varid_max = varid_max
+        self._rsid_max = rsid_max
+        self._chrom_max = chrom_max
+        self._allele_max = allele_max
+
+        self._num_samples = int(reader.sample_ids.size)
+        # Pre-compute the zlib-stored size of one genotype block.
+        # zlib.compress(level=0) emits stored DEFLATE blocks whose output
+        # size is a deterministic function of the input length, so every
+        # variant block is the same width.
+        geno_size = 10 + 3 * self._num_samples
+        compressed_geno_size = len(zlib.compress(b"\x00" * geno_size, 0))
+        self._compressed_geno_size = compressed_geno_size
+        self._bytes_per_variant = (
+            28
+            + varid_max
+            + rsid_max
+            + chrom_max
+            + 2 * allele_max
+            + compressed_geno_size
+        )
+
+        sample_id_block = _build_sample_id_block(reader.sample_ids)
+        counts = reader.variant_counts_per_chunk()
+        self._num_variants = int(counts.sum())
+        self._header_bytes = _build_header(
+            self._num_variants,
+            self._num_samples,
+            sample_id_block,
+        )
+        self._header_size = len(self._header_bytes)
+
+        self._chunk_byte_offsets = np.empty(len(counts) + 1, dtype=np.int64)
+        self._chunk_byte_offsets[0] = self._header_size
+        np.cumsum(counts * self._bytes_per_variant, out=self._chunk_byte_offsets[1:])
+        self._chunk_byte_offsets[1:] += self._header_size
+        self._bgen_size = int(self._chunk_byte_offsets[-1])
+
+        self._has_variant_id = "variant_id" in reader.field_names
+        self._has_phased = "call_genotype_phased" in reader.field_names
+        self._contig_ids = reader.contig_ids
+
+        self._iterator = None
+        self._chunk_bytes: bytes | None = None
+        self._chunk_start = 0
+        self._chunk_plan_pos = -1
+        self._restart_count = 0
+        self._mixed_phase_count = 0
+
+        self._encode_threads = encode_threads
+        self._encode_block_bytes = encode_block_bytes
+        self._executor = cf.ThreadPoolExecutor(
+            max_workers=encode_threads,
+            thread_name_prefix="vcztools-encode-bgen",
+        )
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("encoder closed")
+
+    @property
+    def num_variants(self) -> int:
+        self._check_open()
+        return self._num_variants
+
+    @property
+    def num_samples(self) -> int:
+        self._check_open()
+        return self._num_samples
+
+    @property
+    def bytes_per_variant(self) -> int:
+        self._check_open()
+        return self._bytes_per_variant
+
+    @property
+    def header_size(self) -> int:
+        self._check_open()
+        return self._header_size
+
+    @property
+    def bgen_size(self) -> int:
+        self._check_open()
+        return self._bgen_size
+
+    def read(self, off: int, size: int) -> bytes:
+        """Return up to ``size`` bytes from the virtual ``.bgen`` at
+        ``off``. POSIX-read semantics:
+
+        - ``b""`` if ``off >= bgen_size`` or ``size == 0``
+        - ``size`` clamped to the end of the file
+        - ``off < 0`` or ``size < 0`` raises ``ValueError``
+
+        Reads whose start falls in the loaded chunk or the immediately-
+        next plan chunk are served by slicing chunk-resident bytes,
+        advancing the running iterator one chunk at a time as needed.
+        Reads whose start is further away rebuild the iterator at the
+        chunk containing ``off``.
+        """
+        self._check_open()
+        if off < 0:
+            raise ValueError(f"off must be >= 0 (got {off})")
+        if size < 0:
+            raise ValueError(f"size must be >= 0 (got {size})")
+        if off >= self._bgen_size or size == 0:
+            return b""
+        end = min(off + size, self._bgen_size)
+
+        out = bytearray()
+        if off < self._header_size:
+            out.extend(self._header_bytes[off : min(end, self._header_size)])
+            off = min(end, self._header_size)
+        if off < end:
+            out.extend(self._read_data(off, end - off))
+        return bytes(out)
+
+    def _read_data(self, off: int, size: int) -> bytes:
+        # Caller guarantees off >= header_size, size > 0,
+        # off + size <= bgen_size. Off is reachable without restart iff
+        # it lies in the loaded chunk or the immediately-next plan chunk.
+        in_range = False
+        if self._chunk_bytes is not None and self._chunk_start <= off:
+            next_plan_end_idx = self._chunk_plan_pos + 2
+            if next_plan_end_idx < len(self._chunk_byte_offsets):
+                reachable_end = int(self._chunk_byte_offsets[next_plan_end_idx])
+            else:
+                reachable_end = self._chunk_start + len(self._chunk_bytes)
+            in_range = off < reachable_end
+        if not in_range:
+            self._restart(off)
+
+        out = bytearray()
+        while len(out) < size:
+            if off >= self._chunk_start + len(self._chunk_bytes):
+                self._advance()
+            local = off - self._chunk_start
+            take = min(size - len(out), len(self._chunk_bytes) - local)
+            out.extend(self._chunk_bytes[local : local + take])
+            off += take
+        return bytes(out)
+
+    def _advance(self) -> None:
+        chunk = next(self._iterator)
+        _check_biallelic(chunk["variant_allele"])
+        _check_diploid(chunk["call_genotype"])
+        encoded = self._encode_chunk(chunk)
+        self._chunk_plan_pos += 1
+        self._chunk_start = int(self._chunk_byte_offsets[self._chunk_plan_pos])
+        self._chunk_bytes = bytes(encoded)
+
+    def _restart(self, off: int) -> None:
+        prev_plan_pos = self._chunk_plan_pos
+        self._teardown_iterator()
+        plan_pos = int(np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1)
+        fields = [
+            "call_genotype",
+            "variant_allele",
+            "variant_contig",
+            "variant_position",
+        ]
+        if self._has_variant_id:
+            fields.append("variant_id")
+        if self._has_phased:
+            fields.append("call_genotype_phased")
+        self._iterator = self._reader.variant_chunks(
+            fields=fields,
+            start=plan_pos,
+        )
+        self._chunk_plan_pos = plan_pos - 1
+        self._advance()
+        if prev_plan_pos == -1:
+            logger.debug(f"BgenEncoder iterator init: off={off}, plan_pos={plan_pos}")
+        else:
+            self._restart_count += 1
+            logger.info(
+                f"BgenEncoder restart #{self._restart_count}: "
+                f"off={off}, plan_pos={prev_plan_pos} → {plan_pos}"
+            )
+
+    def _encode_chunk(self, chunk):
+        # Derive per-variant string / position / phase inputs from the
+        # chunk dict. Same conventions as _stream_bgen_to_file (rsid="."
+        # for missing, varid = rsid, "." for monomorphic alt).
+        G = chunk["call_genotype"]
+        alleles = chunk["variant_allele"]
+        positions = chunk["variant_position"]
+        contigs = chunk["variant_contig"]
+        varids = chunk.get("variant_id")
+        phased_arr = chunk.get("call_genotype_phased")
+
+        num_variants = G.shape[0]
+        # Per-variant string padding runs on the calling thread before
+        # any pool fan-out so _pad_to_fixed_length overflow raises
+        # deterministically rather than from inside a worker.
+        inputs = []
+        for j in range(num_variants):
+            if phased_arr is not None:
+                row_phased = phased_arr[j]
+                all_phased = bool(row_phased.all())
+                any_phased = bool(row_phased.any())
+                phased = all_phased
+                if any_phased and not all_phased:
+                    self._mixed_phase_count += 1
+            else:
+                phased = False
+
+            a1 = str(alleles[j, 0])
+            a2 = str(alleles[j, 1]) if alleles.shape[1] >= 2 else ""
+            if a2 == "":
+                a2 = "."
+            chrom = str(self._contig_ids[int(contigs[j])])
+            position = int(positions[j])
+            rsid = str(varids[j]) if varids is not None else "."
+            if rsid == "":
+                rsid = "."
+            varid = rsid
+
+            inputs.append(
+                (
+                    _pad_to_fixed_length(varid, self._varid_max, field_name="varid"),
+                    _pad_to_fixed_length(rsid, self._rsid_max, field_name="rsid"),
+                    _pad_to_fixed_length(chrom, self._chrom_max, field_name="chrom"),
+                    position,
+                    _pad_to_fixed_length(a1, self._allele_max, field_name="allele1"),
+                    _pad_to_fixed_length(a2, self._allele_max, field_name="allele2"),
+                    phased,
+                )
+            )
+
+        return self._encode_variants(G, inputs)
+
+    def _encode_variants(self, G, inputs):
+        # Sequential encode path. Phase 3 will add the parallel path.
+        out = bytearray(len(inputs) * self._bytes_per_variant)
+        for j, (varid_p, rsid_p, chrom_p, position, a1_p, a2_p, phased) in enumerate(
+            inputs
+        ):
+            block = _encode_variant_block_fixed_size(
+                varid_padded=varid_p,
+                rsid_padded=rsid_p,
+                chrom_padded=chrom_p,
+                position=position,
+                allele1_padded=a1_p,
+                allele2_padded=a2_p,
+                varid_max=self._varid_max,
+                rsid_max=self._rsid_max,
+                chrom_max=self._chrom_max,
+                allele_max=self._allele_max,
+                genotypes=G[j],
+                phased=phased,
+            )
+            out[j * self._bytes_per_variant : (j + 1) * self._bytes_per_variant] = block
+        return bytes(out)
+
+    def _teardown_iterator(self) -> None:
+        if self._iterator is not None:
+            self._iterator.close()
+            self._iterator = None
+        self._chunk_bytes = None
+        self._chunk_plan_pos = -1
+
+    def close(self) -> None:
+        """Tear down the active chunk iterator, shut down the encode
+        thread pool, and drop iterator state. Does not close the
+        underlying reader. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        self._teardown_iterator()
+        self._executor.shutdown(wait=True)
+        if self._restart_count > 0:
+            logger.debug(
+                f"BgenEncoder closed: {self._restart_count} restarts "
+                f"over {self._bgen_size} bytes"
+            )
+        if self._mixed_phase_count > 0:
+            logger.warning(
+                f"BgenEncoder: {self._mixed_phase_count} variant(s) had "
+                "mixed phase across samples; emitted as unphased (BGEN "
+                "has one phase flag per variant)."
+            )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 
 def generate_sample(reader):

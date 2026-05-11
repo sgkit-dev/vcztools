@@ -63,8 +63,7 @@ uv run python performance/benchmarks.py generate-long
 
 This adds a `rechunk_variant_only` stage after `augment` that rewrites
 each variant-only array with chunk size targeting ~10 MiB uncompressed
-per chunk. `call_*` fields keep the standard 1000-variant chunks. See
-`proportional-chunk-sizes.md` for design rationale.
+per chunk. `call_*` fields keep the standard 1000-variant chunks.
 
 ## Run the matrix
 

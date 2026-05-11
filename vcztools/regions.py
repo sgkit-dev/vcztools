@@ -419,7 +419,7 @@ def build_chunk_plan(
         "variant_contig",
         "variant_length",
     ]
-    surviving = []
+    plan: list[utils.ChunkRead] = []
     reader.set_variants(candidate_plan)
     for chunk_data in reader.variant_chunks(fields=read_fields):
         local_sel = regions_to_selection(
@@ -434,9 +434,11 @@ def build_chunk_plan(
         local_sel = np.asarray(local_sel, dtype=np.int64)
         if local_sel.size == 0:
             continue
-        surviving.append(chunk_data["variant_index"][local_sel])
-
-    if len(surviving) == 0:
-        return []
-    indexes = np.concatenate(surviving)
-    return chunk_plan_from_indexes(indexes, min_chunk=min_chunk)
+        abs_idx = chunk_data["variant_index"][local_sel]
+        # Bucket per yielded chunk: a stream chunk's surviving variants
+        # only ever fall in the (at most stream_chunk_size // min_chunk)
+        # min-chunks it overlaps, and stream chunks come in order, so
+        # appending the per-chunk plan entries to ``plan`` preserves the
+        # global min-chunk ordering without a final concatenate pass.
+        plan.extend(chunk_plan_from_indexes(abs_idx, min_chunk=min_chunk))
+    return plan

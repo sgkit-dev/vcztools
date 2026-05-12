@@ -103,6 +103,16 @@ benchmark = [
   "requests",
 ]
 
+validation = [
+  "bgen-reader",
+  "bio2zarr",
+  "msprime",
+  "pandas",
+  "pytest",
+  "tskit>=1",
+  "tstrait",
+]
+
 dev = [
   {include-group = "test"},
   {include-group = "lint"},

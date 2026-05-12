@@ -22,6 +22,27 @@ import zarr.storage
 _NO_COMPRESSION = [zarr.codecs.BytesCodec()]
 
 
+# Default per-field chunk-size multipliers over ``variants_chunk_size``,
+# applied unless ``field_chunk_overrides`` supplies an explicit size.
+# Production VCZ stores (e.g. ``performance/long_bench.vcz``) use
+# proportional chunking on variant-only fields: ``call_*`` defines the
+# minimum chunk size and variant-only fields get bigger chunks tuned to
+# their per-row footprint. The multiplier set below mirrors that shape
+# at test-fixture scale and deliberately mixes pairwise-non-multiple
+# values (e.g. ``2 × v_chunk`` and ``3 × v_chunk``) so the GCD-vs-min
+# stream-chunk-size regime is exercised by every test that builds a
+# fixture without explicit chunk-size overrides.
+DEFAULT_VARIANT_CHUNK_MULTIPLIERS: dict[str, int] = {
+    "variant_position": 3,
+    "variant_allele": 2,
+    "variant_contig": 6,
+    "variant_length": 4,
+    "variant_filter": 2,
+    "variant_id": 2,
+    "variant_quality": 2,
+}
+
+
 def _create_array(group, name, data, *, chunks, dimension_names):
     arr = group.create_array(
         name=name,
@@ -96,6 +117,7 @@ def make_vcz(
     variants_chunk_size=None,
     samples_chunk_size=None,
     field_chunk_overrides=None,
+    proportional_chunks=True,
     call_genotype=None,
     call_fields=None,
     info_fields=None,
@@ -114,13 +136,24 @@ def make_vcz(
 
     ``field_chunk_overrides`` is an optional ``dict[str, int]`` mapping
     a variant-axis array name (e.g. ``"variant_allele"``,
-    ``"variant_id"``) to a chunk size that overrides the default
-    ``variants_chunk_size`` for that field. Each override must be a
-    positive integer multiple of ``variants_chunk_size`` (the minimum
-    chunk size on the variants axis); ``call_*`` fields cannot be
-    overridden. Used to build fixtures that exercise the proportional-
-    chunk-size code paths in :mod:`vcztools.regions` and
-    :mod:`vcztools.retrieval`.
+    ``"variant_id"``) to a chunk size that overrides the default for
+    that field. Each override must be a positive integer multiple of
+    ``variants_chunk_size`` (the minimum chunk size on the variants
+    axis); ``call_*`` fields cannot be overridden.
+
+    Variant-only fields named in :data:`DEFAULT_VARIANT_CHUNK_MULTIPLIERS`
+    default to ``multiplier * variants_chunk_size`` so a fixture built
+    without explicit overrides matches the proportional chunking shape
+    that production stores use. Other variant-only fields (anonymous
+    INFO arrays passed via ``info_fields``) default to
+    ``variants_chunk_size``. The recipe is applied only for keys not
+    present in ``field_chunk_overrides``; pass an entry per field to
+    pin specific chunk sizes.
+
+    Set ``proportional_chunks=False`` to disable the recipe entirely
+    so every variant-only field defaults to ``variants_chunk_size`` —
+    intended for unit tests whose assertions depend on uniform chunking
+    (plan counts, multipliers, stream-chunk-size derivations).
     """
     variant_contig = np.asarray(variant_contig, dtype=np.int32)
     variant_position = np.asarray(variant_position, dtype=np.int32)
@@ -150,8 +183,10 @@ def make_vcz(
         samples_chunk_size if samples_chunk_size is not None else max(num_samples, 1)
     )
 
-    overrides = dict(field_chunk_overrides) if field_chunk_overrides is not None else {}
-    for name, size in overrides.items():
+    explicit_overrides = (
+        dict(field_chunk_overrides) if field_chunk_overrides is not None else {}
+    )
+    for name, size in explicit_overrides.items():
         if name.startswith("call_"):
             raise ValueError(
                 f"field_chunk_overrides[{name!r}]: call_* fields define the "
@@ -162,6 +197,14 @@ def make_vcz(
                 f"field_chunk_overrides[{name!r}]={size} must be a positive "
                 f"multiple of variants_chunk_size={v_chunk}"
             )
+    if proportional_chunks:
+        overrides = {
+            name: factor * v_chunk
+            for name, factor in DEFAULT_VARIANT_CHUNK_MULTIPLIERS.items()
+        }
+    else:
+        overrides = {}
+    overrides.update(explicit_overrides)
 
     def _vc(name: str) -> int:
         return overrides.get(name, v_chunk)
@@ -443,10 +486,14 @@ def copy_vcz(
     if samples_chunk_size is None and "sample_id" in source:
         samples_chunk_size = int(source["sample_id"].chunks[0])
 
-    # Default per-field chunk overrides: preserve any source field whose
-    # chunks[0] differs from the (new) min_chunk. The caller may pass an
-    # explicit dict to override this.
-    if field_chunk_overrides is None and variants_chunk_size == source_min_chunk:
+    # When the caller didn't pass field_chunk_overrides and isn't
+    # rechunking, default to preserving every variant-axis field's
+    # source chunk size. Recording all of them (not just ones that
+    # differ from v_chunk) keeps make_vcz's proportional-chunking
+    # recipe from re-applying to a field the copy is supposed to
+    # preserve.
+    caller_provided_overrides = field_chunk_overrides is not None
+    if not caller_provided_overrides and variants_chunk_size == source_min_chunk:
         derived_overrides: dict[str, int] = {}
         for name in source.array_keys():
             if name.startswith("call_"):
@@ -457,17 +504,18 @@ def copy_vcz(
             )
             if dims is None or len(dims) == 0 or dims[0] != "variants":
                 continue
-            field_chunk = int(arr.chunks[0])
-            if field_chunk != variants_chunk_size:
-                derived_overrides[name] = field_chunk
+            derived_overrides[name] = int(arr.chunks[0])
         field_chunk_overrides = derived_overrides or None
 
     # Preserve the source region_index when chunk sizes match the source
-    # (i.e. no caller override); recompute (via make_vcz) when they are
-    # overridden, since the chunk_idx column would otherwise be wrong.
+    # and the caller didn't override them; recompute (via make_vcz) when
+    # they are overridden, since the chunk_idx column would otherwise be
+    # wrong. The recomputed index can also differ in its end-position
+    # convention from whatever produced the source (e.g. bio2zarr), so
+    # only recompute when the chunk-rewrite truly invalidates it.
     keep_region_index = (
         variants_chunk_size == source_min_chunk
-        and field_chunk_overrides is None
+        and not caller_provided_overrides
         and "region_index" in source
     )
 

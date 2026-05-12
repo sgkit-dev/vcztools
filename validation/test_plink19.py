@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from . import conftest as cfg
 from . import helpers, reference
 
 
@@ -74,21 +75,40 @@ class TestPlink19FromPlinkInput:
         )
 
 
+class TestPlink19VariantIds:
+    def test_bim_snp_column_matches_reference(self, plink19_bin, small_fixture):
+        # PLINK doesn't echo the .bim SNP column in --freq output, so
+        # read it directly from the .bim file written by view-plink.
+        bim = pd.read_csv(
+            small_fixture.plink_prefix.with_suffix(".bim"),
+            sep=r"\s+",
+            engine="python",
+            header=None,
+            names=["chrom", "snp", "cm", "pos", "a1", "a2"],
+            dtype={"snp": str},
+        )
+        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        assert len(bim) == len(ids)
+        np.testing.assert_array_equal(bim["snp"].to_numpy(), ids)
+
+
 class TestPlink19RejectsBgenV12:
     """PLINK 1.9 cannot read BGEN v1.2. Pin the diagnostic so a future
     PLINK 1.9 release that drops the restriction surfaces here.
     """
 
-    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_rejects_layout2(self, tmp_path, plink19_bin, small_fixture, level):
-        bgen = small_fixture.bgen_minus1 if level == -1 else small_fixture.bgen_stored
+        bgen, sample = cfg.bgen_for_level(small_fixture, level)
         result = helpers.run_tool(
             [
                 str(plink19_bin),
                 "--bgen",
                 str(bgen),
                 "--sample",
-                str(small_fixture.sample_path),
+                str(sample),
                 "--freq",
                 "--out",
                 str(tmp_path / "frq"),

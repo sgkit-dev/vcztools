@@ -1,16 +1,24 @@
-"""bgenix reads vcztools view-bgen output and lists the same variants
-we wrote.
+"""bgenix reads vcztools view-bgen / BgenEncoder output and lists the
+same variants we wrote.
 
-Three checks per compression level:
+Three checks per BGEN flavour (CLI lvl=-1, CLI lvl=0, encoder):
 
-1. ``bgenix -list`` emits a metadata row per variant. The variant
-   positions match the source VCZ after the biallelic filter.
+1. ``bgenix -list`` emits a metadata row per variant. Positions and
+   alleles match the source VCZ after the biallelic filter.
 2. ``bgenix -index`` builds a ``.bgen.bgi`` index from scratch
-   (overwriting the one ``view-bgen`` produces). The reindexed file
-   then lists the same set of variants.
+   (overwriting any pre-existing one). The reindexed file then lists
+   the same set of variants.
 3. ``bgenix -incl-range`` returns a per-range subset whose variant
    count matches the count we'd compute from the source VCZ for the
    same range.
+
+A separate class checks variant IDs round-trip through bgenix's
+``rsid`` and ``alternate_ids`` columns.
+
+All tests stage the BGEN into ``tmp_path`` and rebuild the ``.bgi``
+index there. ``BgenEncoder`` writes no index, and reindexing the
+``view-bgen`` outputs in-place would clobber the index for other
+tests in the session.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from . import conftest as cfg
 from . import helpers, reference
 
 
@@ -36,19 +45,32 @@ def _bgenix_list(bgenix: pathlib.Path, bgen: pathlib.Path) -> pd.DataFrame:
     return pd.read_csv(pd.io.common.StringIO(text), sep="\t")
 
 
+def _stage_with_index(
+    bgenix: pathlib.Path, src: pathlib.Path, dst: pathlib.Path
+) -> pathlib.Path:
+    """Copy ``src`` to ``dst`` and build a fresh .bgen.bgi alongside it."""
+    dst.write_bytes(src.read_bytes())
+    helpers.run_tool([str(bgenix), "-g", str(dst), "-index", "-clobber"])
+    return dst
+
+
 class TestBgenixList:
-    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
-    def test_variant_positions_match_reference(self, bgenix_bin, small_fixture, level):
-        bgen = small_fixture.bgen_minus1 if level == -1 else small_fixture.bgen_stored
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_variant_positions_match_reference(
+        self, tmp_path, bgenix_bin, small_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(small_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         df = _bgenix_list(bgenix_bin, bgen)
         ref = reference.compute_variant_stats(small_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
         np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
 
-    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
-    def test_alleles_match_reference(self, bgenix_bin, small_fixture, level):
-        bgen = small_fixture.bgen_minus1 if level == -1 else small_fixture.bgen_stored
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_alleles_match_reference(self, tmp_path, bgenix_bin, small_fixture, level):
+        src, _ = cfg.bgen_for_level(small_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         df = _bgenix_list(bgenix_bin, bgen)
         ref = reference.compute_variant_stats(small_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
@@ -66,17 +88,10 @@ class TestBgenixList:
 
 
 class TestBgenixIndex:
-    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_reindex_then_list_agrees(self, tmp_path, bgenix_bin, small_fixture, level):
-        # Copy the BGEN into tmp so we don't clobber the .bgen.bgi
-        # written by view-bgen for other tests in the session.
-        bgen_src = (
-            small_fixture.bgen_minus1 if level == -1 else small_fixture.bgen_stored
-        )
-        bgen = tmp_path / "x.bgen"
-        bgen.write_bytes(bgen_src.read_bytes())
-        # `-clobber` lets bgenix overwrite a stale index.
-        helpers.run_tool([str(bgenix_bin), "-g", str(bgen), "-index", "-clobber"])
+        src, _ = cfg.bgen_for_level(small_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         bgi = bgen.with_suffix(".bgen.bgi")
         assert bgi.exists(), f"bgenix did not write {bgi}"
         df = _bgenix_list(bgenix_bin, bgen)
@@ -86,7 +101,7 @@ class TestBgenixIndex:
 
 
 class TestBgenixIncludeRange:
-    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_range_subset_count_matches(
         self, tmp_path, bgenix_bin, small_fixture, level
     ):
@@ -97,7 +112,8 @@ class TestBgenixIncludeRange:
         positions = ref.pos[biallelic]
         midpoint = int(positions[len(positions) // 2])
 
-        bgen = small_fixture.bgen_minus1 if level == -1 else small_fixture.bgen_stored
+        src, _ = cfg.bgen_for_level(small_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         # bgenix -incl-range emits a subset BGEN to stdout; capture
         # the raw bytes directly into a file and re-list to count.
         out = tmp_path / "sub.bgen"
@@ -117,3 +133,21 @@ class TestBgenixIncludeRange:
         # Reference: biallelic variants on contig "1" with pos <= midpoint.
         expected = int(((ref.chrom == "1") & (ref.pos <= midpoint) & biallelic).sum())
         assert len(df) == expected
+
+
+class TestBgenixVariantIds:
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_rsid_and_alternate_ids_match_reference(
+        self, tmp_path, bgenix_bin, small_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(small_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        # vcztools (both write_bgen and BgenEncoder) sets BGEN's varid
+        # and rsid fields to the same value from variant_id; bgenix
+        # exposes them as alternate_ids and rsid respectively.
+        np.testing.assert_array_equal(df["rsid"].astype(str).to_numpy(), ids)
+        np.testing.assert_array_equal(df["alternate_ids"].astype(str).to_numpy(), ids)

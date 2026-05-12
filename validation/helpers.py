@@ -14,8 +14,12 @@ import pathlib
 import subprocess
 
 import click.testing as ct
+import zarr
 
+import vcztools.bcftools_filter as bcftools_filter
+import vcztools.bgen as bgen
 import vcztools.cli as cli
+import vcztools.retrieval as retrieval
 
 
 @dataclasses.dataclass
@@ -104,3 +108,35 @@ def run_view_bgen(
             f"command: vcztools {cmd}\nstderr: {result.stderr}"
         )
     return out_prefix
+
+
+def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathlib.Path:
+    """Encode ``vcz_path`` to a fixed-size BGEN via :class:`vcztools.bgen.BgenEncoder`.
+
+    Writes ``<out_prefix>.bgen`` and ``<out_prefix>.sample``. No
+    ``.bgen.bgi`` index — bgenix tests that need one must build it via
+    ``bgenix -index``. The encoder rejects multi-allelic variants, so a
+    biallelic-only filter is materialised first (matching what
+    ``view-bgen --max-alleles 2`` does for the variable-size path).
+    """
+    root = zarr.open_group(str(vcz_path), mode="r")
+    bgen_path = out_prefix.with_suffix(".bgen")
+    sample_path = out_prefix.with_suffix(".sample")
+    with retrieval.VczReader(root) as reader:
+        biallelic_filter = bcftools_filter.BcftoolsFilter(
+            field_names=reader.field_names, include="N_ALT <= 1"
+        )
+        reader.set_variant_filter(biallelic_filter)
+        reader.materialise_variant_filter()
+        with bgen.BgenEncoder(reader) as enc:
+            with open(bgen_path, "wb") as f:
+                off = 0
+                step = 1 << 17
+                while True:
+                    chunk = enc.read(off, step)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    off += len(chunk)
+        sample_path.write_text(bgen.generate_sample(reader))
+    return bgen_path

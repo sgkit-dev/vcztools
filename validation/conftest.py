@@ -81,12 +81,14 @@ def bolt_lmm_bin() -> pathlib.Path:
 class FixtureOutputs:
     """Paths to converted artefacts for one VCZ fixture.
 
-    ``vcz_path`` is the source store. ``bgen_minus1`` is BGEN written
-    at the zlib default level (-1); ``bgen_stored`` is BGEN written
-    with compression level 0 (the "fixed length / stored" variant we
-    want exercised). ``plink_prefix`` is the bed/bim/fam prefix from
-    ``view-plink``. ``sample_path`` is the .sample file produced
-    alongside the BGEN outputs (qctool / bgenix need it).
+    ``vcz_path`` is the source store. ``bgen_minus1`` and ``bgen_stored``
+    come from the ``view-bgen`` CLI at compression levels ``-1`` (zlib
+    default) and ``0`` (stored) respectively. ``bgen_encoder`` is the
+    fixed-size, byte-equal-width-per-variant output from the
+    Python-API-only :class:`vcztools.bgen.BgenEncoder`. The encoder
+    writes its own ``.sample`` sidecar (``bgen_encoder_sample``);
+    ``sample_path`` is the one shared by both ``view-bgen`` outputs.
+    ``plink_prefix`` is the bed/bim/fam prefix from ``view-plink``.
     """
 
     size: str
@@ -95,7 +97,25 @@ class FixtureOutputs:
     plink_prefix: pathlib.Path
     bgen_minus1: pathlib.Path
     bgen_stored: pathlib.Path
+    bgen_encoder: pathlib.Path
     sample_path: pathlib.Path
+    bgen_encoder_sample: pathlib.Path
+
+
+BGEN_LEVELS = ["lvl=-1", "lvl=0", "encoder"]
+
+
+def bgen_for_level(fx: FixtureOutputs, level: str) -> tuple[pathlib.Path, pathlib.Path]:
+    """Return ``(bgen_path, sample_path)`` for one of the three BGEN
+    flavours produced by the fixture. The encoder needs its own .sample
+    because it does not share the CLI's filter/sample plumbing."""
+    if level == "encoder":
+        return fx.bgen_encoder, fx.bgen_encoder_sample
+    if level == "lvl=-1":
+        return fx.bgen_minus1, fx.sample_path
+    if level == "lvl=0":
+        return fx.bgen_stored, fx.sample_path
+    raise ValueError(f"unknown BGEN level identifier {level!r}")
 
 
 def _require_fixture(size: str) -> pathlib.Path:
@@ -114,22 +134,27 @@ def _build_outputs(size: str, work: pathlib.Path) -> FixtureOutputs:
     plink_prefix = work / "plink"
     bgen_minus1 = work / "bgen_lvl_minus1"
     bgen_stored = work / "bgen_lvl_stored"
+    bgen_encoder = work / "bgen_encoder"
 
     # The msprime simulation produces occasional recurrent mutations at
     # the same site, so a small fraction of variants are tri-allelic.
     # PLINK 1 .bed and BGEN layout 2 (as we write it) are biallelic-
     # only; --max-alleles 2 drops those rows, matching what every
-    # downstream tool expects.
+    # downstream tool expects. run_bgen_encoder applies the same
+    # biallelic-only filter internally.
     extra = "--max-alleles 2"
     helpers.run_view_plink(vcz, plink_prefix, extra_args=extra)
     helpers.run_view_bgen(vcz, bgen_minus1, compression_level=-1, extra_args=extra)
     helpers.run_view_bgen(vcz, bgen_stored, compression_level=0, extra_args=extra)
+    helpers.run_bgen_encoder(vcz, bgen_encoder)
 
-    # vcztools writes a `.sample` next to the BGEN; both BGENs share
-    # the same sample list. Use the one from bgen_minus1.
+    # view-bgen writes a `.sample` next to each BGEN; the two view-bgen
+    # outputs share a sample list, the encoder writes its own.
     sample_path = bgen_minus1.with_suffix(".sample")
-    if not sample_path.exists():
-        raise AssertionError(f"missing .sample file at {sample_path}")
+    encoder_sample_path = bgen_encoder.with_suffix(".sample")
+    for p in (sample_path, encoder_sample_path):
+        if not p.exists():
+            raise AssertionError(f"missing .sample file at {p}")
 
     return FixtureOutputs(
         size=size,
@@ -138,7 +163,9 @@ def _build_outputs(size: str, work: pathlib.Path) -> FixtureOutputs:
         plink_prefix=plink_prefix,
         bgen_minus1=bgen_minus1.with_suffix(".bgen"),
         bgen_stored=bgen_stored.with_suffix(".bgen"),
+        bgen_encoder=bgen_encoder.with_suffix(".bgen"),
         sample_path=sample_path,
+        bgen_encoder_sample=encoder_sample_path,
     )
 
 

@@ -98,3 +98,15 @@ def compute_variant_stats(vcz_path: str | pathlib.Path) -> VariantStats:
 def sample_ids(vcz_path: str | pathlib.Path) -> list[str]:
     group = zarr.open_group(str(vcz_path), mode="r")
     return [str(s) for s in group["sample_id"][...]]
+
+
+def variant_ids(vcz_path: str | pathlib.Path) -> np.ndarray:
+    """Return the per-variant ``variant_id`` array as Python ``str`` values.
+
+    Raises ``KeyError`` if the store has no ``variant_id`` field —
+    fixtures used by the round-trip checks must have one injected by
+    ``generate_data.py``.
+    """
+    group = zarr.open_group(str(vcz_path), mode="r")
+    raw = group["variant_id"][...]
+    return np.array([str(v) for v in raw])

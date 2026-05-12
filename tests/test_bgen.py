@@ -277,8 +277,6 @@ class TestPhaseDetection:
 
 class TestBgiIndex:
     def test_basic(self, tmp_path):
-        bgen_path = tmp_path / "out.bgen"
-        bgen_path.write_bytes(b"\x00" * 1500)
         entries = [
             bgen._BgiEntry(
                 chromosome="chr1",
@@ -301,8 +299,14 @@ class TestBgiIndex:
                 size_in_bytes=140,
             ),
         ]
+        metadata = bgen._BgiMetadata(
+            filename="out.bgen",
+            file_size=1500,
+            last_write_time=1234567890,
+            first_1000_bytes=b"\x00" * 1000,
+        )
         bgi_path = tmp_path / "out.bgen.bgi"
-        bgen._write_bgi_index(bgi_path, bgen_path, entries)
+        bgen._write_bgi_index(bgi_path, entries, metadata)
         conn = sqlite3.connect(str(bgi_path))
         try:
             rows = conn.execute(
@@ -314,21 +318,26 @@ class TestBgiIndex:
                 ("chr1", 100, "rs1", 2, "A", "T", 24, 128),
                 ("chr1", 200, "rs2", 2, "C", "G", 152, 140),
             ]
-            metadata = conn.execute(
-                "SELECT filename, file_size, length(first_1000_bytes) FROM Metadata"
+            md_row = conn.execute(
+                "SELECT filename, file_size, last_write_time, "
+                "length(first_1000_bytes) FROM Metadata"
             ).fetchone()
-            assert metadata == ("out.bgen", 1500, 1000)
+            assert md_row == ("out.bgen", 1500, 1234567890, 1000)
         finally:
             conn.close()
 
     def test_index_overwritten(self, tmp_path):
-        bgen_path = tmp_path / "out.bgen"
-        bgen_path.write_bytes(b"\x00" * 100)
         bgi_path = tmp_path / "out.bgen.bgi"
+        metadata = bgen._BgiMetadata(
+            filename="out.bgen",
+            file_size=100,
+            last_write_time=0,
+            first_1000_bytes=b"",
+        )
         # First write
-        bgen._write_bgi_index(bgi_path, bgen_path, [])
+        bgen._write_bgi_index(bgi_path, [], metadata)
         # Second write should not raise (PK conflict would if not unlinked).
-        bgen._write_bgi_index(bgi_path, bgen_path, [])
+        bgen._write_bgi_index(bgi_path, [], metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -1188,3 +1197,150 @@ class TestBgenEncoderOverflowRaises:
         with bgen.BgenEncoder(reader) as enc:
             with pytest.raises(ValueError, match="allele1"):
                 enc.read(0, enc.bgen_size)
+
+
+class TestBgenEncoderBgiIndex:
+    def test_variant_rows(self, tmp_path):
+        with _build_encoder(num_variants=3, num_samples=2) as enc:
+            bgi_path = tmp_path / "out.bgen.bgi"
+            enc.write_bgi_index(bgi_path)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                rows = conn.execute(
+                    "SELECT chromosome, position, rsid, number_of_alleles, "
+                    "allele1, allele2, file_start_position, size_in_bytes "
+                    "FROM Variant ORDER BY file_start_position"
+                ).fetchall()
+            finally:
+                conn.close()
+            assert len(rows) == 3
+            bpv = enc.bytes_per_variant
+            for i, row in enumerate(rows):
+                assert row[0] == "chr1"
+                assert row[1] == 100 + i
+                assert row[2] == "."
+                assert row[3] == 2
+                assert row[4] == "A"
+                assert row[5] == "T"
+                assert row[6] == enc.header_size + i * bpv
+                assert row[7] == bpv
+
+    def test_metadata_row(self, tmp_path):
+        with _build_encoder(num_variants=2, num_samples=3) as enc:
+            bgi_path = tmp_path / "sample.bgen.bgi"
+            enc.write_bgi_index(bgi_path)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                md = conn.execute(
+                    "SELECT filename, file_size, length(first_1000_bytes) FROM Metadata"
+                ).fetchone()
+            finally:
+                conn.close()
+            assert md == ("sample.bgen", enc.bgen_size, min(1000, enc.bgen_size))
+
+    def test_filename_strip_only_trailing_bgi(self, tmp_path):
+        # A bgi_path that doesn't end in ".bgi" is preserved verbatim.
+        with _build_encoder(num_variants=1, num_samples=1) as enc:
+            bgi_path = tmp_path / "custom-name"
+            enc.write_bgi_index(bgi_path)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                (filename,) = conn.execute("SELECT filename FROM Metadata").fetchone()
+            finally:
+                conn.close()
+            assert filename == "custom-name"
+
+    def test_offsets_match_byte_stream(self, tmp_path):
+        # For every variant in the .bgi, the slice
+        # [file_start_position, file_start_position+size_in_bytes) of the
+        # encoder's byte stream should be a self-contained variant block.
+        # The simplest invariant: rows are contiguous and the last one
+        # ends at total_size.
+        with _build_encoder(num_variants=5, num_samples=4) as enc:
+            bgi_path = tmp_path / "x.bgen.bgi"
+            enc.write_bgi_index(bgi_path)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                rows = conn.execute(
+                    "SELECT file_start_position, size_in_bytes FROM Variant "
+                    "ORDER BY file_start_position"
+                ).fetchall()
+            finally:
+                conn.close()
+            assert rows[0][0] == enc.header_size
+            for (start, size), (next_start, _) in zip(rows, rows[1:]):
+                assert next_start == start + size
+            last_start, last_size = rows[-1]
+            assert last_start + last_size == enc.bgen_size
+
+    def test_metadata_first_bytes_match_drain(self, tmp_path):
+        with _build_encoder(num_variants=2, num_samples=2) as enc:
+            stream = _drain(enc)
+            bgi_path = tmp_path / "out.bgen.bgi"
+            enc.write_bgi_index(bgi_path)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                (first_bytes,) = conn.execute(
+                    "SELECT first_1000_bytes FROM Metadata"
+                ).fetchone()
+            finally:
+                conn.close()
+            assert first_bytes == stream[: min(1000, enc.bgen_size)]
+
+    def test_equivalent_to_write_bgen_metadata_columns(self, tmp_path):
+        # Variant-metadata columns (chromosome, position, rsid,
+        # number_of_alleles, allele1, allele2) should be identical
+        # between write_bgen and BgenEncoder.write_bgi_index for the
+        # same reader. Offsets and sizes differ (variable vs fixed
+        # widths) and are not compared.
+        kwargs = dict(num_variants=4, num_samples=3)
+
+        out = tmp_path / "wb"
+        bgen.write_bgen(_build_reader(**kwargs), out)
+        write_bgen_bgi = out.with_suffix(".bgen").with_suffix(".bgen.bgi")
+        conn = sqlite3.connect(str(write_bgen_bgi))
+        try:
+            wb_rows = conn.execute(
+                "SELECT chromosome, position, rsid, number_of_alleles, "
+                "allele1, allele2 FROM Variant ORDER BY file_start_position"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        with _build_encoder(**kwargs) as enc:
+            enc_bgi = tmp_path / "enc.bgen.bgi"
+            enc.write_bgi_index(enc_bgi)
+            conn = sqlite3.connect(str(enc_bgi))
+            try:
+                enc_rows = conn.execute(
+                    "SELECT chromosome, position, rsid, number_of_alleles, "
+                    "allele1, allele2 FROM Variant ORDER BY file_start_position"
+                ).fetchall()
+            finally:
+                conn.close()
+        assert wb_rows == enc_rows
+
+    def test_with_variant_id(self, tmp_path):
+        # When variant_id is present in the reader, rsids are propagated
+        # from the field rather than emitted as ".".
+        reader = _build_reader(num_variants=2, num_samples=2, variant_id=["rsA", "rsB"])
+        with bgen.BgenEncoder(reader) as enc:
+            bgi_path = tmp_path / "out.bgen.bgi"
+            enc.write_bgi_index(bgi_path)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                rsids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT rsid FROM Variant ORDER BY file_start_position"
+                    ).fetchall()
+                ]
+            finally:
+                conn.close()
+            assert rsids == ["rsA", "rsB"]
+
+    def test_rejects_multiallelic(self, tmp_path):
+        reader = _build_reader(num_variants=1, num_samples=1, alleles=[("A", "T", "G")])
+        with bgen.BgenEncoder(reader) as enc:
+            with pytest.raises(ValueError, match="Multi-allelic"):
+                enc.write_bgi_index(tmp_path / "out.bgen.bgi")

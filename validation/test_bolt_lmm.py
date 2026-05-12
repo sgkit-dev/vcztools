@@ -1,0 +1,182 @@
+"""BOLT-LMM accepts vcztools view-plink and view-bgen output as valid
+genotype input.
+
+BOLT-LMM's LMM variance-component fit is fragile on small / synthetic
+genomes — heritability estimation routinely returns h2g ≈ 0 (and can
+crash with a floating-point exception in the inf-model step) for any
+fixture small enough to ship in a local validation suite. Real
+performance benchmarks of BOLT-LMM use UK-Biobank-scale data: hundreds
+of thousands of independent loci across 22 chromosomes. We can't
+reproduce that here in seconds.
+
+What we *can* validate is the file-format contract:
+
+- BOLT-LMM parses ``view-plink`` output (.bed/.bim/.fam) and reports
+  the correct sample and SNP counts in its log.
+- BOLT-LMM parses ``view-bgen`` output (.bgen/.sample), at both
+  compression-level -1 and 0, and reports matching counts.
+
+This pins the "downstream tool can read the file" contract, which is
+the actual deliverable of the validation suite for vcztools. The
+allele-frequency cross-check is left to qctool, PLINK 1.9, and
+REGENIE, all of which produce reliable per-variant frequency output on
+the same fixtures.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+
+import pandas as pd
+import pytest
+
+from . import helpers, reference
+
+
+def _remap_pheno_fid0(pheno_path: pathlib.Path, out_path: pathlib.Path) -> pathlib.Path:
+    """Rewrite a phenotype file's FID column to "0" so it matches the
+    .fam written by ``view-plink``."""
+    df = pd.read_csv(pheno_path, sep=r"\s+", engine="python")
+    df["FID"] = "0"
+    df.to_csv(out_path, sep=" ", index=False)
+    return out_path
+
+
+def _remap_sample_fid0(
+    sample_path: pathlib.Path, out_path: pathlib.Path
+) -> pathlib.Path:
+    """Rewrite a BGEN ``.sample`` file's ID_1 column to "0" so the
+    (FID, IID) pairs match the ``.fam`` written by ``view-plink``.
+    BOLT-LMM, when given both ``--bfile`` and ``--bgenFile``, cross-
+    checks the two on (FID, IID) and aborts if any sample is missing
+    on either side."""
+    lines = sample_path.read_text().splitlines()
+    # .sample format: header row, then a per-column type row
+    # (0=identifier), then one row per sample.
+    out = [lines[0], lines[1]]
+    for row in lines[2:]:
+        parts = row.split()
+        parts[0] = "0"
+        out.append(" ".join(parts))
+    out_path.write_text("\n".join(out) + "\n")
+    return out_path
+
+
+def _bolt_run(
+    bolt: pathlib.Path,
+    args: list[str],
+    *,
+    expected_n_samples: int,
+    expected_n_snps: int,
+) -> str:
+    """Run BOLT-LMM and return its log stdout. We don't assert exit 0
+    because the LMM fit can fail on small synthetic data; we only need
+    the genotype-data parsing to succeed, which happens before the
+    fit. Asserts the parsing was successful by matching summary lines.
+    BOLT prints two different summary shapes depending on the source:
+    PLINK input emits ``Total indivs in PLINK data: Nbed = <N>`` /
+    ``Total snps in PLINK data: Mbed = <M>``; BGEN input emits
+    ``samples (Nbgen): <N>`` / ``snpBlocks (Mbgen): <M>``.
+    """
+    result = helpers.run_tool([str(bolt), *args], check=False)
+    log = result.stdout
+    m_n_plink = re.search(r"Total indivs in PLINK data: Nbed = (\d+)", log)
+    m_m_plink = re.search(r"Total snps in PLINK data: Mbed = (\d+)", log)
+    assert m_n_plink is not None, (
+        f"BOLT didn't print a PLINK samples-loaded summary; stdout tail:\n{log[-2000:]}"
+    )
+    assert m_m_plink is not None, (
+        f"BOLT didn't print a PLINK SNPs-loaded summary; stdout tail:\n{log[-2000:]}"
+    )
+    assert int(m_n_plink.group(1)) == expected_n_samples
+    assert int(m_m_plink.group(1)) == expected_n_snps
+    return log
+
+
+class TestBoltLmmFromPlinkInput:
+    def test_loads_bed_and_runs_linreg(self, tmp_path, bolt_lmm_bin, large_fixture):
+        pheno = _remap_pheno_fid0(large_fixture.pheno_path, tmp_path / "pheno.tsv")
+        ref = reference.compute_variant_stats(large_fixture.vcz_path)
+        n_samples = len(reference.sample_ids(large_fixture.vcz_path))
+        n_snps_biallelic = int((ref.n_alleles == 2).sum())
+        log = _bolt_run(
+            bolt_lmm_bin,
+            [
+                "--bfile",
+                str(large_fixture.plink_prefix),
+                "--phenoFile",
+                str(pheno),
+                "--phenoCol",
+                "Y1",
+                "--lmm",
+                "--LDscoresUseChip",
+                "--numLeaveOutChunks",
+                "2",
+                "--statsFile",
+                str(tmp_path / "stats.txt"),
+            ],
+            expected_n_samples=n_samples,
+            expected_n_snps=n_snps_biallelic,
+        )
+        # BOLT computes LINREG stats before fitting the LMM. The
+        # presence of the timing line confirms LINREG ran successfully
+        # against our genotype data.
+        assert "Computing linear regression (LINREG) stats" in log
+
+
+class TestBoltLmmFromBgenInput:
+    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
+    def test_loads_bgen(self, tmp_path, bolt_lmm_bin, large_fixture, level):
+        bgen = large_fixture.bgen_minus1 if level == -1 else large_fixture.bgen_stored
+        # BOLT also requires a .bed-style anchor input for --lmm even
+        # when scoring BGEN variants, so we pass --bfile alongside.
+        # The pheno file and .sample file are both remapped to FID=0
+        # so the (FID, IID) pairs line up with the .fam written by
+        # view-plink (BOLT cross-checks .fam and .sample).
+        pheno = _remap_pheno_fid0(large_fixture.pheno_path, tmp_path / "pheno.tsv")
+        sample = _remap_sample_fid0(
+            large_fixture.sample_path, tmp_path / "remap.sample"
+        )
+        ref = reference.compute_variant_stats(large_fixture.vcz_path)
+        n_samples = len(reference.sample_ids(large_fixture.vcz_path))
+        n_snps_biallelic = int((ref.n_alleles == 2).sum())
+        log = _bolt_run(
+            bolt_lmm_bin,
+            [
+                "--bfile",
+                str(large_fixture.plink_prefix),
+                "--bgenFile",
+                str(bgen),
+                "--sampleFile",
+                str(sample),
+                "--phenoFile",
+                str(pheno),
+                "--phenoCol",
+                "Y1",
+                "--lmm",
+                "--LDscoresUseChip",
+                "--numLeaveOutChunks",
+                "2",
+                "--statsFile",
+                str(tmp_path / "stats.txt"),
+                "--statsFileBgenSnps",
+                str(tmp_path / "stats_bgen.txt"),
+            ],
+            expected_n_samples=n_samples,
+            expected_n_snps=n_snps_biallelic,
+        )
+        # BGEN parsing prints its own summary lines:
+        #   samples (Nbgen): <N>
+        #   snpBlocks (Mbgen): <M>
+        m_n_bgen = re.search(r"samples \(Nbgen\): (\d+)", log)
+        m_m_bgen = re.search(r"snpBlocks \(Mbgen\): (\d+)", log)
+        assert m_n_bgen is not None, (
+            "BOLT didn't print a BGEN samples-loaded summary; "
+            f"stdout tail:\n{log[-2000:]}"
+        )
+        assert m_m_bgen is not None, (
+            f"BOLT didn't print a BGEN SNPs-loaded summary; stdout tail:\n{log[-2000:]}"
+        )
+        assert int(m_n_bgen.group(1)) == n_samples
+        assert int(m_m_bgen.group(1)) == n_snps_biallelic

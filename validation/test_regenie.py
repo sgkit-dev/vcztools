@@ -165,10 +165,17 @@ class TestRegenieFromPlinkInput:
         ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
+        # REGENIE writes A1FREQ to 6 decimal places. With 1% missing
+        # the per-variant denominator is no longer a power-of-10
+        # friendly 400, so fractions like 291/396 don't have an exact
+        # 6-decimal representation — the diff is up to ~5e-7. The
+        # computation itself round-trips exactly (vcztools writes hard
+        # calls); this tolerance only covers REGENIE's output
+        # formatter.
         np.testing.assert_allclose(
             df["A1FREQ"].to_numpy(),
             ref.alt_freq[biallelic],
-            atol=1e-10,
+            atol=5e-7,
         )
 
 
@@ -198,13 +205,14 @@ class TestRegenieFromBgenInput:
         ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
-        # vcztools writes hard calls (P=1.0 on the called genotype),
-        # so the BGEN dosages REGENIE reads are integer-valued and
-        # the recomputed frequency round-trips exactly.
+        # Same display-precision dodge as the PLINK input case. The
+        # numerical round-trip is exact because vcztools writes hard
+        # calls; the ~5e-7 slack covers REGENIE's 6-decimal A1FREQ
+        # output formatter.
         np.testing.assert_allclose(
             df["A1FREQ"].to_numpy(),
             ref.alt_freq[biallelic],
-            atol=1e-10,
+            atol=5e-7,
         )
 
 
@@ -216,7 +224,10 @@ class TestRegenieVariantIds:
             small_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
         )
         pred = _run_step1_plink(
-            regenie_bin, small_unphased_fixture.plink_prefix, pheno, tmp_path / "step1"
+            regenie_bin,
+            small_unphased_fixture.plink_prefix,
+            pheno,
+            tmp_path / "step1",
         )
         df = _run_step2(
             regenie_bin,

@@ -40,24 +40,55 @@ def _plink_freq(
     return pd.read_csv(out.with_suffix(".frq"), sep=r"\s+", engine="python")
 
 
+def _plink_freq_counts(
+    plink_bin: pathlib.Path,
+    prefix: pathlib.Path,
+    out: pathlib.Path,
+) -> pd.DataFrame:
+    """Run ``plink --bfile <prefix> --freq counts`` and return the
+    parsed ``.frq.counts`` table. Columns: CHR, SNP, A1, A2, C1 (minor
+    allele count), C2 (major allele count), G0 (missing genotype
+    count). Integer-valued — bypasses PLINK's 4-decimal MAF display
+    truncation in ``--freq``."""
+    helpers.run_tool(
+        [
+            str(plink_bin),
+            "--bfile",
+            str(prefix),
+            "--freq",
+            "counts",
+            "--out",
+            str(out),
+        ]
+    )
+    return pd.read_csv(str(out) + ".frq.counts", sep=r"\s+", engine="python")
+
+
 class TestPlink19FromPlinkInput:
     def test_minor_allele_frequency_matches_reference(
         self, tmp_path, plink19_bin, small_unphased_fixture
     ):
+        # Use ``--freq counts`` so we get integer allele counts (C1 =
+        # minor, C2 = major). PLINK truncates the ``MAF`` column of
+        # ``--freq`` to 4 decimals, which fails an atol=1e-10
+        # comparison at fractions like 105/396.
         out = tmp_path / "freq"
-        df = _plink_freq(plink19_bin, small_unphased_fixture.plink_prefix, out)
+        df = _plink_freq_counts(plink19_bin, small_unphased_fixture.plink_prefix, out)
 
         ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum()), (
-            f"plink --freq emitted {len(df)} rows, reference has "
+            f"plink --freq counts emitted {len(df)} rows, reference has "
             f"{int(biallelic.sum())} biallelic variants"
         )
-        # PLINK reports MAF on the minor allele only; compare against
-        # ``minor_freq`` directly. PLINK 1.9 uses exact float; no
-        # quantisation tolerance needed (PLINK reads BED, not BGEN).
+        # PLINK preserves the .bim allele order, so ``C1`` is the count
+        # of the file's A1 (ALT, per view-plink) — not always the minor.
+        # Take min(C1, C2) for the minor-allele count.
+        n_called = (df["C1"] + df["C2"]).to_numpy()
+        minor_count = np.minimum(df["C1"].to_numpy(), df["C2"].to_numpy())
+        minor_freq = minor_count / n_called
         np.testing.assert_allclose(
-            df["MAF"].to_numpy(),
+            minor_freq,
             ref.minor_freq[biallelic],
             atol=1e-10,
         )
@@ -65,15 +96,18 @@ class TestPlink19FromPlinkInput:
     def test_chromosome_observation_count(
         self, tmp_path, plink19_bin, small_unphased_fixture
     ):
-        # Each biallelic row has 2 * n_samples observed chromosomes
-        # when no genotypes are missing (the msprime fixture has
-        # no missingness).
+        # The fixture has 1% missing calls (all full-call). NCHROBS
+        # reports the count of called chromosomes per variant: every
+        # missing call subtracts 2 from the row's total. Compare
+        # against the per-variant non-missing-allele count we get from
+        # the source VCZ.
         out = tmp_path / "freq"
         df = _plink_freq(plink19_bin, small_unphased_fixture.plink_prefix, out)
-        n_samples = len(reference.sample_ids(small_unphased_fixture.vcz_path))
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
         np.testing.assert_array_equal(
             df["NCHROBS"].to_numpy(),
-            np.full(len(df), 2 * n_samples),
+            ref.n_called[biallelic],
         )
 
 

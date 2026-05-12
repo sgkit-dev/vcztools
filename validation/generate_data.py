@@ -156,7 +156,70 @@ def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path, *, phased: bool) -
     # every variant-scoped field. bio2zarr writes v2 by default, so
     # set the v2 attribute on the array we just appended.
     variant_id_arr.attrs["_ARRAY_DIMENSIONS"] = ["variants"]
+    _inject_missing_calls(group, fraction=MISSING_FRACTION)
     logger.info("Wrote VCZ store at %s", vcz_path)
+
+
+MISSING_FRACTION = 0.01
+
+
+def _inject_missing_calls(group: zarr.Group, *, fraction: float) -> None:
+    """Mark ``fraction`` of (variant, sample) calls as fully missing.
+
+    "Fully missing" means every ploidy slot of the call is set to
+    ``-1`` and the matching ``call_genotype_mask`` entries are set to
+    ``True``. This mirrors how a genotyping caller emits no-calls in
+    practice — a sample either has a complete diploid call or none at
+    all.
+
+    Missing positions are picked deterministically: every ``stride``-th
+    flat (variant, sample) index, where ``stride = round(1/fraction)``.
+    Variants that would become monomorphic under that mask (rare for
+    1% missingness — only a handful of singleton-ALT variants in the
+    fixture) are reverted to their full-call state, so every emitted
+    variant retains both alleles. REGENIE refuses to fit step-1 blocks
+    containing zero-variance SNPs, so this revert step keeps the
+    downstream surface clean without changing the fraction
+    appreciably.
+    """
+    gt = group["call_genotype"]
+    n_variants, n_samples, _ploidy = gt.shape
+    n_total = n_variants * n_samples
+    stride = int(round(1.0 / fraction))
+    flat_missing = np.zeros(n_total, dtype=bool)
+    flat_missing[::stride] = True
+    missing_mask = flat_missing.reshape(n_variants, n_samples)
+
+    gt_values = gt[:]
+    # Tentative: where the mask says missing, both alleles are -1.
+    tentative = gt_values.copy()
+    tentative[missing_mask] = -1
+    # Per-variant ALT count over non-missing alleles, and total non-
+    # missing-allele count: monomorphic iff alt_count is 0 or equals
+    # the total non-missing.
+    non_missing_alleles = tentative >= 0
+    n_alleles = non_missing_alleles.sum(axis=(1, 2))
+    alt_alleles = (tentative > 0).sum(axis=(1, 2))
+    mono = (alt_alleles == 0) | (alt_alleles == n_alleles)
+    if mono.any():
+        logger.info(
+            "Reverting missing calls on %d would-be-monomorphic variants",
+            int(mono.sum()),
+        )
+        missing_mask[mono, :] = False
+    gt_values[missing_mask] = -1
+    gt[:] = gt_values
+    if "call_genotype_mask" in group.array_keys():
+        mask_arr = group["call_genotype_mask"]
+        mask_values = mask_arr[:]
+        mask_values[missing_mask] = True
+        mask_arr[:] = mask_values
+    logger.info(
+        "Injected %d missing calls (%.2f%% of %d total)",
+        int(missing_mask.sum()),
+        100.0 * missing_mask.sum() / n_total,
+        n_total,
+    )
 
 
 def simulate_phenotype(

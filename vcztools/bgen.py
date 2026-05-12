@@ -576,14 +576,9 @@ class BgenEncoder(format_encoder.FormatEncoder):
         bytes_per_variant`` and is exactly ``bytes_per_variant`` bytes
         wide. Sidecar generation iterates only variant-metadata fields
         (``variant_allele``, ``variant_contig``, ``variant_position``,
-        and ``variant_id`` if present); no genotype data is read.
-
-        The ``Metadata`` table is populated from the encoder itself, so
-        a ``.bgen`` file on disk is not required. ``filename`` is
-        derived from ``bgi_path`` by stripping a trailing ``.bgi``
-        suffix (e.g. ``out.bgen.bgi`` → ``out.bgen``).
+        and ``variant_id`` if present); no genotype data is read, and
+        the on-disk ``.bgen`` file is not required.
         """
-        bgi_path = pathlib.Path(bgi_path)
         fields = ["variant_allele", "variant_contig", "variant_position"]
         if self._has_variant_id:
             fields.append("variant_id")
@@ -621,17 +616,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 )
                 file_offset += bpv
 
-        filename = bgi_path.name
-        if filename.endswith(".bgi"):
-            filename = filename[: -len(".bgi")]
-        first_bytes = self.read(0, min(1000, self.total_size))
-        metadata = _BgiMetadata(
-            filename=filename,
-            file_size=self.total_size,
-            last_write_time=int(time.time()),
-            first_1000_bytes=first_bytes,
-        )
-        _write_bgi_index(bgi_path, entries, metadata)
+        _write_bgi_index(bgi_path, entries)
 
 
 def generate_sample(reader):
@@ -670,14 +655,6 @@ CREATE TABLE Variant (
   PRIMARY KEY (chromosome, position, rsid, allele1, allele2, file_start_position)
 );
 CREATE INDEX position_idx ON Variant (chromosome, position);
-
-CREATE TABLE Metadata (
-  filename TEXT NOT NULL,
-  file_size INTEGER NOT NULL,
-  last_write_time INTEGER NOT NULL,
-  first_1000_bytes BLOB NOT NULL,
-  index_creation_time INTEGER NOT NULL
-);
 """
 
 
@@ -693,17 +670,11 @@ class _BgiEntry:
     size_in_bytes: int
 
 
-@dataclasses.dataclass
-class _BgiMetadata:
-    filename: str
-    file_size: int
-    last_write_time: int
-    first_1000_bytes: bytes
-
-
-def _write_bgi_index(bgi_path, entries, metadata):
+def _write_bgi_index(bgi_path, entries):
     """Write the bgenix SQLite index. Schema documented at
-    https://enkre.net/cgi-bin/code/bgen/wiki/The bgenix index file format."""
+    https://enkre.net/cgi-bin/code/bgen/wiki/The bgenix index file format.
+    The bgenix Metadata table is omitted: it is informational and no
+    downstream tool we target requires it."""
     bgi_path = pathlib.Path(bgi_path)
     if bgi_path.exists():
         bgi_path.unlink()
@@ -727,17 +698,6 @@ def _write_bgi_index(bgi_path, entries, metadata):
                 )
                 for e in entries
             ],
-        )
-        conn.execute(
-            "INSERT INTO Metadata (filename, file_size, last_write_time, "
-            "first_1000_bytes, index_creation_time) VALUES (?, ?, ?, ?, ?)",
-            (
-                metadata.filename,
-                metadata.file_size,
-                metadata.last_write_time,
-                metadata.first_1000_bytes,
-                int(time.time()),
-            ),
         )
         conn.commit()
     finally:
@@ -777,16 +737,7 @@ def write_bgen(reader, out, *, compression_level: int = -1):
     entries = _stream_bgen_to_file(
         reader, bgen_path, compression_level=compression_level
     )
-    bgen_stat = bgen_path.stat()
-    with open(bgen_path, "rb") as f:
-        first_bytes = f.read(1000)
-    metadata = _BgiMetadata(
-        filename=bgen_path.name,
-        file_size=bgen_stat.st_size,
-        last_write_time=int(bgen_stat.st_mtime),
-        first_1000_bytes=first_bytes,
-    )
-    _write_bgi_index(bgi_path, entries, metadata)
+    _write_bgi_index(bgi_path, entries)
 
 
 def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):

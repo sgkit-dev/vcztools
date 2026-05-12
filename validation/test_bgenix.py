@@ -13,17 +13,19 @@ Three checks per BGEN flavour (CLI lvl=-1, CLI lvl=0, encoder):
    same range.
 
 A separate class checks variant IDs round-trip through bgenix's
-``rsid`` and ``alternate_ids`` columns.
+``rsid`` and ``alternate_ids`` columns. Another asserts that the
+``Variant`` table of the ``.bgi`` we produce is row-equal to the one
+bgenix builds from the same ``.bgen``.
 
 All tests stage the BGEN into ``tmp_path`` and rebuild the ``.bgi``
-index there. ``BgenEncoder`` writes no index, and reindexing the
-``view-bgen`` outputs in-place would clobber the index for other
-tests in the session.
+index there. Reindexing the source outputs in-place would clobber the
+index for other tests in the session.
 """
 
 from __future__ import annotations
 
 import pathlib
+import sqlite3
 
 import numpy as np
 import pandas as pd
@@ -171,3 +173,67 @@ class TestBgenixPhasedBgen:
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
         np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
+
+
+def _read_variant_table(bgi_path: pathlib.Path) -> list[tuple]:
+    """Read the Variant table, stripping trailing NULs from every TEXT
+    column. ``BgenEncoder`` NUL-pads variable-length BGEN string fields
+    (varid, rsid, chromosome, alleles) to a fixed width so the variant
+    block is a constant size. bgenix indexes the on-disk bytes verbatim
+    and so records the padded form; we record canonical values in our
+    own ``.bgi``. The padding is BGEN-spec-permitted (the reference
+    bgen-reader strips it on read) but it would otherwise make a
+    byte-exact comparison spurious. Stripping on both sides aligns
+    canonical and on-disk-byte representations for the equality
+    assertion."""
+    conn = sqlite3.connect(str(bgi_path))
+    try:
+        rows = conn.execute(
+            "SELECT chromosome, position, rsid, number_of_alleles, "
+            "allele1, allele2, file_start_position, size_in_bytes "
+            "FROM Variant ORDER BY file_start_position"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        (
+            chrom.rstrip("\x00"),
+            pos,
+            rsid.rstrip("\x00"),
+            n_alleles,
+            a1.rstrip("\x00"),
+            a2.rstrip("\x00") if a2 is not None else a2,
+            start,
+            size,
+        )
+        for chrom, pos, rsid, n_alleles, a1, a2, start, size in rows
+    ]
+
+
+class TestBgenixIndexEquality:
+    """The ``.bgi`` we produce alongside each BGEN flavour is row-equal
+    to the one bgenix builds from the same ``.bgen``.
+
+    For each flavour: the vcztools-written ``.bgi`` lives next to the
+    fixture's ``.bgen``. A separate copy of the ``.bgen`` is staged
+    into ``tmp_path`` and reindexed by bgenix; the two ``Variant``
+    tables are then compared row-by-row including
+    ``file_start_position`` and ``size_in_bytes`` (the BGEN file is
+    byte-identical, so byte offsets must match exactly)."""
+
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_variant_table_matches_bgenix(
+        self, tmp_path, bgenix_bin, small_unphased_fixture, level
+    ):
+        bgen_src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
+        vcztools_bgi = pathlib.Path(str(bgen_src) + ".bgi")
+        assert vcztools_bgi.exists(), (
+            f"expected vcztools-produced .bgi alongside {bgen_src}"
+        )
+
+        bgenix_bgen = _stage_with_index(bgenix_bin, bgen_src, tmp_path / "ref.bgen")
+        bgenix_bgi = pathlib.Path(str(bgenix_bgen) + ".bgi")
+
+        ours = _read_variant_table(vcztools_bgi)
+        theirs = _read_variant_table(bgenix_bgi)
+        assert ours == theirs

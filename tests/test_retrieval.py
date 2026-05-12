@@ -454,7 +454,7 @@ class TestMakeFieldSpecs:
 
     def test_non_divisible_stream_chunk_size_rejected(self):
         # variant_allele chunked at 6 is not a multiple of stream_chunk_size=4.
-        # The assert in _make_field_specs guards the invariant that
+        # _make_field_specs guards the invariant that
         # compute_stream_chunk_size must return a divisor of every read
         # field's chunks[0].
         root = vcz_builder.make_vcz(
@@ -468,7 +468,7 @@ class TestMakeFieldSpecs:
             call_genotype=np.zeros((6, 2, 2), dtype=np.int8),
             field_chunk_overrides={"variant_allele": 6},
         )
-        with pytest.raises(AssertionError, match="not a multiple of"):
+        with pytest.raises(ValueError, match="not a multiple of"):
             retrieval_mod._make_field_specs(
                 root, ["variant_allele"], stream_chunk_size=4
             )

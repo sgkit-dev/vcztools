@@ -75,7 +75,6 @@ class _FakeEncoder(format_encoder.FormatEncoder):
         num_variants = G.shape[0]
         bpv = self._bytes_per_variant
         if self._fake_use_parallel:
-            block_variants = max(1, self._encode_block_bytes // bpv)
 
             def encode_range(start, end):
                 if self._encode_raise_in_worker:
@@ -84,8 +83,6 @@ class _FakeEncoder(format_encoder.FormatEncoder):
 
             return self._parallel_encode(
                 num_variants=num_variants,
-                block_variants=block_variants,
-                sequential_threshold_bytes=num_variants * bpv,
                 encode_range=encode_range,
             )
         return _emit_range(G, 0, num_variants, bpv)

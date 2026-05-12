@@ -499,16 +499,11 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 )
             )
 
-        bpv = self._bytes_per_variant
-        block_variants = max(1, self._encode_block_bytes // bpv)
-
         def encode_range(start: int, end: int) -> bytes:
             return self._encode_variant_range(G, inputs, start, end)
 
         return self._parallel_encode(
             num_variants=num_variants,
-            block_variants=block_variants,
-            sequential_threshold_bytes=num_variants * bpv,
             encode_range=encode_range,
         )
 

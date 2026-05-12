@@ -318,34 +318,27 @@ class FormatEncoder(abc.ABC):
         self,
         *,
         num_variants: int,
-        block_variants: int,
-        sequential_threshold_bytes: int,
         encode_range: Callable[[int, int], bytes],
     ) -> bytes:
         """Encode ``num_variants`` worth of variant-axis output, optionally
         splitting across the thread pool.
 
-        Sub-block layout: ``encode_range(start, end)`` must produce
-        exactly ``(end - start) * bytes_per_variant`` bytes for variants
-        ``[start, end)``. Sub-blocks are assembled into the chunk's final
-        byte buffer at deterministic offsets, so caller-side ordering
-        does not matter — workers complete in any order.
+        ``encode_range(start, end)`` must produce exactly
+        ``(end - start) * bytes_per_variant`` bytes for variants
+        ``[start, end)``. Sub-blocks are assembled into the chunk's
+        final byte buffer at deterministic offsets, so workers may
+        complete in any order.
 
-        Threshold semantics are caller-determined:
-        ``sequential_threshold_bytes`` is what the caller compares to
-        ``self._encode_block_bytes`` to decide between sequential and
-        parallel. BGEN passes the chunk's output bytes
-        (``num_variants * bytes_per_variant``); BED passes the chunk's
-        input genotype bytes (``G.nbytes``). The two semantics are
-        intentionally distinct — do not unify here.
+        Fan-out fires when the chunk's output size
+        (``num_variants * bytes_per_variant``) exceeds
+        ``encode_block_bytes``; sub-blocks are sized so each produces
+        roughly ``encode_block_bytes`` of output.
         """
-        if (
-            self._encode_threads <= 1
-            or sequential_threshold_bytes <= self._encode_block_bytes
-        ):
+        bpv = self._bytes_per_variant
+        if self._encode_threads <= 1 or num_variants * bpv <= self._encode_block_bytes:
             return encode_range(0, num_variants)
 
-        bpv = self._bytes_per_variant
+        block_variants = max(1, self._encode_block_bytes // bpv)
         output = bytearray(num_variants * bpv)
         future_to_range = {}
         for start in range(0, num_variants, block_variants):

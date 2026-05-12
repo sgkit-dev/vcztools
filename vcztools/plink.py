@@ -267,15 +267,11 @@ class BedEncoder(format_encoder.FormatEncoder):
         # are zero-copy views; the C kernel writes one row of
         # bytes_per_variant per variant.
         G = np.ascontiguousarray(chunk["call_genotype"], dtype=np.int8)
-        num_variants = G.shape[0]
-        block_variants = max(1, self._encode_block_bytes // (G.shape[1] * 2))
 
         def encode_range(start: int, end: int) -> bytes:
             return bytes(_vcztools.encode_plink(G[start:end]).data)
 
         return self._parallel_encode(
-            num_variants=num_variants,
-            block_variants=block_variants,
-            sequential_threshold_bytes=G.nbytes,
+            num_variants=G.shape[0],
             encode_range=encode_range,
         )

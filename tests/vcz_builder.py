@@ -314,10 +314,13 @@ def make_vcz(
         )
 
         if variant_id is not None:
+            # dtype inferred from input so tests can exercise rsids
+            # longer than 16 characters; the production VCZ schema
+            # uses whatever width bio2zarr emits for the source data.
             _create_array(
                 root,
                 "variant_id",
-                np.asarray(variant_id, dtype="<U16"),
+                np.asarray(variant_id),
                 chunks=(_vc("variant_id"),),
                 dimension_names=("variants",),
             )

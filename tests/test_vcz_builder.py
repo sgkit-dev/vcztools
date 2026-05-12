@@ -2,7 +2,11 @@ import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from tests.vcz_builder import copy_vcz, make_vcz
+from tests.vcz_builder import (
+    DEFAULT_VARIANT_CHUNK_MULTIPLIERS,
+    copy_vcz,
+    make_vcz,
+)
 
 
 def _values_equal(a_arr, b_arr):
@@ -29,10 +33,19 @@ class TestCopyVcz:
             _values_equal(fx_source[name][...], copy[name][...])
 
     def test_variants_chunk_size_override(self, fx_source):
+        # When the caller rechunks, the proportional-chunking recipe in
+        # make_vcz applies. call_* fields take the new min_chunk (3);
+        # the variant-only fields scale by their recipe multipliers.
         copy = copy_vcz(fx_source, variants_chunk_size=3)
-        assert copy["variant_position"].chunks[0] == 3
-        assert copy["variant_allele"].chunks[0] == 3
         assert copy["call_genotype"].chunks[0] == 3
+        assert (
+            copy["variant_position"].chunks[0]
+            == 3 * DEFAULT_VARIANT_CHUNK_MULTIPLIERS["variant_position"]
+        )
+        assert (
+            copy["variant_allele"].chunks[0]
+            == 3 * DEFAULT_VARIANT_CHUNK_MULTIPLIERS["variant_allele"]
+        )
         # values are still correct under the new chunking
         _values_equal(fx_source["variant_position"][...], copy["variant_position"][...])
         _values_equal(fx_source["call_genotype"][...], copy["call_genotype"][...])

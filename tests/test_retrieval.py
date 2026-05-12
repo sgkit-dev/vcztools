@@ -142,6 +142,7 @@ def _make_filter_vcz(num_variants=9, variants_chunk_size=3):
         filters=("PASS", "q10"),
         variant_filter=variant_filter,
         variants_chunk_size=variants_chunk_size,
+        proportional_chunks=False,
     )
 
 
@@ -239,6 +240,7 @@ def _make_string_field_vcz(num_variants=9, variants_chunk_size=3):
         alleles=[("A", "T")] * num_variants,
         num_samples=2,
         variants_chunk_size=variants_chunk_size,
+        proportional_chunks=False,
         call_fields={"AB": vlen},
     )
 
@@ -367,6 +369,10 @@ def _vcz_for_template_tests():
     - 2-D variant-axis non-call (``variant_allele``)
     - 2-D ``call_*`` (``call_DP``)
     - 3-D ``call_*`` (``call_genotype``)
+
+    Uses uniform chunks (no proportional recipe) because the consumers
+    are unit tests that assert on chunk-derived quantities (multiplier,
+    block_size_estimate, intra-slice math).
     """
     num_variants = 4
     num_samples = 4
@@ -381,6 +387,7 @@ def _vcz_for_template_tests():
         sample_id=[f"s{i}" for i in range(num_samples)],
         variants_chunk_size=2,
         samples_chunk_size=2,
+        proportional_chunks=False,
         call_genotype=call_genotype,
         call_fields={"DP": call_dp},
     )
@@ -444,6 +451,7 @@ class TestMakeFieldSpecs:
             sample_id=["s0", "s1"],
             variants_chunk_size=2,
             samples_chunk_size=2,
+            proportional_chunks=False,
             call_genotype=np.zeros((4, 2, 2), dtype=np.int8),
             field_chunk_overrides={"variant_allele": 4},
         )
@@ -614,6 +622,7 @@ class TestStreamReader:
             alleles=[("A", "T")] * num_variants,
             num_samples=num_samples,
             variants_chunk_size=variants_chunk_size,
+            proportional_chunks=False,
         )
 
     def test_yields_one_chunk_per_plan_entry_in_order(self):
@@ -1141,6 +1150,7 @@ def _vcz_for_cache_tests(
         sample_id=[f"s{i}" for i in range(num_samples)],
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
+        proportional_chunks=False,
         call_fields={"DP": call_dp},
     )
 
@@ -1275,6 +1285,7 @@ class TestCachedLogicalVariantsChunkAxes:
             sample_id=[f"s{i}" for i in range(num_samples)],
             variants_chunk_size=num_variants,
             samples_chunk_size=2,
+            proportional_chunks=False,
             call_fields={"DP": call_dp},
         )
 
@@ -1748,6 +1759,7 @@ class TestEmptyCallArray:
             num_samples=num_samples,
             samples_chunk_size=num_samples,
             variants_chunk_size=3,
+            proportional_chunks=False,
             call_fields={"DP": call_dp},
         )
 
@@ -2239,6 +2251,7 @@ class TestVariantCountsPerChunk:
             variant_position=list(range(100, 100 + num_variants)),
             alleles=[("A", "T")] * num_variants,
             variants_chunk_size=variants_chunk_size,
+            proportional_chunks=False,
         )
 
     def test_default_plan_full_chunks(self):
@@ -2321,6 +2334,7 @@ class TestVariantChunksStart:
             variant_position=list(range(100, 100 + num_variants)),
             alleles=[("A", "T")] * num_variants,
             variants_chunk_size=variants_chunk_size,
+            proportional_chunks=False,
         )
 
     def test_default_kwarg_omitted_iterates_full_plan(self):
@@ -3106,9 +3120,7 @@ class TestProportionalChunkSizes:
             samples_chunk_size=num_samples,
             call_genotype=call_genotype,
             call_fields={"DP": call_dp},
-            field_chunk_overrides={"variant_allele": allele_chunk}
-            if allele_chunk != min_chunk
-            else None,
+            field_chunk_overrides={"variant_allele": allele_chunk},
         )
 
     def test_block_cache_dedups_reads_within_one_field_block(self, monkeypatch):

@@ -65,7 +65,7 @@ defeat the suite to ask a tool to validate against its own input.
 | `test_plink19.py` | PLINK 1.9 v20231211 | `--freq` MAF matches VCZ exactly from PLINK input; `.bim` SNP column round-trip; pins "BGEN v1.2 input requires PLINK 2.0" |
 | `test_bgenix.py` | bgenix (waf build) | `-list` positions/alleles/rsid/alternate_ids match VCZ; `-index` rebuild; `-incl-range` subset count |
 | `test_regenie.py` | REGENIE v4.1 | step-1 + step-2 end-to-end on PLINK and BGEN input; per-variant `A1FREQ` and `ID` round-trip |
-| `test_bolt_lmm.py` | BOLT-LMM v2.5 | BOLT parses both PLINK and BGEN input with the right N/M counts and runs LINREG. **Currently skipped via `pytestmark` — each test takes ~5 min on the 5000-sample fixture.** Drop the skip in `test_bolt_lmm.py` to opt back in. |
+| `test_bolt_lmm.py` | BOLT-LMM v2.5 | BOLT parses both PLINK and BGEN input with the right N/M counts and runs LINREG. Uses `--exclude` to skip all but the first 20 SNPs so each run is ~1.5 s instead of minutes; the summary lines we assert on report the pre-exclude count. |
 
 BGEN tests are parametrised over three flavours: `view-bgen` at
 compression level `-1` (zlib default) and `0` (uncompressed /

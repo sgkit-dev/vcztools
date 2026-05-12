@@ -608,8 +608,22 @@ class CachedLogicalVariantsChunk:
 
     def _materialize(self, field: str) -> np.ndarray:
         if field.startswith("call_"):
-            return self._assemble_call(field)
-        return self._slice_variants(self._blocks[(field,)])
+            result = self._assemble_call(field)
+        else:
+            result = self._slice_variants(self._blocks[(field,)])
+        #
+        # Workaround for numpy bug: https://github.com/numpy/numpy/issues/31415
+        #
+        # Under proportional chunking a single Zarr block can back many
+        # stream chunks; basic-indexing slices return a view that shares
+        # its numpy 2 StringDType arena with the block buffer in
+        # _live. The consumer thread's StringDType operations on that
+        # view then race the prefetch worker's parallel operations on a
+        # sibling view of the same block, causing heap corruption. Force
+        # a copy so each chunk's StringDType array has its own arena.
+        if result.dtype.kind == "T" and not result.flags.owndata:
+            result = result.copy()
+        return result
 
     def _slice_variants(self, data):
         sel = self.variant_chunk.selection

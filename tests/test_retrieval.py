@@ -292,6 +292,57 @@ class TestReadaheadBudgetSweep:
         )
 
 
+class TestMaterializeStringDTypeOwnData:
+    """Regression for the SIGSEGV/SIGABRT in vcf_writer.write_vcf at
+    sustained scale on long_bench.
+
+    Under proportional chunking, a single variant-only StringDType
+    block can back many stream chunks (``variant_allele`` chunks[0] =
+    163,000 vs. min_chunk = 1,000 on long_bench). Each stream chunk
+    pulls a basic-indexing slice of the shared block, which numpy 2
+    returns as a *view* sharing the block's StringDType arena. The
+    prefetch worker and the main thread then race on parallel
+    StringDType operations against that arena — a numpy 2.4 hazard
+    that surfaces as heap corruption after a few million records.
+    :meth:`CachedLogicalVariantsChunk._materialize` is the chokepoint;
+    it must hand back StringDType arrays that own their data.
+    """
+
+    def _make_vcz(self, *, num_variants=12, variants_chunk_size=3, info_chunk_size=12):
+        """One info field with StringDType data, chunked larger than
+        ``variants_chunk_size`` so the same block backs every stream
+        chunk."""
+        info = np.array(
+            [f"impact_{i}" for i in range(num_variants)],
+            dtype=np.dtypes.StringDType(),
+        )
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            variants_chunk_size=variants_chunk_size,
+            info_fields={"IMPACT": info},
+            field_chunk_overrides={"variant_IMPACT": info_chunk_size},
+            proportional_chunks=False,
+        )
+
+    def test_yielded_string_arrays_own_their_data(self):
+        root = self._make_vcz()
+        reader = VczReader(root)
+        chunks = list(
+            reader.variant_chunks(fields=["variant_position", "variant_IMPACT"])
+        )
+        assert len(chunks) == 4
+        for chunk in chunks:
+            impact = chunk["variant_IMPACT"]
+            assert impact.dtype.kind == "T"
+            assert impact.flags.owndata, (
+                "StringDType arrays from variant_chunks must own their "
+                "data: a view that shares its arena with a multi-chunk "
+                "shared block races with the prefetch worker."
+            )
+
+
 def _make_stream_reader(
     root,
     *,

@@ -42,6 +42,7 @@ from . import conftest as cfg
 from . import helpers, reference
 
 KEEP_N_SNPS = 20
+KEEP_N_SAMPLES = 10
 
 
 def _remap_pheno_fid0(pheno_path: pathlib.Path, out_path: pathlib.Path) -> pathlib.Path:
@@ -72,6 +73,30 @@ def _write_exclude_all_but_first_n(
     return out_path
 
 
+def _write_remove_all_but_first_n(
+    fam_path: pathlib.Path,
+    out_path: pathlib.Path,
+    keep_n: int = KEEP_N_SAMPLES,
+) -> pathlib.Path:
+    """Write a BOLT ``--remove`` file naming every individual in
+    ``fam_path`` after the first ``keep_n``. Combined with
+    ``--exclude``, BOLT operates on a sample × variant slab small
+    enough that the LMM step finishes in well under a second."""
+    fam = pd.read_csv(
+        fam_path,
+        sep=r"\s+",
+        engine="python",
+        header=None,
+        names=["fid", "iid", "fa", "mo", "sex", "pheno"],
+        dtype={"fid": str, "iid": str},
+    )
+    removed = fam[["fid", "iid"]].iloc[keep_n:]
+    out_path.write_text(
+        "\n".join(f"{fid} {iid}" for fid, iid in removed.itertuples(index=False)) + "\n"
+    )
+    return out_path
+
+
 def _remap_sample_fid0(
     sample_path: pathlib.Path, out_path: pathlib.Path
 ) -> pathlib.Path:
@@ -96,17 +121,15 @@ def _bolt_run(
     bolt: pathlib.Path,
     args: list[str],
     *,
-    expected_n_samples: int,
-    expected_n_snps: int,
+    expected_n_full_samples: int,
+    expected_n_full_snps: int,
 ) -> str:
     """Run BOLT-LMM and return its log stdout. We don't assert exit 0
     because the LMM fit can fail on small synthetic data; we only need
     the genotype-data parsing to succeed, which happens before the
-    fit. Asserts the parsing was successful by matching summary lines.
-    BOLT prints two different summary shapes depending on the source:
-    PLINK input emits ``Total indivs in PLINK data: Nbed = <N>`` /
-    ``Total snps in PLINK data: Mbed = <M>``; BGEN input emits
-    ``samples (Nbgen): <N>`` / ``snpBlocks (Mbgen): <M>``.
+    fit. The ``Nbed`` / ``Mbed`` lines report the count loaded from
+    PLINK *before* ``--remove`` / ``--exclude`` filtering, so the
+    expected values are still the full-fixture totals.
     """
     result = helpers.run_tool([str(bolt), *args], check=False)
     log = result.stdout
@@ -118,8 +141,8 @@ def _bolt_run(
     assert m_m_plink is not None, (
         f"BOLT didn't print a PLINK SNPs-loaded summary; stdout tail:\n{log[-2000:]}"
     )
-    assert int(m_n_plink.group(1)) == expected_n_samples
-    assert int(m_m_plink.group(1)) == expected_n_snps
+    assert int(m_n_plink.group(1)) == expected_n_full_samples
+    assert int(m_m_plink.group(1)) == expected_n_full_snps
     return log
 
 
@@ -134,6 +157,10 @@ class TestBoltLmmFromPlinkInput:
             large_unphased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
         )
+        remove = _write_remove_all_but_first_n(
+            large_unphased_fixture.plink_prefix.with_suffix(".fam"),
+            tmp_path / "remove.txt",
+        )
         ref = reference.compute_variant_stats(large_unphased_fixture.vcz_path)
         n_samples = len(reference.sample_ids(large_unphased_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
@@ -144,6 +171,8 @@ class TestBoltLmmFromPlinkInput:
                 str(large_unphased_fixture.plink_prefix),
                 "--exclude",
                 str(exclude),
+                "--remove",
+                str(remove),
                 "--phenoFile",
                 str(pheno),
                 "--phenoCol",
@@ -155,8 +184,8 @@ class TestBoltLmmFromPlinkInput:
                 "--statsFile",
                 str(tmp_path / "stats.txt"),
             ],
-            expected_n_samples=n_samples,
-            expected_n_snps=n_snps_biallelic,
+            expected_n_full_samples=n_samples,
+            expected_n_full_snps=n_snps_biallelic,
         )
         # BOLT computes LINREG stats before fitting the LMM. The
         # presence of the timing line confirms LINREG ran successfully
@@ -181,6 +210,10 @@ class TestBoltLmmFromBgenInput:
             large_unphased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
         )
+        remove = _write_remove_all_but_first_n(
+            large_unphased_fixture.plink_prefix.with_suffix(".fam"),
+            tmp_path / "remove.txt",
+        )
         ref = reference.compute_variant_stats(large_unphased_fixture.vcz_path)
         n_samples = len(reference.sample_ids(large_unphased_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
@@ -195,6 +228,8 @@ class TestBoltLmmFromBgenInput:
                 str(sample),
                 "--exclude",
                 str(exclude),
+                "--remove",
+                str(remove),
                 "--phenoFile",
                 str(pheno),
                 "--phenoCol",
@@ -208,8 +243,8 @@ class TestBoltLmmFromBgenInput:
                 "--statsFileBgenSnps",
                 str(tmp_path / "stats_bgen.txt"),
             ],
-            expected_n_samples=n_samples,
-            expected_n_snps=n_snps_biallelic,
+            expected_n_full_samples=n_samples,
+            expected_n_full_snps=n_snps_biallelic,
         )
         # BGEN parsing prints its own summary lines:
         #   samples (Nbgen): <N>
@@ -245,6 +280,10 @@ class TestBoltLmmPhasedBgen:
             large_phased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
         )
+        remove = _write_remove_all_but_first_n(
+            large_phased_fixture.plink_prefix.with_suffix(".fam"),
+            tmp_path / "remove.txt",
+        )
         ref = reference.compute_variant_stats(large_phased_fixture.vcz_path)
         n_samples = len(reference.sample_ids(large_phased_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
@@ -259,6 +298,8 @@ class TestBoltLmmPhasedBgen:
                 str(sample),
                 "--exclude",
                 str(exclude),
+                "--remove",
+                str(remove),
                 "--phenoFile",
                 str(pheno),
                 "--phenoCol",
@@ -272,8 +313,8 @@ class TestBoltLmmPhasedBgen:
                 "--statsFileBgenSnps",
                 str(tmp_path / "stats_bgen.txt"),
             ],
-            expected_n_samples=n_samples,
-            expected_n_snps=n_snps_biallelic,
+            expected_n_full_samples=n_samples,
+            expected_n_full_snps=n_snps_biallelic,
         )
         m_n_bgen = re.search(r"samples \(Nbgen\): (\d+)", log)
         m_m_bgen = re.search(r"snpBlocks \(Mbgen\): (\d+)", log)

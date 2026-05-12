@@ -68,12 +68,17 @@ class TestQctoolSnpStats:
             df["position"].to_numpy(),
             ref.pos[biallelic],
         )
-        # vcztools writes hard calls as P=1.0 (= 255/255 at 8-bit
-        # precision) on the called genotype. Recomputed frequencies
-        # are integer rationals and round-trip exactly through the
-        # BGEN encoding — no quantisation slack needed.
+        # qctool truncates ``alleleB_frequency`` to ~6 decimal places in
+        # the TSV output, so a direct compare against an exact-rational
+        # reference fails at fractions like 291/396. Recompute from the
+        # integer ``alleleB_count`` and ``NULL`` columns — vcztools
+        # writes hard calls (P=1.0 on the called genotype), so the
+        # integer count round-trips exactly and the recomputed
+        # frequency matches the reference at float64 precision.
+        n_called = (2 * (df["total"] - df["NULL"])).to_numpy()
+        alt_freq = df["alleleB_count"].to_numpy() / n_called
         np.testing.assert_allclose(
-            df["alleleB_frequency"].to_numpy(),
+            alt_freq,
             ref.alt_freq[biallelic],
             atol=1e-10,
         )
@@ -88,8 +93,15 @@ class TestQctoolSnpStats:
 
         ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
+        # Same display-precision dodge as above — recompute MAF from
+        # the integer count columns rather than the formatted output.
+        n_called = (2 * (df["total"] - df["NULL"])).to_numpy()
+        minor_count = np.minimum(
+            df["alleleA_count"].to_numpy(), df["alleleB_count"].to_numpy()
+        )
+        minor_freq = minor_count / n_called
         np.testing.assert_allclose(
-            df["minor_allele_frequency"].to_numpy(),
+            minor_freq,
             ref.minor_freq[biallelic],
             atol=1e-10,
         )

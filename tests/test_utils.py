@@ -200,9 +200,9 @@ class TestComputeStreamChunkSize:
             == 12
         )
 
-    def test_mixed_fields_returns_minimum(self):
+    def test_mixed_fields_collapse_to_min_chunk(self):
         # variant_position chunked at 12, call_genotype at min_chunk=3 →
-        # stream chunk size pinned at min_chunk because the call_* field
+        # gcd(12, 3) = 3, equal to min_chunk because the call_* field
         # is referenced.
         root = self._vcz_with_overrides({"variant_position": 12})
         assert (
@@ -212,15 +212,30 @@ class TestComputeStreamChunkSize:
             == 3
         )
 
-    def test_two_variant_only_with_distinct_chunks_returns_min(self):
-        # variant_position chunked at 12, variant_contig at 6 → stream
-        # chunk size is the minimum of the read fields' chunks[0].
+    def test_two_variant_only_with_pairwise_multiple_chunks(self):
+        # variant_position chunked at 12, variant_contig at 6 — 6
+        # divides 12, so gcd(12, 6) = 6 and stream chunk size matches
+        # the smaller of the two.
         root = self._vcz_with_overrides({"variant_position": 12, "variant_contig": 6})
         assert (
             utils.compute_stream_chunk_size(
                 root, ["variant_position", "variant_contig"], min_chunk=3
             )
             == 6
+        )
+
+    def test_two_variant_only_with_non_multiple_chunks_returns_gcd(self):
+        # variant_position chunked at 6, variant_contig at 9 — both
+        # multiples of min_chunk=3 but neither divides the other.
+        # The minimum (6) would silently break downstream multiplier
+        # arithmetic (9 // 6 == 1, but 1 * 6 != 9); gcd(6, 9) == 3 is
+        # the only value that divides both exactly.
+        root = self._vcz_with_overrides({"variant_position": 6, "variant_contig": 9})
+        assert (
+            utils.compute_stream_chunk_size(
+                root, ["variant_position", "variant_contig"], min_chunk=3
+            )
+            == 3
         )
 
 

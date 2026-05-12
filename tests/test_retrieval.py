@@ -51,6 +51,38 @@ def test_variant_chunks_empty_fields(fx_sample_vcz):
         next(reader.variant_chunks(fields=[]))
 
 
+def test_variant_chunks_heterogeneous_chunk_sizes():
+    # Variant-only fields with chunk sizes that are multiples of
+    # variants_chunk_size (3) but not pairwise multiples of each other:
+    # variant_position=6, variant_contig=9. compute_stream_chunk_size
+    # must return their GCD (3) — using the minimum (6) would walk
+    # variant_contig's blocks at the wrong offset (9 // 6 == 1 but
+    # 1 * 6 != 9) and drift each iteration.
+    num_variants = 18
+    positions = np.arange(1, num_variants + 1, dtype=np.int32)
+    contigs = np.arange(num_variants, dtype=np.int32)
+    root = vcz_builder.make_vcz(
+        variant_contig=contigs,
+        variant_position=positions,
+        alleles=[("A", "T")] * num_variants,
+        num_samples=2,
+        sample_id=["s0", "s1"],
+        contigs=tuple(f"chr{i}" for i in range(num_variants)),
+        variants_chunk_size=3,
+        samples_chunk_size=2,
+        call_genotype=np.zeros((num_variants, 2, 2), dtype=np.int8),
+        field_chunk_overrides={"variant_position": 6, "variant_contig": 9},
+    )
+    reader = VczReader(root)
+    seen_positions = []
+    seen_contigs = []
+    for chunk in reader.variant_chunks(fields=["variant_position", "variant_contig"]):
+        seen_positions.append(chunk["variant_position"])
+        seen_contigs.append(chunk["variant_contig"])
+    nt.assert_array_equal(np.concatenate(seen_positions), positions)
+    nt.assert_array_equal(np.concatenate(seen_contigs), contigs)
+
+
 @pytest.mark.parametrize(
     ("regions", "samples"),
     [
@@ -419,6 +451,27 @@ class TestMakeFieldSpecs:
             root, ["variant_position", "variant_allele"], stream_chunk_size=2
         )
         assert [s.multiplier for s in specs] == [1, 2]
+
+    def test_non_divisible_stream_chunk_size_rejected(self):
+        # variant_allele chunked at 6 is not a multiple of stream_chunk_size=4.
+        # The assert in _make_field_specs guards the invariant that
+        # compute_stream_chunk_size must return a divisor of every read
+        # field's chunks[0].
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * 6,
+            variant_position=[1, 2, 3, 4, 5, 6],
+            alleles=[("A", "T")] * 6,
+            num_samples=2,
+            sample_id=["s0", "s1"],
+            variants_chunk_size=2,
+            samples_chunk_size=2,
+            call_genotype=np.zeros((6, 2, 2), dtype=np.int8),
+            field_chunk_overrides={"variant_allele": 6},
+        )
+        with pytest.raises(AssertionError, match="not a multiple of"):
+            retrieval_mod._make_field_specs(
+                root, ["variant_allele"], stream_chunk_size=4
+            )
 
     def test_block_size_estimate_from_dtype_and_chunks(self):
         # variant_position: chunks=(2,), dtype int32 → 2 * 4 = 8 bytes/block.

@@ -203,10 +203,14 @@ class FieldSpec:
     sample chunk (the sample chunk index is a runtime parameter of
     :meth:`StreamReader._derive_blocks`).
 
-    ``multiplier`` is ``arr.chunks[0] // stream_chunk_size`` (always
-    ``1`` for ``call_*``, since ``stream_chunk_size`` is the minimum
-    over read fields and ``call_*`` defines that minimum; can be
-    ``>1`` for variant-only fields with bigger chunks). When
+    ``multiplier`` is ``arr.chunks[0] // stream_chunk_size`` (exact
+    integer — :func:`vcztools.utils.compute_stream_chunk_size` returns
+    a value that divides every read field's chunk size). It is ``1``
+    for any field whose chunk size equals ``stream_chunk_size``
+    (always the case for ``call_*`` when ``call_*`` is in
+    ``read_fields``, since ``call_*`` chunks define ``min_chunk`` and
+    ``stream_chunk_size`` collapses to ``min_chunk`` then); it is
+    ``>1`` for variant-only fields with bigger chunks. When
     ``multiplier > 1``, one Zarr block spans ``multiplier`` consecutive
     stream chunks and gets intra-sliced to the current chunk's rows.
 
@@ -246,6 +250,10 @@ def _make_field_specs(root, read_fields, stream_chunk_size: int) -> list[FieldSp
             f"non-variants-axis field in stream reader: {field}"
         )
         chunks = arr.chunks
+        assert int(chunks[0]) % stream_chunk_size == 0, (
+            f"field {field!r} chunks[0]={chunks[0]} is not a multiple of "
+            f"stream_chunk_size={stream_chunk_size}"
+        )
         multiplier = int(chunks[0]) // stream_chunk_size
         is_call = field.startswith("call_")
         block_size = int(arr.dtype.itemsize)
@@ -1203,8 +1211,8 @@ class VczReader:
         The per-chunk flow:
 
         1. Rebucket the canonical (``min_chunk``-unit) variant chunk
-           plan into stream chunks sized by the minimum chunk size
-           among the read fields (see
+           plan into stream chunks sized by the GCD of the read fields'
+           chunk sizes (see
            :func:`vcztools.utils.compute_stream_chunk_size` /
            :func:`vcztools.utils.rebucket_to_stream_plan`). Iterate
            ``stream_plan[start:]``; each entry's ``selection`` pre-

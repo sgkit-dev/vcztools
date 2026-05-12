@@ -118,7 +118,6 @@ dev = [
   {include-group = "lint"},
   {include-group = "packaging"},
   {include-group = "benchmark"},
-  {include-group = "validation"},
 ]
 
 [tool.setuptools]

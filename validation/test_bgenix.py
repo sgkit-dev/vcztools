@@ -57,22 +57,24 @@ def _stage_with_index(
 class TestBgenixList:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_variant_positions_match_reference(
-        self, tmp_path, bgenix_bin, small_fixture, level
+        self, tmp_path, bgenix_bin, small_unphased_fixture, level
     ):
-        src, _ = cfg.bgen_for_level(small_fixture, level)
+        src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
         bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         df = _bgenix_list(bgenix_bin, bgen)
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
         np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
 
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
-    def test_alleles_match_reference(self, tmp_path, bgenix_bin, small_fixture, level):
-        src, _ = cfg.bgen_for_level(small_fixture, level)
+    def test_alleles_match_reference(
+        self, tmp_path, bgenix_bin, small_unphased_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
         bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         df = _bgenix_list(bgenix_bin, bgen)
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         # vcztools writes alleles ref-first: first_allele = REF,
         # alternative_alleles = ALT (comma-separated; biallelic so just
@@ -89,13 +91,15 @@ class TestBgenixList:
 
 class TestBgenixIndex:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
-    def test_reindex_then_list_agrees(self, tmp_path, bgenix_bin, small_fixture, level):
-        src, _ = cfg.bgen_for_level(small_fixture, level)
+    def test_reindex_then_list_agrees(
+        self, tmp_path, bgenix_bin, small_unphased_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
         bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         bgi = bgen.with_suffix(".bgen.bgi")
         assert bgi.exists(), f"bgenix did not write {bgi}"
         df = _bgenix_list(bgenix_bin, bgen)
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
 
@@ -103,16 +107,16 @@ class TestBgenixIndex:
 class TestBgenixIncludeRange:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_range_subset_count_matches(
-        self, tmp_path, bgenix_bin, small_fixture, level
+        self, tmp_path, bgenix_bin, small_unphased_fixture, level
     ):
         # Pick a position interval covering the first half of the
         # variants and count the survivors.
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         positions = ref.pos[biallelic]
         midpoint = int(positions[len(positions) // 2])
 
-        src, _ = cfg.bgen_for_level(small_fixture, level)
+        src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
         bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         # bgenix -incl-range emits a subset BGEN to stdout; capture
         # the raw bytes directly into a file and re-list to count.
@@ -138,16 +142,32 @@ class TestBgenixIncludeRange:
 class TestBgenixVariantIds:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_rsid_and_alternate_ids_match_reference(
-        self, tmp_path, bgenix_bin, small_fixture, level
+        self, tmp_path, bgenix_bin, small_unphased_fixture, level
     ):
-        src, _ = cfg.bgen_for_level(small_fixture, level)
+        src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
         bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         df = _bgenix_list(bgenix_bin, bgen)
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
-        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
         # vcztools (both write_bgen and BgenEncoder) sets BGEN's varid
         # and rsid fields to the same value from variant_id; bgenix
         # exposes them as alternate_ids and rsid respectively.
         np.testing.assert_array_equal(df["rsid"].astype(str).to_numpy(), ids)
         np.testing.assert_array_equal(df["alternate_ids"].astype(str).to_numpy(), ids)
+
+
+class TestBgenixPhasedBgen:
+    """bgenix is phase-agnostic — its ``-list`` operation reads metadata
+    only and never decodes probability data. The phased fixture should
+    list the same biallelic-survivor count as the unphased one."""
+
+    def test_lists_phased_variants(self, tmp_path, bgenix_bin, small_phased_fixture):
+        bgen = _stage_with_index(
+            bgenix_bin, small_phased_fixture.bgen_minus1, tmp_path / "phased.bgen"
+        )
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(small_phased_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        assert len(df) == int(biallelic.sum())
+        np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])

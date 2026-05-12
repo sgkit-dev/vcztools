@@ -121,8 +121,10 @@ def compute_min_variants_chunk_size(root) -> int:
     field must use a chunk size that is a positive integer multiple of
     it. Two ``call_*`` fields with different chunk sizes are a writer
     bug and raise ``ValueError`` here. When no ``call_*`` field is
-    present, falls back to the minimum chunk size across variant-axis
-    fields.
+    present, falls back to the GCD of variant-only chunk sizes — the
+    largest value that divides every chunk, so the writer-side
+    chunking invariant (every chunks[0] is a positive multiple of the
+    result) still holds.
     """
     call_sizes: dict[str, int] = {}
     other_sizes: list[int] = []
@@ -144,7 +146,7 @@ def compute_min_variants_chunk_size(root) -> int:
             )
         return next(iter(sizes_set))
     if len(other_sizes) > 0:
-        return min(other_sizes)
+        return functools.reduce(math.gcd, other_sizes)
     raise ValueError("no variant-axis fields in store")
 
 

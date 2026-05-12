@@ -17,6 +17,7 @@ import zlib
 
 import bgen_reader as br
 import numpy as np
+import numpy.testing as nt
 import pytest
 
 from tests import vcz_builder
@@ -227,8 +228,8 @@ class TestEncodeVariantBlock:
             probs = bgen_file.read()
         # G=[[0,0],[0,1]] unphased: hom-ref → P(00,01,11)=[1,0,0],
         # het → [0,1,0].
-        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
-        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        nt.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        nt.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
 
 
 class TestChecks:
@@ -428,9 +429,9 @@ class TestCompressionLevel:
             probs = bgen_file.read()
         # bgen-reader returns shape (n_samples, n_variants, 3).
         assert probs.shape == (3, 2, 3)
-        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
-        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
-        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
+        nt.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        nt.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        nt.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
 
     def test_level_9_not_larger_than_level_0(self, tmp_path):
         # All-zero genotypes give a highly compressible payload, so the
@@ -520,34 +521,27 @@ class TestBgenRoundTripViaBgenReader:
         with br.open_bgen(path, verbose=False) as bg:
             assert bg.nvariants == 3
             assert bg.nsamples == 4
-            assert list(bg.samples) == [
-                "sample_0",
-                "sample_1",
-                "sample_2",
-                "sample_3",
-            ]
+            nt.assert_array_equal(
+                bg.samples, ["sample_0", "sample_1", "sample_2", "sample_3"]
+            )
             assert bg.chromosomes[0] == "chr1"
-            assert list(bg.positions) == [100, 200, 300]
-            assert [str(a).split(",") for a in bg.allele_ids] == [
-                ["A", "T"],
-                ["C", "G"],
-                ["G", "A"],
-            ]
+            nt.assert_array_equal(bg.positions, [100, 200, 300])
+            nt.assert_array_equal(bg.allele_ids, ["A,T", "C,G", "G,A"])
             probs, missing = bg.read(return_missings=True)
 
         # Variant 0: hom-ref, het, hom-alt, missing.
-        np.testing.assert_array_equal(missing[:, 0], [False, False, False, True])
-        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
-        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
-        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
+        nt.assert_array_equal(missing[:, 0], [False, False, False, True])
+        nt.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        nt.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        nt.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
         assert np.isnan(probs[3, 0]).all()
 
         # Variant 2: hom-alt, reversed het (1,0), het (0,1),
         # half-missing (treated as fully missing).
-        np.testing.assert_array_equal(missing[:, 2], [False, False, False, True])
-        np.testing.assert_array_equal(probs[0, 2], [0.0, 0.0, 1.0])
-        np.testing.assert_array_equal(probs[1, 2], [0.0, 1.0, 0.0])
-        np.testing.assert_array_equal(probs[2, 2], [0.0, 1.0, 0.0])
+        nt.assert_array_equal(missing[:, 2], [False, False, False, True])
+        nt.assert_array_equal(probs[0, 2], [0.0, 0.0, 1.0])
+        nt.assert_array_equal(probs[1, 2], [0.0, 1.0, 0.0])
+        nt.assert_array_equal(probs[2, 2], [0.0, 1.0, 0.0])
         assert np.isnan(probs[3, 2]).all()
 
     def test_phased_round_trip(self, write_to_bgen):
@@ -570,8 +564,8 @@ class TestBgenRoundTripViaBgenReader:
         assert probs.shape == (4, 1, 4)
         hap1 = np.argmax(probs[..., 0:2], axis=-1).T
         hap2 = np.argmax(probs[..., 2:4], axis=-1).T
-        np.testing.assert_array_equal(hap1, G[..., 0])
-        np.testing.assert_array_equal(hap2, G[..., 1])
+        nt.assert_array_equal(hap1, G[..., 0])
+        nt.assert_array_equal(hap2, G[..., 1])
 
     def test_unphased_when_phased_field_absent(self, write_to_bgen):
         reader = _build_reader(num_variants=1, num_samples=2)
@@ -602,7 +596,7 @@ class TestBgenRoundTripViaBgenReader:
         )
         path = write_to_bgen(reader)
         with br.open_bgen(path, verbose=False) as bg:
-            assert [str(r) for r in bg.rsids] == ["rsX", "rsY"]
+            nt.assert_array_equal(bg.rsids, ["rsX", "rsY"])
 
     def test_empty_variant_id_normalised_to_dot(self, write_to_bgen):
         # An empty-string variant_id (VCF "." → empty in VCZ) is
@@ -614,7 +608,7 @@ class TestBgenRoundTripViaBgenReader:
         )
         path = write_to_bgen(reader)
         with br.open_bgen(path, verbose=False) as bg:
-            assert [str(r) for r in bg.rsids] == [".", "rsY"]
+            nt.assert_array_equal(bg.rsids, [".", "rsY"])
 
     def test_monomorphic_alt_normalised_to_dot(self, write_to_bgen):
         # An empty ALT slot becomes "." in the BGEN output.
@@ -641,7 +635,7 @@ class TestBgenRoundTripViaBgenReader:
         reader.set_samples([0, 2])
         path = write_to_bgen(reader)
         with br.open_bgen(path, verbose=False) as bg:
-            assert list(bg.samples) == ["sample_0", "sample_2"]
+            nt.assert_array_equal(bg.samples, ["sample_0", "sample_2"])
             assert bg.nsamples == 2
             assert bg.nvariants == 2
             assert bg.read().shape == (2, 2, 3)
@@ -670,9 +664,9 @@ class TestBgenRoundTripViaBgenReader:
             probs = bg.read()
         # Sample 0 is hom-alt on every variant; samples 1 and 2 are hom-ref.
         for v in range(num_variants):
-            np.testing.assert_array_equal(probs[0, v], [0.0, 0.0, 1.0])
-            np.testing.assert_array_equal(probs[1, v], [1.0, 0.0, 0.0])
-            np.testing.assert_array_equal(probs[2, v], [1.0, 0.0, 0.0])
+            nt.assert_array_equal(probs[0, v], [0.0, 0.0, 1.0])
+            nt.assert_array_equal(probs[1, v], [1.0, 0.0, 0.0])
+            nt.assert_array_equal(probs[2, v], [1.0, 0.0, 0.0])
 
     @pytest.mark.parametrize(
         "rsids",
@@ -707,7 +701,7 @@ class TestBgenRoundTripViaBgenReader:
         path = write_to_bgen(reader)
         with br.open_bgen(path, verbose=False) as bg:
             expected = [r if r != "" else "." for r in rsids]
-            assert [str(r) for r in bg.rsids] == expected
+            nt.assert_array_equal(bg.rsids, expected)
 
     def test_rsids_dot_when_variant_id_absent(self, write_to_bgen):
         # A VCZ without a ``variant_id`` field emits all rsids as ".".
@@ -717,7 +711,7 @@ class TestBgenRoundTripViaBgenReader:
         assert "variant_id" not in reader.field_names
         path = write_to_bgen(reader)
         with br.open_bgen(path, verbose=False) as bg:
-            assert [str(r) for r in bg.rsids] == [".", ".", "."]
+            nt.assert_array_equal(bg.rsids, [".", ".", "."])
 
     def test_long_contig_name_round_trips(self, write_to_bgen):
         # BgenEncoder now derives chrom_max from reader.contig_ids, so
@@ -1147,7 +1141,7 @@ class TestBgenEncoderWithSetVariants:
             assert bg.nvariants == 3
             # Default reader builds variant_position = [100..109]; subset
             # picks indices 1, 3, 5 → positions 101, 103, 105.
-            assert list(bg.positions) == [101, 103, 105]
+            nt.assert_array_equal(bg.positions, [101, 103, 105])
 
     def test_sample_subset_reflected_in_output(self, tmp_path):
         gt = _varied_genotypes(num_variants=3, num_samples=6)
@@ -1160,7 +1154,7 @@ class TestBgenEncoderWithSetVariants:
         path.write_bytes(buf)
         with br.open_bgen(path, verbose=False) as bg:
             assert bg.nsamples == 3
-            assert list(bg.samples) == ["sample_0", "sample_2", "sample_4"]
+            nt.assert_array_equal(bg.samples, ["sample_0", "sample_2", "sample_4"])
 
 
 class TestBgenEncoderOverflowRaises:

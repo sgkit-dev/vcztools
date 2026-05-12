@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from . import conftest as cfg
 from . import helpers, reference
 
 
@@ -168,17 +169,17 @@ class TestRegenieFromPlinkInput:
 
 
 class TestRegenieFromBgenInput:
-    @pytest.mark.parametrize("level", [-1, 0], ids=["lvl=-1", "lvl=0"])
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_a1freq_matches_reference(
         self, tmp_path, regenie_bin, small_fixture, level
     ):
-        bgen = small_fixture.bgen_minus1 if level == -1 else small_fixture.bgen_stored
-        # BGEN samples already have FID=IID=tsk_N, matching the
-        # phenotype file as written by generate_data.py — no remap.
+        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        # BGEN samples have FID=IID=tsk_N, matching the phenotype file
+        # written by generate_data.py — no remap needed for BGEN input.
         pred = _run_step1_bgen(
             regenie_bin,
             bgen,
-            small_fixture.sample_path,
+            sample,
             small_fixture.pheno_path,
             tmp_path / "step1",
         )
@@ -188,7 +189,7 @@ class TestRegenieFromBgenInput:
             small_fixture.pheno_path,
             tmp_path / "step2",
             bgen_path=bgen,
-            sample_path=small_fixture.sample_path,
+            sample_path=sample,
         )
         ref = reference.compute_variant_stats(small_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
@@ -200,3 +201,57 @@ class TestRegenieFromBgenInput:
             ref.alt_freq[biallelic],
             atol=5e-3,
         )
+
+
+class TestRegenieVariantIds:
+    def test_plink_input_id_column_matches_reference(
+        self, tmp_path, regenie_bin, small_fixture
+    ):
+        pheno = _remap_pheno_fid0(small_fixture.pheno_path, tmp_path / "pheno.tsv")
+        pred = _run_step1_plink(
+            regenie_bin, small_fixture.plink_prefix, pheno, tmp_path / "step1"
+        )
+        df = _run_step2(
+            regenie_bin,
+            pred,
+            pheno,
+            tmp_path / "step2",
+            bed_prefix=small_fixture.plink_prefix,
+        )
+        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        np.testing.assert_array_equal(df["ID"].astype(str).to_numpy(), ids)
+
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_bgen_input_id_column_matches_reference(
+        self, tmp_path, regenie_bin, small_fixture, level
+    ):
+        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        pred = _run_step1_bgen(
+            regenie_bin,
+            bgen,
+            sample,
+            small_fixture.pheno_path,
+            tmp_path / "step1",
+        )
+        df = _run_step2(
+            regenie_bin,
+            pred,
+            small_fixture.pheno_path,
+            tmp_path / "step2",
+            bgen_path=bgen,
+            sample_path=sample,
+        )
+        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        # BgenEncoder NUL-pads string fields to a fixed width per the
+        # BGEN spec. bgenix and qctool strip the padding on read;
+        # REGENIE does not, so its ID column comes back as
+        # "rs0\x00\x00..." for the encoder fixture. Strip here so the
+        # round-trip check measures content rather than padding policy.
+        regenie_ids = np.array(
+            [s.rstrip("\x00") for s in df["ID"].astype(str).to_numpy()]
+        )
+        np.testing.assert_array_equal(regenie_ids, ids)

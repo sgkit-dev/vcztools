@@ -93,6 +93,27 @@ def simulate(spec: FixtureSpec) -> tskit.TreeSequence:
     return ts
 
 
+VARIANT_ID_BUCKETS: tuple[str, ...] = (
+    "rs{i}",
+    "rs_var_{i:08d}",
+    "rs_variant_{i:010d}_chr_{c:02d}_pos_{p:010d}",
+)
+"""Three format strings cycled across the variants axis to produce a
+deterministic mix of short (3–7 byte), medium (15 byte), and long
+(~46 byte) variant IDs. Lengths stay below
+:class:`vcztools.bgen.BgenEncoder`'s default ``rsid_max=64`` so the
+encoder's defaults still apply when this fixture is fed through it.
+"""
+
+
+def _make_variant_ids(positions: np.ndarray, contigs: np.ndarray) -> np.ndarray:
+    out = np.empty(positions.shape, dtype=np.dtypes.StringDType())
+    for i in range(positions.size):
+        template = VARIANT_ID_BUCKETS[i % len(VARIANT_ID_BUCKETS)]
+        out[i] = template.format(i=i, c=int(contigs[i]), p=int(positions[i]))
+    return out
+
+
 def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> None:
     if vcz_path.exists():
         # bio2zarr refuses to overwrite an existing store; clean up first.
@@ -105,13 +126,33 @@ def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> None:
         worker_processes=0,
         show_progress=False,
     )
+    group = zarr.open_group(str(vcz_path), mode="r+")
     # tskit data is always phased; bio2zarr writes call_genotype_phased
     # = True. Many downstream tools (qctool in particular) don't handle
     # our phased BGEN layout cleanly, and real-world genotyping-array
     # data is unphased anyway, so flatten the phasing flag here.
-    group = zarr.open_group(str(vcz_path), mode="r+")
     if "call_genotype_phased" in group.array_keys():
         group["call_genotype_phased"][...] = False
+    # bio2zarr.tskit.convert does not populate variant_id (tskit uses
+    # positional numbering, not RS-style IDs). Inject deterministic
+    # variable-length IDs so the downstream-tool round-trip checks have
+    # a non-trivial signal to verify.
+    positions = group["variant_position"][:]
+    contigs = group["variant_contig"][:]
+    ids = _make_variant_ids(positions, contigs)
+    variants_chunk = group["variant_position"].chunks[0]
+    variant_id_arr = group.create_array(
+        "variant_id",
+        shape=ids.shape,
+        chunks=(variants_chunk,),
+        dtype=np.dtypes.StringDType(),
+    )
+    variant_id_arr[:] = ids
+    # vcztools uses the zarr-v2 `_ARRAY_DIMENSIONS` attribute (and the
+    # v3 `dimension_names` metadata) to identify the variants axis on
+    # every variant-scoped field. bio2zarr writes v2 by default, so
+    # set the v2 attribute on the array we just appended.
+    variant_id_arr.attrs["_ARRAY_DIMENSIONS"] = ["variants"]
     logger.info("Wrote VCZ store at %s", vcz_path)
 
 

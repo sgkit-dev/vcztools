@@ -40,7 +40,7 @@ downloads and the bgenix waf build).
 
 ## What gets tested
 
-For each downstream tool, we check two things:
+For each downstream tool, we check three things:
 
 1. **File-format contract** — the tool accepts the bytes vcztools
    wrote and reports the expected sample / variant counts.
@@ -48,6 +48,10 @@ For each downstream tool, we check two things:
    variant statistic (ALT allele frequency, minor allele frequency),
    we compute the same number directly from the source VCZ in
    `reference.py` and assert numerical agreement.
+3. **Variant ID round-trip** — the per-tool variant-ID output column
+   matches the IDs injected into the VCZ. IDs are deterministic and
+   span three length buckets (~3, 15, 46 bytes) so truncation and
+   width-allocation bugs surface as mismatches.
 
 The ground truth is computed from the **source VCZ**, not from the
 tool's own output round-tripped back in. This is the point: it would
@@ -57,15 +61,26 @@ defeat the suite to ask a tool to validate against its own input.
 
 | Test file | Tool | Coverage |
 |---|---|---|
-| `test_qctool.py` | qctool v2.2.5 | `-snp-stats` ALT and minor allele frequency match VCZ at BGEN levels −1 and 0; AA+AB+BB+NULL = N |
-| `test_plink19.py` | PLINK 1.9 v20231211 | `--freq` MAF matches VCZ exactly from PLINK input; pins the "BGEN v1.2 input requires PLINK 2.0" diagnostic |
-| `test_bgenix.py` | bgenix (waf build) | `-list` variant positions/alleles match VCZ; `-index` overwrites `.bgen.bgi`; `-incl-range` subset count matches |
-| `test_regenie.py` | REGENIE v4.1 | step-1 + step-2 run end-to-end on PLINK and BGEN input; per-variant `A1FREQ` in the step-2 output matches VCZ |
-| `test_bolt_lmm.py` | BOLT-LMM v2.5 | BOLT parses both PLINK and BGEN input, prints summary lines with correct N/M, and runs LINREG (LMM heritability fit is not asserted — see notes) |
+| `test_qctool.py` | qctool v2.2.5 | `-snp-stats` ALT and minor allele frequency match VCZ; AA+AB+BB+NULL = N; `alternate_ids` round-trip |
+| `test_plink19.py` | PLINK 1.9 v20231211 | `--freq` MAF matches VCZ exactly from PLINK input; `.bim` SNP column round-trip; pins "BGEN v1.2 input requires PLINK 2.0" |
+| `test_bgenix.py` | bgenix (waf build) | `-list` positions/alleles/rsid/alternate_ids match VCZ; `-index` rebuild; `-incl-range` subset count |
+| `test_regenie.py` | REGENIE v4.1 | step-1 + step-2 end-to-end on PLINK and BGEN input; per-variant `A1FREQ` and `ID` round-trip |
+| `test_bolt_lmm.py` | BOLT-LMM v2.5 | BOLT parses both PLINK and BGEN input with the right N/M counts and runs LINREG. **Currently skipped via `pytestmark` — each test takes ~5 min on the 5000-sample fixture.** Drop the skip in `test_bolt_lmm.py` to opt back in. |
 
-BGEN tests are parametrised over compression level `-1` (zlib
-default) and `0` (uncompressed / "fixed length"), per the suite's
-brief.
+BGEN tests are parametrised over three flavours: `view-bgen` at
+compression level `-1` (zlib default) and `0` (uncompressed /
+"stored"), plus a third flavour produced by `vcztools.bgen.BgenEncoder`
+— a Python-API-only random-access encoder that writes fixed-width
+variant blocks (every variant exactly `bytes_per_variant` bytes,
+strings NUL-padded). The encoder has no CLI flag; the suite drives
+it directly via `helpers.run_bgen_encoder` and writes the byte
+stream + a separate `.sample` sidecar.
+
+`BgenEncoder` writes no `.bgen.bgi` index — the bgenix tests build
+one inline via `bgenix -index -clobber`. REGENIE does not strip the
+encoder's trailing NUL padding from variant-ID strings on read; the
+ID round-trip test compensates by `rstrip("\x00")`-ing REGENIE's `ID`
+column before comparing.
 
 ## Tool versions
 
@@ -104,6 +119,13 @@ architecture lets REGENIE step-1 fit a null model cleanly.
 the VCZ. msprime data is fully phased, but qctool refuses our
 phased BGEN layout (`order_type=6 value_type=1`); flattening the
 phase flag works around this without altering the genotypes.
+
+The same script also injects a `variant_id` array — `bio2zarr.tskit.convert`
+doesn't populate one from a tree sequence. The injected IDs cycle
+through three format strings (e.g. `rs0`, `rs_var_00000001`,
+`rs_variant_0000000002_chr_00_pos_0000000178`) so the downstream
+round-trip checks have variable-length signal to verify. All IDs are
+≤ 50 bytes, fitting `BgenEncoder`'s default `rsid_max=64`.
 
 ## Caveats
 

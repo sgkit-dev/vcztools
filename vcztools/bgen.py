@@ -340,8 +340,11 @@ class BgenEncoder(format_encoder.FormatEncoder):
     and the offending value.
 
     Defaults are tuned for biobank biallelic SNP arrays:
-    ``varid_max=64``, ``rsid_max=64``, ``chrom_max=8``, ``allele_max=1``.
-    Indel or SV stores must opt in by passing larger ``*_max`` values.
+    ``allele_max=1`` for SNPs; ``rsid_max=varid_max=64`` when the
+    source has a ``variant_id`` field, else ``1`` (the encoder emits
+    ``"."`` for every rsid in that case). ``chrom_max`` is always
+    derived from ``reader.contig_ids`` — no manual knob. Indel or SV
+    stores must opt in to larger ``allele_max`` / ``rsid_max`` values.
 
     Variant scope: biallelic and diploid (multi-allelic / non-diploid
     raises ``ValueError`` lazily as chunks are decoded).
@@ -364,17 +367,40 @@ class BgenEncoder(format_encoder.FormatEncoder):
         self,
         reader: retrieval.VczReader,
         *,
-        varid_max: int = 64,
-        rsid_max: int = 64,
-        chrom_max: int = 8,
-        allele_max: int = 1,
+        varid_max: int | None = None,
+        rsid_max: int | None = None,
+        allele_max: int | None = None,
         encode_threads: int | None = None,
         encode_block_bytes: int | None = None,
     ):
+        has_variant_id = "variant_id" in reader.field_names
+        if rsid_max is None:
+            # When variant_id is absent, _encode_chunk emits "." (1 byte)
+            # for every rsid — no point reserving 64 bytes per variant.
+            rsid_max = 64 if has_variant_id else 1
+        if varid_max is None:
+            # _encode_chunk sets varid = rsid, so they share fate.
+            varid_max = rsid_max
+        if allele_max is None:
+            allele_max = 1
+
+        # chrom_max is derived from contig_ids: one pass over a typically-
+        # short list, exact, removes the user-facing knob entirely. The
+        # max(1, ...) floor covers empty contig_ids and the all-empty-
+        # string degenerate case; bytes_per_variant needs >= 1.
+        contig_ids = reader.contig_ids
+        chrom_max = max(
+            (len(str(c).encode("utf-8")) for c in contig_ids),
+            default=1,
+        )
+        chrom_max = max(1, chrom_max)
+
+        # rsid_max validated before varid_max: when the user passes
+        # rsid_max=X (and varid_max=None), varid_max propagates to X
+        # above, so rsid_max owns the error message.
         for name, value, ceiling in (
-            ("varid_max", varid_max, 0xFFFF),
             ("rsid_max", rsid_max, 0xFFFF),
-            ("chrom_max", chrom_max, 0xFFFF),
+            ("varid_max", varid_max, 0xFFFF),
             ("allele_max", allele_max, 0xFFFFFFFF),
         ):
             if value < 1:
@@ -383,11 +409,19 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 raise ValueError(
                     f"{name}={value} exceeds BGEN length-prefix width {ceiling}"
                 )
+        if chrom_max > 0xFFFF:
+            raise ValueError(
+                f"longest contig is {chrom_max} bytes, exceeds BGEN "
+                f"length-prefix width 65535"
+            )
 
         self._varid_max = varid_max
         self._rsid_max = rsid_max
         self._chrom_max = chrom_max
         self._allele_max = allele_max
+        self._has_variant_id = has_variant_id
+        self._has_phased = "call_genotype_phased" in reader.field_names
+        self._contig_ids = contig_ids
         self._mixed_phase_count = 0
 
         num_samples = int(reader.sample_ids.size)
@@ -410,10 +444,6 @@ class BgenEncoder(format_encoder.FormatEncoder):
         sample_id_block = _build_sample_id_block(reader.sample_ids)
         num_variants = int(reader.variant_counts_per_chunk().sum())
         prefix_bytes = _build_header(num_variants, num_samples, sample_id_block)
-
-        self._has_variant_id = "variant_id" in reader.field_names
-        self._has_phased = "call_genotype_phased" in reader.field_names
-        self._contig_ids = reader.contig_ids
 
         iterator_fields = [
             "call_genotype",

@@ -674,6 +674,65 @@ class TestBgenRoundTripViaBgenReader:
             np.testing.assert_array_equal(probs[1, v], [1.0, 0.0, 0.0])
             np.testing.assert_array_equal(probs[2, v], [1.0, 0.0, 0.0])
 
+    @pytest.mark.parametrize(
+        "rsids",
+        [
+            pytest.param(["rs1", "rs2", "rs3"], id="short"),
+            pytest.param(
+                ["rs" + "0" * 60, "rs" + "1" * 60, "rs" + "2" * 60],
+                id="long-62-byte",
+            ),
+            pytest.param(["1:100:A:T", "1:200:G:C", "."], id="mixed-and-dot"),
+            pytest.param(["x" * 64, "y", "z" * 32], id="at-default-cap"),
+        ],
+    )
+    def test_rsids_round_trip_exactly(self, write_to_bgen, rsids):
+        # rsid values round-trip byte-for-byte through bgen-reader for
+        # a range of short / long / boundary inputs. Locks in NUL-
+        # padding behaviour for BgenEncoder (bgen-reader strips trailing
+        # NULs) and direct length-prefixed encoding for write_bgen.
+        #
+        # Multi-byte UTF-8 rsids are valid per the BGEN spec but
+        # bgen-reader assumes ASCII internally; UTF-8 byte-counting is
+        # covered by TestPadToFixedLength.test_unicode_multibyte_counts_bytes.
+        n = len(rsids)
+        reader = _build_reader(
+            num_variants=n,
+            num_samples=2,
+            variant_position=list(range(100, 100 + n)),
+            alleles=[("A", "T")] * n,
+            variant_id=rsids,
+            call_genotype=np.zeros((n, 2, 2), dtype=np.int8),
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            expected = [r if r != "" else "." for r in rsids]
+            assert [str(r) for r in bg.rsids] == expected
+
+    def test_rsids_dot_when_variant_id_absent(self, write_to_bgen):
+        # A VCZ without a ``variant_id`` field emits all rsids as ".".
+        # For BgenEncoder this triggers the 1-byte rsid_max default;
+        # for write_bgen the rsid literal is "." (1 byte).
+        reader = _build_reader(num_variants=3, num_samples=2)
+        assert "variant_id" not in reader.field_names
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert [str(r) for r in bg.rsids] == [".", ".", "."]
+
+    def test_long_contig_name_round_trips(self, write_to_bgen):
+        # BgenEncoder now derives chrom_max from reader.contig_ids, so
+        # a long contig name should pass through without manual tuning.
+        long_contig = "chr19_KI270939v1_alt"
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=2,
+            contigs=(long_contig,),
+            variant_contig=[0],
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.chromosomes[0] == long_contig
+
 
 # ---------------------------------------------------------------------------
 # BgenEncoder: fixed-size random-access encoder.
@@ -745,10 +804,12 @@ class TestBgenEncoderMetadata:
             assert enc.num_samples == 5
 
     def test_bytes_per_variant_formula(self):
-        # bpv = 28 + vmax + rmax + cmax + 2*amax + zlib_stored(10 + 3*N)
+        # bpv = 28 + vmax + rmax + cmax + 2*amax + zlib_stored(10 + 3*N).
+        # Default _build_reader has no variant_id, so rsid_max=varid_max=1;
+        # default contig "chr1" → chrom_max=4; allele_max=1.
         with _build_encoder(num_variants=2, num_samples=4) as enc:
             geno_size = 10 + 3 * 4
-            expected = 28 + 64 + 64 + 8 + 2 + len(zlib.compress(b"\x00" * geno_size, 0))
+            expected = 28 + 1 + 1 + 4 + 2 + len(zlib.compress(b"\x00" * geno_size, 0))
             assert enc.bytes_per_variant == expected
 
     def test_header_size_matches_serialised_header(self):
@@ -763,14 +824,53 @@ class TestBgenEncoderMetadata:
             assert enc.bgen_size == enc.header_size + 7 * enc.bytes_per_variant
 
     def test_custom_maxes_change_bytes_per_variant(self):
+        # Default contig "chr1" → chrom_max=4 (derived, no longer a kwarg).
         with _build_encoder(
             num_variants=1,
             num_samples=2,
-            encoder_kwargs=dict(varid_max=16, rsid_max=16, chrom_max=4, allele_max=2),
+            encoder_kwargs=dict(varid_max=16, rsid_max=16, allele_max=2),
         ) as enc:
             geno_size = 10 + 3 * 2
             expected = 28 + 16 + 16 + 4 + 4 + len(zlib.compress(b"\x00" * geno_size, 0))
             assert enc.bytes_per_variant == expected
+
+    def test_default_rsid_varid_max_when_variant_id_absent(self):
+        # Defaults shrink to 1 byte when the source has no variant_id.
+        with _build_encoder(num_variants=2, num_samples=4) as enc:
+            assert "variant_id" not in enc._reader.field_names
+            assert enc._rsid_max == 1
+            assert enc._varid_max == 1
+
+    def test_default_rsid_varid_max_when_variant_id_present(self):
+        # Defaults stay at 64 when variant_id is present.
+        with _build_encoder(
+            num_variants=2, num_samples=4, variant_id=["rsA", "rsB"]
+        ) as enc:
+            assert enc._rsid_max == 64
+            assert enc._varid_max == 64
+
+    def test_varid_max_default_follows_rsid_max(self):
+        # Explicit rsid_max propagates to varid_max when varid_max is
+        # not explicitly set (they share fate in _encode_chunk).
+        with _build_encoder(
+            num_variants=1,
+            num_samples=2,
+            encoder_kwargs=dict(rsid_max=32),
+        ) as enc:
+            assert enc._rsid_max == 32
+            assert enc._varid_max == 32
+
+    def test_chrom_max_derived_from_contig_ids(self):
+        # chrom_max is derived from the longest contig name in
+        # reader.contig_ids rather than a manual knob.
+        long_contig = "chr19_KI270939v1_alt"  # 20 bytes
+        with _build_encoder(
+            num_variants=1,
+            num_samples=2,
+            contigs=(long_contig,),
+            variant_contig=[0],
+        ) as enc:
+            assert enc._chrom_max == len(long_contig)
 
 
 class TestBgenEncoderSequential:
@@ -976,8 +1076,6 @@ class TestBgenEncoderLifecycle:
             bgen.BgenEncoder(reader, varid_max=0)
         with pytest.raises(ValueError, match="rsid_max"):
             bgen.BgenEncoder(reader, rsid_max=0)
-        with pytest.raises(ValueError, match="chrom_max"):
-            bgen.BgenEncoder(reader, chrom_max=0)
         with pytest.raises(ValueError, match="allele_max"):
             bgen.BgenEncoder(reader, allele_max=0)
 
@@ -1072,16 +1170,20 @@ class TestBgenEncoderOverflowRaises:
             with pytest.raises(ValueError, match="varid"):
                 enc.read(0, enc.bgen_size)
 
-    def test_chrom_too_long(self):
-        # Single contig with a long name; chrom_max=8 is the default.
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=1,
-            contigs=("chr_with_a_very_long_name",),
-        )
-        with bgen.BgenEncoder(reader) as enc:
-            with pytest.raises(ValueError, match="chrom"):
-                enc.read(0, enc.bgen_size)
+    def test_contig_exceeds_bgen_length_prefix(self):
+        # chrom_max is now derived from reader.contig_ids, so an
+        # arbitrarily long contig name produces a wider variant block
+        # rather than failing. A name that exceeds the uint16 length
+        # prefix is the only remaining error path; caught at
+        # construction time, not lazily.
+        #
+        # vcz_builder stores contig_id with dtype "<U32" which truncates
+        # 70000-char strings, so inject directly into the reader's
+        # cached_property dict.
+        reader = _build_reader(num_variants=1, num_samples=1)
+        reader.__dict__["contig_ids"] = np.array(["x" * 70000])
+        with pytest.raises(ValueError, match="longest contig is 70000 bytes"):
+            bgen.BgenEncoder(reader)
 
     def test_allele_too_long(self):
         reader = _build_reader(

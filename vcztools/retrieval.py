@@ -250,10 +250,11 @@ def _make_field_specs(root, read_fields, stream_chunk_size: int) -> list[FieldSp
             f"non-variants-axis field in stream reader: {field}"
         )
         chunks = arr.chunks
-        assert int(chunks[0]) % stream_chunk_size == 0, (
-            f"field {field!r} chunks[0]={chunks[0]} is not a multiple of "
-            f"stream_chunk_size={stream_chunk_size}"
-        )
+        if int(chunks[0]) % stream_chunk_size != 0:
+            raise ValueError(
+                f"field {field!r} chunks[0]={chunks[0]} is not a multiple of "
+                f"stream_chunk_size={stream_chunk_size}"
+            )
         multiplier = int(chunks[0]) // stream_chunk_size
         is_call = field.startswith("call_")
         block_size = int(arr.dtype.itemsize)

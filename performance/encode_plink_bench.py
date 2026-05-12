@@ -1,34 +1,55 @@
-"""Microbenchmark for the ``vcz_encode_plink`` C kernel.
+"""CPU-only encoding microbenchmarks for the formats vcztools writes.
 
-Allocates a synthetic ``call_genotype``-shaped int8 buffer in memory
-and times repeated calls to ``_vcztools.encode_plink`` in isolation,
-with no I/O or readahead pipeline involved. Gives the upper bound
-the matrix benchmarks (``output_plink`` / ``output_bed_stream``)
-can asymptotically approach.
+Allocates a synthetic ``call_genotype``-shaped int8 buffer plus minimal
+per-variant metadata in memory, and times repeated calls to each
+encoder kernel in isolation — no Zarr, no I/O, no readahead pipeline.
+Gives the upper bound the corresponding end-to-end matrix benchmarks
+(``output_plink`` / ``output_bed_stream`` for plink, ``view_vcf`` for
+VCF, ``write_bgen`` / BGEN streaming for BGEN) can asymptotically
+approach.
+
+Formats:
+
+* ``plink`` — calls ``_vcztools.encode_plink`` on the whole chunk.
+* ``vcf`` — constructs ``_vcztools.VcfEncoder`` and runs the per-variant
+  ``encode(j, buflen)`` loop, mirroring ``c_chunk_to_vcf``. GT-only:
+  no INFO/FORMAT fields, so the kernel cost tracks the same genotype
+  payload as the other three benchmarks.
+* ``bgen`` — variable-size, zlib-compressed BGEN; per-variant
+  ``bgen._encode_variant_block`` loop. Compression level controlled by
+  ``--compression-level`` (default 6, the zlib default).
+* ``bgen-fixed`` — fixed-size BGEN; per-variant
+  ``bgen._encode_variant_block_fixed_size`` loop (zlib level 0 stored).
 
 Run from the repo root::
 
     uv run python performance/encode_plink_bench.py
+    uv run python performance/encode_plink_bench.py --format bgen-fixed
+    uv run python performance/encode_plink_bench.py --format all --sweep
 
 Defaults to one variant-chunk's worth of work on the standard bench
 shape (1000 variants x 100000 samples). Override with ``--variants``
 and ``--samples``; ``--repeats`` controls the number of timed calls.
 
-``--threads`` and ``--block-bytes`` exercise the same variant-axis
-slicing strategy used by :class:`vcztools.plink.BedEncoder` for
-parallel encoding. ``--sweep`` runs the canonical ``(threads,
-block_bytes)`` matrix at the chosen sample count and prints a
-markdown table of MiB/s.
+``--threads`` and ``--block-bytes`` exercise variant-axis slicing for
+``plink``, ``bgen``, and ``bgen-fixed`` (same strategy as
+:class:`vcztools.plink.BedEncoder` / :class:`vcztools.bgen.BgenEncoder`).
+VCF has no parallel slicing path — the ``VcfEncoder`` is stateful
+per-chunk — so ``--threads > 1 --format vcf`` falls back to sync with
+a warning. ``--sweep`` runs the canonical ``(threads, block_bytes)``
+matrix per active format and prints one markdown table each (VCF's
+parallel cells are filled with ``--`` to make the limitation explicit).
 """
 
 import concurrent.futures as cf
+import dataclasses
 import statistics
 import time
 
 import click
 import numpy as np
 
-from vcztools import _vcztools, plink
+from vcztools import _vcztools, bgen, constants
 
 # Mix of values that exercises every branch in encode_diploid_fixed:
 # 0/1 (REF/ALT calls), 2 (out-of-range diploid), -1 (missing
@@ -37,6 +58,8 @@ _GENOTYPE_VALUES = np.array([0, 1, 0, 0, 1, 1, 2, -1, -2, 0], dtype=np.int8)
 
 _SWEEP_THREADS = (1, 2, 4, 8)
 _SWEEP_BLOCK_BYTES = (1 << 20, 4 << 20, 10 << 20, 40 << 20)
+
+_FORMATS = ("plink", "vcf", "bgen", "bgen-fixed")
 
 
 def _make_genotypes(num_variants: int, num_samples: int, seed: int) -> np.ndarray:
@@ -59,14 +82,213 @@ def _make_genotypes(num_variants: int, num_samples: int, seed: int) -> np.ndarra
     return flat.reshape(num_variants, num_samples, 2)
 
 
+@dataclasses.dataclass
+class _Chunk:
+    """Synthetic per-variant chunk shared across all encoder runners.
+
+    Fields are pre-built in shapes/dtypes each encoder accepts directly
+    so the timed region contains only encoder work, never numpy fanout.
+    """
+
+    num_variants: int
+    num_samples: int
+    G: np.ndarray
+    phased: np.ndarray
+    # VCF arrays (C-contiguous, NPY_STRING / NPY_INT32 / NPY_FLOAT32 / NPY_BOOL).
+    chrom_bytes: np.ndarray
+    pos: np.ndarray
+    id_bytes: np.ndarray
+    ref_bytes: np.ndarray
+    alt_bytes: np.ndarray
+    qual: np.ndarray
+    filter_ids_bytes: np.ndarray
+    filter: np.ndarray
+    # BGEN variable-size inputs (Python strings; encoded inside the kernel).
+    varid_strs: list
+    chrom_str: str
+    a1_str: str
+    a2_str: str
+    # BGEN fixed-size inputs (pre-padded NUL-terminated bytes).
+    varid_padded: list
+    rsid_padded: list
+    chrom_padded: bytes
+    a1_padded: bytes
+    a2_padded: bytes
+    varid_max: int
+    rsid_max: int
+    chrom_max: int
+    allele_max: int
+
+
+def _make_chunk(num_variants: int, num_samples: int, seed: int) -> _Chunk:
+    G = _make_genotypes(num_variants, num_samples, seed)
+    phased = np.zeros((num_variants, num_samples), dtype=bool)
+
+    chrom = "1"
+    a1, a2 = "A", "T"
+    rsids = [f"rs{j:08d}" for j in range(num_variants)]
+    pos = np.arange(1, num_variants + 1, dtype=np.int32)
+
+    chrom_max = len(chrom.encode("utf-8"))
+    varid_max = max((len(r) for r in rsids), default=1)
+    rsid_max = varid_max
+    allele_max = 1
+
+    varid_padded = [
+        bgen._pad_to_fixed_length(r, varid_max, field_name="varid") for r in rsids
+    ]
+    # rsid == varid here, so the same padded bytes serve both fields.
+    rsid_padded = varid_padded
+    chrom_padded = bgen._pad_to_fixed_length(chrom, chrom_max, field_name="chrom")
+    a1_padded = bgen._pad_to_fixed_length(a1, allele_max, field_name="allele1")
+    a2_padded = bgen._pad_to_fixed_length(a2, allele_max, field_name="allele2")
+
+    chrom_bytes = np.full(num_variants, chrom.encode("utf-8"), dtype=f"S{chrom_max}")
+    id_bytes = np.array(
+        [r.encode("utf-8") for r in rsids], dtype=f"S{varid_max}"
+    ).reshape((num_variants, 1))
+    ref_bytes = np.full(num_variants, a1.encode("utf-8"), dtype=f"S{allele_max}")
+    alt_bytes = np.full((num_variants, 1), a2.encode("utf-8"), dtype=f"S{allele_max}")
+    qual = np.full(num_variants, constants.FLOAT32_MISSING, dtype=np.float32)
+    filter_ids_bytes = np.array([b"PASS"], dtype="S4")
+    filter_arr = np.ones((num_variants, 1), dtype=bool)
+
+    return _Chunk(
+        num_variants=num_variants,
+        num_samples=num_samples,
+        G=G,
+        phased=phased,
+        chrom_bytes=chrom_bytes,
+        pos=pos,
+        id_bytes=id_bytes,
+        ref_bytes=ref_bytes,
+        alt_bytes=alt_bytes,
+        qual=qual,
+        filter_ids_bytes=filter_ids_bytes,
+        filter=filter_arr,
+        varid_strs=rsids,
+        chrom_str=chrom,
+        a1_str=a1,
+        a2_str=a2,
+        varid_padded=varid_padded,
+        rsid_padded=rsid_padded,
+        chrom_padded=chrom_padded,
+        a1_padded=a1_padded,
+        a2_padded=a2_padded,
+        varid_max=varid_max,
+        rsid_max=rsid_max,
+        chrom_max=chrom_max,
+        allele_max=allele_max,
+    )
+
+
+def _plink_slice(G: np.ndarray, start: int, end: int) -> bytes:
+    # Matches the per-slice idiom in plink.BedEncoder._encode_chunk.
+    return bytes(_vcztools.encode_plink(G[start:end]).data)
+
+
+def _vcf_run(chunk: _Chunk) -> int:
+    """Construct a VcfEncoder and run the per-variant encode loop.
+
+    Returns total bytes (including the implicit trailing newline per
+    line). Matches the layout of ``c_chunk_to_vcf`` in vcf_writer.py.
+    """
+    encoder = _vcztools.VcfEncoder(
+        chunk.num_variants,
+        chunk.num_samples,
+        chrom=chunk.chrom_bytes,
+        pos=chunk.pos,
+        id=chunk.id_bytes,
+        ref=chunk.ref_bytes,
+        alt=chunk.alt_bytes,
+        qual=chunk.qual,
+        filter_ids=chunk.filter_ids_bytes,
+        filter=chunk.filter,
+    )
+    encoder.add_gt_field(chunk.G, chunk.phased)
+    buflen = 1024
+    total = 0
+    for j in range(chunk.num_variants):
+        while True:
+            try:
+                line = encoder.encode(j, buflen)
+                break
+            except _vcztools.VczBufferTooSmall:
+                buflen *= 2
+        # +1 for the newline that ``print(line, file=output)`` adds.
+        total += len(line) + 1
+    return total
+
+
+def _bgen_var_slice(chunk: _Chunk, level: int, start: int, end: int) -> bytes:
+    G = chunk.G
+    num_samples = G.shape[1]
+    rsids = chunk.varid_strs
+    chrom = chunk.chrom_str
+    a1 = chunk.a1_str
+    a2 = chunk.a2_str
+    pos = chunk.pos
+    parts = []
+    for j in range(start, end):
+        parts.append(
+            bgen._encode_variant_block(
+                varid=rsids[j],
+                rsid=rsids[j],
+                chrom=chrom,
+                position=int(pos[j]),
+                allele1=a1,
+                allele2=a2,
+                num_samples=num_samples,
+                genotypes=G[j],
+                phased=False,
+                compression_level=level,
+            )
+        )
+    return b"".join(parts)
+
+
+def _bgen_fixed_slice(chunk: _Chunk, start: int, end: int) -> bytes:
+    G = chunk.G
+    varid_padded = chunk.varid_padded
+    rsid_padded = chunk.rsid_padded
+    chrom_padded = chunk.chrom_padded
+    a1_padded = chunk.a1_padded
+    a2_padded = chunk.a2_padded
+    varid_max = chunk.varid_max
+    rsid_max = chunk.rsid_max
+    chrom_max = chunk.chrom_max
+    allele_max = chunk.allele_max
+    pos = chunk.pos
+    parts = []
+    for j in range(start, end):
+        parts.append(
+            bgen._encode_variant_block_fixed_size(
+                varid_padded=varid_padded[j],
+                rsid_padded=rsid_padded[j],
+                chrom_padded=chrom_padded,
+                position=int(pos[j]),
+                allele1_padded=a1_padded,
+                allele2_padded=a2_padded,
+                varid_max=varid_max,
+                rsid_max=rsid_max,
+                chrom_max=chrom_max,
+                allele_max=allele_max,
+                genotypes=G[j],
+                phased=False,
+            )
+        )
+    return b"".join(parts)
+
+
 def _encode_parallel(
-    G: np.ndarray,
+    num_variants: int,
     executor: cf.ThreadPoolExecutor,
     block_variants: int,
+    encode_slice,
 ) -> bytes:
     futures = [
-        executor.submit(plink._encode_genotypes_sync, G[start : start + block_variants])
-        for start in range(0, G.shape[0], block_variants)
+        executor.submit(encode_slice, start, min(start + block_variants, num_variants))
+        for start in range(0, num_variants, block_variants)
     ]
     out = bytearray()
     for f in futures:
@@ -74,36 +296,146 @@ def _encode_parallel(
     return bytes(out)
 
 
-def _time_one_sync(G: np.ndarray) -> float:
+def _time_one_sync(sync_call) -> float:
     t0 = time.perf_counter()
-    _vcztools.encode_plink(G)
+    sync_call()
     return time.perf_counter() - t0
 
 
 def _time_one_parallel(
-    G: np.ndarray,
+    num_variants: int,
     executor: cf.ThreadPoolExecutor,
     block_variants: int,
+    encode_slice,
 ) -> float:
     t0 = time.perf_counter()
-    _encode_parallel(G, executor, block_variants)
+    _encode_parallel(num_variants, executor, block_variants, encode_slice)
     return time.perf_counter() - t0
 
 
-def _median_rate(times: list[float], in_mib: float) -> float:
+def _median_rate(times: list, in_mib: float) -> float:
     return in_mib / statistics.median(times)
 
 
-def _sweep(num_variants: int, num_samples: int, repeats: int, seed: int) -> None:
-    G = _make_genotypes(num_variants, num_samples, seed)
-    in_mib = G.nbytes / (1024 * 1024)
-    out_mib = ((num_samples + 3) // 4) * num_variants / (1024 * 1024)
+def _bytes_out_for(fmt: str, chunk: _Chunk, level: int) -> int:
+    """Compute encoded byte count for one format, once, outside timing."""
+    if fmt == "plink":
+        return ((chunk.num_samples + 3) // 4) * chunk.num_variants
+    if fmt == "vcf":
+        return _vcf_run(chunk)
+    if fmt == "bgen":
+        return len(_bgen_var_slice(chunk, level, 0, chunk.num_variants))
+    if fmt == "bgen-fixed":
+        return len(_bgen_fixed_slice(chunk, 0, chunk.num_variants))
+    raise ValueError(f"unknown format {fmt!r}")
 
-    click.echo("# encode_plink parallel sweep")
+
+def _make_runners(fmt: str, chunk: _Chunk, level: int):
+    """Return ``(sync_call, slice_fn)``. ``slice_fn`` is None when no
+    parallel slicing path is implemented for this format (VCF)."""
+    if fmt == "plink":
+        return (
+            lambda: _vcztools.encode_plink(chunk.G),
+            lambda s, e: _plink_slice(chunk.G, s, e),
+        )
+    if fmt == "vcf":
+        return (lambda: _vcf_run(chunk), None)
+    if fmt == "bgen":
+        return (
+            lambda: _bgen_var_slice(chunk, level, 0, chunk.num_variants),
+            lambda s, e: _bgen_var_slice(chunk, level, s, e),
+        )
+    if fmt == "bgen-fixed":
+        return (
+            lambda: _bgen_fixed_slice(chunk, 0, chunk.num_variants),
+            lambda s, e: _bgen_fixed_slice(chunk, s, e),
+        )
+    raise ValueError(f"unknown format {fmt!r}")
+
+
+def _run_one_format(
+    fmt: str,
+    chunk: _Chunk,
+    threads: int,
+    block_bytes: int,
+    repeats: int,
+    level: int,
+) -> None:
+    sync_call, slice_fn = _make_runners(fmt, chunk, level)
+    bytes_in = chunk.G.nbytes
+    bytes_out = _bytes_out_for(fmt, chunk, level)
+
+    # One untimed call to warm caches and (on first ever call) the
+    # numpy/C extension boundary.
+    sync_call()
+
+    parallel = threads > 1 and slice_fn is not None
+    if threads > 1 and slice_fn is None:
+        click.echo(
+            f"# {fmt}: no parallel slice path; "
+            f"falling back to single-thread (--threads ignored)"
+        )
+
+    if not parallel:
+        times = [_time_one_sync(sync_call) for _ in range(repeats)]
+        threads_eff = 1
+    else:
+        block_variants = max(1, block_bytes // (chunk.num_samples * 2))
+        with cf.ThreadPoolExecutor(
+            max_workers=threads,
+            thread_name_prefix=f"vcztools-encode-{fmt}-bench",
+        ) as executor:
+            times = [
+                _time_one_parallel(
+                    chunk.num_variants, executor, block_variants, slice_fn
+                )
+                for _ in range(repeats)
+            ]
+        threads_eff = threads
+
+    median = statistics.median(times)
+    fastest = min(times)
+    slowest = max(times)
+
+    in_mib = bytes_in / (1024 * 1024)
+    out_mib = bytes_out / (1024 * 1024)
+
+    click.echo(f"# {fmt}")
     click.echo(
-        f"# shape: {num_variants} variants x {num_samples} samples "
+        f"shape:        {chunk.num_variants} variants x {chunk.num_samples} samples"
+    )
+    click.echo(f"bytes_in:     {in_mib:.1f} MiB")
+    click.echo(f"bytes_out:    {out_mib:.1f} MiB")
+    click.echo(f"threads:      {threads_eff}")
+    if threads_eff > 1:
+        block_variants = max(1, block_bytes // (chunk.num_samples * 2))
+        click.echo(
+            f"block_bytes:  {block_bytes / (1024 * 1024):.1f} MiB "
+            f"({block_variants} variants/block)"
+        )
+    if fmt == "bgen":
+        click.echo(f"compression:  zlib level {level}")
+    click.echo(f"repeats:      {repeats}")
+    click.echo(
+        f"time:         median {median * 1000:.1f} ms "
+        f"(min {fastest * 1000:.1f}, max {slowest * 1000:.1f})"
+    )
+    click.echo(f"input rate:   {in_mib / median:.0f} MiB/s")
+    click.echo(f"output rate:  {out_mib / median:.0f} MiB/s")
+
+
+def _sweep_one_format(fmt: str, chunk: _Chunk, repeats: int, level: int) -> None:
+    sync_call, slice_fn = _make_runners(fmt, chunk, level)
+    in_mib = chunk.G.nbytes / (1024 * 1024)
+    out_mib = _bytes_out_for(fmt, chunk, level) / (1024 * 1024)
+
+    click.echo(f"# encode_{fmt} parallel sweep")
+    click.echo(
+        f"# shape: {chunk.num_variants} variants x {chunk.num_samples} samples "
         f"(in {in_mib:.1f} MiB, out {out_mib:.1f} MiB), repeats={repeats}"
     )
+    if fmt == "bgen":
+        click.echo(f"# compression: zlib level {level}")
     click.echo("")
 
     headers = ["threads"] + [f"{b // (1 << 20)} MiB" for b in _SWEEP_BLOCK_BYTES]
@@ -111,23 +443,32 @@ def _sweep(num_variants: int, num_samples: int, repeats: int, seed: int) -> None
     click.echo("|" + "|".join(["---"] * len(headers)) + "|")
 
     # Untimed warmup.
-    _vcztools.encode_plink(G)
+    sync_call()
 
     for threads in _SWEEP_THREADS:
         row = [str(threads)]
         if threads == 1:
-            times = [_time_one_sync(G) for _ in range(repeats)]
+            times = [_time_one_sync(sync_call) for _ in range(repeats)]
             rate = _median_rate(times, in_mib)
             row.extend([f"{rate:.0f}"] * len(_SWEEP_BLOCK_BYTES))
+        elif slice_fn is None:
+            # No parallel slicing path: leave the row blank rather than
+            # repeat the threads=1 number (the cells aren't comparable).
+            row.extend(["—"] * len(_SWEEP_BLOCK_BYTES))
         else:
             with cf.ThreadPoolExecutor(
                 max_workers=threads,
-                thread_name_prefix="vcztools-encode-plink-bench",
+                thread_name_prefix=f"vcztools-encode-{fmt}-bench",
             ) as executor:
                 for block_bytes in _SWEEP_BLOCK_BYTES:
-                    block_variants = max(1, block_bytes // (num_samples * 2))
+                    block_variants = max(1, block_bytes // (chunk.num_samples * 2))
                     times = [
-                        _time_one_parallel(G, executor, block_variants)
+                        _time_one_parallel(
+                            chunk.num_variants,
+                            executor,
+                            block_variants,
+                            slice_fn,
+                        )
                         for _ in range(repeats)
                     ]
                     rate = _median_rate(times, in_mib)
@@ -157,10 +498,26 @@ def _sweep(num_variants: int, num_samples: int, repeats: int, seed: int) -> None
     help="Input-bytes target per sub-block. Ignored when --threads=1.",
 )
 @click.option(
+    "--format",
+    "fmt",
+    type=click.Choice([*_FORMATS, "all"]),
+    default="plink",
+    show_default=True,
+    help="Encoder to benchmark. 'all' runs every format in sequence.",
+)
+@click.option(
+    "--compression-level",
+    type=int,
+    default=6,
+    show_default=True,
+    help="zlib level for --format bgen (variable-size BGEN). "
+    "Ignored for other formats. 6 is the zlib default.",
+)
+@click.option(
     "--sweep",
     is_flag=True,
     help="Run the canonical (threads, block_bytes) matrix and emit a "
-    "markdown table of MiB/s.",
+    "markdown table of MiB/s per format.",
 )
 def main(
     variants: int,
@@ -169,58 +526,20 @@ def main(
     seed: int,
     threads: int,
     block_bytes: int,
+    fmt: str,
+    compression_level: int,
     sweep: bool,
 ) -> None:
-    """Time vcz_encode_plink over an in-memory genotype array."""
-    if sweep:
-        _sweep(variants, samples, repeats, seed)
-        return
-
-    genotypes = _make_genotypes(variants, samples, seed)
-    bytes_in = genotypes.nbytes
-    bytes_out = ((samples + 3) // 4) * variants
-
-    # One untimed call to warm caches and (on first ever call) the
-    # numpy/C extension boundary.
-    _vcztools.encode_plink(genotypes)
-
-    if threads <= 1:
-        times = [_time_one_sync(genotypes) for _ in range(repeats)]
-    else:
-        block_variants = max(1, block_bytes // (samples * 2))
-        with cf.ThreadPoolExecutor(
-            max_workers=threads,
-            thread_name_prefix="vcztools-encode-plink-bench",
-        ) as executor:
-            times = [
-                _time_one_parallel(genotypes, executor, block_variants)
-                for _ in range(repeats)
-            ]
-
-    median = statistics.median(times)
-    fastest = min(times)
-    slowest = max(times)
-
-    in_mib = bytes_in / (1024 * 1024)
-    out_mib = bytes_out / (1024 * 1024)
-
-    click.echo(f"shape:        {variants} variants x {samples} samples")
-    click.echo(f"bytes_in:     {in_mib:.1f} MiB")
-    click.echo(f"bytes_out:    {out_mib:.1f} MiB")
-    click.echo(f"threads:      {threads}")
-    if threads > 1:
-        block_variants = max(1, block_bytes // (samples * 2))
-        click.echo(
-            f"block_bytes:  {block_bytes / (1024 * 1024):.1f} MiB "
-            f"({block_variants} variants/block)"
-        )
-    click.echo(f"repeats:      {repeats}")
-    click.echo(
-        f"time:         median {median * 1000:.1f} ms "
-        f"(min {fastest * 1000:.1f}, max {slowest * 1000:.1f})"
-    )
-    click.echo(f"input rate:   {in_mib / median:.0f} MiB/s")
-    click.echo(f"output rate:  {out_mib / median:.0f} MiB/s")
+    """Time vcztools encoder kernels over an in-memory chunk."""
+    chunk = _make_chunk(variants, samples, seed)
+    formats = list(_FORMATS) if fmt == "all" else [fmt]
+    for i, f in enumerate(formats):
+        if i > 0:
+            click.echo("")
+        if sweep:
+            _sweep_one_format(f, chunk, repeats, compression_level)
+        else:
+            _run_one_format(f, chunk, threads, block_bytes, repeats, compression_level)
 
 
 if __name__ == "__main__":

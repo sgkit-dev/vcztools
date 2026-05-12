@@ -13,7 +13,6 @@ normalisation, and known divergences from plink 2 — see
 ``docs/plink.md``.
 """
 
-import concurrent.futures as cf
 import logging
 import pathlib
 import time
@@ -22,7 +21,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from vcztools import _vcztools, retrieval
+from vcztools import _vcztools, format_encoder, retrieval
 from vcztools.utils import _as_fixed_length_unicode
 
 logger = logging.getLogger(__name__)
@@ -198,28 +197,15 @@ def _stream_bed_to_file(reader, bed_path):
     )
 
 
-class BedEncoder:
+class BedEncoder(format_encoder.FormatEncoder):
     """PLINK 1 ``.bed`` byte-stream encoder over a VCZ store.
 
-    Exposes the virtual ``.bed`` as a byte stream addressable by
-    ``(off, size)``. State is chunk-resident: the encoder holds the
-    most recently produced chunk's full encoded bytes plus the chunk's
-    start offset, and serves :meth:`read` by slicing into that buffer.
-    Reads whose start lies in the loaded chunk or the immediately-next
-    plan chunk roll forward through a running variant-chunk iterator
-    one chunk at a time. Reads whose start is further away — a forward
-    skip that would bypass a whole chunk, or a backward jump past the
-    loaded chunk — tear down and rebuild the iterator at the chunk
-    containing ``off``.
-
-    Concurrency: a single :class:`BedEncoder` instance is **not**
-    thread-safe — :meth:`read` and :meth:`close` must be serialised
-    by the caller (one encoder per consumer: thread, FUSE handle,
-    range-HTTP connection). Multiple :class:`BedEncoder` instances
-    may share one :class:`~vcztools.retrieval.VczReader` safely;
-    each encoder runs an independent variant-chunk iteration on the
-    reader. The caller owns the reader's lifetime — :meth:`close`
-    tears down the encoder's iterator only, not the reader.
+    Thin :class:`~vcztools.format_encoder.FormatEncoder` subclass: the
+    base class supplies the chunk-resident state machine, POSIX-style
+    :meth:`read`, iterator restart/advance arbitration, thread-pool
+    lifecycle, and prefix (magic) serving. ``BedEncoder`` plugs in
+    PLINK 1's 3-byte magic prefix and the C-kernel encode of one
+    variant chunk.
 
     Scope is the ``.bed`` stream only. For the companion ``.bim`` and
     ``.fam`` files, use :func:`generate_bim` and :func:`generate_fam`
@@ -231,9 +217,6 @@ class BedEncoder:
     ``.bed`` covers exactly the selected variants in chunk-plan order;
     :attr:`bed_size` and :attr:`num_variants` reflect the selection.
 
-    Construction is I/O-free: byte offsets are derived from the
-    reader's chunk plan via
-    :meth:`~vcztools.retrieval.VczReader.variant_counts_per_chunk`.
     Biallelic checking is performed lazily as chunks are decoded;
     multi-allelic variants raise ``ValueError`` during :meth:`read`,
     not at construction.
@@ -247,9 +230,7 @@ class BedEncoder:
     owned by the encoder. ``encode_threads`` (default 4) sets the
     pool size; ``encode_block_bytes`` (default 10 MiB) is the
     input-bytes target per sub-block. Chunks at or below the
-    threshold encode synchronously on the calling thread. The pool
-    is created in ``__init__`` and joined in :meth:`close` /
-    :meth:`__exit__`.
+    threshold encode synchronously on the calling thread.
     """
 
     BED_MAGIC: ClassVar[bytes] = BED_MAGIC
@@ -261,237 +242,40 @@ class BedEncoder:
         encode_threads: int | None = None,
         encode_block_bytes: int | None = None,
     ):
-        if encode_threads is None:
-            encode_threads = 4
-        if encode_block_bytes is None:
-            encode_block_bytes = 10 * 1024 * 1024
-
-        if reader.variant_filter is not None:
-            raise NotImplementedError(
-                "BedEncoder does not yet support readers with a "
-                "set_variant_filter() configured. Apply the filter "
-                "externally and pass the resulting reader, or use "
-                "set_variants() to materialise the surviving indices."
-            )
-        if encode_threads < 1:
-            raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
-        if encode_block_bytes < 1:
-            raise ValueError(
-                f"encode_block_bytes must be >= 1 (got {encode_block_bytes})"
-            )
-
-        self._reader = reader
-        self._closed = False
-
-        self._num_samples = int(reader.sample_ids.size)
-        self._bytes_per_variant = (self._num_samples + 3) // 4
-
-        # _chunk_byte_offsets: cumulative byte offset per plan entry,
-        # starting at 3 (post-magic). Length = len(plan) + 1; the
-        # trailing entry equals bed_size.
-        self._compute_offsets()
-        self._bed_size = int(self._chunk_byte_offsets[-1])
-
-        self._iterator = None
-        self._chunk_bytes: bytes | None = None
-        self._chunk_start = 0
-        self._chunk_plan_pos = -1
-        # Counts only true restarts (offset jumps). The first read() after
-        # construction is mechanically a restart-from-None but is logged
-        # as an "init" event and does not increment this counter.
-        self._restart_count = 0
-
-        self._encode_threads = encode_threads
-        self._encode_block_bytes = encode_block_bytes
-        self._executor = cf.ThreadPoolExecutor(
-            max_workers=encode_threads,
-            thread_name_prefix="vcztools-encode-plink",
+        num_samples = int(reader.sample_ids.size)
+        bytes_per_variant = (num_samples + 3) // 4
+        super().__init__(
+            reader,
+            bytes_per_variant=bytes_per_variant,
+            prefix_bytes=BED_MAGIC,
+            iterator_fields=["call_genotype", "variant_allele"],
+            encode_threads=encode_threads,
+            encode_block_bytes=encode_block_bytes,
         )
-
-    def _compute_offsets(self) -> None:
-        bpv = self._bytes_per_variant
-        counts = self._reader.variant_counts_per_chunk()
-        self._num_variants = int(counts.sum())
-        self._chunk_byte_offsets = np.empty(len(counts) + 1, dtype=np.int64)
-        self._chunk_byte_offsets[0] = 3
-        np.cumsum(counts * bpv, out=self._chunk_byte_offsets[1:])
-        self._chunk_byte_offsets[1:] += 3
-
-    def _check_open(self) -> None:
-        if self._closed:
-            raise RuntimeError("encoder closed")
-
-    @property
-    def num_variants(self) -> int:
-        self._check_open()
-        return self._num_variants
-
-    @property
-    def num_samples(self) -> int:
-        self._check_open()
-        return self._num_samples
-
-    @property
-    def bytes_per_variant(self) -> int:
-        self._check_open()
-        return self._bytes_per_variant
 
     @property
     def bed_size(self) -> int:
-        self._check_open()
-        return self._bed_size
+        """Total ``.bed`` size in bytes (alias of
+        :attr:`~vcztools.format_encoder.FormatEncoder.total_size`)."""
+        return self.total_size
 
-    def read(self, off: int, size: int) -> bytes:
-        """Return up to ``size`` bytes from the virtual ``.bed`` at
-        ``off``. POSIX-read semantics:
-
-        - ``b""`` if ``off >= bed_size`` or ``size == 0``
-        - ``size`` clamped to the end of the file
-        - ``off < 0`` or ``size < 0`` raises ``ValueError``
-
-        Reads whose start falls in the loaded chunk or the immediately-
-        next plan chunk are served by slicing chunk-resident bytes,
-        advancing the running iterator one chunk at a time as needed.
-        Reads whose start is further away rebuild the iterator at the
-        chunk containing ``off``.
-        """
-        self._check_open()
-        if off < 0:
-            raise ValueError(f"off must be >= 0 (got {off})")
-        if size < 0:
-            raise ValueError(f"size must be >= 0 (got {size})")
-        if off >= self._bed_size or size == 0:
-            return b""
-        end = min(off + size, self._bed_size)
-
-        out = bytearray()
-        if off < 3:
-            out.extend(BED_MAGIC[off : min(end, 3)])
-            off = min(end, 3)
-        if off < end:
-            out.extend(self._read_data(off, end - off))
-        return bytes(out)
-
-    def _read_data(self, off: int, size: int) -> bytes:
-        # Caller guarantees: off >= 3, size > 0, off + size <= bed_size.
-        # Off is reachable without restart iff it lies in the loaded chunk
-        # or the immediately-next plan chunk: at most one advance gets us
-        # to the chunk containing off. Anything further skips a chunk's
-        # bytes that nobody asked for, so restart is cheaper than advance.
-        in_range = False
-        if self._chunk_bytes is not None and self._chunk_start <= off:
-            next_plan_end_idx = self._chunk_plan_pos + 2
-            if next_plan_end_idx < len(self._chunk_byte_offsets):
-                reachable_end = int(self._chunk_byte_offsets[next_plan_end_idx])
-            else:
-                reachable_end = self._chunk_start + len(self._chunk_bytes)
-            in_range = off < reachable_end
-        if not in_range:
-            self._restart(off)
-
-        out = bytearray()
-        while len(out) < size:
-            # If off has crossed into a chunk we haven't loaded yet, roll
-            # forward via the running iterator. The >= covers both the
-            # exact trailing-edge boundary and the case where off sits
-            # inside the next chunk past its start.
-            if off >= self._chunk_start + len(self._chunk_bytes):
-                self._advance()
-            local = off - self._chunk_start
-            take = min(size - len(out), len(self._chunk_bytes) - local)
-            out.extend(self._chunk_bytes[local : local + take])
-            off += take
-        return bytes(out)
-
-    def _advance(self) -> None:
-        chunk = next(self._iterator)
+    def _encode_chunk(self, chunk: dict) -> bytes:
         _check_biallelic(chunk["variant_allele"])
-        encoded = self._encode_genotypes(chunk["call_genotype"])
-        self._chunk_plan_pos += 1
-        self._chunk_start = int(self._chunk_byte_offsets[self._chunk_plan_pos])
-        self._chunk_bytes = bytes(encoded)
-
-    def _restart(self, off: int) -> None:
-        prev_plan_pos = self._chunk_plan_pos
-        self._teardown_iterator()
-        # searchsorted(side="right") - 1: largest plan position whose
-        # start offset is <= off. _chunk_byte_offsets has len(plan)+1
-        # entries (the trailing entry is bed_size); off < bed_size is
-        # guaranteed by read(), so the index is in range.
-        plan_pos = int(np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1)
-        self._iterator = self._reader.variant_chunks(
-            fields=["call_genotype", "variant_allele"],
-            start=plan_pos,
-        )
-        self._chunk_plan_pos = plan_pos - 1
-        self._advance()
-        if prev_plan_pos == -1:
-            logger.debug(f"BedEncoder iterator init: off={off}, plan_pos={plan_pos}")
-        else:
-            self._restart_count += 1
-            logger.info(
-                f"BedEncoder restart #{self._restart_count}: "
-                f"off={off}, plan_pos={prev_plan_pos} → {plan_pos}"
-            )
-
-    def _encode_genotypes(self, genotypes: np.ndarray):
         # Coerce once at method entry: a sample-subset call_genotype
         # is fancy-indexed and non-contiguous, so the copy must happen
         # before slicing. Once G is C-contiguous, axis-0 sub-blocks
-        # are zero-copy views.
-        G = np.ascontiguousarray(genotypes, dtype=np.int8)
-        if self._encode_threads <= 1 or G.nbytes <= self._encode_block_bytes:
-            return bytes(_vcztools.encode_plink(G).data)
-
+        # are zero-copy views; the C kernel writes one row of
+        # bytes_per_variant per variant.
+        G = np.ascontiguousarray(chunk["call_genotype"], dtype=np.int8)
         num_variants = G.shape[0]
-        bytes_per_variant = self._bytes_per_variant
         block_variants = max(1, self._encode_block_bytes // (G.shape[1] * 2))
-        # Pre-allocate the full chunk's output once; each completed
-        # future's result is copied into its variant-aligned slice.
-        # Slicing along axis 0 (variants) preserves per-row independence:
-        # the C kernel writes one row of bytes_per_variant per variant.
-        output = np.empty(num_variants * bytes_per_variant, dtype=np.uint8)
 
-        future_to_start = {}
-        for start in range(0, num_variants, block_variants):
-            block = G[start : start + block_variants]
-            future = self._executor.submit(_vcztools.encode_plink, block)
-            future_to_start[future] = start
+        def encode_range(start: int, end: int) -> bytes:
+            return bytes(_vcztools.encode_plink(G[start:end]).data)
 
-        for future in cf.as_completed(future_to_start):
-            start = future_to_start[future]
-            end = min(start + block_variants, num_variants)
-            out_start = start * bytes_per_variant
-            out_end = end * bytes_per_variant
-            output[out_start:out_end] = future.result()
-
-        return output.data
-
-    def _teardown_iterator(self) -> None:
-        if self._iterator is not None:
-            self._iterator.close()
-            self._iterator = None
-        self._chunk_bytes = None
-        self._chunk_plan_pos = -1
-
-    def close(self) -> None:
-        """Tear down the active chunk iterator, shut down the encode
-        thread pool, and drop iterator state. Does not close the
-        underlying reader. Idempotent."""
-        if self._closed:
-            return
-        self._closed = True
-        self._teardown_iterator()
-        self._executor.shutdown(wait=True)
-        if self._restart_count > 0:
-            logger.debug(
-                f"BedEncoder closed: {self._restart_count} restarts "
-                f"over {self._bed_size} bytes"
-            )
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
+        return self._parallel_encode(
+            num_variants=num_variants,
+            block_variants=block_variants,
+            sequential_threshold_bytes=G.nbytes,
+            encode_range=encode_range,
+        )

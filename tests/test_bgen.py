@@ -336,63 +336,20 @@ class TestBgiIndex:
 
 
 class TestWriteBgenEndToEnd:
-    def test_minimal_round_trip(self, tmp_path):
-        # 3 variants, 4 samples, biallelic, diploid; varied genotypes.
-        G = np.array(
-            [
-                [[0, 0], [0, 1], [1, 1], [-1, -1]],
-                [[0, 0], [0, 0], [0, 0], [0, 0]],
-                [[1, 1], [1, 0], [0, 1], [0, -1]],
-            ],
-            dtype=np.int8,
-        )
-        reader = _build_reader(
-            num_variants=3,
-            num_samples=4,
-            variant_position=[100, 200, 300],
-            alleles=[("A", "T"), ("C", "G"), ("G", "A")],
-            call_genotype=G,
-        )
+    """``write_bgen``-specific end-to-end behaviour: sidecar files
+    (``.sample``, ``.bgen.bgi``) and edge cases that don't translate to
+    the byte-stream encoder. Format-correctness round-trips that apply
+    to both encoder code paths live in
+    :class:`TestBgenRoundTripViaBgenReader`.
+    """
+
+    def test_sidecar_files_written(self, tmp_path):
+        reader = _build_reader(num_variants=1, num_samples=2)
         out = tmp_path / "out"
         bgen.write_bgen(reader, out)
-        bgen_path = out.with_suffix(".bgen")
-        sample_path = out.with_suffix(".sample")
-        bgi_path = bgen_path.with_suffix(".bgen.bgi")
-        assert bgen_path.exists()
-        assert sample_path.exists()
-        assert bgi_path.exists()
-
-        with br.open_bgen(bgen_path, verbose=False) as bgen_file:
-            assert bgen_file.nvariants == 3
-            assert bgen_file.nsamples == 4
-            assert list(bgen_file.samples) == [
-                "sample_0",
-                "sample_1",
-                "sample_2",
-                "sample_3",
-            ]
-            assert bgen_file.chromosomes[0] == "chr1"
-            assert int(bgen_file.positions[0]) == 100
-            assert str(bgen_file.allele_ids[0]).split(",") == ["A", "T"]
-            probs, missing = bgen_file.read(return_missings=True)
-
-        # Variant 0: hom-ref, het, hom-alt, missing. Unphased biallelic
-        # diploid stores P(00), P(01), P(11) per sample; missing samples
-        # are flagged in ``missing`` and have NaN probabilities.
-        np.testing.assert_array_equal(missing[:, 0], [False, False, False, True])
-        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
-        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
-        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
-        assert np.isnan(probs[3, 0]).all()
-
-        # Variant 2 has reversed-order het (1,0) which is encoded
-        # identically to (0,1) in the unphased path. Last sample is
-        # half-missing and therefore fully missing.
-        np.testing.assert_array_equal(missing[:, 2], [False, False, False, True])
-        np.testing.assert_array_equal(probs[0, 2], [0.0, 0.0, 1.0])  # (1,1) hom-alt
-        np.testing.assert_array_equal(probs[1, 2], [0.0, 1.0, 0.0])  # (1,0) het
-        np.testing.assert_array_equal(probs[2, 2], [0.0, 1.0, 0.0])  # (0,1) het
-        assert np.isnan(probs[3, 2]).all()
+        assert out.with_suffix(".bgen").exists()
+        assert out.with_suffix(".sample").exists()
+        assert out.with_suffix(".bgen").with_suffix(".bgen.bgi").exists()
 
     def test_sample_text_matches(self, tmp_path):
         reader = _build_reader(num_variants=1, num_samples=2)
@@ -431,117 +388,6 @@ class TestWriteBgenEndToEnd:
             assert next_start == start + size
         last_start, last_size = rows[-1]
         assert last_start + last_size == bgen_path.stat().st_size
-
-    def test_phased_round_trip(self, tmp_path):
-        # Phased: (0,1) and (1,0) must distinguish.
-        G = np.array(
-            [
-                [[0, 1], [1, 0], [0, 0], [1, 1]],
-            ],
-            dtype=np.int8,
-        )
-        phased = np.ones((1, 4), dtype=bool)
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=4,
-            call_genotype=G,
-            call_fields={"genotype_phased": phased},
-        )
-        out = tmp_path / "p"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            assert bool(bgen_file.phased[0])
-            probs = bgen_file.read()
-        # For phased biallelic diploid, bgen-reader returns shape
-        # (n_samples, n_variants, 4) storing per-haplotype
-        # [P(allele 0 | h1), P(allele 1 | h1), P(allele 0 | h2), P(allele 1 | h2)].
-        assert probs.shape == (4, 1, 4)
-        hap1 = np.argmax(probs[..., 0:2], axis=-1).T
-        hap2 = np.argmax(probs[..., 2:4], axis=-1).T
-        np.testing.assert_array_equal(hap1, G[..., 0])
-        np.testing.assert_array_equal(hap2, G[..., 1])
-
-    def test_unphased_when_phased_field_absent(self, tmp_path):
-        reader = _build_reader(num_variants=1, num_samples=2)
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            assert not bool(bgen_file.phased[0])
-
-    def test_mixed_phase_degrades_to_unphased(self, tmp_path, caplog):
-        G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
-        phased = np.array([[True, False]], dtype=bool)
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=2,
-            call_genotype=G,
-            call_fields={"genotype_phased": phased},
-        )
-        out = tmp_path / "x"
-        with caplog.at_level(logging.WARNING, logger="vcztools.bgen"):
-            bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            assert not bool(bgen_file.phased[0])
-        assert any("mixed phase" in record.getMessage() for record in caplog.records)
-
-    def test_multi_allelic_raises(self, tmp_path):
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=2,
-            alleles=[("A", "T", "G")],
-        )
-        with pytest.raises(ValueError, match="Multi-allelic"):
-            bgen.write_bgen(reader, tmp_path / "x")
-
-    def test_variant_id_field_used(self, tmp_path):
-        reader = _build_reader(
-            num_variants=2,
-            num_samples=1,
-            variant_id=["rsX", "rsY"],
-        )
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            rsids = [str(r) for r in bgen_file.rsids]
-        assert rsids == ["rsX", "rsY"]
-
-    def test_empty_variant_id_normalised_to_dot(self, tmp_path):
-        # An empty-string variant_id (VCF "." → empty in VCZ) should
-        # be emitted as "." in BGEN, matching generate_bim.
-        reader = _build_reader(
-            num_variants=2,
-            num_samples=1,
-            variant_id=["", "rsY"],
-        )
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            rsids = [str(r) for r in bgen_file.rsids]
-        assert rsids == [".", "rsY"]
-
-    def test_monomorphic_alt_normalised_to_dot(self, tmp_path):
-        # A monomorphic-REF variant has an empty ALT slot in VCZ; emit
-        # "." in BGEN to match generate_bim's convention.
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=1,
-            alleles=[("A",)],
-        )
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            assert str(bgen_file.allele_ids[0]) == "A,."
-
-    def test_sample_subset(self, tmp_path):
-        reader = _build_reader(num_variants=2, num_samples=4)
-        reader.set_samples([0, 2])
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
-            assert list(bgen_file.samples) == ["sample_0", "sample_2"]
-            assert bgen_file.nsamples == 2
-            assert bgen_file.nvariants == 2
-            assert bgen_file.read().shape == (2, 2, 3)
 
     def test_sample_subset_to_empty_via_filter(self, tmp_path):
         # An empty axis isn't a configuration vcz_builder supports
@@ -606,6 +452,227 @@ class TestCompressionLevel:
         size_l0 = out0.with_suffix(".bgen").stat().st_size
         size_l9 = out9.with_suffix(".bgen").stat().st_size
         assert size_l9 < size_l0
+
+
+# ---------------------------------------------------------------------------
+# Round-trip via bgen-reader, parametrized over both encoder code paths.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["write_bgen", "BgenEncoder"])
+def write_to_bgen(request, tmp_path):
+    """Write a reader to a ``.bgen`` file via one of the two encoder
+    code paths and return the resulting path.
+
+    Parametrized over the two BGEN code paths in ``vcztools.bgen``:
+
+    * ``write_bgen`` — variable-size, configurably-compressed variant
+      blocks; also writes ``.sample`` and ``.bgen.bgi`` sidecars.
+    * ``BgenEncoder`` — fixed-size, zlib-stored variant blocks; emits
+      only the ``.bgen`` byte stream (no sidecars).
+
+    A single test exercising this fixture covers both paths.
+    """
+    interface = request.param
+
+    def write(reader):
+        bgen_path = tmp_path / "out.bgen"
+        if interface == "write_bgen":
+            bgen.write_bgen(reader, tmp_path / "out")
+        else:
+            with bgen.BgenEncoder(reader) as enc:
+                buf = _drain(enc)
+            bgen_path.write_bytes(buf)
+        return bgen_path
+
+    return write
+
+
+class TestBgenRoundTripViaBgenReader:
+    """End-to-end correctness: write a ``.bgen`` file through one of the
+    two encoder code paths and verify metadata and probabilities round-
+    trip via the ``bgen-reader`` reference reader.
+
+    Parametrized over the writer interface so each case exercises both
+    code paths from a single definition.
+    """
+
+    def test_minimal_round_trip(self, write_to_bgen):
+        # 3 variants, 4 samples; covers hom-ref / het / hom-alt /
+        # missing on variant 0 and reversed-order het (1,0) on variant 2
+        # (which the unphased path encodes identically to (0,1)).
+        G = np.array(
+            [
+                [[0, 0], [0, 1], [1, 1], [-1, -1]],
+                [[0, 0], [0, 0], [0, 0], [0, 0]],
+                [[1, 1], [1, 0], [0, 1], [0, -1]],
+            ],
+            dtype=np.int8,
+        )
+        reader = _build_reader(
+            num_variants=3,
+            num_samples=4,
+            variant_position=[100, 200, 300],
+            alleles=[("A", "T"), ("C", "G"), ("G", "A")],
+            call_genotype=G,
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nvariants == 3
+            assert bg.nsamples == 4
+            assert list(bg.samples) == [
+                "sample_0",
+                "sample_1",
+                "sample_2",
+                "sample_3",
+            ]
+            assert bg.chromosomes[0] == "chr1"
+            assert list(bg.positions) == [100, 200, 300]
+            assert [str(a).split(",") for a in bg.allele_ids] == [
+                ["A", "T"],
+                ["C", "G"],
+                ["G", "A"],
+            ]
+            probs, missing = bg.read(return_missings=True)
+
+        # Variant 0: hom-ref, het, hom-alt, missing.
+        np.testing.assert_array_equal(missing[:, 0], [False, False, False, True])
+        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
+        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
+        assert np.isnan(probs[3, 0]).all()
+
+        # Variant 2: hom-alt, reversed het (1,0), het (0,1),
+        # half-missing (treated as fully missing).
+        np.testing.assert_array_equal(missing[:, 2], [False, False, False, True])
+        np.testing.assert_array_equal(probs[0, 2], [0.0, 0.0, 1.0])
+        np.testing.assert_array_equal(probs[1, 2], [0.0, 1.0, 0.0])
+        np.testing.assert_array_equal(probs[2, 2], [0.0, 1.0, 0.0])
+        assert np.isnan(probs[3, 2]).all()
+
+    def test_phased_round_trip(self, write_to_bgen):
+        # Phased: (0,1) and (1,0) must distinguish.
+        G = np.array([[[0, 1], [1, 0], [0, 0], [1, 1]]], dtype=np.int8)
+        phased = np.ones((1, 4), dtype=bool)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=4,
+            call_genotype=G,
+            call_fields={"genotype_phased": phased},
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bool(bg.phased[0])
+            probs = bg.read()
+        # Phased biallelic diploid: bgen-reader returns shape
+        # (n_samples, n_variants, 4) with per-haplotype probabilities
+        # [P(0|h1), P(1|h1), P(0|h2), P(1|h2)].
+        assert probs.shape == (4, 1, 4)
+        hap1 = np.argmax(probs[..., 0:2], axis=-1).T
+        hap2 = np.argmax(probs[..., 2:4], axis=-1).T
+        np.testing.assert_array_equal(hap1, G[..., 0])
+        np.testing.assert_array_equal(hap2, G[..., 1])
+
+    def test_unphased_when_phased_field_absent(self, write_to_bgen):
+        reader = _build_reader(num_variants=1, num_samples=2)
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert not bool(bg.phased[0])
+
+    def test_mixed_phase_degrades_to_unphased(self, write_to_bgen, caplog):
+        G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
+        phased = np.array([[True, False]], dtype=bool)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=2,
+            call_genotype=G,
+            call_fields={"genotype_phased": phased},
+        )
+        with caplog.at_level(logging.WARNING, logger="vcztools.bgen"):
+            path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert not bool(bg.phased[0])
+        assert any("mixed phase" in r.getMessage() for r in caplog.records)
+
+    def test_variant_id_field_used(self, write_to_bgen):
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=1,
+            variant_id=["rsX", "rsY"],
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert [str(r) for r in bg.rsids] == ["rsX", "rsY"]
+
+    def test_empty_variant_id_normalised_to_dot(self, write_to_bgen):
+        # An empty-string variant_id (VCF "." → empty in VCZ) is
+        # emitted as "." in BGEN, matching generate_bim's convention.
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=1,
+            variant_id=["", "rsY"],
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert [str(r) for r in bg.rsids] == [".", "rsY"]
+
+    def test_monomorphic_alt_normalised_to_dot(self, write_to_bgen):
+        # An empty ALT slot becomes "." in the BGEN output.
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            alleles=[("A",)],
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert str(bg.allele_ids[0]) == "A,."
+
+    def test_multi_allelic_raises(self, write_to_bgen):
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=2,
+            alleles=[("A", "T", "G")],
+        )
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            write_to_bgen(reader)
+
+    def test_sample_subset(self, write_to_bgen):
+        reader = _build_reader(num_variants=2, num_samples=4)
+        reader.set_samples([0, 2])
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert list(bg.samples) == ["sample_0", "sample_2"]
+            assert bg.nsamples == 2
+            assert bg.nvariants == 2
+            assert bg.read().shape == (2, 2, 3)
+
+    def test_multi_chunk_round_trip(self, write_to_bgen):
+        # 10 variants split across 3 plan chunks (chunk size 4) drives
+        # the chunk-boundary path through both encoders. Genotypes are
+        # set so per-variant content is unique, locking ordering across
+        # chunks.
+        num_variants = 10
+        num_samples = 3
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        # Variant v: sample 0 is hom-alt, samples 1..end hom-ref. Lets
+        # us assert per-variant probability content positionally.
+        G[:, 0, 0] = 1
+        G[:, 0, 1] = 1
+        reader = _build_reader(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            variants_chunk_size=4,
+            call_genotype=G,
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nvariants == num_variants
+            probs = bg.read()
+        # Sample 0 is hom-alt on every variant; samples 1 and 2 are hom-ref.
+        for v in range(num_variants):
+            np.testing.assert_array_equal(probs[0, v], [0.0, 0.0, 1.0])
+            np.testing.assert_array_equal(probs[1, v], [1.0, 0.0, 0.0])
+            np.testing.assert_array_equal(probs[2, v], [1.0, 0.0, 0.0])
 
 
 # ---------------------------------------------------------------------------
@@ -1025,119 +1092,3 @@ class TestBgenEncoderOverflowRaises:
         with bgen.BgenEncoder(reader) as enc:
             with pytest.raises(ValueError, match="allele1"):
                 enc.read(0, enc.bgen_size)
-
-
-class TestBgenEncoderRoundTripViaBgenReader:
-    """End-to-end: drain encoder to disk, open with bgen-reader,
-    verify metadata and probabilities round-trip."""
-
-    def test_round_trip(self, tmp_path):
-        # Cover hom-ref, het, hom-alt, missing, plus variant_id.
-        G = np.array(
-            [
-                [[0, 0], [0, 1], [1, 1], [-1, -1]],
-                [[1, 1], [0, 0], [-1, -1], [0, 1]],
-                [[1, 0], [1, 1], [0, 0], [0, 0]],
-            ],
-            dtype=np.int8,
-        )
-        reader = _build_reader(
-            num_variants=3,
-            num_samples=4,
-            call_genotype=G,
-            variant_id=["rs1", "rs2", "rs3"],
-        )
-        with bgen.BgenEncoder(reader) as enc:
-            buf = _drain(enc)
-        path = tmp_path / "rt.bgen"
-        path.write_bytes(buf)
-        with br.open_bgen(path, verbose=False) as bg:
-            assert bg.nvariants == 3
-            assert bg.nsamples == 4
-            assert list(bg.rsids) == ["rs1", "rs2", "rs3"]
-            assert list(bg.positions) == [100, 101, 102]
-            assert list(bg.allele_ids) == ["A,T", "A,T", "A,T"]
-            assert list(bg.samples) == [
-                "sample_0",
-                "sample_1",
-                "sample_2",
-                "sample_3",
-            ]
-            probs, missing = bg.read(return_missings=True)
-
-        # Variant 0: hom-ref, het, hom-alt, missing.
-        np.testing.assert_array_equal(missing[:, 0], [False, False, False, True])
-        np.testing.assert_array_equal(probs[0, 0], [1.0, 0.0, 0.0])
-        np.testing.assert_array_equal(probs[1, 0], [0.0, 1.0, 0.0])
-        np.testing.assert_array_equal(probs[2, 0], [0.0, 0.0, 1.0])
-        assert np.isnan(probs[3, 0]).all()
-        # Variant 2: reversed-het (1,0) encodes identically to (0,1).
-        np.testing.assert_array_equal(probs[0, 2], [0.0, 1.0, 0.0])
-
-    def test_phased_round_trip(self, tmp_path):
-        G = np.array([[[0, 1], [1, 0], [0, 0], [1, 1]]], dtype=np.int8)
-        phased = np.ones((1, 4), dtype=bool)
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=4,
-            call_genotype=G,
-            call_fields={"genotype_phased": phased},
-        )
-        with bgen.BgenEncoder(reader) as enc:
-            buf = _drain(enc)
-        path = tmp_path / "p.bgen"
-        path.write_bytes(buf)
-        with br.open_bgen(path, verbose=False) as bg:
-            assert bool(bg.phased[0])
-            probs = bg.read()
-        # Phased biallelic diploid: per-haplotype probs.
-        hap1 = np.argmax(probs[..., 0:2], axis=-1).T
-        hap2 = np.argmax(probs[..., 2:4], axis=-1).T
-        np.testing.assert_array_equal(hap1, G[..., 0])
-        np.testing.assert_array_equal(hap2, G[..., 1])
-
-    def test_mixed_phase_degrades_to_unphased(self, tmp_path, caplog):
-        G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
-        phased = np.array([[True, False]], dtype=bool)
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=2,
-            call_genotype=G,
-            call_fields={"genotype_phased": phased},
-        )
-        with caplog.at_level(logging.WARNING, logger="vcztools.bgen"):
-            with bgen.BgenEncoder(reader) as enc:
-                buf = _drain(enc)
-        path = tmp_path / "mp.bgen"
-        path.write_bytes(buf)
-        with br.open_bgen(path, verbose=False) as bg:
-            assert not bool(bg.phased[0])
-        assert any("mixed phase" in record.getMessage() for record in caplog.records)
-
-    def test_empty_variant_id_normalised_to_dot(self, tmp_path):
-        reader = _build_reader(
-            num_variants=2,
-            num_samples=2,
-            variant_id=["", "rs2"],
-        )
-        with bgen.BgenEncoder(reader) as enc:
-            buf = _drain(enc)
-        path = tmp_path / "rsid.bgen"
-        path.write_bytes(buf)
-        with br.open_bgen(path, verbose=False) as bg:
-            assert list(bg.rsids) == [".", "rs2"]
-
-    def test_monomorphic_alt_normalised_to_dot(self, tmp_path):
-        # An empty ALT slot becomes "." in the BGEN output, matching the
-        # write_bgen convention.
-        reader = _build_reader(
-            num_variants=1,
-            num_samples=2,
-            alleles=[("A", "")],
-        )
-        with bgen.BgenEncoder(reader) as enc:
-            buf = _drain(enc)
-        path = tmp_path / "mono.bgen"
-        path.write_bytes(buf)
-        with br.open_bgen(path, verbose=False) as bg:
-            assert list(bg.allele_ids) == ["A,."]

@@ -1,5 +1,7 @@
 import dataclasses
+import functools
 import importlib
+import math
 import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -165,21 +167,29 @@ def validate_variants_axis_chunking(root, min_chunk: int) -> None:
 
 
 def compute_stream_chunk_size(root, read_fields, min_chunk: int) -> int:
-    """Stream-chunk size for a per-query iteration: minimum
+    """Stream-chunk size for a per-query iteration: GCD of
     ``chunks[0]`` across ``read_fields``, falling back to ``min_chunk``
     when ``read_fields`` is empty.
 
-    By the variants-axis chunking invariant
-    (:func:`validate_variants_axis_chunking`) the result is always a
-    positive integer multiple of ``min_chunk``. Every field in
+    Using the GCD (rather than the minimum) ensures every field in
     ``read_fields`` has a chunk size that is a positive integer
     multiple of this stream chunk size — so each (stream chunk, field)
     pair maps to exactly one Zarr block on the variants axis, possibly
-    with an intra-block slice.
+    with an intra-block slice. Taking the minimum is only correct when
+    the read fields' chunk sizes are pairwise multiples; with
+    proportional / heterogeneous variant-only chunking they need not be.
+
+    By the variants-axis chunking invariant
+    (:func:`validate_variants_axis_chunking`) every variant-axis chunk
+    size is a positive multiple of ``min_chunk``, so ``min_chunk``
+    divides the GCD and the result is always a positive integer
+    multiple of ``min_chunk`` — :func:`rebucket_to_stream_plan`'s
+    precondition.
     """
     if len(read_fields) == 0:
         return min_chunk
-    return min(int(root[f].chunks[0]) for f in read_fields)
+    sizes = [int(root[f].chunks[0]) for f in read_fields]
+    return functools.reduce(math.gcd, sizes)
 
 
 def rebucket_to_stream_plan(

@@ -349,11 +349,12 @@ class BgenEncoder(format_encoder.FormatEncoder):
     Variant scope: biallelic and diploid (multi-allelic / non-diploid
     raises ``ValueError`` lazily as chunks are decoded).
 
-    The encoder serves only the ``.bgen`` byte stream. The ``.sample``
-    sidecar is produced by :func:`generate_sample`; a ``.bgi`` index, if
-    desired, can be built from the fixed-size offsets
-    (``header_size + i * bytes_per_variant``) without iterating the
-    encoder.
+    The encoder serves the ``.bgen`` byte stream and, on demand via
+    :meth:`write_bgi_index`, a matching bgenix ``.bgi`` SQLite sidecar
+    built from the fixed-size offsets (``header_size + i *
+    bytes_per_variant``); sidecar generation iterates variant-metadata
+    fields only, not genotypes. The ``.sample`` sidecar is produced by
+    :func:`generate_sample`.
 
     :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
     supported and raises ``NotImplementedError`` at construction;
@@ -566,6 +567,72 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 "has one phase flag per variant)."
             )
 
+    def write_bgi_index(self, bgi_path) -> None:
+        """Write a bgenix ``.bgi`` SQLite sidecar matching this encoder's
+        byte stream.
+
+        The encoder's fixed-size layout makes per-variant offsets
+        deterministic: variant ``i`` lives at ``prefix_size + i *
+        bytes_per_variant`` and is exactly ``bytes_per_variant`` bytes
+        wide. Sidecar generation iterates only variant-metadata fields
+        (``variant_allele``, ``variant_contig``, ``variant_position``,
+        and ``variant_id`` if present); no genotype data is read.
+
+        The ``Metadata`` table is populated from the encoder itself, so
+        a ``.bgen`` file on disk is not required. ``filename`` is
+        derived from ``bgi_path`` by stripping a trailing ``.bgi``
+        suffix (e.g. ``out.bgen.bgi`` → ``out.bgen``).
+        """
+        bgi_path = pathlib.Path(bgi_path)
+        fields = ["variant_allele", "variant_contig", "variant_position"]
+        if self._has_variant_id:
+            fields.append("variant_id")
+
+        entries: list[_BgiEntry] = []
+        bpv = self._bytes_per_variant
+        file_offset = self.prefix_size
+        for chunk in self._reader.variant_chunks(fields=fields):
+            alleles = chunk["variant_allele"]
+            positions = chunk["variant_position"]
+            contigs = chunk["variant_contig"]
+            varids = chunk.get("variant_id")
+            _check_biallelic(alleles)
+            for j in range(alleles.shape[0]):
+                a1 = str(alleles[j, 0])
+                a2 = str(alleles[j, 1]) if alleles.shape[1] >= 2 else ""
+                if a2 == "":
+                    a2 = "."
+                chrom = str(self._contig_ids[int(contigs[j])])
+                position = int(positions[j])
+                rsid = str(varids[j]) if varids is not None else "."
+                if rsid == "":
+                    rsid = "."
+                entries.append(
+                    _BgiEntry(
+                        chromosome=chrom,
+                        position=position,
+                        rsid=rsid,
+                        number_of_alleles=2,
+                        allele1=a1,
+                        allele2=a2,
+                        file_start_position=file_offset,
+                        size_in_bytes=bpv,
+                    )
+                )
+                file_offset += bpv
+
+        filename = bgi_path.name
+        if filename.endswith(".bgi"):
+            filename = filename[: -len(".bgi")]
+        first_bytes = self.read(0, min(1000, self.total_size))
+        metadata = _BgiMetadata(
+            filename=filename,
+            file_size=self.total_size,
+            last_write_time=int(time.time()),
+            first_1000_bytes=first_bytes,
+        )
+        _write_bgi_index(bgi_path, entries, metadata)
+
 
 def generate_sample(reader):
     """Oxford ``.sample`` text. Two header rows, then one row per sample.
@@ -626,7 +693,15 @@ class _BgiEntry:
     size_in_bytes: int
 
 
-def _write_bgi_index(bgi_path, bgen_path, entries):
+@dataclasses.dataclass
+class _BgiMetadata:
+    filename: str
+    file_size: int
+    last_write_time: int
+    first_1000_bytes: bytes
+
+
+def _write_bgi_index(bgi_path, entries, metadata):
     """Write the bgenix SQLite index. Schema documented at
     https://enkre.net/cgi-bin/code/bgen/wiki/The bgenix index file format."""
     bgi_path = pathlib.Path(bgi_path)
@@ -653,17 +728,14 @@ def _write_bgi_index(bgi_path, bgen_path, entries):
                 for e in entries
             ],
         )
-        bgen_stat = pathlib.Path(bgen_path).stat()
-        with open(bgen_path, "rb") as f:
-            first_bytes = f.read(1000)
         conn.execute(
             "INSERT INTO Metadata (filename, file_size, last_write_time, "
             "first_1000_bytes, index_creation_time) VALUES (?, ?, ?, ?, ?)",
             (
-                pathlib.Path(bgen_path).name,
-                bgen_stat.st_size,
-                int(bgen_stat.st_mtime),
-                first_bytes,
+                metadata.filename,
+                metadata.file_size,
+                metadata.last_write_time,
+                metadata.first_1000_bytes,
                 int(time.time()),
             ),
         )
@@ -705,7 +777,16 @@ def write_bgen(reader, out, *, compression_level: int = -1):
     entries = _stream_bgen_to_file(
         reader, bgen_path, compression_level=compression_level
     )
-    _write_bgi_index(bgi_path, bgen_path, entries)
+    bgen_stat = bgen_path.stat()
+    with open(bgen_path, "rb") as f:
+        first_bytes = f.read(1000)
+    metadata = _BgiMetadata(
+        filename=bgen_path.name,
+        file_size=bgen_stat.st_size,
+        last_write_time=int(bgen_stat.st_mtime),
+        first_1000_bytes=first_bytes,
+    )
+    _write_bgi_index(bgi_path, entries, metadata)
 
 
 def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):

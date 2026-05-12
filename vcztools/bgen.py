@@ -384,16 +384,14 @@ class BgenEncoder(format_encoder.FormatEncoder):
         if allele_max is None:
             allele_max = 1
 
-        # chrom_max is derived from contig_ids: one pass over a typically-
-        # short list, exact, removes the user-facing knob entirely. The
-        # max(1, ...) floor covers empty contig_ids and the all-empty-
-        # string degenerate case; bytes_per_variant needs >= 1.
+        # chrom_max is derived from contig_ids via vectorised numpy ops:
+        # str_len on the UTF-8-encoded form gives byte length per element.
+        # The max(initial=1) floor covers empty contig_ids and the all-
+        # empty-string degenerate case; bytes_per_variant needs >= 1.
         contig_ids = reader.contig_ids
-        chrom_max = max(
-            (len(str(c).encode("utf-8")) for c in contig_ids),
-            default=1,
+        chrom_max = int(
+            np.strings.str_len(np.strings.encode(contig_ids)).max(initial=1)
         )
-        chrom_max = max(1, chrom_max)
 
         # rsid_max validated before varid_max: when the user passes
         # rsid_max=X (and varid_max=None), varid_max propagates to X

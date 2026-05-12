@@ -1063,8 +1063,13 @@ class VczReader:
 
     @functools.cached_property
     def contig_ids(self):
-        """Contig IDs as raw zarr strings."""
-        return self.root["contig_id"][:]
+        """Contig IDs as a numpy StringDType array.
+
+        Zarr stores may use fixed-width unicode or variable-length UTF-8;
+        coerce to the modern variable-length StringDType so downstream
+        callers get a uniform array type regardless of on-disk layout.
+        """
+        return np.asarray(self.root["contig_id"][:], dtype=np.dtypes.StringDType())
 
     @functools.cached_property
     def filter_ids(self):

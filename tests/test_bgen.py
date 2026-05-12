@@ -299,14 +299,8 @@ class TestBgiIndex:
                 size_in_bytes=140,
             ),
         ]
-        metadata = bgen._BgiMetadata(
-            filename="out.bgen",
-            file_size=1500,
-            last_write_time=1234567890,
-            first_1000_bytes=b"\x00" * 1000,
-        )
         bgi_path = tmp_path / "out.bgen.bgi"
-        bgen._write_bgi_index(bgi_path, entries, metadata)
+        bgen._write_bgi_index(bgi_path, entries)
         conn = sqlite3.connect(str(bgi_path))
         try:
             rows = conn.execute(
@@ -318,26 +312,23 @@ class TestBgiIndex:
                 ("chr1", 100, "rs1", 2, "A", "T", 24, 128),
                 ("chr1", 200, "rs2", 2, "C", "G", 152, 140),
             ]
-            md_row = conn.execute(
-                "SELECT filename, file_size, last_write_time, "
-                "length(first_1000_bytes) FROM Metadata"
-            ).fetchone()
-            assert md_row == ("out.bgen", 1500, 1234567890, 1000)
+            tables = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+            assert "Variant" in tables
+            assert "Metadata" not in tables
         finally:
             conn.close()
 
     def test_index_overwritten(self, tmp_path):
         bgi_path = tmp_path / "out.bgen.bgi"
-        metadata = bgen._BgiMetadata(
-            filename="out.bgen",
-            file_size=100,
-            last_write_time=0,
-            first_1000_bytes=b"",
-        )
         # First write
-        bgen._write_bgi_index(bgi_path, [], metadata)
+        bgen._write_bgi_index(bgi_path, [])
         # Second write should not raise (PK conflict would if not unlinked).
-        bgen._write_bgi_index(bgi_path, [], metadata)
+        bgen._write_bgi_index(bgi_path, [])
 
 
 # ---------------------------------------------------------------------------
@@ -1225,31 +1216,6 @@ class TestBgenEncoderBgiIndex:
                 assert row[6] == enc.header_size + i * bpv
                 assert row[7] == bpv
 
-    def test_metadata_row(self, tmp_path):
-        with _build_encoder(num_variants=2, num_samples=3) as enc:
-            bgi_path = tmp_path / "sample.bgen.bgi"
-            enc.write_bgi_index(bgi_path)
-            conn = sqlite3.connect(str(bgi_path))
-            try:
-                md = conn.execute(
-                    "SELECT filename, file_size, length(first_1000_bytes) FROM Metadata"
-                ).fetchone()
-            finally:
-                conn.close()
-            assert md == ("sample.bgen", enc.bgen_size, min(1000, enc.bgen_size))
-
-    def test_filename_strip_only_trailing_bgi(self, tmp_path):
-        # A bgi_path that doesn't end in ".bgi" is preserved verbatim.
-        with _build_encoder(num_variants=1, num_samples=1) as enc:
-            bgi_path = tmp_path / "custom-name"
-            enc.write_bgi_index(bgi_path)
-            conn = sqlite3.connect(str(bgi_path))
-            try:
-                (filename,) = conn.execute("SELECT filename FROM Metadata").fetchone()
-            finally:
-                conn.close()
-            assert filename == "custom-name"
-
     def test_offsets_match_byte_stream(self, tmp_path):
         # For every variant in the .bgi, the slice
         # [file_start_position, file_start_position+size_in_bytes) of the
@@ -1272,20 +1238,6 @@ class TestBgenEncoderBgiIndex:
                 assert next_start == start + size
             last_start, last_size = rows[-1]
             assert last_start + last_size == enc.bgen_size
-
-    def test_metadata_first_bytes_match_drain(self, tmp_path):
-        with _build_encoder(num_variants=2, num_samples=2) as enc:
-            stream = _drain(enc)
-            bgi_path = tmp_path / "out.bgen.bgi"
-            enc.write_bgi_index(bgi_path)
-            conn = sqlite3.connect(str(bgi_path))
-            try:
-                (first_bytes,) = conn.execute(
-                    "SELECT first_1000_bytes FROM Metadata"
-                ).fetchone()
-            finally:
-                conn.close()
-            assert first_bytes == stream[: min(1000, enc.bgen_size)]
 
     def test_equivalent_to_write_bgen_metadata_columns(self, tmp_path):
         # Variant-metadata columns (chromosome, position, rsid,

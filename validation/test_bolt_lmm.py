@@ -2,25 +2,32 @@
 genotype input.
 
 BOLT-LMM's LMM variance-component fit is fragile on small / synthetic
-genomes — heritability estimation routinely returns h2g ≈ 0 (and can
-crash with a floating-point exception in the inf-model step) for any
-fixture small enough to ship in a local validation suite. Real
-performance benchmarks of BOLT-LMM use UK-Biobank-scale data: hundreds
-of thousands of independent loci across 22 chromosomes. We can't
-reproduce that here in seconds.
+genomes — heritability estimation routinely returns h2g ≈ 0 and the
+process segfaults during the inf-model step for any fixture small
+enough to ship in a local validation suite. Real performance
+benchmarks of BOLT-LMM use UK-Biobank-scale data: hundreds of
+thousands of independent loci across 22 chromosomes. We can't
+reproduce that here.
 
 What we *can* validate is the file-format contract:
 
 - BOLT-LMM parses ``view-plink`` output (.bed/.bim/.fam) and reports
   the correct sample and SNP counts in its log.
-- BOLT-LMM parses ``view-bgen`` output (.bgen/.sample), at both
-  compression-level -1 and 0, and reports matching counts.
+- BOLT-LMM parses ``view-bgen`` output (.bgen/.sample), at all three
+  BGEN flavours (CLI lvl=-1, CLI lvl=0, encoder), and reports
+  matching counts.
 
 This pins the "downstream tool can read the file" contract, which is
 the actual deliverable of the validation suite for vcztools. The
 allele-frequency cross-check is left to qctool, PLINK 1.9, and
 REGENIE, all of which produce reliable per-variant frequency output on
 the same fixtures.
+
+Each test passes ``--exclude`` listing every variant after the first
+:data:`KEEP_N_SNPS` so BOLT only processes a handful — wall time per
+test is then ~1.5 s instead of minutes. The summary lines we assert
+on (``Total snps in PLINK data``, ``snpBlocks (Mbgen)``) report the
+pre-exclude count, so the assertion logic is unchanged.
 """
 
 from __future__ import annotations
@@ -34,12 +41,7 @@ import pytest
 from . import conftest as cfg
 from . import helpers, reference
 
-# Every BOLT-LMM test takes minutes on the 5000-sample fixture and the
-# whole module is skipped to keep `make test` interactive while the
-# rest of the suite is iterated on. Drop this when BOLT-LMM regressions
-# need investigating; the tests below have been kept working
-# end-to-end.
-pytestmark = pytest.mark.skip(reason="BOLT-LMM runs are minutes-long; opt in manually")
+KEEP_N_SNPS = 20
 
 
 def _remap_pheno_fid0(pheno_path: pathlib.Path, out_path: pathlib.Path) -> pathlib.Path:
@@ -48,6 +50,25 @@ def _remap_pheno_fid0(pheno_path: pathlib.Path, out_path: pathlib.Path) -> pathl
     df = pd.read_csv(pheno_path, sep=r"\s+", engine="python")
     df["FID"] = "0"
     df.to_csv(out_path, sep=" ", index=False)
+    return out_path
+
+
+def _write_exclude_all_but_first_n(
+    bim_path: pathlib.Path, out_path: pathlib.Path, keep_n: int = KEEP_N_SNPS
+) -> pathlib.Path:
+    """Write a BOLT ``--exclude`` file naming every SNP in ``bim_path``
+    after the first ``keep_n``. BOLT then skips those, so the LMM-side
+    work shrinks to a handful of variants per run."""
+    bim = pd.read_csv(
+        bim_path,
+        sep=r"\s+",
+        engine="python",
+        header=None,
+        names=["chrom", "snp", "cm", "pos", "a1", "a2"],
+        dtype={"snp": str},
+    )
+    excluded = bim["snp"].iloc[keep_n:]
+    out_path.write_text("\n".join(excluded) + "\n")
     return out_path
 
 
@@ -105,6 +126,10 @@ def _bolt_run(
 class TestBoltLmmFromPlinkInput:
     def test_loads_bed_and_runs_linreg(self, tmp_path, bolt_lmm_bin, large_fixture):
         pheno = _remap_pheno_fid0(large_fixture.pheno_path, tmp_path / "pheno.tsv")
+        exclude = _write_exclude_all_but_first_n(
+            large_fixture.plink_prefix.with_suffix(".bim"),
+            tmp_path / "exclude.txt",
+        )
         ref = reference.compute_variant_stats(large_fixture.vcz_path)
         n_samples = len(reference.sample_ids(large_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
@@ -113,6 +138,8 @@ class TestBoltLmmFromPlinkInput:
             [
                 "--bfile",
                 str(large_fixture.plink_prefix),
+                "--exclude",
+                str(exclude),
                 "--phenoFile",
                 str(pheno),
                 "--phenoCol",
@@ -144,6 +171,10 @@ class TestBoltLmmFromBgenInput:
         # view-plink (BOLT cross-checks .fam and .sample).
         pheno = _remap_pheno_fid0(large_fixture.pheno_path, tmp_path / "pheno.tsv")
         sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
+        exclude = _write_exclude_all_but_first_n(
+            large_fixture.plink_prefix.with_suffix(".bim"),
+            tmp_path / "exclude.txt",
+        )
         ref = reference.compute_variant_stats(large_fixture.vcz_path)
         n_samples = len(reference.sample_ids(large_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
@@ -156,6 +187,8 @@ class TestBoltLmmFromBgenInput:
                 str(bgen),
                 "--sampleFile",
                 str(sample),
+                "--exclude",
+                str(exclude),
                 "--phenoFile",
                 str(pheno),
                 "--phenoCol",

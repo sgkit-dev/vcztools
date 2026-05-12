@@ -47,13 +47,13 @@ def _qctool_snp_stats(
 class TestQctoolSnpStats:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_alt_allele_frequency_matches_reference(
-        self, tmp_path, qctool_bin, small_fixture, level
+        self, tmp_path, qctool_bin, small_unphased_fixture, level
     ):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         out = tmp_path / "snp_stats.tsv"
         df = _qctool_snp_stats(qctool_bin, bgen, sample, out)
 
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         # The fixture is biallelic-filtered (--max-alleles 2 / equivalent
         # N_ALT<=1 in the encoder path), so qctool's row order over the
         # BGEN is the same biallelic-survivor order as the reference
@@ -68,36 +68,37 @@ class TestQctoolSnpStats:
             df["position"].to_numpy(),
             ref.pos[biallelic],
         )
-        # 8 bits/probability quantisation is 1/255 ≈ 4e-3 per sample;
-        # frequency averaged over n samples shrinks roughly as
-        # 1/sqrt(n). atol=5e-3 is comfortably above that for n=200.
+        # vcztools writes hard calls as P=1.0 (= 255/255 at 8-bit
+        # precision) on the called genotype. Recomputed frequencies
+        # are integer rationals and round-trip exactly through the
+        # BGEN encoding — no quantisation slack needed.
         np.testing.assert_allclose(
             df["alleleB_frequency"].to_numpy(),
             ref.alt_freq[biallelic],
-            atol=5e-3,
+            atol=1e-10,
         )
 
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_minor_allele_frequency_matches_reference(
-        self, tmp_path, qctool_bin, small_fixture, level
+        self, tmp_path, qctool_bin, small_unphased_fixture, level
     ):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         out = tmp_path / "snp_stats.tsv"
         df = _qctool_snp_stats(qctool_bin, bgen, sample, out)
 
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         np.testing.assert_allclose(
             df["minor_allele_frequency"].to_numpy(),
             ref.minor_freq[biallelic],
-            atol=5e-3,
+            atol=1e-10,
         )
 
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_sample_and_variant_counts(
-        self, tmp_path, qctool_bin, small_fixture, level
+        self, tmp_path, qctool_bin, small_unphased_fixture, level
     ):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         out = tmp_path / "snp_stats.tsv"
         df = _qctool_snp_stats(qctool_bin, bgen, sample, out)
         # Sample count is implicit in the .sample file format; check
@@ -105,7 +106,7 @@ class TestQctoolSnpStats:
         assert len(df) > 0
         # qctool collapses 4 expected genotype-count columns; AA + AB +
         # BB + NULL should sum to the sample count for every row.
-        n_samples = len(reference.sample_ids(small_fixture.vcz_path))
+        n_samples = len(reference.sample_ids(small_unphased_fixture.vcz_path))
         totals = (df["AA"] + df["AB"] + df["BB"] + df["NULL"]).to_numpy()
         np.testing.assert_array_equal(totals, np.full(len(df), n_samples))
 
@@ -113,12 +114,45 @@ class TestQctoolSnpStats:
 class TestQctoolVariantIds:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_alternate_ids_match_reference(
-        self, tmp_path, qctool_bin, small_fixture, level
+        self, tmp_path, qctool_bin, small_unphased_fixture, level
     ):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         out = tmp_path / "snp_stats.tsv"
         df = _qctool_snp_stats(qctool_bin, bgen, sample, out)
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
-        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
         np.testing.assert_array_equal(df["alternate_ids"].astype(str).to_numpy(), ids)
+
+
+class TestQctoolPhasedBgen:
+    """qctool refuses vcztools' phased BGEN layout — it raises
+    ``genfile::BadArgumentError`` complaining that the
+    ``order_type=6, value_type=1`` combination is not supported.
+    Pin the diagnostic so a future qctool release that adds phased
+    support surfaces here.
+    """
+
+    def test_rejects_phased_bgen(self, tmp_path, qctool_bin, small_phased_fixture):
+        result = helpers.run_tool(
+            [
+                str(qctool_bin),
+                "-g",
+                str(small_phased_fixture.bgen_minus1),
+                "-s",
+                str(small_phased_fixture.sample_path),
+                "-snp-stats",
+                "-osnp",
+                str(tmp_path / "snp_stats.tsv"),
+            ],
+            check=False,
+        )
+        # qctool reports the error on stdout, then exits non-zero.
+        combined = result.stdout + result.stderr
+        tail = f"stdout+stderr tail:\n{combined[-2000:]}"
+        assert "order_type=6" in combined, (
+            f"qctool didn't print the order_type=6 marker; {tail}"
+        )
+        assert "value_type=1" in combined, (
+            f"qctool didn't print the value_type=1 marker; {tail}"
+        )

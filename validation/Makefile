@@ -28,20 +28,24 @@ tools: $(TOOLS)
 $(TOOLS):
 	bash $(HERE)install/install_$@.sh
 
-data: data/small.vcz/.ready data/large.vcz/.ready
+data: data/small.vcz.ready data/large.vcz.ready
 
-data/small.vcz/.ready: generate_data.py
-	uv run python generate_data.py --size small
+# Marker file sits next to the store (not inside it) so zarr doesn't
+# warn about unrecognised hierarchy components on every open.
+data/small.vcz.ready: generate_data.py
+	uv run --group validation python generate_data.py --size small
 
-data/large.vcz/.ready: generate_data.py
-	uv run python generate_data.py --size large
+data/large.vcz.ready: generate_data.py
+	uv run --group validation python generate_data.py --size large
 
 # The repo's pyproject.toml sets `addopts = "-n auto"` for xdist
 # parallelism. The validation suite runs heavy external binaries
 # (BOLT-LMM in particular) on multi-thousand-sample fixtures and OOMs
 # under parallel workers, so override addopts to run serially.
+# `--group validation` resolves msprime / tstrait / bio2zarr /
+# bgen-reader ad-hoc; the `dev` group does not pull them in.
 test: tools data
-	uv run pytest -v -o "addopts=" $(HERE)
+	uv run --group validation pytest -v -o "addopts=" $(HERE)
 
 clean-tools:
 	rm -rf $(HERE)tools

@@ -124,20 +124,24 @@ def _bolt_run(
 
 
 class TestBoltLmmFromPlinkInput:
-    def test_loads_bed_and_runs_linreg(self, tmp_path, bolt_lmm_bin, large_fixture):
-        pheno = _remap_pheno_fid0(large_fixture.pheno_path, tmp_path / "pheno.tsv")
+    def test_loads_bed_and_runs_linreg(
+        self, tmp_path, bolt_lmm_bin, large_unphased_fixture
+    ):
+        pheno = _remap_pheno_fid0(
+            large_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
+        )
         exclude = _write_exclude_all_but_first_n(
-            large_fixture.plink_prefix.with_suffix(".bim"),
+            large_unphased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
         )
-        ref = reference.compute_variant_stats(large_fixture.vcz_path)
-        n_samples = len(reference.sample_ids(large_fixture.vcz_path))
+        ref = reference.compute_variant_stats(large_unphased_fixture.vcz_path)
+        n_samples = len(reference.sample_ids(large_unphased_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
         log = _bolt_run(
             bolt_lmm_bin,
             [
                 "--bfile",
-                str(large_fixture.plink_prefix),
+                str(large_unphased_fixture.plink_prefix),
                 "--exclude",
                 str(exclude),
                 "--phenoFile",
@@ -162,27 +166,29 @@ class TestBoltLmmFromPlinkInput:
 
 class TestBoltLmmFromBgenInput:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
-    def test_loads_bgen(self, tmp_path, bolt_lmm_bin, large_fixture, level):
-        bgen, sample_src = cfg.bgen_for_level(large_fixture, level)
+    def test_loads_bgen(self, tmp_path, bolt_lmm_bin, large_unphased_fixture, level):
+        bgen, sample_src = cfg.bgen_for_level(large_unphased_fixture, level)
         # BOLT also requires a .bed-style anchor input for --lmm even
         # when scoring BGEN variants, so we pass --bfile alongside.
         # The pheno file and .sample file are both remapped to FID=0
         # so the (FID, IID) pairs line up with the .fam written by
         # view-plink (BOLT cross-checks .fam and .sample).
-        pheno = _remap_pheno_fid0(large_fixture.pheno_path, tmp_path / "pheno.tsv")
+        pheno = _remap_pheno_fid0(
+            large_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
+        )
         sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
         exclude = _write_exclude_all_but_first_n(
-            large_fixture.plink_prefix.with_suffix(".bim"),
+            large_unphased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
         )
-        ref = reference.compute_variant_stats(large_fixture.vcz_path)
-        n_samples = len(reference.sample_ids(large_fixture.vcz_path))
+        ref = reference.compute_variant_stats(large_unphased_fixture.vcz_path)
+        n_samples = len(reference.sample_ids(large_unphased_fixture.vcz_path))
         n_snps_biallelic = int((ref.n_alleles == 2).sum())
         log = _bolt_run(
             bolt_lmm_bin,
             [
                 "--bfile",
-                str(large_fixture.plink_prefix),
+                str(large_unphased_fixture.plink_prefix),
                 "--bgenFile",
                 str(bgen),
                 "--sampleFile",
@@ -217,6 +223,62 @@ class TestBoltLmmFromBgenInput:
         assert m_m_bgen is not None, (
             f"BOLT didn't print a BGEN SNPs-loaded summary; stdout tail:\n{log[-2000:]}"
         )
+        assert int(m_n_bgen.group(1)) == n_samples
+        assert int(m_m_bgen.group(1)) == n_snps_biallelic
+
+
+class TestBoltLmmPhasedBgen:
+    """BOLT-LMM handles vcztools' phased BGEN cleanly — unlike qctool
+    and REGENIE, which reject it outright. Document that and pin the
+    summary lines we'd expect for either phase."""
+
+    def test_loads_phased_bgen(self, tmp_path, bolt_lmm_bin, large_phased_fixture):
+        bgen, sample_src = (
+            large_phased_fixture.bgen_minus1,
+            large_phased_fixture.sample_path,
+        )
+        pheno = _remap_pheno_fid0(
+            large_phased_fixture.pheno_path, tmp_path / "pheno.tsv"
+        )
+        sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
+        exclude = _write_exclude_all_but_first_n(
+            large_phased_fixture.plink_prefix.with_suffix(".bim"),
+            tmp_path / "exclude.txt",
+        )
+        ref = reference.compute_variant_stats(large_phased_fixture.vcz_path)
+        n_samples = len(reference.sample_ids(large_phased_fixture.vcz_path))
+        n_snps_biallelic = int((ref.n_alleles == 2).sum())
+        log = _bolt_run(
+            bolt_lmm_bin,
+            [
+                "--bfile",
+                str(large_phased_fixture.plink_prefix),
+                "--bgenFile",
+                str(bgen),
+                "--sampleFile",
+                str(sample),
+                "--exclude",
+                str(exclude),
+                "--phenoFile",
+                str(pheno),
+                "--phenoCol",
+                "Y1",
+                "--lmm",
+                "--LDscoresUseChip",
+                "--numLeaveOutChunks",
+                "2",
+                "--statsFile",
+                str(tmp_path / "stats.txt"),
+                "--statsFileBgenSnps",
+                str(tmp_path / "stats_bgen.txt"),
+            ],
+            expected_n_samples=n_samples,
+            expected_n_snps=n_snps_biallelic,
+        )
+        m_n_bgen = re.search(r"samples \(Nbgen\): (\d+)", log)
+        m_m_bgen = re.search(r"snpBlocks \(Mbgen\): (\d+)", log)
+        assert m_n_bgen is not None
+        assert m_m_bgen is not None
         assert int(m_n_bgen.group(1)) == n_samples
         assert int(m_m_bgen.group(1)) == n_snps_biallelic
 

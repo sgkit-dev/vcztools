@@ -143,11 +143,15 @@ def _run_step2(
 
 
 class TestRegenieFromPlinkInput:
-    def test_a1freq_matches_reference(self, tmp_path, regenie_bin, small_fixture):
-        pheno = _remap_pheno_fid0(small_fixture.pheno_path, tmp_path / "pheno.tsv")
+    def test_a1freq_matches_reference(
+        self, tmp_path, regenie_bin, small_unphased_fixture
+    ):
+        pheno = _remap_pheno_fid0(
+            small_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
+        )
         pred = _run_step1_plink(
             regenie_bin,
-            small_fixture.plink_prefix,
+            small_unphased_fixture.plink_prefix,
             pheno,
             tmp_path / "step1",
         )
@@ -156,9 +160,9 @@ class TestRegenieFromPlinkInput:
             pred,
             pheno,
             tmp_path / "step2",
-            bed_prefix=small_fixture.plink_prefix,
+            bed_prefix=small_unphased_fixture.plink_prefix,
         )
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
         np.testing.assert_allclose(
@@ -171,81 +175,84 @@ class TestRegenieFromPlinkInput:
 class TestRegenieFromBgenInput:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_a1freq_matches_reference(
-        self, tmp_path, regenie_bin, small_fixture, level
+        self, tmp_path, regenie_bin, small_unphased_fixture, level
     ):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         # BGEN samples have FID=IID=tsk_N, matching the phenotype file
         # written by generate_data.py — no remap needed for BGEN input.
         pred = _run_step1_bgen(
             regenie_bin,
             bgen,
             sample,
-            small_fixture.pheno_path,
+            small_unphased_fixture.pheno_path,
             tmp_path / "step1",
         )
         df = _run_step2(
             regenie_bin,
             pred,
-            small_fixture.pheno_path,
+            small_unphased_fixture.pheno_path,
             tmp_path / "step2",
             bgen_path=bgen,
             sample_path=sample,
         )
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum())
-        # BGEN dosages are 8-bit quantised, so allele frequency has
-        # the same atol budget as qctool.
+        # vcztools writes hard calls (P=1.0 on the called genotype),
+        # so the BGEN dosages REGENIE reads are integer-valued and
+        # the recomputed frequency round-trips exactly.
         np.testing.assert_allclose(
             df["A1FREQ"].to_numpy(),
             ref.alt_freq[biallelic],
-            atol=5e-3,
+            atol=1e-10,
         )
 
 
 class TestRegenieVariantIds:
     def test_plink_input_id_column_matches_reference(
-        self, tmp_path, regenie_bin, small_fixture
+        self, tmp_path, regenie_bin, small_unphased_fixture
     ):
-        pheno = _remap_pheno_fid0(small_fixture.pheno_path, tmp_path / "pheno.tsv")
+        pheno = _remap_pheno_fid0(
+            small_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
+        )
         pred = _run_step1_plink(
-            regenie_bin, small_fixture.plink_prefix, pheno, tmp_path / "step1"
+            regenie_bin, small_unphased_fixture.plink_prefix, pheno, tmp_path / "step1"
         )
         df = _run_step2(
             regenie_bin,
             pred,
             pheno,
             tmp_path / "step2",
-            bed_prefix=small_fixture.plink_prefix,
+            bed_prefix=small_unphased_fixture.plink_prefix,
         )
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
-        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
         np.testing.assert_array_equal(df["ID"].astype(str).to_numpy(), ids)
 
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_bgen_input_id_column_matches_reference(
-        self, tmp_path, regenie_bin, small_fixture, level
+        self, tmp_path, regenie_bin, small_unphased_fixture, level
     ):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         pred = _run_step1_bgen(
             regenie_bin,
             bgen,
             sample,
-            small_fixture.pheno_path,
+            small_unphased_fixture.pheno_path,
             tmp_path / "step1",
         )
         df = _run_step2(
             regenie_bin,
             pred,
-            small_fixture.pheno_path,
+            small_unphased_fixture.pheno_path,
             tmp_path / "step2",
             bgen_path=bgen,
             sample_path=sample,
         )
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
-        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
         # BgenEncoder NUL-pads string fields to a fixed width per the
         # BGEN spec. bgenix and qctool strip the padding on read;
         # REGENIE does not, so its ID column comes back as
@@ -255,3 +262,39 @@ class TestRegenieVariantIds:
             [s.rstrip("\x00") for s in df["ID"].astype(str).to_numpy()]
         )
         np.testing.assert_array_equal(regenie_ids, ids)
+
+
+class TestRegeniePhasedBgen:
+    """REGENIE rejects phased BGEN with the diagnostic ``only unphased
+    bgen are supported``. Pin that so a future REGENIE release that
+    adds phased support surfaces here."""
+
+    def test_rejects_phased_bgen(self, tmp_path, regenie_bin, small_phased_fixture):
+        result = helpers.run_tool(
+            [
+                str(regenie_bin),
+                "--step",
+                "1",
+                "--bgen",
+                str(small_phased_fixture.bgen_minus1),
+                "--sample",
+                str(small_phased_fixture.sample_path),
+                "--ref-first",
+                "--phenoFile",
+                str(small_phased_fixture.pheno_path),
+                "--bsize",
+                "100",
+                "--qt",
+                "--lowmem",
+                "--lowmem-prefix",
+                str(tmp_path / "lowmem"),
+                "--out",
+                str(tmp_path / "step1"),
+            ],
+            check=False,
+        )
+        combined = result.stdout + result.stderr
+        assert "only unphased bgen are supported" in combined, (
+            f"REGENIE didn't surface the phased-BGEN diagnostic; "
+            f"stdout+stderr tail:\n{combined[-2000:]}"
+        )

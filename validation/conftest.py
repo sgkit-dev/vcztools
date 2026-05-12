@@ -118,8 +118,10 @@ def bgen_for_level(fx: FixtureOutputs, level: str) -> tuple[pathlib.Path, pathli
     raise ValueError(f"unknown BGEN level identifier {level!r}")
 
 
-def _require_fixture(size: str) -> pathlib.Path:
-    vcz = DATA_DIR / f"{size}.vcz"
+def _require_fixture(size: str, variant: str) -> pathlib.Path:
+    """Resolve ``data/<size>_<variant>.vcz``; skip if the size's marker
+    file (which signals *both* variants are built) is missing."""
+    vcz = DATA_DIR / f"{size}_{variant}.vcz"
     if not (DATA_DIR / f"{size}.vcz.ready").exists():
         pytest.skip(
             f"{size}.vcz fixture missing — run `make -C validation data` to generate it"
@@ -127,8 +129,8 @@ def _require_fixture(size: str) -> pathlib.Path:
     return vcz
 
 
-def _build_outputs(size: str, work: pathlib.Path) -> FixtureOutputs:
-    vcz = _require_fixture(size)
+def _build_outputs(size: str, variant: str, work: pathlib.Path) -> FixtureOutputs:
+    vcz = _require_fixture(size, variant)
     pheno = DATA_DIR / f"{size}.pheno.tsv"
 
     plink_prefix = work / "plink"
@@ -170,12 +172,24 @@ def _build_outputs(size: str, work: pathlib.Path) -> FixtureOutputs:
 
 
 @pytest.fixture(scope="session")
-def small_fixture(tmp_path_factory) -> FixtureOutputs:
-    work = tmp_path_factory.mktemp("small_outputs")
-    return _build_outputs("small", work)
+def small_unphased_fixture(tmp_path_factory) -> FixtureOutputs:
+    work = tmp_path_factory.mktemp("small_unphased_outputs")
+    return _build_outputs("small", "unphased", work)
 
 
 @pytest.fixture(scope="session")
-def large_fixture(tmp_path_factory) -> FixtureOutputs:
-    work = tmp_path_factory.mktemp("large_outputs")
-    return _build_outputs("large", work)
+def small_phased_fixture(tmp_path_factory) -> FixtureOutputs:
+    work = tmp_path_factory.mktemp("small_phased_outputs")
+    return _build_outputs("small", "phased", work)
+
+
+@pytest.fixture(scope="session")
+def large_unphased_fixture(tmp_path_factory) -> FixtureOutputs:
+    work = tmp_path_factory.mktemp("large_unphased_outputs")
+    return _build_outputs("large", "unphased", work)
+
+
+@pytest.fixture(scope="session")
+def large_phased_fixture(tmp_path_factory) -> FixtureOutputs:
+    work = tmp_path_factory.mktemp("large_phased_outputs")
+    return _build_outputs("large", "phased", work)

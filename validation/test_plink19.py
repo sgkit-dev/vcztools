@@ -42,12 +42,12 @@ def _plink_freq(
 
 class TestPlink19FromPlinkInput:
     def test_minor_allele_frequency_matches_reference(
-        self, tmp_path, plink19_bin, small_fixture
+        self, tmp_path, plink19_bin, small_unphased_fixture
     ):
         out = tmp_path / "freq"
-        df = _plink_freq(plink19_bin, small_fixture.plink_prefix, out)
+        df = _plink_freq(plink19_bin, small_unphased_fixture.plink_prefix, out)
 
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         assert len(df) == int(biallelic.sum()), (
             f"plink --freq emitted {len(df)} rows, reference has "
@@ -62,13 +62,15 @@ class TestPlink19FromPlinkInput:
             atol=1e-10,
         )
 
-    def test_chromosome_observation_count(self, tmp_path, plink19_bin, small_fixture):
+    def test_chromosome_observation_count(
+        self, tmp_path, plink19_bin, small_unphased_fixture
+    ):
         # Each biallelic row has 2 * n_samples observed chromosomes
         # when no genotypes are missing (the msprime fixture has
         # no missingness).
         out = tmp_path / "freq"
-        df = _plink_freq(plink19_bin, small_fixture.plink_prefix, out)
-        n_samples = len(reference.sample_ids(small_fixture.vcz_path))
+        df = _plink_freq(plink19_bin, small_unphased_fixture.plink_prefix, out)
+        n_samples = len(reference.sample_ids(small_unphased_fixture.vcz_path))
         np.testing.assert_array_equal(
             df["NCHROBS"].to_numpy(),
             np.full(len(df), 2 * n_samples),
@@ -76,20 +78,22 @@ class TestPlink19FromPlinkInput:
 
 
 class TestPlink19VariantIds:
-    def test_bim_snp_column_matches_reference(self, plink19_bin, small_fixture):
+    def test_bim_snp_column_matches_reference(
+        self, plink19_bin, small_unphased_fixture
+    ):
         # PLINK doesn't echo the .bim SNP column in --freq output, so
         # read it directly from the .bim file written by view-plink.
         bim = pd.read_csv(
-            small_fixture.plink_prefix.with_suffix(".bim"),
+            small_unphased_fixture.plink_prefix.with_suffix(".bim"),
             sep=r"\s+",
             engine="python",
             header=None,
             names=["chrom", "snp", "cm", "pos", "a1", "a2"],
             dtype={"snp": str},
         )
-        ref = reference.compute_variant_stats(small_fixture.vcz_path)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
-        ids = reference.variant_ids(small_fixture.vcz_path)[biallelic]
+        ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
         assert len(bim) == len(ids)
         np.testing.assert_array_equal(bim["snp"].to_numpy(), ids)
 
@@ -100,8 +104,10 @@ class TestPlink19RejectsBgenV12:
     """
 
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
-    def test_rejects_layout2(self, tmp_path, plink19_bin, small_fixture, level):
-        bgen, sample = cfg.bgen_for_level(small_fixture, level)
+    def test_rejects_layout2(
+        self, tmp_path, plink19_bin, small_unphased_fixture, level
+    ):
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         result = helpers.run_tool(
             [
                 str(plink19_bin),

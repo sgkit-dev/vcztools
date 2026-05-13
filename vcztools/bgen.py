@@ -298,15 +298,17 @@ def _build_geno_blocks(G, phased):
     phased_row = phased[:, None]
     b0_bit = np.where(phased_row, a_zero, homref)
     b1_bit = np.where(phased_row, b_zero, het)
-    B0 = np.where(b0_bit, 0xFF, 0).astype(np.uint8)
-    B1 = np.where(b1_bit, 0xFF, 0).astype(np.uint8)
-    # Spec says missing samples' probability bytes should be ignored;
-    # zero them so the bytes are deterministic for testing / hashing.
-    B0[missing] = 0
-    B1[missing] = 0
+    # bool's underlying storage is uint8 (0/1), so .view(np.uint8) is
+    # zero-copy; multiplying by uint8(0xFF) keeps the result in uint8 and
+    # avoids the int64 intermediate of np.where(bit, 0xFF, 0).astype(uint8).
+    # Folding ~missing into the AND zeroes missing samples in the same
+    # pass (spec: missing samples' probability bytes are ignored, but we
+    # zero them for deterministic output).
+    valid = ~missing
+    B0 = (b0_bit & valid).view(np.uint8) * np.uint8(0xFF)
+    B1 = (b1_bit & valid).view(np.uint8) * np.uint8(0xFF)
 
-    ploidy = np.full((v, s), _PLOIDY_DIPLOID, dtype=np.uint8)
-    ploidy[missing] = _PLOIDY_MISSING
+    ploidy = np.where(missing, np.uint8(_PLOIDY_MISSING), np.uint8(_PLOIDY_DIPLOID))
 
     geno_blocks = np.empty((v, 10 + 3 * s), dtype=np.uint8)
     header = struct.pack("<IHBB", s, 2, 2, 2)  # 8 bytes; constant per chunk

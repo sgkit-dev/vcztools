@@ -319,6 +319,106 @@ class TestBgenReaderRoundtrip:
 
 
 # ---------------------------------------------------------------------------
+# Haploid / mixed-ploidy roundtrip via bgen-reader
+# ---------------------------------------------------------------------------
+
+
+def _haploid_allele_from_probs(probs_row):
+    """``probs_row`` from a K=1 biallelic BGEN call is ``[P(0), P(1)]``.
+    Returns the called allele (0 or 1) for non-missing samples; NaN
+    indicates missing."""
+    if np.isnan(probs_row).any():
+        return None
+    return int(np.argmax(probs_row[:2]))
+
+
+class TestBgenReaderHaploidRoundtrip:
+    """Validate haploid + mixed-ploidy ``view-bgen`` output via the
+    ``bgen-reader`` reference reader. Source VCZ is built synthetically
+    with :func:`tests.vcz_builder.make_vcz`. Mixed-ploidy must go
+    through ``write_bgen`` (the variable-size encoder); BgenEncoder is
+    uniform-only and is covered in ``tests/test_bgen.py``."""
+
+    def test_uniform_haploid_round_trip(self, tmp_path):
+        G = np.array(
+            [
+                [[0], [1], [-1], [0]],
+                [[1], [0], [1], [1]],
+                [[0], [-1], [-1], [1]],
+            ],
+            dtype=np.int8,
+        )
+        root = vcz_builder.make_vcz(
+            variant_contig=[0, 0, 0],
+            variant_position=[100, 200, 300],
+            alleles=[("A", "T"), ("C", "G"), ("G", "A")],
+            num_samples=4,
+            call_genotype=G,
+            ploidy=1,
+        )
+        reader = retrieval.VczReader(root)
+        out = tmp_path / "h"
+        bgen_mod.write_bgen(reader, out)
+        with br.open_bgen(
+            out.with_suffix(".bgen"), verbose=False, allow_complex=True
+        ) as bg:
+            assert bg.nvariants == 3
+            assert bg.nsamples == 4
+            np.testing.assert_array_equal(bg.ncombinations, [2, 2, 2])
+            probs, missing = bg.read(return_missings=True)
+        # Compare allele-per-call against the source.
+        for v in range(3):
+            for s in range(4):
+                source_allele = int(G[v, s, 0])
+                if source_allele < 0:
+                    assert missing[s, v]
+                    assert np.isnan(probs[s, v, :2]).all()
+                else:
+                    assert not missing[s, v]
+                    assert _haploid_allele_from_probs(probs[s, v]) == source_allele
+
+    def test_mixed_ploidy_round_trip(self, tmp_path):
+        # Synthetic X-chromosome style: sample 0 diploid, sample 1
+        # haploid, sample 2 missing-haploid, sample 3 diploid.
+        G = np.array(
+            [
+                [[0, 1], [1, -2], [-1, -2], [0, 0]],
+                [[1, 1], [0, -2], [1, -2], [0, 1]],
+            ],
+            dtype=np.int8,
+        )
+        root = vcz_builder.make_vcz(
+            variant_contig=[0, 0],
+            variant_position=[100, 200],
+            alleles=[("A", "T"), ("C", "G")],
+            num_samples=4,
+            call_genotype=G,
+            ploidy=2,
+        )
+        reader = retrieval.VczReader(root)
+        out = tmp_path / "mp"
+        bgen_mod.write_bgen(reader, out)
+        with br.open_bgen(
+            out.with_suffix(".bgen"), verbose=False, allow_complex=True
+        ) as bg:
+            assert bg.nvariants == 2
+            assert bg.nsamples == 4
+            # Both variants have diploid + haploid samples -> max combos = 3.
+            np.testing.assert_array_equal(bg.ncombinations, [3, 3])
+            probs, missing = bg.read(return_missings=True)
+        # Variant 0: sample 0 diploid het (0, 1) -> [0, 1, 0].
+        np.testing.assert_array_equal(probs[0, 0], [0.0, 1.0, 0.0])
+        # sample 1 haploid alt -> [0, 1, NaN]
+        np.testing.assert_array_equal(probs[1, 0, :2], [0.0, 1.0])
+        assert np.isnan(probs[1, 0, 2])
+        # sample 2 missing haploid -> all NaN
+        assert np.isnan(probs[2, 0]).all()
+        # sample 3 diploid hom-ref -> [1, 0, 0]
+        np.testing.assert_array_equal(probs[3, 0], [1.0, 0.0, 0.0])
+        np.testing.assert_array_equal(missing[:, 0], [False, False, True, False])
+
+
+# ---------------------------------------------------------------------------
 # plink2 cross-check (skipped if plink2 not on PATH)
 # ---------------------------------------------------------------------------
 

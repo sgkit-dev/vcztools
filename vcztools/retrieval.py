@@ -1473,6 +1473,11 @@ class VczReader:
                     f"(read {read_seconds:.2f}s, assemble {assemble_seconds:.2f}s)"
                 )
                 last_yield_t = time.perf_counter()
+                # Lock the dict's arrays read-only at the chokepoint so a
+                # consumer cannot mutate a view into a shared raw block,
+                # a cached static field, or a sibling StringDType arena.
+                for value in chunk_data.values():
+                    value.flags.writeable = False
                 yield chunk_data
         finally:
             elapsed = time.perf_counter() - iter_start

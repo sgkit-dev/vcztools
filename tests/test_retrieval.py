@@ -343,6 +343,108 @@ class TestMaterializeStringDTypeOwnData:
             )
 
 
+class TestVariantChunksReadOnly:
+    """Arrays yielded by ``variant_chunks`` must be marked read-only.
+
+    The reader hands back views into shared raw blocks, the cached
+    static-field arrays, and StringDType buffers whose arena is shared
+    with the prefetch worker. Mutating any of these would corrupt the
+    next stream chunk or race the producer thread. The read-only flag
+    is set at the yield chokepoint in ``_variant_chunks_gen``.
+    """
+
+    FIELDS = [
+        "variant_position",
+        "call_genotype",
+        "variant_IMPACT",
+        "variant_index",
+    ]
+
+    @staticmethod
+    def _make_vcz(num_variants=9, variants_chunk_size=3):
+        """Multi-chunk VCZ exercising a 1-D variant-axis field
+        (``variant_position``), a 3-D call_* field
+        (``call_genotype``), and a StringDType variant-axis info field
+        (``variant_IMPACT``)."""
+        num_samples = 2
+        ploidy = 2
+        impact = np.array(
+            [f"impact_{i}" for i in range(num_variants)],
+            dtype=np.dtypes.StringDType(),
+        )
+        call_genotype = np.zeros((num_variants, num_samples, ploidy), dtype=np.int8)
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=num_samples,
+            variants_chunk_size=variants_chunk_size,
+            proportional_chunks=False,
+            call_genotype=call_genotype,
+            info_fields={"IMPACT": impact},
+        )
+
+    def test_all_arrays_read_only(self):
+        root = self._make_vcz()
+        reader = VczReader(root)
+        chunks = list(reader.variant_chunks(fields=self.FIELDS))
+        assert len(chunks) == 3
+        for chunk in chunks:
+            for name in self.FIELDS:
+                assert not chunk[name].flags.writeable, f"{name} must be read-only"
+
+    @pytest.mark.parametrize("field", FIELDS)
+    def test_write_raises(self, field):
+        root = self._make_vcz()
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=self.FIELDS))
+        arr = chunk[field]
+        with pytest.raises(ValueError, match="read-only"):
+            arr.flat[0] = arr.flat[0]
+
+    def test_sample_filter_pass_read_only(self, fx_sample_vcz):
+        reader = make_reader(
+            fx_sample_vcz.group,
+            regions="20:1230236-",
+            samples=["NA00002", "NA00003"],
+            include="FMT/DP>3",
+            view_semantics=True,
+        )
+        chunk = next(
+            reader.variant_chunks(
+                fields=["variant_position", "call_DP"],
+            )
+        )
+        mask = chunk["sample_filter_pass"]
+        assert not mask.flags.writeable
+        with pytest.raises(ValueError, match="read-only"):
+            mask[0, 0] = not mask[0, 0]
+
+    def test_static_field_read_only_across_yields(self):
+        # ``filter_id`` is a static (no variants axis) field; the same
+        # array object is yielded on every stream chunk. The read-only
+        # flag must hold for every yield, not just the first.
+        root = _make_filter_vcz(num_variants=9, variants_chunk_size=3)
+        reader = VczReader(root)
+        chunks = list(reader.variant_chunks(fields=["variant_position", "filter_id"]))
+        assert len(chunks) == 3
+        first = chunks[0]["filter_id"]
+        for chunk in chunks:
+            assert chunk["filter_id"] is first
+            assert not chunk["filter_id"].flags.writeable
+
+    def test_copy_is_writeable(self):
+        # Documented escape hatch: callers that need to mutate must
+        # ``.copy()`` first. The copy must be writeable — read-only is
+        # a per-array flag, not a property of the underlying buffer.
+        root = self._make_vcz()
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=["variant_position"]))
+        writable = chunk["variant_position"].copy()
+        assert writable.flags.writeable
+        writable[0] = 0
+
+
 def _make_stream_reader(
     root,
     *,

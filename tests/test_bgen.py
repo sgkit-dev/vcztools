@@ -150,7 +150,7 @@ def _single_variant_geno_block(G_single, *, phased=False):
     }
     if phased:
         chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
-    prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+    prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=1)
     return bytes(prep.geno_blocks[0])
 
 
@@ -948,7 +948,7 @@ class TestPrepareChunk:
 
     def test_variable_mode_basic(self):
         chunk = self._make_chunk()
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=2)
         assert [bytes(b) for b in prep.varid] == [b".", b"."]
         assert [bytes(b) for b in prep.rsid] == [b".", b"."]
         assert [bytes(b) for b in prep.chrom] == [b"chr1", b"chr1"]
@@ -967,6 +967,8 @@ class TestPrepareChunk:
         prep = bgen._prepare_chunk(
             chunk,
             contig_ids=np.array(["chr1"]),
+            start=0,
+            end=2,
             varid_max_len=8,
             rsid_max_len=8,
             chrom_max_len=4,
@@ -982,12 +984,12 @@ class TestPrepareChunk:
 
     def test_missing_rsid_normalised_to_dot(self):
         chunk = self._make_chunk(variant_id=["", "rsY"])
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=2)
         assert [bytes(b) for b in prep.rsid] == [b".", b"rsY"]
 
     def test_monomorphic_allele2_normalised_to_dot(self):
         chunk = self._make_chunk(alleles=np.array([["A", ""], ["C", "G"]]))
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=2)
         assert [bytes(b) for b in prep.allele2] == [b".", b"G"]
 
     def test_phase_detection_and_mixed_count(self):
@@ -1003,7 +1005,7 @@ class TestPrepareChunk:
         )
         alleles = np.array([["A", "T"], ["C", "G"], ["G", "A"]])
         chunk = self._make_chunk(alleles=alleles, phased=phased, num_samples=2)
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=3)
         # Phased flag lives at byte 8 + num_samples in each geno-block row.
         flags = prep.geno_blocks[:, 8 + 2]
         np.testing.assert_array_equal(flags, [1, 0, 0])
@@ -1017,6 +1019,8 @@ class TestPrepareChunk:
             bgen._prepare_chunk(
                 chunk,
                 contig_ids=np.array(["chr1"]),
+                start=0,
+                end=2,
                 varid_max_len=8,
                 rsid_max_len=64,
             )
@@ -1025,7 +1029,7 @@ class TestPrepareChunk:
         alleles = np.array([["A", "T", "G"]])
         chunk = self._make_chunk(alleles=alleles)
         with pytest.raises(ValueError, match="Multi-allelic"):
-            bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+            bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=1)
 
 
 class TestBgenEncoderMetadata:

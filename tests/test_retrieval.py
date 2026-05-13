@@ -444,6 +444,65 @@ class TestVariantChunksReadOnly:
         assert writable.flags.writeable
         writable[0] = 0
 
+    def test_variant_index_only_read_only(self):
+        # Pseudo-field requested alone: ``real_query_fields`` is empty,
+        # ``_absolute_variant_indexes`` is the only producer. The
+        # emitted array must still be marked read-only at the yield
+        # site even though no Zarr-backed field went through
+        # ``output_view``.
+        root = self._make_vcz()
+        reader = VczReader(root)
+        chunks = list(reader.variant_chunks(fields=["variant_index"]))
+        assert len(chunks) == 3
+        for chunk in chunks:
+            idx = chunk["variant_index"]
+            assert idx.dtype == np.int64
+            assert not idx.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                idx[0] = 0
+        nt.assert_array_equal(
+            np.concatenate([c["variant_index"] for c in chunks]),
+            np.arange(9),
+        )
+
+    def test_variant_index_after_filter_selection_read_only(self):
+        # When a variant filter drops rows the per-chunk pseudo-field
+        # array is fancy-indexed with the surviving-rows mask
+        # (``value = value[variants_selection]``) before yield. That
+        # post-selection result is a fresh owning array, and it must
+        # also be flagged read-only.
+        root = self._make_vcz()
+        reader = VczReader(root)
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS>=105")
+        )
+        emitted = []
+        for chunk in reader.variant_chunks(fields=["variant_index"]):
+            idx = chunk["variant_index"]
+            assert not idx.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                idx[0] = 0
+            emitted.append(idx)
+        # variant_position starts at 100; POS>=105 keeps indexes 5..8.
+        nt.assert_array_equal(np.concatenate(emitted), [5, 6, 7, 8])
+
+    def test_variant_index_after_set_variants_read_only(self):
+        # Sparse global indexes drive ``_absolute_variant_indexes`` down
+        # its ndarray-selection branch (non-contiguous local indexes
+        # within a chunk). The result must also be read-only.
+        root = self._make_vcz()
+        reader = VczReader(root)
+        wanted = np.array([0, 2, 4, 7], dtype=np.int64)
+        reader.set_variants(wanted)
+        emitted = []
+        for chunk in reader.variant_chunks(fields=["variant_index"]):
+            idx = chunk["variant_index"]
+            assert not idx.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                idx[0] = 0
+            emitted.append(idx)
+        nt.assert_array_equal(np.concatenate(emitted), wanted)
+
 
 class TestVczReaderArraysReadOnly:
     """Every numpy array ``VczReader`` exposes to a caller must be

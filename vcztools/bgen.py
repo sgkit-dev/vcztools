@@ -20,6 +20,7 @@ For the user-facing reference — multi-allelic policy, downstream-tool
 compatibility, sidecar conventions — see ``docs/bgen.md``.
 """
 
+import concurrent.futures as cf
 import dataclasses
 import logging
 import pathlib
@@ -386,6 +387,36 @@ def _encode_variant_block(
     out += struct.pack("<II", C, D)
     out += compressed
     return bytes(out)
+
+
+def _encode_chunk_slice(chunk, contig_ids, start, end, *, compression_level):
+    """Encode variants ``[start:end]`` of ``chunk`` into one concatenated
+    byte buffer. Returns ``(slice_bytes, per_variant_lengths,
+    mixed_phase_count)``.
+
+    Self-contained for worker-thread use by the parallel
+    :func:`_stream_bgen_to_file` path: holds no encoder/reader state,
+    only reads from the chunk arrays. ``_prepare_chunk`` runs inside
+    so each worker handles its slice's vectorised numpy prep too.
+    """
+    prep = _prepare_chunk(chunk, contig_ids, start=start, end=end)
+    n = end - start
+    out = bytearray()
+    lens = []
+    for j in range(n):
+        block = _encode_variant_block(
+            varid_bytes=prep.varid[j],
+            rsid_bytes=prep.rsid[j],
+            chrom_bytes=prep.chrom[j],
+            position=int(prep.position[j]),
+            allele1_bytes=prep.allele1[j],
+            allele2_bytes=prep.allele2[j],
+            geno_block_bytes=bytes(prep.geno_blocks[j]),
+            compression_level=compression_level,
+        )
+        out.extend(block)
+        lens.append(len(block))
+    return bytes(out), lens, prep.mixed_phase_count
 
 
 def _detect_variant_phase(phased_array_for_variant):
@@ -802,7 +833,13 @@ def write_bgen_index(reader, bgi_path, variant_offsets):
     )
 
 
-def write_bgen(reader, out, *, compression_level: int = -1):
+def write_bgen(
+    reader,
+    out,
+    *,
+    compression_level: int = -1,
+    encode_threads: int | None = None,
+):
     """Write an Oxford BGEN fileset (``.bgen`` / ``.sample`` /
     ``.bgen.bgi``) for ``reader`` under prefix ``out``.
 
@@ -822,7 +859,18 @@ def write_bgen(reader, out, *, compression_level: int = -1):
     zlib default ≈ level 6; ``0`` = stored, still framed as zlib;
     ``9`` = maximum). The BGEN flag word always advertises
     ``COMPRESSION_ZLIB`` regardless of level.
+
+    ``encode_threads`` sizes the worker pool that runs per-slice
+    :func:`_prepare_chunk` + per-variant ``_encode_variant_block`` for
+    each chunk. Slice bytes are written back to ``bgen_path`` in
+    variant order on the main thread so byte layout and ``.bgi``
+    offsets stay deterministic. ``None`` selects the default (4).
     """
+    if encode_threads is None:
+        encode_threads = 4
+    if encode_threads < 1:
+        raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
+
     reader.materialise_variant_filter()
     out_prefix = pathlib.Path(out)
     bgen_path = out_prefix.with_suffix(".bgen")
@@ -833,12 +881,17 @@ def write_bgen(reader, out, *, compression_level: int = -1):
         f.write(generate_sample(reader))
 
     variant_offsets = _stream_bgen_to_file(
-        reader, bgen_path, compression_level=compression_level
+        reader,
+        bgen_path,
+        compression_level=compression_level,
+        encode_threads=encode_threads,
     )
     write_bgen_index(reader, bgi_path, variant_offsets)
 
 
-def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
+def _stream_bgen_to_file(
+    reader, bgen_path, *, compression_level: int, encode_threads: int
+):
     start = time.perf_counter()
     encode_seconds = 0.0
     write_seconds = 0.0
@@ -866,38 +919,50 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
     mixed_phase_count = 0
     idx = 0
 
-    with open(bgen_path, "wb") as bgen_file:
+    with (
+        cf.ThreadPoolExecutor(
+            max_workers=encode_threads,
+            thread_name_prefix="write-bgen-encode",
+        ) as executor,
+        open(bgen_path, "wb") as bgen_file,
+    ):
         bgen_file.write(header_bytes)
         bytes_written += len(header_bytes)
 
         for chunk in reader.variant_chunks(fields=fields):
-            t_prep = time.perf_counter()
             n = int(chunk["call_genotype"].shape[0])
-            prep = _prepare_chunk(chunk, contig_id, start=0, end=n)
-            mixed_phase_count += prep.mixed_phase_count
-            encode_seconds += time.perf_counter() - t_prep
-
-            for j in range(n):
-                t0 = time.perf_counter()
-                block = _encode_variant_block(
-                    varid_bytes=prep.varid[j],
-                    rsid_bytes=prep.rsid[j],
-                    chrom_bytes=prep.chrom[j],
-                    position=int(prep.position[j]),
-                    allele1_bytes=prep.allele1[j],
-                    allele2_bytes=prep.allele2[j],
-                    geno_block_bytes=bytes(prep.geno_blocks[j]),
+            # Dispatch slice encodes in submit order; collect in submit
+            # order so the file byte layout (and variant_offsets) stay
+            # deterministic regardless of which worker finishes first.
+            slice_variants = max(1, (n + encode_threads - 1) // encode_threads)
+            slice_ranges = [
+                (s, min(s + slice_variants, n)) for s in range(0, n, slice_variants)
+            ]
+            t_enc = time.perf_counter()
+            futures = [
+                executor.submit(
+                    _encode_chunk_slice,
+                    chunk,
+                    contig_id,
+                    s,
+                    e,
                     compression_level=compression_level,
                 )
-                t1 = time.perf_counter()
-                bgen_file.write(block)
-                t2 = time.perf_counter()
-                encode_seconds += t1 - t0
-                write_seconds += t2 - t1
+                for (s, e) in slice_ranges
+            ]
+            for fut in futures:
+                slice_bytes, lens, slice_mpc = fut.result()
+                t_after_enc = time.perf_counter()
+                encode_seconds += t_after_enc - t_enc
+                bgen_file.write(slice_bytes)
+                write_seconds += time.perf_counter() - t_after_enc
+                t_enc = time.perf_counter()
 
-                variant_offsets[idx + 1] = variant_offsets[idx] + len(block)
-                idx += 1
-                bytes_written += len(block)
+                mixed_phase_count += slice_mpc
+                for length in lens:
+                    variant_offsets[idx + 1] = variant_offsets[idx] + length
+                    idx += 1
+                bytes_written += len(slice_bytes)
 
     elapsed = time.perf_counter() - start
     mib = bytes_written / (1024 * 1024)
@@ -905,7 +970,7 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
     logger.info(
         f"write_bgen: wrote {mib:.1f} MiB to {bgen_path} in "
         f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
-        f"compression_level={compression_level}; "
+        f"compression_level={compression_level}, encode_threads={encode_threads}; "
         f"encode={encode_seconds:.2f}s, write={write_seconds:.2f}s"
     )
     if mixed_phase_count > 0:

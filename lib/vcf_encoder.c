@@ -1074,70 +1074,118 @@ vcz_encode_plink(
 }
 
 size_t
-vcz_bgen_geno_block_row_size(size_t num_samples)
+vcz_bgen_geno_block_row_max_size(size_t num_samples)
 {
+    /* Worst-case (all diploid): 8 header + S ploidy + 2 flags + 2*S probs. */
     return 10 + 3 * num_samples;
 }
 
-/* BGEN Layout 2 / 8-bit / biallelic / diploid genotype block builder.
- * Writes num_variants rows of (10 + 3 * num_samples) bytes into buf.
- * See vcztools/bgen.py and the BGEN spec for the byte layout. */
+/* BGEN Layout 2 / 8-bit / biallelic genotype block builder with
+ * per-sample ploidy. See vcztools/bgen.py and the BGEN spec for the
+ * byte layout. Each row is variable-length: header (8B) + ploidy bytes
+ * (one per sample) + phased flag (1B) + bits-per-prob (1B) + per-sample
+ * probability bytes (K_s bytes for ploidy K_s; K_s in {1, 2}). Per-
+ * variant header reports the variant's actual Pmin/Pmax.
+ *
+ * Per-sample interpretation of (a, b) = (gt[2s], gt[2s+1]):
+ *   a >= 0, b >= 0           -> diploid call. 0x02. 2 prob bytes.
+ *   a >= 0, b == -2          -> haploid call. 0x01. 1 prob byte.
+ *   a == -1, b == -1         -> missing diploid. 0x82. 2 zero bytes.
+ *   a == -1, b == -2         -> missing haploid. 0x81. 1 zero byte.
+ *   a >= 0, b == -1 or
+ *   a == -1, b >= 0          -> half-missing diploid. 0x82. 2 zero bytes.
+ *   a == -2 (any b)          -> zero-ploidy. Returns
+ *                               VCZ_ERR_BGEN_INVALID_PLOIDY.
+ *
+ * buf must be at least num_variants * row_stride bytes; row_stride is
+ * typically vcz_bgen_geno_block_row_max_size(num_samples). out_lens[v]
+ * receives the actual byte count written for variant v. */
 int
 vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
-    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf)
+    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
+    uint32_t *out_lens)
 {
-    const size_t row_size = vcz_bgen_geno_block_row_size(num_samples);
-    uint8_t header[8];
     uint8_t *row;
     uint8_t *ploidy_out;
     uint8_t *prob_out;
     const int8_t *gt;
     int8_t a, b;
-    uint8_t b0, b1, variant_phased;
-    size_t v, s;
-
-    /* The 8-byte header is identical for every variant in the chunk. */
-    header[0] = (uint8_t) (num_samples & 0xFF);
-    header[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
-    header[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
-    header[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
-    header[4] = 2; /* K (n_alleles) low byte */
-    header[5] = 0; /* K high byte */
-    header[6] = 2; /* P_min */
-    header[7] = 2; /* P_max */
+    uint8_t variant_phased, ploidy_byte, pmin, pmax;
+    size_t v, s, prob_offset;
 
     for (v = 0; v < num_variants; v++) {
-        row = buf + v * row_size;
+        row = buf + v * row_stride;
         gt = genotypes + v * num_samples * 2;
         ploidy_out = row + 8;
         prob_out = row + 8 + num_samples + 2;
         variant_phased = phased[v] ? 1 : 0;
-
-        memcpy(row, header, 8);
-        row[8 + num_samples] = variant_phased;
-        row[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
+        pmin = 2;
+        pmax = 1;
+        prob_offset = 0;
 
         for (s = 0; s < num_samples; s++) {
             a = gt[2 * s];
             b = gt[2 * s + 1];
 
-            if (a < 0 || b < 0) {
-                ploidy_out[s] = VCZ_BGEN_PLOIDY_MISSING;
-                b0 = 0;
-                b1 = 0;
-            } else {
-                ploidy_out[s] = VCZ_BGEN_PLOIDY_DIPLOID;
-                if (variant_phased) {
-                    b0 = (a == 0) ? 0xFF : 0x00;
-                    b1 = (b == 0) ? 0xFF : 0x00;
-                } else {
-                    b0 = (a == 0 && b == 0) ? 0xFF : 0x00;
-                    b1 = ((a == 0 && b == 1) || (a == 1 && b == 0)) ? 0xFF : 0x00;
-                }
+            if (a == VCZ_INT_FILL) {
+                return VCZ_ERR_BGEN_INVALID_PLOIDY;
             }
-            prob_out[2 * s] = b0;
-            prob_out[2 * s + 1] = b1;
+            if (b == VCZ_INT_FILL) {
+                /* Haploid call: ploidy=1. */
+                if (a == VCZ_INT_MISSING) {
+                    ploidy_byte = VCZ_BGEN_PLOIDY_MISSING_HAPLOID;
+                    prob_out[prob_offset] = 0x00;
+                } else {
+                    ploidy_byte = VCZ_BGEN_PLOIDY_HAPLOID;
+                    prob_out[prob_offset] = (a == 0) ? 0xFF : 0x00;
+                }
+                prob_offset += 1;
+                if (pmin > 1) {
+                    pmin = 1;
+                }
+            } else if (a < 0 || b < 0) {
+                ploidy_byte = VCZ_BGEN_PLOIDY_MISSING_DIPLOID;
+                prob_out[prob_offset] = 0x00;
+                prob_out[prob_offset + 1] = 0x00;
+                prob_offset += 2;
+                pmax = 2;
+            } else {
+                ploidy_byte = VCZ_BGEN_PLOIDY_DIPLOID;
+                if (variant_phased) {
+                    prob_out[prob_offset] = (a == 0) ? 0xFF : 0x00;
+                    prob_out[prob_offset + 1] = (b == 0) ? 0xFF : 0x00;
+                } else {
+                    prob_out[prob_offset] = (a == 0 && b == 0) ? 0xFF : 0x00;
+                    prob_out[prob_offset + 1]
+                        = ((a == 0 && b == 1) || (a == 1 && b == 0)) ? 0xFF : 0x00;
+                }
+                prob_offset += 2;
+                pmax = 2;
+            }
+            ploidy_out[s] = ploidy_byte;
         }
+
+        if (num_samples == 0) {
+            /* Pmin/Pmax are undefined without samples; spec says report 2/2
+             * (the diploid default). Matches the previous diploid-only
+             * behaviour for empty stores. */
+            pmin = 2;
+            pmax = 2;
+        }
+
+        /* 8-byte header: N (uint32 LE), K (uint16 LE), Pmin, Pmax. */
+        row[0] = (uint8_t) (num_samples & 0xFF);
+        row[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
+        row[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
+        row[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
+        row[4] = 2; /* K (n_alleles) low byte */
+        row[5] = 0; /* K high byte */
+        row[6] = pmin;
+        row[7] = pmax;
+        row[8 + num_samples] = variant_phased;
+        row[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
+
+        out_lens[v] = (uint32_t) (8 + num_samples + 2 + prob_offset);
     }
     return 0;
 }

@@ -46,6 +46,9 @@
 #define VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE (-203)
 #define VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS (-204)
 
+/* BGEN encoder errors */
+#define VCZ_ERR_BGEN_INVALID_PLOIDY (-301)
+
 typedef struct {
     // maximum length + 1 for NULL byte
     char name[VCZ_MAX_FIELD_NAME_LEN + 1];
@@ -117,9 +120,12 @@ int vcz_ftoa(char *buf, float v);
 int vcz_encode_plink(
     size_t num_variants, size_t num_samples, const int8_t *genotypes, char *buf);
 
+#define VCZ_BGEN_PLOIDY_HAPLOID 0x01
 #define VCZ_BGEN_PLOIDY_DIPLOID 0x02
-#define VCZ_BGEN_PLOIDY_MISSING 0x82
+#define VCZ_BGEN_PLOIDY_MISSING_HAPLOID 0x81
+#define VCZ_BGEN_PLOIDY_MISSING_DIPLOID 0x82
 #define VCZ_BGEN_BITS_PER_PROB 8
 int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
-    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf);
-size_t vcz_bgen_geno_block_row_size(size_t num_samples);
+    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
+    uint32_t *out_lens);
+size_t vcz_bgen_geno_block_row_max_size(size_t num_samples);

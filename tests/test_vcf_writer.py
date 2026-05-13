@@ -622,16 +622,18 @@ def chunk_to_vcf(chunk):
     contigs = np.array([b"chr1"])
     num_samples = chunk["call_genotype"].shape[1]
     output = StringIO()
-    c_chunk_to_vcf(
-        chunk,
-        samples_selection=np.arange(num_samples),
-        contigs=contigs,
-        filters=filters,
-        output=output,
-        drop_genotypes=False,
-        no_update=False,
-        subsetting_samples=False,
-    )
+    with cf.ThreadPoolExecutor(max_workers=1) as executor:
+        c_chunk_to_vcf(
+            chunk,
+            samples_selection=np.arange(num_samples),
+            contigs=contigs,
+            filters=filters,
+            output=output,
+            drop_genotypes=False,
+            no_update=False,
+            subsetting_samples=False,
+            executor=executor,
+        )
     return output.getvalue()
 
 

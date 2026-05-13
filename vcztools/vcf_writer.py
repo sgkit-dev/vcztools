@@ -88,12 +88,10 @@ def write_vcf(
     (matching ``bcftools view -s …`` semantics). Callers that already
     configured ``reader.set_samples(...)`` should pass ``True``.
 
-    ``encode_threads`` controls the per-chunk line encoding fan-out.
-    The default of 1 keeps the encode loop in the calling thread. With
-    ``encode_threads > 1`` a :class:`concurrent.futures.ThreadPoolExecutor`
-    is created for the duration of the call and rows in each chunk are
-    split into ``encode_threads`` contiguous blocks encoded in parallel;
-    completed blocks are written to ``output`` in row order.
+    ``encode_threads`` sets the size of the per-chunk line encoding
+    thread pool. Each chunk's rows are split into ``encode_threads``
+    contiguous blocks encoded in parallel; completed blocks are written
+    to ``output`` in row order.
     """
     start = time.perf_counter()
     bytes_written = 0
@@ -109,12 +107,10 @@ def write_vcf(
             bytes_written += len(vcf_header)
 
         if not header_only:
-            executor = None
-            if encode_threads > 1:
-                executor = cf.ThreadPoolExecutor(
-                    max_workers=encode_threads,
-                    thread_name_prefix="vcf-encode",
-                )
+            executor = cf.ThreadPoolExecutor(
+                max_workers=encode_threads,
+                thread_name_prefix="vcf-encode",
+            )
             try:
                 for chunk_data in reader.variant_chunks():
                     bytes_written += c_chunk_to_vcf(
@@ -129,8 +125,7 @@ def write_vcf(
                         executor=executor,
                     )
             finally:
-                if executor is not None:
-                    executor.shutdown(wait=True)
+                executor.shutdown(wait=True)
     elapsed = time.perf_counter() - start
     mib = bytes_written / (1024 * 1024)
     rate = mib / elapsed if elapsed > 0 else 0.0
@@ -147,7 +142,7 @@ def c_chunk_to_vcf(
     drop_genotypes,
     no_update,
     subsetting_samples,
-    executor=None,
+    executor,
 ):
     format_fields = {}
     info_fields = {}
@@ -288,16 +283,8 @@ def c_chunk_to_vcf(
         return "".join(parts)
 
     bytes_written = 0
-    if executor is None:
-        block_text = encode_block(0, num_variants, buflen_hint)
-        output.write(block_text)
-        bytes_written += len(block_text)
-        return bytes_written
-
-    max_workers = executor._max_workers
-    num_blocks = max(1, min(max_workers, num_variants))
+    num_blocks = min(executor._max_workers, num_variants)
     block_size = (num_variants + num_blocks - 1) // num_blocks
-
     futures = []
     for i in range(num_blocks):
         start = i * block_size

@@ -88,6 +88,10 @@ class _Chunk:
 
     Fields are pre-built in shapes/dtypes each encoder accepts directly
     so the timed region contains only encoder work, never numpy fanout.
+    The two ``bgen_*_prep`` slots hold the per-chunk byte-prepared inputs
+    that ``vcztools.bgen._prepare_chunk`` produces — building them is
+    chunk-level vectorised work that ``BgenEncoder._encode_chunk`` does
+    once per chunk, so it's amortised outside the per-variant timing.
     """
 
     num_variants: int
@@ -103,21 +107,30 @@ class _Chunk:
     qual: np.ndarray
     filter_ids_bytes: np.ndarray
     filter: np.ndarray
-    # BGEN variable-size inputs (Python strings; encoded inside the kernel).
-    varid_strs: list
-    chrom_str: str
-    a1_str: str
-    a2_str: str
-    # BGEN fixed-size inputs (pre-padded NUL-terminated bytes).
-    varid_padded: list
-    rsid_padded: list
-    chrom_padded: bytes
-    a1_padded: bytes
-    a2_padded: bytes
-    varid_max: int
-    rsid_max: int
-    chrom_max: int
-    allele_max: int
+    # BGEN per-chunk prepared inputs (variable mode and fixed mode).
+    bgen_var_prep: bgen._ChunkBytes
+    bgen_fixed_prep: bgen._ChunkBytes
+
+
+def _build_bgen_chunk_dict(
+    G: np.ndarray, phased: np.ndarray, pos: np.ndarray, rsids: list, chrom: str
+) -> tuple[dict, np.ndarray]:
+    """Build the ``chunk`` dict shape ``bgen._prepare_chunk`` expects.
+
+    Returns ``(chunk_dict, contig_ids)``. The synthetic dataset uses one
+    contig string for every variant, so ``variant_contig`` is all zeros
+    and ``contig_ids`` is a single-element array."""
+    n = G.shape[0]
+    contig_ids = np.array([chrom])
+    chunk = {
+        "call_genotype": G,
+        "variant_allele": np.array([["A", "T"]] * n, dtype=np.str_),
+        "variant_position": pos,
+        "variant_contig": np.zeros(n, dtype=np.int32),
+        "variant_id": np.array(rsids, dtype=np.str_),
+        "call_genotype_phased": phased,
+    }
+    return chunk, contig_ids
 
 
 def _make_chunk(num_variants: int, num_samples: int, seed: int) -> _Chunk:
@@ -134,14 +147,16 @@ def _make_chunk(num_variants: int, num_samples: int, seed: int) -> _Chunk:
     rsid_max = varid_max
     allele_max = 1
 
-    varid_padded = [
-        bgen._pad_to_fixed_length(r, varid_max, field_name="varid") for r in rsids
-    ]
-    # rsid == varid here, so the same padded bytes serve both fields.
-    rsid_padded = varid_padded
-    chrom_padded = bgen._pad_to_fixed_length(chrom, chrom_max, field_name="chrom")
-    a1_padded = bgen._pad_to_fixed_length(a1, allele_max, field_name="allele1")
-    a2_padded = bgen._pad_to_fixed_length(a2, allele_max, field_name="allele2")
+    bgen_chunk, contig_ids = _build_bgen_chunk_dict(G, phased, pos, rsids, chrom)
+    bgen_var_prep = bgen._prepare_chunk(bgen_chunk, contig_ids)
+    bgen_fixed_prep = bgen._prepare_chunk(
+        bgen_chunk,
+        contig_ids,
+        varid_max_len=varid_max,
+        rsid_max_len=rsid_max,
+        chrom_max_len=chrom_max,
+        allele_max_len=allele_max,
+    )
 
     chrom_bytes = np.full(num_variants, chrom.encode("utf-8"), dtype=f"S{chrom_max}")
     id_bytes = np.array(
@@ -166,19 +181,8 @@ def _make_chunk(num_variants: int, num_samples: int, seed: int) -> _Chunk:
         qual=qual,
         filter_ids_bytes=filter_ids_bytes,
         filter=filter_arr,
-        varid_strs=rsids,
-        chrom_str=chrom,
-        a1_str=a1,
-        a2_str=a2,
-        varid_padded=varid_padded,
-        rsid_padded=rsid_padded,
-        chrom_padded=chrom_padded,
-        a1_padded=a1_padded,
-        a2_padded=a2_padded,
-        varid_max=varid_max,
-        rsid_max=rsid_max,
-        chrom_max=chrom_max,
-        allele_max=allele_max,
+        bgen_var_prep=bgen_var_prep,
+        bgen_fixed_prep=bgen_fixed_prep,
     )
 
 
@@ -220,64 +224,39 @@ def _vcf_run(chunk: _Chunk) -> int:
     return total
 
 
-def _bgen_var_slice(chunk: _Chunk, level: int, start: int, end: int) -> bytes:
-    G = chunk.G
-    num_samples = G.shape[1]
-    rsids = chunk.varid_strs
-    chrom = chunk.chrom_str
-    a1 = chunk.a1_str
-    a2 = chunk.a2_str
-    pos = chunk.pos
+def _bgen_block_slice(
+    prep: bgen._ChunkBytes, level: int, start: int, end: int
+) -> bytes:
+    """Per-variant ``_encode_variant_block`` loop over ``prep[start:end]``.
+
+    ``prep`` already holds chunk-level byte-prepared inputs (the
+    vectorised ``_prepare_chunk`` work is amortised outside timing),
+    so the timed region is the per-variant zlib + framing path that
+    ``BgenEncoder._encode_variant_range`` runs in production."""
+    position = prep.position
     parts = []
     for j in range(start, end):
         parts.append(
             bgen._encode_variant_block(
-                varid=rsids[j],
-                rsid=rsids[j],
-                chrom=chrom,
-                position=int(pos[j]),
-                allele1=a1,
-                allele2=a2,
-                num_samples=num_samples,
-                genotypes=G[j],
-                phased=False,
+                varid_bytes=prep.varid[j],
+                rsid_bytes=prep.rsid[j],
+                chrom_bytes=prep.chrom[j],
+                position=int(position[j]),
+                allele1_bytes=prep.allele1[j],
+                allele2_bytes=prep.allele2[j],
+                geno_block_bytes=bytes(prep.geno_blocks[j]),
                 compression_level=level,
             )
         )
     return b"".join(parts)
 
 
+def _bgen_var_slice(chunk: _Chunk, level: int, start: int, end: int) -> bytes:
+    return _bgen_block_slice(chunk.bgen_var_prep, level, start, end)
+
+
 def _bgen_fixed_slice(chunk: _Chunk, start: int, end: int) -> bytes:
-    G = chunk.G
-    varid_padded = chunk.varid_padded
-    rsid_padded = chunk.rsid_padded
-    chrom_padded = chunk.chrom_padded
-    a1_padded = chunk.a1_padded
-    a2_padded = chunk.a2_padded
-    varid_max = chunk.varid_max
-    rsid_max = chunk.rsid_max
-    chrom_max = chunk.chrom_max
-    allele_max = chunk.allele_max
-    pos = chunk.pos
-    parts = []
-    for j in range(start, end):
-        parts.append(
-            bgen._encode_variant_block_fixed_size(
-                varid_padded=varid_padded[j],
-                rsid_padded=rsid_padded[j],
-                chrom_padded=chrom_padded,
-                position=int(pos[j]),
-                allele1_padded=a1_padded,
-                allele2_padded=a2_padded,
-                varid_max=varid_max,
-                rsid_max=rsid_max,
-                chrom_max=chrom_max,
-                allele_max=allele_max,
-                genotypes=G[j],
-                phased=False,
-            )
-        )
-    return b"".join(parts)
+    return _bgen_block_slice(chunk.bgen_fixed_prep, 0, start, end)
 
 
 def _encode_parallel(

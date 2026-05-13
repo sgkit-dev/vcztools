@@ -148,10 +148,14 @@ def _make_chunk(num_variants: int, num_samples: int, seed: int) -> _Chunk:
     allele_max = 1
 
     bgen_chunk, contig_ids = _build_bgen_chunk_dict(G, phased, pos, rsids, chrom)
-    bgen_var_prep = bgen._prepare_chunk(bgen_chunk, contig_ids)
+    bgen_var_prep = bgen._prepare_chunk(
+        bgen_chunk, contig_ids, start=0, end=num_variants
+    )
     bgen_fixed_prep = bgen._prepare_chunk(
         bgen_chunk,
         contig_ids,
+        start=0,
+        end=num_variants,
         varid_max_len=varid_max,
         rsid_max_len=rsid_max,
         chrom_max_len=chrom_max,

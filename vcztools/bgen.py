@@ -181,17 +181,19 @@ def _prepare_chunk(
     chunk,
     contig_ids,
     *,
+    start,
+    end,
     varid_max_len=None,
     rsid_max_len=None,
     chrom_max_len=None,
     allele_max_len=None,
 ):
-    """Validate and prepare per-variant byte inputs for one chunk of
-    BGEN encoding. ``contig_ids`` resolves ``variant_contig`` integer
-    indices to chromosome name strings. Each ``*_max_len`` controls
-    whether the corresponding string field is NUL-padded to a fixed
-    width (``int``) or written at its actual UTF-8 byte length
-    (``None``).
+    """Validate and prepare per-variant byte inputs for variants
+    ``[start:end]`` of ``chunk``. ``contig_ids`` resolves
+    ``variant_contig`` integer indices to chromosome name strings.
+    Each ``*_max_len`` controls whether the corresponding string field
+    is NUL-padded to a fixed width (``int``) or written at its actual
+    UTF-8 byte length (``None``).
 
     Mirrors the conventions shared by :class:`BgenEncoder` and
     :func:`write_bgen`: ``rsid=""`` and ``allele2=""`` normalise to
@@ -202,13 +204,22 @@ def _prepare_chunk(
     ``varid`` is validated before ``rsid`` so a too-narrow
     ``varid_max_len`` surfaces as a ``"varid"`` error even when both
     fields would overflow with the default ``rsid_max_len=64``.
+
+    Chunk-axis reads are sliced at the top of the body so workers can
+    invoke this function on disjoint variant ranges concurrently —
+    ``BgenEncoder._encode_chunk`` dispatches one call per worker per
+    slice via :meth:`_parallel_encode`.
     """
-    G = chunk["call_genotype"]
-    alleles = chunk["variant_allele"]
-    positions = chunk["variant_position"]
-    contigs = chunk["variant_contig"]
+    G = chunk["call_genotype"][start:end]
+    alleles = chunk["variant_allele"][start:end]
+    positions = chunk["variant_position"][start:end]
+    contigs = chunk["variant_contig"][start:end]
     varids = chunk.get("variant_id")
+    if varids is not None:
+        varids = varids[start:end]
     phased_arr = chunk.get("call_genotype_phased")
+    if phased_arr is not None:
+        phased_arr = phased_arr[start:end]
 
     _check_biallelic(alleles)
     _check_diploid(G)
@@ -554,28 +565,41 @@ class BgenEncoder(format_encoder.FormatEncoder):
         return self.total_size
 
     def _encode_chunk(self, chunk: dict) -> bytes:
+        # _prepare_chunk runs inside _encode_variant_range, so each
+        # worker handles its slice's vectorised numpy prep in parallel
+        # with the others. Per-slice mixed_phase_count partials are
+        # appended to a closure-captured list (list.append is GIL-safe
+        # under CPython) and summed once _parallel_encode returns.
+        num_variants = int(chunk["call_genotype"].shape[0])
+        phase_counts: list[int] = []
+
+        def encode_range(start: int, end: int) -> bytes:
+            return self._encode_variant_range(chunk, start, end, phase_counts)
+
+        output = self._parallel_encode(
+            num_variants=num_variants, encode_range=encode_range
+        )
+        self._mixed_phase_count += sum(phase_counts)
+        return output
+
+    def _encode_variant_range(
+        self, chunk: dict, start: int, end: int, phase_counts: list[int]
+    ) -> bytes:
         prep = _prepare_chunk(
             chunk,
             self._contig_ids,
+            start=start,
+            end=end,
             varid_max_len=self._varid_max,
             rsid_max_len=self._rsid_max,
             chrom_max_len=self._chrom_max,
             allele_max_len=self._allele_max,
         )
-        self._mixed_phase_count += prep.mixed_phase_count
-
-        def encode_range(start: int, end: int) -> bytes:
-            return self._encode_variant_range(prep, start, end)
-
-        return self._parallel_encode(
-            num_variants=prep.geno_blocks.shape[0],
-            encode_range=encode_range,
-        )
-
-    def _encode_variant_range(self, prep: _ChunkBytes, start: int, end: int) -> bytes:
+        phase_counts.append(prep.mixed_phase_count)
         bpv = self._bytes_per_variant
-        out = bytearray((end - start) * bpv)
-        for j in range(start, end):
+        n = end - start
+        out = bytearray(n * bpv)
+        for j in range(n):
             block = _encode_variant_block(
                 varid_bytes=prep.varid[j],
                 rsid_bytes=prep.rsid[j],
@@ -586,8 +610,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 geno_block_bytes=bytes(prep.geno_blocks[j]),
                 compression_level=0,
             )
-            local = j - start
-            out[local * bpv : (local + 1) * bpv] = block
+            out[j * bpv : (j + 1) * bpv] = block
         return bytes(out)
 
     def _close_hook(self) -> None:
@@ -849,11 +872,11 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
 
         for chunk in reader.variant_chunks(fields=fields):
             t_prep = time.perf_counter()
-            prep = _prepare_chunk(chunk, contig_id)
+            n = int(chunk["call_genotype"].shape[0])
+            prep = _prepare_chunk(chunk, contig_id, start=0, end=n)
             mixed_phase_count += prep.mixed_phase_count
             encode_seconds += time.perf_counter() - t_prep
 
-            n = prep.geno_blocks.shape[0]
             for j in range(n):
                 t0 = time.perf_counter()
                 block = _encode_variant_block(

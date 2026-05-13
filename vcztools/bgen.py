@@ -171,15 +171,51 @@ def _encode_genotype_block(genotypes, phased):
     return bytes(out)
 
 
+def _encode_field_chunk(values, *, max_width=None, field_name=None):
+    """Vectorised UTF-8 byte preparation for a chunk's worth of variant
+    string-field values.
+
+    ``values`` is a numpy string array of length ``N``. Returns a
+    ``len()``-able sequence whose element ``i`` is the UTF-8 byte
+    form of ``values[i]``, optionally NUL-padded.
+
+    - ``max_width is None``: variable mode. Returns an ``S``-dtype
+      numpy array; element ``i`` is the raw UTF-8 form of
+      ``values[i]``. ``len(arr[i])`` equals the actual byte length.
+    - ``max_width is int``: fixed mode. Returns a 2D ``uint8`` array
+      of shape ``(N, max_width)``; each row is NUL-padded to exactly
+      ``max_width`` bytes. Overflow raises ``ValueError`` naming
+      ``field_name`` and the offending value. The 2D ``uint8`` view
+      is necessary because numpy's ``S``-dtype strips trailing NULs
+      on element access — ``len(arr[i])`` would return the unpadded
+      length, breaking the length-prefix invariant.
+
+    Both modes preserve the invariant ``len(arr[i]) == length-prefix``
+    so the downstream block encoder can read the prefix off the bytes
+    themselves.
+    """
+    encoded = np.strings.encode(values, "utf-8")
+    if max_width is None:
+        return encoded
+    lens = np.strings.str_len(encoded)
+    if lens.size > 0 and int(lens.max()) > max_width:
+        bad = int(np.argmax(lens > max_width))
+        raise ValueError(
+            f"{field_name} {str(values[bad])!r} encodes to "
+            f"{int(lens[bad])} UTF-8 bytes, exceeds configured max "
+            f"of {max_width}"
+        )
+    return encoded.astype(f"S{max_width}").view(np.uint8).reshape(-1, max_width)
+
+
 def _encode_variant_block(
     *,
-    varid,
-    rsid,
-    chrom,
+    varid_bytes,
+    rsid_bytes,
+    chrom_bytes,
     position,
-    allele1,
-    allele2,
-    num_samples,
+    allele1_bytes,
+    allele2_bytes,
     genotypes,
     phased,
     compression_level,
@@ -187,111 +223,49 @@ def _encode_variant_block(
     """Encode one full BGEN variant data block (identifying data +
     compressed genotype block).
 
-    The compressed block is preceded by ``C`` (total compressed length
-    including the 4-byte ``D`` field) and ``D`` (uncompressed length).
+    Layout:
+
+        uint16 len(varid_bytes)  ; varid_bytes
+        uint16 len(rsid_bytes)   ; rsid_bytes
+        uint16 len(chrom_bytes)  ; chrom_bytes
+        uint32 position
+        uint16 K = 2
+        uint32 len(allele1_bytes) ; allele1_bytes
+        uint32 len(allele2_bytes) ; allele2_bytes
+        uint32 C = 4 + len(compressed)
+        uint32 D = len(uncompressed_geno_block)
+        compressed (zlib, level = ``compression_level``)
+
+    All string fields arrive pre-encoded as UTF-8 bytes via
+    :func:`_encode_field_chunk` — in variable mode (``max_width=None``)
+    their length is the actual encoding; in fixed mode their length is
+    the configured ``*_max`` and the bytes carry trailing NUL padding.
+    Either way ``len(bytes)`` is the length-prefix that goes on the
+    wire, so the encoder doesn't need to know which mode it's in.
+
+    bgen-reader strips trailing NULs from variable-length string
+    fields, so the NUL-padded form round-trips as the original UTF-8
+    string. ``compression_level`` is forwarded verbatim to
+    :func:`zlib.compress`; :class:`BgenEncoder` always passes ``0``
+    (stored) to keep block sizes deterministic.
     """
     geno_block = _encode_genotype_block(genotypes, phased)
     compressed = zlib.compress(geno_block, compression_level)
 
     out = bytearray()
-    varid_b = str(varid).encode("utf-8")
-    rsid_b = str(rsid).encode("utf-8")
-    chrom_b = str(chrom).encode("utf-8")
-    a1_b = str(allele1).encode("utf-8")
-    a2_b = str(allele2).encode("utf-8")
-
-    out += struct.pack("<H", len(varid_b))
-    out += varid_b
-    out += struct.pack("<H", len(rsid_b))
-    out += rsid_b
-    out += struct.pack("<H", len(chrom_b))
-    out += chrom_b
+    out += struct.pack("<H", len(varid_bytes))
+    out.extend(varid_bytes)
+    out += struct.pack("<H", len(rsid_bytes))
+    out.extend(rsid_bytes)
+    out += struct.pack("<H", len(chrom_bytes))
+    out.extend(chrom_bytes)
     out += struct.pack("<I", int(position))
     out += struct.pack("<H", 2)  # K = 2 alleles
-    out += struct.pack("<I", len(a1_b))
-    out += a1_b
-    out += struct.pack("<I", len(a2_b))
-    out += a2_b
+    out += struct.pack("<I", len(allele1_bytes))
+    out.extend(allele1_bytes)
+    out += struct.pack("<I", len(allele2_bytes))
+    out.extend(allele2_bytes)
     # C includes its own 4-byte size of D plus the compressed payload.
-    C = 4 + len(compressed)
-    D = len(geno_block)
-    out += struct.pack("<II", C, D)
-    out += compressed
-    return bytes(out)
-
-
-def _pad_to_fixed_length(value, max_len, *, field_name):
-    """UTF-8 encode ``value`` and right-pad with NUL to exactly ``max_len``
-    bytes. Raise ``ValueError`` if the encoded form exceeds ``max_len``.
-
-    bgen-reader strips trailing NULs from variable string fields, so
-    a NUL-padded value round-trips as the original UTF-8 string.
-    """
-    encoded = str(value).encode("utf-8")
-    if len(encoded) > max_len:
-        raise ValueError(
-            f"{field_name} {value!r} encodes to {len(encoded)} UTF-8 bytes, "
-            f"exceeds configured max of {max_len}"
-        )
-    return encoded + b"\x00" * (max_len - len(encoded))
-
-
-def _encode_variant_block_fixed_size(
-    *,
-    varid_padded,
-    rsid_padded,
-    chrom_padded,
-    position,
-    allele1_padded,
-    allele2_padded,
-    varid_max,
-    rsid_max,
-    chrom_max,
-    allele_max,
-    genotypes,
-    phased,
-):
-    """Emit one fixed-size BGEN variant data block.
-
-    Layout (length prefixes are written as the configured *_max values;
-    string payloads are NUL-padded to those widths):
-
-        uint16 varid_max ; varid_max bytes (UTF-8, NUL-padded)
-        uint16 rsid_max  ; rsid_max  bytes (UTF-8, NUL-padded)
-        uint16 chrom_max ; chrom_max bytes (UTF-8, NUL-padded)
-        uint32 position
-        uint16 K = 2
-        uint32 allele_max ; allele_max bytes (UTF-8, NUL-padded)
-        uint32 allele_max ; allele_max bytes (UTF-8, NUL-padded)
-        uint32 C = 4 + len(compressed)
-        uint32 D = len(uncompressed_geno_block)
-        compressed: zlib level 0 (stored) of the uncompressed geno block
-
-    Compression flag is ``ZLIB`` but level is always ``0`` (stored, no
-    DEFLATE). Stored zlib output for an input of fixed length is itself
-    of fixed length, so every variant block is the same number of bytes.
-    The published BGEN spec also supports a ``compression == 0`` mode
-    that would save the 11+ bytes of zlib framing per variant, but the
-    reference cbgen/limix-bgen library has an inconsistency: its
-    ``bgen_variant_next`` always reads a uint32 length prefix, while
-    its layout-2 read-header for ``compression == 0`` does not consume
-    one. Using ``ZLIB`` with level 0 sidesteps this.
-    """
-    geno_block = _encode_genotype_block(genotypes, phased)
-    compressed = zlib.compress(geno_block, 0)
-    out = bytearray()
-    out += struct.pack("<H", varid_max)
-    out += varid_padded
-    out += struct.pack("<H", rsid_max)
-    out += rsid_padded
-    out += struct.pack("<H", chrom_max)
-    out += chrom_padded
-    out += struct.pack("<I", int(position))
-    out += struct.pack("<H", 2)
-    out += struct.pack("<I", allele_max)
-    out += allele1_padded
-    out += struct.pack("<I", allele_max)
-    out += allele2_padded
     C = 4 + len(compressed)
     D = len(geno_block)
     out += struct.pack("<II", C, D)
@@ -478,9 +452,12 @@ class BgenEncoder(format_encoder.FormatEncoder):
     def _encode_chunk(self, chunk: dict) -> bytes:
         _check_biallelic(chunk["variant_allele"])
         _check_diploid(chunk["call_genotype"])
-        # Derive per-variant string / position / phase inputs from the
-        # chunk dict. Same conventions as _stream_bgen_to_file (rsid="."
-        # for missing, varid = rsid, "." for monomorphic alt).
+        # Chunk-level vectorised string normalisation + NUL-padded UTF-8
+        # encode, mirroring _stream_bgen_to_file (rsid="." for missing,
+        # varid = rsid, "." for monomorphic alt). _encode_field_chunk
+        # raises ``ValueError`` on overflow before any pool fan-out so
+        # field-overflow surfaces deterministically rather than from
+        # inside a worker.
         G = chunk["call_genotype"]
         alleles = chunk["variant_allele"]
         positions = chunk["variant_position"]
@@ -489,70 +466,89 @@ class BgenEncoder(format_encoder.FormatEncoder):
         phased_arr = chunk.get("call_genotype_phased")
 
         num_variants = G.shape[0]
-        # Per-variant string padding runs on the calling thread before
-        # any pool fan-out so _pad_to_fixed_length overflow raises
-        # deterministically rather than from inside a worker.
-        inputs = []
-        for j in range(num_variants):
-            if phased_arr is not None:
-                row_phased = phased_arr[j]
-                all_phased = bool(row_phased.all())
-                any_phased = bool(row_phased.any())
-                phased = all_phased
-                if any_phased and not all_phased:
-                    self._mixed_phase_count += 1
-            else:
-                phased = False
+        chrom_arr = self._contig_ids[contigs]
+        a1_arr = alleles[:, 0]
+        if alleles.shape[1] >= 2:
+            a2_arr = np.where(alleles[:, 1] == "", ".", alleles[:, 1])
+        else:
+            a2_arr = np.full(num_variants, ".")
+        if varids is not None:
+            rsid_arr = np.where(varids == "", ".", varids)
+        else:
+            rsid_arr = np.full(num_variants, ".")
 
-            a1 = str(alleles[j, 0])
-            a2 = str(alleles[j, 1]) if alleles.shape[1] >= 2 else ""
-            if a2 == "":
-                a2 = "."
-            chrom = str(self._contig_ids[int(contigs[j])])
-            position = int(positions[j])
-            rsid = str(varids[j]) if varids is not None else "."
-            if rsid == "":
-                rsid = "."
-            varid = rsid
+        # varid is checked before rsid so that "varid_max too small"
+        # overflow surfaces as a "varid" error even when both fields
+        # would overflow with the default rsid_max=64.
+        varid_b = _encode_field_chunk(
+            rsid_arr, max_width=self._varid_max, field_name="varid"
+        )
+        rsid_b = _encode_field_chunk(
+            rsid_arr, max_width=self._rsid_max, field_name="rsid"
+        )
+        chrom_b = _encode_field_chunk(
+            chrom_arr, max_width=self._chrom_max, field_name="chrom"
+        )
+        a1_b = _encode_field_chunk(
+            a1_arr, max_width=self._allele_max, field_name="allele1"
+        )
+        a2_b = _encode_field_chunk(
+            a2_arr, max_width=self._allele_max, field_name="allele2"
+        )
 
-            inputs.append(
-                (
-                    _pad_to_fixed_length(varid, self._varid_max, field_name="varid"),
-                    _pad_to_fixed_length(rsid, self._rsid_max, field_name="rsid"),
-                    _pad_to_fixed_length(chrom, self._chrom_max, field_name="chrom"),
-                    position,
-                    _pad_to_fixed_length(a1, self._allele_max, field_name="allele1"),
-                    _pad_to_fixed_length(a2, self._allele_max, field_name="allele2"),
-                    phased,
-                )
-            )
+        if phased_arr is not None:
+            all_phased = phased_arr.all(axis=1)
+            any_phased = phased_arr.any(axis=1)
+            self._mixed_phase_count += int(np.sum(any_phased & ~all_phased))
+            phased_per_variant = np.asarray(all_phased)
+        else:
+            phased_per_variant = np.zeros(num_variants, dtype=bool)
 
         def encode_range(start: int, end: int) -> bytes:
-            return self._encode_variant_range(G, inputs, start, end)
+            return self._encode_variant_range(
+                G,
+                varid_b,
+                rsid_b,
+                chrom_b,
+                a1_b,
+                a2_b,
+                positions,
+                phased_per_variant,
+                start,
+                end,
+            )
 
         return self._parallel_encode(
             num_variants=num_variants,
             encode_range=encode_range,
         )
 
-    def _encode_variant_range(self, G, inputs, start, end):
+    def _encode_variant_range(
+        self,
+        G,
+        varid_b,
+        rsid_b,
+        chrom_b,
+        a1_b,
+        a2_b,
+        positions,
+        phased_per_variant,
+        start,
+        end,
+    ):
         bpv = self._bytes_per_variant
         out = bytearray((end - start) * bpv)
         for j in range(start, end):
-            varid_p, rsid_p, chrom_p, position, a1_p, a2_p, phased = inputs[j]
-            block = _encode_variant_block_fixed_size(
-                varid_padded=varid_p,
-                rsid_padded=rsid_p,
-                chrom_padded=chrom_p,
-                position=position,
-                allele1_padded=a1_p,
-                allele2_padded=a2_p,
-                varid_max=self._varid_max,
-                rsid_max=self._rsid_max,
-                chrom_max=self._chrom_max,
-                allele_max=self._allele_max,
+            block = _encode_variant_block(
+                varid_bytes=varid_b[j],
+                rsid_bytes=rsid_b[j],
+                chrom_bytes=chrom_b[j],
+                position=int(positions[j]),
+                allele1_bytes=a1_b[j],
+                allele2_bytes=a2_b[j],
                 genotypes=G[j],
-                phased=phased,
+                phased=bool(phased_per_variant[j]),
+                compression_level=0,
             )
             local = j - start
             out[local * bpv : (local + 1) * bpv] = block
@@ -815,6 +811,7 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
         bgen_file.write(header_bytes)
         bytes_written += len(header_bytes)
 
+        contig_id_arr = np.asarray(contig_id)
         for chunk in reader.variant_chunks(fields=fields):
             G = chunk["call_genotype"]
             alleles = chunk["variant_allele"]
@@ -825,42 +822,49 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
 
             _check_biallelic(alleles)
             _check_diploid(G)
+            n = G.shape[0]
 
-            for j in range(G.shape[0]):
+            # Chunk-level vectorised string normalisation + UTF-8 encode.
+            # Length prefix written by _encode_variant_block is len(bytes)
+            # so no padding is needed in the variable-size path.
+            t_prep = time.perf_counter()
+            chrom_arr = contig_id_arr[contigs]
+            a1_arr = alleles[:, 0]
+            if alleles.shape[1] >= 2:
+                a2_arr = np.where(alleles[:, 1] == "", ".", alleles[:, 1])
+            else:
+                a2_arr = np.full(n, ".")
+            if varids is not None:
+                rsid_arr = np.where(varids == "", ".", varids)
+            else:
+                rsid_arr = np.full(n, ".")
+
+            chrom_b = _encode_field_chunk(chrom_arr)
+            a1_b = _encode_field_chunk(a1_arr)
+            a2_b = _encode_field_chunk(a2_arr)
+            rsid_b = _encode_field_chunk(rsid_arr)
+            varid_b = rsid_b  # varid mirrors rsid in this path
+
+            if phased_arr is not None:
+                all_phased = phased_arr.all(axis=1)
+                any_phased = phased_arr.any(axis=1)
+                mixed_phase_count += int(np.sum(any_phased & ~all_phased))
+                phased_per_variant = np.asarray(all_phased)
+            else:
+                phased_per_variant = np.zeros(n, dtype=bool)
+            encode_seconds += time.perf_counter() - t_prep
+
+            for j in range(n):
                 t0 = time.perf_counter()
-                if phased_arr is not None:
-                    row_phased = phased_arr[j]
-                    all_phased = bool(row_phased.all())
-                    any_phased = bool(row_phased.any())
-                    phased = all_phased
-                    if any_phased and not all_phased:
-                        mixed_phase_count += 1
-                else:
-                    phased = False
-
-                a1 = str(alleles[j, 0])
-                a2 = str(alleles[j, 1]) if alleles.shape[1] >= 2 else ""
-                # Match generate_bim's monomorphic convention: emit "."
-                # when the alt slot is empty.
-                if a2 == "":
-                    a2 = "."
-                chrom = str(contig_id[int(contigs[j])])
-                position = int(positions[j])
-                rsid = str(varids[j]) if varids is not None else "."
-                if rsid == "":
-                    rsid = "."
-                varid = rsid
-
                 block = _encode_variant_block(
-                    varid=varid,
-                    rsid=rsid,
-                    chrom=chrom,
-                    position=position,
-                    allele1=a1,
-                    allele2=a2,
-                    num_samples=num_samples,
+                    varid_bytes=varid_b[j],
+                    rsid_bytes=rsid_b[j],
+                    chrom_bytes=chrom_b[j],
+                    position=int(positions[j]),
+                    allele1_bytes=a1_b[j],
+                    allele2_bytes=a2_b[j],
                     genotypes=G[j],
-                    phased=phased,
+                    phased=bool(phased_per_variant[j]),
                     compression_level=compression_level,
                 )
                 t1 = time.perf_counter()

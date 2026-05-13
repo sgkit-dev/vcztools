@@ -203,13 +203,12 @@ class TestEncodeVariantBlock:
     def test_round_trip(self, tmp_path):
         G = np.array([[0, 0], [0, 1]], dtype=np.int8)
         block = bgen._encode_variant_block(
-            varid="rs1",
-            rsid="rs1",
-            chrom="chr1",
+            varid_bytes=b"rs1",
+            rsid_bytes=b"rs1",
+            chrom_bytes=b"chr1",
             position=12345,
-            allele1="A",
-            allele2="T",
-            num_samples=2,
+            allele1_bytes=b"A",
+            allele2_bytes=b"T",
             genotypes=G,
             phased=False,
             compression_level=-1,
@@ -844,29 +843,55 @@ def _drain(encoder, step=1 << 17):
     return bytes(out)
 
 
-class TestPadToFixedLength:
-    def test_pads_with_nul(self):
-        assert (
-            bgen._pad_to_fixed_length("rs1", 8, field_name="rsid")
-            == b"rs1\x00" * 1 + b"\x00" * 4
+class TestEncodeFieldChunk:
+    def test_variable_mode_raw_utf8(self):
+        out = bgen._encode_field_chunk(np.array(["rs1", "rs22"]))
+        assert bytes(out[0]) == b"rs1"
+        assert bytes(out[1]) == b"rs22"
+        assert len(out[0]) == 3
+        assert len(out[1]) == 4
+
+    def test_fixed_mode_nul_padded(self):
+        out = bgen._encode_field_chunk(
+            np.array(["rs1", "rs22"]), max_width=8, field_name="rsid"
         )
+        assert out.shape == (2, 8)
+        assert bytes(out[0]) == b"rs1\x00\x00\x00\x00\x00"
+        assert bytes(out[1]) == b"rs22\x00\x00\x00\x00"
+        # The length prefix the block encoder writes is len(out[i]); in
+        # fixed mode that must equal max_width regardless of content.
+        assert len(out[0]) == 8
+        assert len(out[1]) == 8
 
-    def test_exact_length(self):
-        assert bgen._pad_to_fixed_length("ABCD", 4, field_name="x") == b"ABCD"
+    def test_fixed_mode_exact_length(self):
+        out = bgen._encode_field_chunk(np.array(["ABCD"]), max_width=4, field_name="x")
+        assert bytes(out[0]) == b"ABCD"
+        assert len(out[0]) == 4
 
-    def test_overflow_raises(self):
+    def test_fixed_mode_overflow_raises(self):
         with pytest.raises(ValueError, match="rsid 'too_long'"):
-            bgen._pad_to_fixed_length("too_long", 4, field_name="rsid")
+            bgen._encode_field_chunk(
+                np.array(["too_long"]), max_width=4, field_name="rsid"
+            )
 
-    def test_overflow_message_names_field_and_max(self):
+    def test_fixed_mode_overflow_message_names_field_and_max(self):
         with pytest.raises(ValueError, match="exceeds configured max of 3"):
-            bgen._pad_to_fixed_length("abcd", 3, field_name="varid")
+            bgen._encode_field_chunk(
+                np.array(["abcd"]), max_width=3, field_name="varid"
+            )
 
     def test_unicode_multibyte_counts_bytes(self):
-        # "é" = 2 bytes in UTF-8; fits in 4 but not in 1.
-        assert bgen._pad_to_fixed_length("é", 4, field_name="x") == b"\xc3\xa9\x00\x00"
+        # "é" = 2 bytes in UTF-8.
+        out = bgen._encode_field_chunk(np.array(["é"]), max_width=4, field_name="x")
+        assert bytes(out[0]) == b"\xc3\xa9\x00\x00"
         with pytest.raises(ValueError, match="exceeds configured max"):
-            bgen._pad_to_fixed_length("é", 1, field_name="x")
+            bgen._encode_field_chunk(np.array(["é"]), max_width=1, field_name="x")
+
+    def test_fixed_mode_empty_chunk(self):
+        out = bgen._encode_field_chunk(
+            np.array([], dtype="<U8"), max_width=4, field_name="x"
+        )
+        assert out.shape == (0, 4)
 
 
 class TestBgenEncoderMetadata:

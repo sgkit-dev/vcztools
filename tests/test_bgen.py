@@ -1186,6 +1186,149 @@ class TestBgenRoundTripViaBgenReader:
         with br.open_bgen(path, verbose=False) as bg:
             assert bg.chromosomes[0] == long_contig
 
+    def test_uniform_haploid_round_trip(self, write_to_bgen):
+        # All-haploid VCZ stored as shape (V, S, 1). Both encoders
+        # support uniform haploid; BgenEncoder picks up the haploid
+        # geno_size = 10 + 2*S from reader.call_genotype.shape[2].
+        G = np.array(
+            [
+                [[0], [1], [-1], [0]],
+                [[1], [0], [1], [1]],
+            ],
+            dtype=np.int8,
+        )
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=4,
+            variant_position=[100, 200],
+            alleles=[("A", "T"), ("C", "G")],
+            call_genotype=G,
+            ploidy=1,
+        )
+        path = write_to_bgen(reader)
+        with br.open_bgen(path, verbose=False, allow_complex=True) as bg:
+            assert bg.nvariants == 2
+            assert bg.nsamples == 4
+            # K=1 biallelic: ncombinations is 2 (allele 0 or 1).
+            nt.assert_array_equal(bg.ncombinations, [2, 2])
+            probs, missing = bg.read(return_missings=True)
+        # Variant 0 by sample: hom-ref haploid -> [1, 0]; alt -> [0, 1];
+        # missing -> NaN; hom-ref -> [1, 0].
+        assert probs.shape == (4, 2, 2)
+        nt.assert_array_equal(probs[0, 0, :2], [1.0, 0.0])
+        nt.assert_array_equal(probs[1, 0, :2], [0.0, 1.0])
+        assert np.isnan(probs[2, 0]).all()
+        nt.assert_array_equal(probs[3, 0, :2], [1.0, 0.0])
+        nt.assert_array_equal(missing[:, 0], [False, False, True, False])
+
+
+class TestBgenMixedPloidyRoundTrip:
+    """Mixed-ploidy stores: some samples haploid, some diploid, within
+    the same variant. Only ``write_bgen`` (variable-size variant blocks)
+    supports this; ``BgenEncoder`` (fixed-size) raises
+    ``NotImplementedError`` and is covered in
+    :class:`TestBgenEncoderUniformPloidy`."""
+
+    def test_mixed_ploidy_round_trip(self, tmp_path):
+        # Synthetic X-chromosome style: sample 0 diploid (female-like),
+        # sample 1 haploid (male-like), sample 2 missing-haploid.
+        G = np.array(
+            [
+                [[0, 1], [1, -2], [-1, -2]],
+                [[1, 1], [0, -2], [1, -2]],
+            ],
+            dtype=np.int8,
+        )
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=3,
+            variant_position=[100, 200],
+            alleles=[("A", "T"), ("C", "G")],
+            call_genotype=G,
+            ploidy=2,
+        )
+        out = tmp_path / "mp"
+        bgen.write_bgen(reader, out)
+        with br.open_bgen(
+            out.with_suffix(".bgen"), verbose=False, allow_complex=True
+        ) as bg:
+            assert bg.nvariants == 2
+            assert bg.nsamples == 3
+            # Each variant has both diploid (K=2 -> 3 combos) and haploid
+            # (K=1 -> 2 combos) samples; bgen-reader pads to the max.
+            nt.assert_array_equal(bg.ncombinations, [3, 3])
+            probs, missing = bg.read(return_missings=True)
+        # probs.shape == (n_samples, n_variants, max_combinations).
+        assert probs.shape == (3, 2, 3)
+        # Variant 0:
+        # sample 0 diploid het (0, 1) -> [0, 1, 0]
+        nt.assert_array_equal(probs[0, 0], [0.0, 1.0, 0.0])
+        # sample 1 haploid alt -> [0, 1, NaN]
+        nt.assert_array_equal(probs[1, 0, :2], [0.0, 1.0])
+        assert np.isnan(probs[1, 0, 2])
+        # sample 2 missing haploid -> [NaN, NaN, NaN]
+        assert np.isnan(probs[2, 0]).all()
+        nt.assert_array_equal(missing[:, 0], [False, False, True])
+
+    def test_haploid_shape_one_round_trip(self, tmp_path):
+        # Source (V, S, 1) all-haploid VCZ through write_bgen.
+        G = np.array([[[0], [1], [-1]], [[1], [0], [1]]], dtype=np.int8)
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=3,
+            variant_position=[100, 200],
+            alleles=[("A", "T"), ("C", "G")],
+            call_genotype=G,
+            ploidy=1,
+        )
+        out = tmp_path / "h"
+        bgen.write_bgen(reader, out)
+        with br.open_bgen(
+            out.with_suffix(".bgen"), verbose=False, allow_complex=True
+        ) as bg:
+            nt.assert_array_equal(bg.ncombinations, [2, 2])
+            probs, missing = bg.read(return_missings=True)
+        nt.assert_array_equal(probs[0, 0, :2], [1.0, 0.0])
+        nt.assert_array_equal(probs[1, 0, :2], [0.0, 1.0])
+        assert np.isnan(probs[2, 0]).all()
+
+    def test_haploid_missing_round_trip(self, tmp_path):
+        # All-haploid with some missing alleles via -1 in slot 0.
+        G = np.full((1, 5, 2), -2, dtype=np.int8)
+        G[0, :, 0] = [0, 1, -1, 1, 0]
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=5,
+            call_genotype=G,
+            ploidy=2,
+        )
+        out = tmp_path / "hm"
+        bgen.write_bgen(reader, out)
+        with br.open_bgen(
+            out.with_suffix(".bgen"), verbose=False, allow_complex=True
+        ) as bg:
+            probs, missing = bg.read(return_missings=True)
+        nt.assert_array_equal(missing[:, 0], [False, False, True, False, False])
+        nt.assert_array_equal(probs[0, 0, :2], [1.0, 0.0])
+        nt.assert_array_equal(probs[1, 0, :2], [0.0, 1.0])
+        nt.assert_array_equal(probs[3, 0, :2], [0.0, 1.0])
+        nt.assert_array_equal(probs[4, 0, :2], [1.0, 0.0])
+
+    def test_zero_ploidy_in_chunk_raises(self, tmp_path):
+        # A variant with -2 in slot 0 is zero-ploidy and unrepresentable
+        # in BGEN; write_bgen surfaces this as a ValueError from the C
+        # kernel via _prepare_chunk.
+        G = np.array([[[-2, 0]]], dtype=np.int8)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            call_genotype=G,
+            ploidy=2,
+        )
+        out = tmp_path / "z"
+        with pytest.raises(ValueError, match="zero-ploidy"):
+            bgen.write_bgen(reader, out)
+
 
 # ---------------------------------------------------------------------------
 # BgenEncoder: fixed-size random-access encoder.
@@ -1788,3 +1931,80 @@ class TestBgenEncoderOverflowRaises:
         with bgen.BgenEncoder(reader) as enc:
             with pytest.raises(ValueError, match="allele1"):
                 enc.read(0, enc.bgen_size)
+
+
+class TestBgenEncoderUniformPloidy:
+    """BgenEncoder requires uniform ploidy across the store. It auto-
+    detects from ``reader.call_genotype.shape[2]``: 1 -> haploid, 2 ->
+    diploid. Mixed-ploidy (a ``-2`` sentinel under declared diploid)
+    raises ``NotImplementedError`` lazily on read with a message
+    pointing the user at :func:`write_bgen`."""
+
+    def test_haploid_geno_size_formula(self):
+        # Haploid: geno_size = 10 + 2*S.
+        num_samples = 4
+        G = np.zeros((2, num_samples, 1), dtype=np.int8)
+        reader = _build_reader(
+            num_variants=2, num_samples=num_samples, call_genotype=G, ploidy=1
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            geno_size = 10 + 2 * num_samples
+            expected = 28 + 1 + 1 + 4 + 2 + len(zlib.compress(b"\x00" * geno_size, 0))
+            assert enc.bytes_per_variant == expected
+            assert enc._uniform_ploidy == 1
+            assert enc._uniform_geno_size == geno_size
+
+    def test_diploid_geno_size_formula(self):
+        # Default diploid path: geno_size = 10 + 3*S.
+        with _build_encoder(num_variants=2, num_samples=4) as enc:
+            assert enc._uniform_ploidy == 2
+            assert enc._uniform_geno_size == 10 + 3 * 4
+
+    def test_haploid_round_trip(self, tmp_path):
+        # All-haploid (V, S, 1) reader; bgen-reader recovers per-sample
+        # allele probabilities at K=1.
+        G = np.array([[[0], [1], [-1], [0]], [[1], [0], [1], [1]]], dtype=np.int8)
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=4,
+            variant_position=[100, 200],
+            alleles=[("A", "T"), ("C", "G")],
+            call_genotype=G,
+            ploidy=1,
+        )
+        bgen_path = tmp_path / "h.bgen"
+        with bgen.BgenEncoder(reader) as enc:
+            bgen_path.write_bytes(_drain(enc))
+        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
+            assert bg.nvariants == 2
+            assert bg.nsamples == 4
+            nt.assert_array_equal(bg.ncombinations, [2, 2])
+            probs, missing = bg.read(return_missings=True)
+        nt.assert_array_equal(probs[0, 0, :2], [1.0, 0.0])
+        nt.assert_array_equal(probs[1, 0, :2], [0.0, 1.0])
+        nt.assert_array_equal(missing[:, 0], [False, False, True, False])
+
+    def test_mixed_ploidy_raises_not_implemented(self):
+        # Declared ploidy=2 (shape[2]==2) but the chunk has a -2
+        # sentinel -> per-variant length 12 != worst-case 13 for one
+        # sample. BgenEncoder rejects the chunk on read.
+        G = np.array([[[0, -2]], [[1, 1]]], dtype=np.int8)
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=1,
+            call_genotype=G,
+            ploidy=2,
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            with pytest.raises(NotImplementedError, match="write_bgen"):
+                enc.read(0, enc.bgen_size)
+
+    def test_invalid_ploidy_dim_raises(self):
+        # Polyploid (shape[2] > 2) is rejected at construction time;
+        # the encoder doesn't carry a meaningful geno_size for it.
+        G = np.zeros((1, 1, 3), dtype=np.int8)
+        # vcz_builder requires the ploidy kwarg to match call_genotype's
+        # last dim; bypass by building the reader with a shape-3 array.
+        reader = _build_reader(num_variants=1, num_samples=1, call_genotype=G, ploidy=3)
+        with pytest.raises(ValueError, match=r"shape\[2\] in"):
+            bgen.BgenEncoder(reader)

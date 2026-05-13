@@ -853,45 +853,150 @@ class TestEncodeFieldChunk:
 
     def test_fixed_mode_nul_padded(self):
         out = bgen._encode_field_chunk(
-            np.array(["rs1", "rs22"]), max_width=8, field_name="rsid"
+            np.array(["rs1", "rs22"]), max_len=8, field_name="rsid"
         )
         assert out.shape == (2, 8)
         assert bytes(out[0]) == b"rs1\x00\x00\x00\x00\x00"
         assert bytes(out[1]) == b"rs22\x00\x00\x00\x00"
         # The length prefix the block encoder writes is len(out[i]); in
-        # fixed mode that must equal max_width regardless of content.
+        # fixed mode that must equal max_len regardless of content.
         assert len(out[0]) == 8
         assert len(out[1]) == 8
 
     def test_fixed_mode_exact_length(self):
-        out = bgen._encode_field_chunk(np.array(["ABCD"]), max_width=4, field_name="x")
+        out = bgen._encode_field_chunk(np.array(["ABCD"]), max_len=4, field_name="x")
         assert bytes(out[0]) == b"ABCD"
         assert len(out[0]) == 4
 
     def test_fixed_mode_overflow_raises(self):
         with pytest.raises(ValueError, match="rsid 'too_long'"):
             bgen._encode_field_chunk(
-                np.array(["too_long"]), max_width=4, field_name="rsid"
+                np.array(["too_long"]), max_len=4, field_name="rsid"
             )
 
     def test_fixed_mode_overflow_message_names_field_and_max(self):
         with pytest.raises(ValueError, match="exceeds configured max of 3"):
-            bgen._encode_field_chunk(
-                np.array(["abcd"]), max_width=3, field_name="varid"
-            )
+            bgen._encode_field_chunk(np.array(["abcd"]), max_len=3, field_name="varid")
 
     def test_unicode_multibyte_counts_bytes(self):
         # "é" = 2 bytes in UTF-8.
-        out = bgen._encode_field_chunk(np.array(["é"]), max_width=4, field_name="x")
+        out = bgen._encode_field_chunk(np.array(["é"]), max_len=4, field_name="x")
         assert bytes(out[0]) == b"\xc3\xa9\x00\x00"
         with pytest.raises(ValueError, match="exceeds configured max"):
-            bgen._encode_field_chunk(np.array(["é"]), max_width=1, field_name="x")
+            bgen._encode_field_chunk(np.array(["é"]), max_len=1, field_name="x")
 
     def test_fixed_mode_empty_chunk(self):
         out = bgen._encode_field_chunk(
-            np.array([], dtype="<U8"), max_width=4, field_name="x"
+            np.array([], dtype="<U8"), max_len=4, field_name="x"
         )
         assert out.shape == (0, 4)
+
+
+class TestPrepareChunk:
+    def _make_chunk(
+        self,
+        *,
+        alleles=None,
+        contigs=None,
+        positions=None,
+        variant_id=None,
+        phased=None,
+        num_samples=2,
+    ):
+        if alleles is None:
+            alleles = np.array([["A", "T"], ["C", "G"]])
+        n = alleles.shape[0]
+        if contigs is None:
+            contigs = np.zeros(n, dtype=np.int32)
+        if positions is None:
+            positions = np.array([100 + i for i in range(n)], dtype=np.int32)
+        G = np.zeros((n, num_samples, 2), dtype=np.int8)
+        chunk = {
+            "call_genotype": G,
+            "variant_allele": alleles,
+            "variant_contig": contigs,
+            "variant_position": positions,
+        }
+        if variant_id is not None:
+            chunk["variant_id"] = np.asarray(variant_id)
+        if phased is not None:
+            chunk["call_genotype_phased"] = np.asarray(phased, dtype=bool)
+        return chunk
+
+    def test_variable_mode_basic(self):
+        chunk = self._make_chunk()
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in prep.varid] == [b".", b"."]
+        assert [bytes(b) for b in prep.rsid] == [b".", b"."]
+        assert [bytes(b) for b in prep.chrom] == [b"chr1", b"chr1"]
+        assert [bytes(b) for b in prep.allele1] == [b"A", b"C"]
+        assert [bytes(b) for b in prep.allele2] == [b"T", b"G"]
+        np.testing.assert_array_equal(prep.position, [100, 101])
+        np.testing.assert_array_equal(prep.phased, [False, False])
+        assert prep.mixed_phase_count == 0
+
+    def test_fixed_mode_pads_to_max_len(self):
+        chunk = self._make_chunk(variant_id=["rsX", "rsY"])
+        prep = bgen._prepare_chunk(
+            chunk,
+            contig_ids=np.array(["chr1"]),
+            varid_max_len=8,
+            rsid_max_len=8,
+            chrom_max_len=4,
+            allele_max_len=2,
+        )
+        # Fixed mode returns (N, max_len) uint8 rows.
+        assert prep.varid.shape == (2, 8)
+        assert bytes(prep.varid[0]) == b"rsX\x00\x00\x00\x00\x00"
+        assert bytes(prep.chrom[0]) == b"chr1"
+        assert bytes(prep.allele1[0]) == b"A\x00"
+        # rsid is propagated from variant_id; varid mirrors rsid.
+        assert bytes(prep.rsid[0]) == b"rsX\x00\x00\x00\x00\x00"
+
+    def test_missing_rsid_normalised_to_dot(self):
+        chunk = self._make_chunk(variant_id=["", "rsY"])
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in prep.rsid] == [b".", b"rsY"]
+
+    def test_monomorphic_allele2_normalised_to_dot(self):
+        chunk = self._make_chunk(alleles=np.array([["A", ""], ["C", "G"]]))
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in prep.allele2] == [b".", b"G"]
+
+    def test_phase_detection_and_mixed_count(self):
+        # Variant 0: all samples phased → phased=True
+        # Variant 1: some samples phased → mixed → phased=False, mixed++
+        # Variant 2: no samples phased → phased=False
+        phased = np.array(
+            [
+                [True, True],
+                [True, False],
+                [False, False],
+            ]
+        )
+        alleles = np.array([["A", "T"], ["C", "G"], ["G", "A"]])
+        chunk = self._make_chunk(alleles=alleles, phased=phased, num_samples=2)
+        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+        np.testing.assert_array_equal(prep.phased, [True, False, False])
+        assert prep.mixed_phase_count == 1
+
+    def test_varid_overflow_checked_before_rsid(self):
+        # Both rsid_max_len and varid_max_len would overflow, but the
+        # varid check fires first.
+        chunk = self._make_chunk(variant_id=["x" * 100, "x" * 100])
+        with pytest.raises(ValueError, match="varid"):
+            bgen._prepare_chunk(
+                chunk,
+                contig_ids=np.array(["chr1"]),
+                varid_max_len=8,
+                rsid_max_len=64,
+            )
+
+    def test_rejects_multiallelic(self):
+        alleles = np.array([["A", "T", "G"]])
+        chunk = self._make_chunk(alleles=alleles)
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
 
 
 class TestBgenEncoderMetadata:

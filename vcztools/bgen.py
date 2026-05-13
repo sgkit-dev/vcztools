@@ -20,7 +20,6 @@ For the user-facing reference — multi-allelic policy, downstream-tool
 compatibility, sidecar conventions — see ``docs/bgen.md``.
 """
 
-import dataclasses
 import logging
 import pathlib
 import sqlite3
@@ -349,11 +348,11 @@ class BgenEncoder(format_encoder.FormatEncoder):
     Variant scope: biallelic and diploid (multi-allelic / non-diploid
     raises ``ValueError`` lazily as chunks are decoded).
 
-    The encoder serves the ``.bgen`` byte stream and, on demand via
-    :meth:`write_bgi_index`, a matching bgenix ``.bgi`` SQLite sidecar
-    built from the fixed-size offsets (``header_size + i *
-    bytes_per_variant``); sidecar generation iterates variant-metadata
-    fields only, not genotypes. The ``.sample`` sidecar is produced by
+    The encoder serves only the ``.bgen`` byte stream. The matching
+    bgenix ``.bgi`` SQLite sidecar can be produced by passing
+    :attr:`variant_offsets` (computed from the encoder's fixed-size
+    layout ``header_size + i * bytes_per_variant``) to the module-level
+    :func:`write_bgen_index`. The ``.sample`` sidecar is produced by
     :func:`generate_sample`.
 
     :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
@@ -567,56 +566,15 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 "has one phase flag per variant)."
             )
 
-    def write_bgi_index(self, bgi_path) -> None:
-        """Write a bgenix ``.bgi`` SQLite sidecar matching this encoder's
-        byte stream.
-
-        The encoder's fixed-size layout makes per-variant offsets
-        deterministic: variant ``i`` lives at ``prefix_size + i *
-        bytes_per_variant`` and is exactly ``bytes_per_variant`` bytes
-        wide. Sidecar generation iterates only variant-metadata fields
-        (``variant_allele``, ``variant_contig``, ``variant_position``,
-        and ``variant_id`` if present); no genotype data is read, and
-        the on-disk ``.bgen`` file is not required.
-        """
-        fields = ["variant_allele", "variant_contig", "variant_position"]
-        if self._has_variant_id:
-            fields.append("variant_id")
-
-        entries: list[_BgiEntry] = []
-        bpv = self._bytes_per_variant
-        file_offset = self.prefix_size
-        for chunk in self._reader.variant_chunks(fields=fields):
-            alleles = chunk["variant_allele"]
-            positions = chunk["variant_position"]
-            contigs = chunk["variant_contig"]
-            varids = chunk.get("variant_id")
-            _check_biallelic(alleles)
-            for j in range(alleles.shape[0]):
-                a1 = str(alleles[j, 0])
-                a2 = str(alleles[j, 1]) if alleles.shape[1] >= 2 else ""
-                if a2 == "":
-                    a2 = "."
-                chrom = str(self._contig_ids[int(contigs[j])])
-                position = int(positions[j])
-                rsid = str(varids[j]) if varids is not None else "."
-                if rsid == "":
-                    rsid = "."
-                entries.append(
-                    _BgiEntry(
-                        chromosome=chrom,
-                        position=position,
-                        rsid=rsid,
-                        number_of_alleles=2,
-                        allele1=a1,
-                        allele2=a2,
-                        file_start_position=file_offset,
-                        size_in_bytes=bpv,
-                    )
-                )
-                file_offset += bpv
-
-        _write_bgi_index(bgi_path, entries)
+    @property
+    def variant_offsets(self) -> np.ndarray:
+        """Byte boundaries of every variant block in the encoded BGEN
+        stream, of shape ``(num_variants + 1,)``: variant ``i`` occupies
+        ``[variant_offsets[i], variant_offsets[i+1])``. Suitable for
+        :func:`write_bgen_index`."""
+        return self.prefix_size + self.bytes_per_variant * np.arange(
+            self.num_variants + 1, dtype=np.int64
+        )
 
 
 def generate_sample(reader):
@@ -658,50 +616,135 @@ CREATE INDEX position_idx ON Variant (chromosome, position);
 """
 
 
-@dataclasses.dataclass
-class _BgiEntry:
-    chromosome: str
-    position: int
-    rsid: str
-    number_of_alleles: int
-    allele1: str
-    allele2: str
-    file_start_position: int
-    size_in_bytes: int
+_BGI_INSERT_SQL = (
+    "INSERT INTO Variant (chromosome, position, rsid, number_of_alleles, "
+    "allele1, allele2, file_start_position, size_in_bytes) "
+    "VALUES (?, ?, ?, 2, ?, ?, ?, ?)"
+)
 
 
-def _write_bgi_index(bgi_path, entries):
-    """Write the bgenix SQLite index. Schema documented at
-    https://enkre.net/cgi-bin/code/bgen/wiki/The bgenix index file format.
-    The bgenix Metadata table is omitted: it is informational and no
-    downstream tool we target requires it."""
+def write_bgen_index(reader, bgi_path, variant_offsets):
+    """Write the bgenix ``.bgen.bgi`` SQLite sidecar for ``reader``.
+
+    ``variant_offsets`` is an integer array of length
+    ``num_variants + 1`` giving the byte boundaries of each variant
+    block: variant ``i`` occupies
+    ``[variant_offsets[i], variant_offsets[i+1])``. Use
+    :attr:`BgenEncoder.variant_offsets` for the fixed-size encoder
+    path, or the cumulative sum of per-variant block sizes (plus the
+    BGEN prefix length) for the variable-size :func:`write_bgen`
+    path.
+
+    Variant-metadata columns (chromosome, position, rsid, alleles)
+    are read via the reader's standard ``variant_chunks`` API and
+    assembled as numpy arrays; per-row tuples are streamed into
+    SQLite via a generator so peak memory stays at the column
+    arrays rather than an N-row tuple list. Variant scope is
+    biallelic only; multi-allelic raises ``ValueError`` lazily on
+    the chunk containing the offending row.
+    """
+    start_total = time.perf_counter()
+
+    num_variants = int(reader.variant_counts_per_chunk().sum())
+    variant_offsets = np.asarray(variant_offsets)
+    if variant_offsets.shape != (num_variants + 1,):
+        raise ValueError(
+            f"variant_offsets must have shape ({num_variants + 1},); "
+            f"got {variant_offsets.shape}"
+        )
+    if not np.issubdtype(variant_offsets.dtype, np.integer):
+        raise ValueError(
+            f"variant_offsets must be integer-typed; got {variant_offsets.dtype}"
+        )
+
     bgi_path = pathlib.Path(bgi_path)
     if bgi_path.exists():
         bgi_path.unlink()
+
+    has_variant_id = "variant_id" in reader.field_names
+    fields = ["variant_allele", "variant_contig", "variant_position"]
+    if has_variant_id:
+        fields.append("variant_id")
+    contig_ids = np.asarray(reader.contig_ids)
+
+    chrom_parts: list[np.ndarray] = []
+    pos_parts: list[np.ndarray] = []
+    a1_parts: list[np.ndarray] = []
+    a2_parts: list[np.ndarray] = []
+    rsid_parts: list[np.ndarray] = []
+
+    read_start = time.perf_counter()
+    for chunk in reader.variant_chunks(fields=fields):
+        alleles = chunk["variant_allele"]
+        _check_biallelic(alleles)
+        n = alleles.shape[0]
+        chrom_parts.append(contig_ids[chunk["variant_contig"]])
+        pos_parts.append(np.asarray(chunk["variant_position"]))
+        a1_parts.append(np.asarray(alleles[:, 0]))
+        if alleles.shape[1] >= 2:
+            a2_parts.append(np.asarray(alleles[:, 1]))
+        else:
+            a2_parts.append(np.full(n, "."))
+        if has_variant_id:
+            rsid_parts.append(np.asarray(chunk["variant_id"]))
+        else:
+            rsid_parts.append(np.full(n, "."))
+    read_seconds = time.perf_counter() - read_start
+
+    assemble_start = time.perf_counter()
+    rows_iter = None
+    if num_variants > 0:
+        chrom_arr = np.concatenate(chrom_parts)
+        pos_arr = np.concatenate(pos_parts)
+        a1_arr = np.concatenate(a1_parts)
+        a2_arr = np.concatenate(a2_parts)
+        rsid_arr = np.concatenate(rsid_parts)
+        # Match the .bim/.bgi monomorphic / missing-rsid convention used
+        # by write_bgen and BgenEncoder.
+        rsid_arr = np.where(rsid_arr == "", ".", rsid_arr)
+        a2_arr = np.where(a2_arr == "", ".", a2_arr)
+        if chrom_arr.shape[0] != num_variants:
+            raise ValueError(
+                f"reader yielded {chrom_arr.shape[0]} variants but "
+                f"variant_offsets implies {num_variants}"
+            )
+        starts = variant_offsets[:-1]
+        sizes = np.diff(variant_offsets)
+
+        def rows_iter():
+            for i in range(num_variants):
+                yield (
+                    str(chrom_arr[i]),
+                    int(pos_arr[i]),
+                    str(rsid_arr[i]),
+                    str(a1_arr[i]),
+                    str(a2_arr[i]),
+                    int(starts[i]),
+                    int(sizes[i]),
+                )
+
+    assemble_seconds = time.perf_counter() - assemble_start
+
+    insert_start = time.perf_counter()
     conn = sqlite3.connect(str(bgi_path))
     try:
         conn.executescript(_BGI_SCHEMA)
-        conn.executemany(
-            "INSERT INTO Variant (chromosome, position, rsid, number_of_alleles, "
-            "allele1, allele2, file_start_position, size_in_bytes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    e.chromosome,
-                    e.position,
-                    e.rsid,
-                    e.number_of_alleles,
-                    e.allele1,
-                    e.allele2,
-                    e.file_start_position,
-                    e.size_in_bytes,
-                )
-                for e in entries
-            ],
-        )
+        if num_variants > 0:
+            conn.executemany(_BGI_INSERT_SQL, rows_iter())
         conn.commit()
     finally:
         conn.close()
+    insert_seconds = time.perf_counter() - insert_start
+
+    elapsed = time.perf_counter() - start_total
+    mib = bgi_path.stat().st_size / (1024 * 1024)
+    rate = mib / elapsed if elapsed > 0 else 0.0
+    logger.info(
+        f"write_bgen_index: wrote {num_variants} variants ({mib:.2f} MiB) "
+        f"to {bgi_path} in {elapsed:.2f}s ({rate:.1f} MiB/s); "
+        f"read={read_seconds:.2f}s, assemble={assemble_seconds:.2f}s, "
+        f"insert={insert_seconds:.2f}s"
+    )
 
 
 def write_bgen(reader, out, *, compression_level: int = -1):
@@ -734,10 +777,10 @@ def write_bgen(reader, out, *, compression_level: int = -1):
     with open(sample_path, "w") as f:
         f.write(generate_sample(reader))
 
-    entries = _stream_bgen_to_file(
+    variant_offsets = _stream_bgen_to_file(
         reader, bgen_path, compression_level=compression_level
     )
-    _write_bgi_index(bgi_path, entries)
+    write_bgen_index(reader, bgi_path, variant_offsets)
 
 
 def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
@@ -763,13 +806,14 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
     sample_id_block = _build_sample_id_block(sample_ids)
     header_bytes = _build_header(num_variants, num_samples, sample_id_block)
 
-    entries: list[_BgiEntry] = []
+    variant_offsets = np.empty(num_variants + 1, dtype=np.int64)
+    variant_offsets[0] = len(header_bytes)
     mixed_phase_count = 0
+    idx = 0
 
     with open(bgen_path, "wb") as bgen_file:
         bgen_file.write(header_bytes)
         bytes_written += len(header_bytes)
-        file_offset = len(header_bytes)
 
         for chunk in reader.variant_chunks(fields=fields):
             G = chunk["call_genotype"]
@@ -825,19 +869,8 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
                 encode_seconds += t1 - t0
                 write_seconds += t2 - t1
 
-                entries.append(
-                    _BgiEntry(
-                        chromosome=chrom,
-                        position=position,
-                        rsid=rsid,
-                        number_of_alleles=2,
-                        allele1=a1,
-                        allele2=a2,
-                        file_start_position=file_offset,
-                        size_in_bytes=len(block),
-                    )
-                )
-                file_offset += len(block)
+                variant_offsets[idx + 1] = variant_offsets[idx] + len(block)
+                idx += 1
                 bytes_written += len(block)
 
     elapsed = time.perf_counter() - start
@@ -855,4 +888,4 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
             "across samples; emitted as unphased (BGEN has one phase flag "
             "per variant)."
         )
-    return entries
+    return variant_offsets

@@ -503,6 +503,105 @@ class TestVariantChunksReadOnly:
             emitted.append(idx)
         nt.assert_array_equal(np.concatenate(emitted), wanted)
 
+    @staticmethod
+    def _make_sample_scope_vcz(num_variants=6, num_samples=3, variants_chunk_size=3):
+        """Multi-chunk VCZ with a deterministic ``call_DP`` shaped so
+        sample-scope filter outcomes are easy to compute by hand:
+        ``DP[v, s] = v + s``, giving distinct sample masks per variant
+        for filters like ``FMT/DP>=k``."""
+        call_dp = np.add.outer(
+            np.arange(num_variants, dtype=np.int32),
+            np.arange(num_samples, dtype=np.int32),
+        )
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=num_samples,
+            call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
+            call_fields={"DP": call_dp},
+            variants_chunk_size=variants_chunk_size,
+            proportional_chunks=False,
+        )
+
+    def test_sample_filter_pass_no_column_reindex_read_only(self):
+        # Sample-scope filter where filter samples == output samples:
+        # ``output_columns`` is None, so only the row slice
+        # ``filter_result[variants_selection]`` fires. The slice
+        # result must still be read-only.
+        root = self._make_sample_scope_vcz()
+        reader = VczReader(root)
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>=4")
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        # DP[v, s] = v + s; DP>=4 drops v=0, v=1 (no sample passes);
+        # v=2..5 each contribute one row.
+        emitted_mask = np.concatenate([c["sample_filter_pass"] for c in chunks])
+        nt.assert_array_equal(
+            emitted_mask,
+            [
+                [False, False, True],  # v=2: 2,3,4
+                [False, True, True],  # v=3: 3,4,5
+                [True, True, True],  # v=4: 4,5,6
+                [True, True, True],  # v=5: 5,6,7
+            ],
+        )
+        for chunk in chunks:
+            mask = chunk["sample_filter_pass"]
+            assert not mask.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                mask[0, 0] = not mask[0, 0]
+
+    def test_sample_filter_pass_all_rows_pass_read_only(self):
+        # Filter where every row passes: ``variants_selection`` is
+        # all-True, ``filter_result[variants_selection]`` is a fresh
+        # owning array equal to ``filter_result``. Combined with
+        # ``output_columns`` reindex (view_semantics + sample subset),
+        # both branches fire on a full-survivor input.
+        root = self._make_sample_scope_vcz()
+        reader = make_reader(
+            root,
+            samples=[1, 2],
+            include="FMT/DP>=2",
+            view_semantics=True,
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        emitted_mask = np.concatenate([c["sample_filter_pass"] for c in chunks])
+        # All 6 variants survive (each has at least one DP>=2 sample);
+        # output axis is samples [1, 2] only — column subset of the
+        # 6x3 filter result above (drop column 0).
+        nt.assert_array_equal(
+            emitted_mask,
+            [
+                [False, True],  # v=0: DP=[1,2], samples [1,2]: [F,T]
+                [True, True],  # v=1: DP=[2,3], samples [1,2]: [T,T]
+                [True, True],  # v=2
+                [True, True],  # v=3
+                [True, True],  # v=4
+                [True, True],  # v=5
+            ],
+        )
+        for chunk in chunks:
+            mask = chunk["sample_filter_pass"]
+            assert not mask.flags.writeable
+            with pytest.raises(ValueError, match="read-only"):
+                mask[0, 0] = not mask[0, 0]
+
+    def test_sample_filter_pass_absent_for_variant_scope_filter(self):
+        # Variant-scope filters produce a 1-D mask and never publish
+        # ``sample_filter_pass``. Regression guard against a future
+        # change that always emits the key.
+        root = self._make_sample_scope_vcz()
+        reader = VczReader(root)
+        reader.set_variant_filter(
+            BcftoolsFilter(field_names=reader.field_names, include="POS>=103")
+        )
+        chunks = list(reader.variant_chunks(fields=["variant_position"]))
+        assert len(chunks) > 0
+        for chunk in chunks:
+            assert "sample_filter_pass" not in chunk
+
 
 class TestVczReaderArraysReadOnly:
     """Every numpy array ``VczReader`` exposes to a caller must be

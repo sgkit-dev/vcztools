@@ -1,6 +1,6 @@
-import concurrent.futures as cf
 import re
 from io import StringIO
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,7 +10,7 @@ from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.retrieval import VczReader
 from vcztools.samples import resolve_sample_selection
 from vcztools.utils import open_zarr
-from vcztools.vcf_writer import _compute_info_fields, c_chunk_to_vcf, write_vcf
+from vcztools.vcf_writer import VcfWriter, _compute_info_fields, write_vcf
 
 from .utils import assert_vcfs_close, make_reader, to_vcz_icechunk
 from .vcz_builder import copy_vcz, make_vcz
@@ -617,23 +617,21 @@ def minimal_vcf_chunk(num_variants, num_samples, ploidy=2):
     }
 
 
-def chunk_to_vcf(chunk):
-    filters = np.array([b"PASS"])
-    contigs = np.array([b"chr1"])
+def _stub_reader(num_samples):
+    return SimpleNamespace(
+        samples_selection=np.arange(num_samples),
+        contigs=np.array([b"chr1"]),
+        filters=np.array([b"PASS"]),
+    )
+
+
+def chunk_to_vcf(chunk, *, encode_threads=1):
     num_samples = chunk["call_genotype"].shape[1]
     output = StringIO()
-    with cf.ThreadPoolExecutor(max_workers=1) as executor:
-        c_chunk_to_vcf(
-            chunk,
-            samples_selection=np.arange(num_samples),
-            contigs=contigs,
-            filters=filters,
-            output=output,
-            drop_genotypes=False,
-            no_update=False,
-            subsetting_samples=False,
-            executor=executor,
-        )
+    with VcfWriter(
+        _stub_reader(num_samples), output, encode_threads=encode_threads
+    ) as writer:
+        writer.write_chunk(chunk)
     return output.getvalue()
 
 
@@ -712,25 +710,6 @@ class TestEncoding:
         #     print(chunk_to_vcf_file(chunk), file=f, end="")
 
 
-def chunk_to_vcf_with_executor(chunk, executor):
-    filters = np.array([b"PASS"])
-    contigs = np.array([b"chr1"])
-    num_samples = chunk["call_genotype"].shape[1]
-    output = StringIO()
-    c_chunk_to_vcf(
-        chunk,
-        samples_selection=np.arange(num_samples),
-        contigs=contigs,
-        filters=filters,
-        output=output,
-        drop_genotypes=False,
-        no_update=False,
-        subsetting_samples=False,
-        executor=executor,
-    )
-    return output.getvalue()
-
-
 class TestParallelEncoding:
 
     @pytest.mark.parametrize("encode_threads", [2, 4])
@@ -758,19 +737,15 @@ class TestParallelEncoding:
     def test_chunk_matches_serial(self, num_workers):
         chunk = minimal_vcf_chunk(20, 3)
         serial = chunk_to_vcf(chunk)
-        with cf.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            parallel = chunk_to_vcf_with_executor(chunk, executor)
+        parallel = chunk_to_vcf(chunk, encode_threads=num_workers)
         assert parallel == serial
 
     def test_fewer_variants_than_workers(self):
         chunk = minimal_vcf_chunk(3, 2)
         serial = chunk_to_vcf(chunk)
-        with cf.ThreadPoolExecutor(max_workers=8) as executor:
-            parallel = chunk_to_vcf_with_executor(chunk, executor)
+        parallel = chunk_to_vcf(chunk, encode_threads=8)
         assert parallel == serial
 
     def test_empty_chunk_with_executor(self):
         chunk = minimal_vcf_chunk(0, 2)
-        with cf.ThreadPoolExecutor(max_workers=4) as executor:
-            parallel = chunk_to_vcf_with_executor(chunk, executor)
-        assert parallel == ""
+        assert chunk_to_vcf(chunk, encode_threads=4) == ""

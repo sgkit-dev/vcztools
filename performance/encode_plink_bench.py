@@ -12,7 +12,7 @@ Formats:
 
 * ``plink`` — calls ``_vcztools.encode_plink`` on the whole chunk.
 * ``vcf`` — constructs ``_vcztools.VcfEncoder`` and runs the per-variant
-  ``encode(j, buflen)`` loop, mirroring ``c_chunk_to_vcf``. GT-only:
+  ``encode(j, buflen)`` loop, mirroring ``VcfWriter.write_chunk``. GT-only:
   no INFO/FORMAT fields, so the kernel cost tracks the same genotype
   payload as the other three benchmarks.
 * ``bgen`` — variable-size, zlib-compressed BGEN; per-variant
@@ -191,7 +191,7 @@ def _vcf_run(chunk: _Chunk) -> int:
     """Construct a VcfEncoder and run the per-variant encode loop.
 
     Returns total bytes (including the implicit trailing newline per
-    line). Matches the layout of ``c_chunk_to_vcf`` in vcf_writer.py.
+    line). Matches the layout of ``VcfWriter.write_chunk`` in vcf_writer.py.
     """
     encoder = _vcztools.VcfEncoder(
         chunk.num_variants,

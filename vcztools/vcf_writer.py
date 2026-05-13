@@ -1,4 +1,5 @@
 import concurrent.futures as cf
+import contextlib
 import io
 import logging
 import sys
@@ -68,19 +69,13 @@ RESERVED_FORMAT_KEY_DESCRIPTIONS = {
 }
 
 
-def write_vcf(
-    reader,
-    output,
-    *,
-    subsetting_samples: bool = False,
-    header_only: bool = False,
-    no_header: bool = False,
-    no_version: bool = False,
-    no_update=None,
-    drop_genotypes: bool = False,
-    encode_threads: int = 1,
-) -> None:
-    """Write a VCF to ``output`` from ``reader``.
+class VcfWriter:
+    """Context-managed VCF writer that streams a ``VczReader``'s chunks
+    to ``output``. Holds the per-write state (reader, output file,
+    config flags, encode-thread pool) so chunk encoding doesn't need to
+    thread it all through. The output file handle and
+    :class:`~concurrent.futures.ThreadPoolExecutor` are owned for the
+    duration of the ``with`` block.
 
     ``subsetting_samples`` mirrors the bcftools distinction between
     "default output" and "a subset was requested": when ``True``,
@@ -93,211 +88,256 @@ def write_vcf(
     contiguous blocks encoded in parallel; completed blocks are written
     to ``output`` in row order.
     """
-    start = time.perf_counter()
-    bytes_written = 0
-    with open_file_like(output) as output:
-        if not no_header:
-            force_ac_an_header = not drop_genotypes and subsetting_samples
-            vcf_header = _generate_header(
-                reader,
-                no_version=no_version,
-                force_ac_an=force_ac_an_header,
-            )
-            print(vcf_header, end="", file=output)
-            bytes_written += len(vcf_header)
 
-        if not header_only:
-            executor = cf.ThreadPoolExecutor(
-                max_workers=encode_threads,
-                thread_name_prefix="vcf-encode",
-            )
-            try:
-                for chunk_data in reader.variant_chunks():
-                    bytes_written += c_chunk_to_vcf(
-                        chunk_data,
-                        reader.samples_selection,
-                        reader.contigs,
-                        reader.filters,
-                        output,
-                        drop_genotypes=drop_genotypes,
-                        no_update=no_update,
-                        subsetting_samples=subsetting_samples,
-                        executor=executor,
-                    )
-            finally:
-                executor.shutdown(wait=True)
-    elapsed = time.perf_counter() - start
-    mib = bytes_written / (1024 * 1024)
-    rate = mib / elapsed if elapsed > 0 else 0.0
-    logger.info(f"write_vcf: wrote {mib:.1f} MiB in {elapsed:.2f}s ({rate:.1f} MiB/s)")
-
-
-def c_chunk_to_vcf(
-    chunk_data,
-    samples_selection,
-    contigs,
-    filters,
-    output,
-    *,
-    drop_genotypes,
-    no_update,
-    subsetting_samples,
-    executor,
-):
-    format_fields = {}
-    info_fields = {}
-    num_samples = len(samples_selection)
-
-    # TODO check we don't truncate silently by doing this
-    pos = chunk_data["variant_position"].astype(np.int32)
-    num_variants = len(pos)
-    if num_variants == 0:
-        return 0
-    # Required fields
-    chrom = contigs[chunk_data["variant_contig"]]
-    alleles = chunk_data["variant_allele"]
-
-    # Optional fields which we fill in with "all missing" defaults
-    if "variant_id" in chunk_data:
-        id = _as_fixed_length_string(chunk_data["variant_id"])
-    else:
-        id = np.array(["."] * num_variants, dtype="S")
-    if "variant_quality" in chunk_data:
-        qual = chunk_data["variant_quality"]
-    else:
-        qual = np.full(num_variants, FLOAT32_MISSING, dtype=np.float32)
-
-    # Filter defaults to "PASS" if not present
-    if "variant_filter" in chunk_data:
-        filter_ = chunk_data["variant_filter"]
-    else:
-        filter_ = np.ones((num_variants, 1), dtype=bool)
-
-    gt = None
-    gt_phased = None
-
-    if "call_genotype" in chunk_data and not drop_genotypes:
-        gt = chunk_data["call_genotype"]
-
-        if (
-            "call_genotype_phased" in chunk_data
-            and not drop_genotypes
-            and num_samples != 0
-        ):
-            gt_phased = chunk_data["call_genotype_phased"]
-        else:
-            # Default to unphased if call_genotype_phased not present
-            gt_phased = np.zeros(gt.shape[:2], dtype=bool)
-
-    # Iterate sorted keys so info_fields / format_fields insertion order is
-    # deterministic regardless of how the reader assembled chunk_data. The
-    # resulting INFO/FORMAT field ordering in each output line is the
-    # insertion order of these dicts.
-    for name in sorted(chunk_data):
-        array = chunk_data[name]
-        if (
-            name.startswith("call_")
-            and not name.startswith("call_genotype")
-            and num_samples != 0
-        ):
-            vcf_name = name[len("call_") :]
-            format_fields[vcf_name] = array
-        elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
-            vcf_name = name[len("variant_") :]
-            info_fields[vcf_name] = array
-
-    ref = _as_fixed_length_string(alleles[:, 0])
-    alt = _as_fixed_length_string(alleles[:, 1:])
-
-    if len(id.shape) == 1:
-        id = id.reshape((-1, 1))
-    if (
-        not no_update
-        and subsetting_samples
-        and "call_genotype" in chunk_data
-        and not drop_genotypes
+    def __init__(
+        self,
+        reader,
+        output,
+        *,
+        subsetting_samples: bool = False,
+        no_update=None,
+        drop_genotypes: bool = False,
+        encode_threads: int = 1,
     ):
-        # Recompute INFO/AC and INFO/AN. When the effective subset is empty
-        # (num_samples == 0), ``gt`` still contains all samples (see the
-        # bypass in ``VariantChunkReader.get_chunk_data``), so AC/AN are
-        # recomputed over the full genotype set to match bcftools.
-        info_fields |= _compute_info_fields(gt, alt)
-    if num_samples == 0:
+        self.reader = reader
+        self._output_arg = output
+        self.subsetting_samples = subsetting_samples
+        self.no_update = no_update
+        self.drop_genotypes = drop_genotypes
+        self.encode_threads = encode_threads
+        # Populated in __enter__
+        self.output = None
+        self._executor = None
+        self._stack = None
+        self._bytes_written = 0
+        self._start = None
+
+    def __enter__(self):
+        with contextlib.ExitStack() as stack:
+            self._start = time.perf_counter()
+            self.output = stack.enter_context(open_file_like(self._output_arg))
+            self._executor = stack.enter_context(
+                cf.ThreadPoolExecutor(
+                    max_workers=self.encode_threads,
+                    thread_name_prefix="vcf-encode",
+                )
+            )
+            # All resources entered cleanly: transfer their cleanup to
+            # self._stack so __exit__ can unwind them later.
+            self._stack = stack.pop_all()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self._stack.__exit__(exc_type, exc, tb)
+        finally:
+            elapsed = time.perf_counter() - self._start
+            mib = self._bytes_written / (1024 * 1024)
+            rate = mib / elapsed if elapsed > 0 else 0.0
+            logger.info(
+                f"VcfWriter: wrote {mib:.1f} MiB in {elapsed:.2f}s ({rate:.1f} MiB/s)"
+            )
+
+    def write_header(self, *, no_version: bool = False) -> None:
+        force_ac_an = not self.drop_genotypes and self.subsetting_samples
+        header = _generate_header(
+            self.reader, no_version=no_version, force_ac_an=force_ac_an
+        )
+        print(header, end="", file=self.output)
+        self._bytes_written += len(header)
+
+    def write_chunks(self) -> None:
+        for chunk_data in self.reader.variant_chunks():
+            self.write_chunk(chunk_data)
+
+    def write_chunk(self, chunk_data) -> None:
+        samples_selection = self.reader.samples_selection
+        contigs = self.reader.contigs
+        filters = self.reader.filters
+        drop_genotypes = self.drop_genotypes
+        no_update = self.no_update
+        subsetting_samples = self.subsetting_samples
+
+        format_fields = {}
+        info_fields = {}
+        num_samples = len(samples_selection)
+
+        # TODO check we don't truncate silently by doing this
+        pos = chunk_data["variant_position"].astype(np.int32)
+        num_variants = len(pos)
+        if num_variants == 0:
+            return
+        # Required fields
+        chrom = contigs[chunk_data["variant_contig"]]
+        alleles = chunk_data["variant_allele"]
+
+        # Optional fields which we fill in with "all missing" defaults
+        if "variant_id" in chunk_data:
+            id = _as_fixed_length_string(chunk_data["variant_id"])
+        else:
+            id = np.array(["."] * num_variants, dtype="S")
+        if "variant_quality" in chunk_data:
+            qual = chunk_data["variant_quality"]
+        else:
+            qual = np.full(num_variants, FLOAT32_MISSING, dtype=np.float32)
+
+        # Filter defaults to "PASS" if not present
+        if "variant_filter" in chunk_data:
+            filter_ = chunk_data["variant_filter"]
+        else:
+            filter_ = np.ones((num_variants, 1), dtype=bool)
+
         gt = None
+        gt_phased = None
 
-    encoder = _vcztools.VcfEncoder(
-        num_variants,
-        num_samples,
-        chrom=chrom,
-        pos=pos,
-        id=id,
-        alt=alt,
-        ref=ref,
-        qual=qual,
-        filter_ids=filters,
-        filter=filter_,
-    )
-    # print(encoder.arrays)
-    # The C encoder validates NPY_ARRAY_IN_ARRAY on every field and reads
-    # raw buffers via PyArray_DATA, so every field handed to add_*_field
-    # must be C-contiguous. VczReader emits strided views for sample-axis
-    # slices and column gathers — wrap here at the boundary instead of
-    # per-chunk in CachedVariantChunk, so non-VCF callers (benchmarks, query.py,
-    # Python API) avoid the memcpy.
-    if gt is not None:
-        gt = np.ascontiguousarray(gt)
-        gt_phased = np.ascontiguousarray(gt_phased)
-        encoder.add_gt_field(gt, gt_phased)
-    for name, zarray in info_fields.items():
-        # print(array.dtype.kind)
-        if zarray.dtype.kind in ("O", "U", "T"):
-            zarray = _as_fixed_length_string(zarray)
-        if len(zarray.shape) == 1:
-            zarray = zarray.reshape((num_variants, 1))
-        zarray = np.ascontiguousarray(zarray)
-        encoder.add_info_field(name, zarray)
+        if "call_genotype" in chunk_data and not drop_genotypes:
+            gt = chunk_data["call_genotype"]
 
-    if num_samples != 0:
-        for name, zarray in format_fields.items():
+            if (
+                "call_genotype_phased" in chunk_data
+                and not drop_genotypes
+                and num_samples != 0
+            ):
+                gt_phased = chunk_data["call_genotype_phased"]
+            else:
+                # Default to unphased if call_genotype_phased not present
+                gt_phased = np.zeros(gt.shape[:2], dtype=bool)
+
+        # Iterate sorted keys so info_fields / format_fields insertion order
+        # is deterministic regardless of how the reader assembled chunk_data.
+        # The resulting INFO/FORMAT field ordering in each output line is
+        # the insertion order of these dicts.
+        for name in sorted(chunk_data):
+            array = chunk_data[name]
+            if (
+                name.startswith("call_")
+                and not name.startswith("call_genotype")
+                and num_samples != 0
+            ):
+                vcf_name = name[len("call_") :]
+                format_fields[vcf_name] = array
+            elif name.startswith("variant_") and name not in RESERVED_VARIABLE_NAMES:
+                vcf_name = name[len("variant_") :]
+                info_fields[vcf_name] = array
+
+        ref = _as_fixed_length_string(alleles[:, 0])
+        alt = _as_fixed_length_string(alleles[:, 1:])
+
+        if len(id.shape) == 1:
+            id = id.reshape((-1, 1))
+        if (
+            not no_update
+            and subsetting_samples
+            and "call_genotype" in chunk_data
+            and not drop_genotypes
+        ):
+            # Recompute INFO/AC and INFO/AN. When the effective subset is
+            # empty (num_samples == 0), ``gt`` still contains all samples
+            # (see the bypass in ``VariantChunkReader.get_chunk_data``), so
+            # AC/AN are recomputed over the full genotype set to match
+            # bcftools.
+            info_fields |= _compute_info_fields(gt, alt)
+        if num_samples == 0:
+            gt = None
+
+        encoder = _vcztools.VcfEncoder(
+            num_variants,
+            num_samples,
+            chrom=chrom,
+            pos=pos,
+            id=id,
+            alt=alt,
+            ref=ref,
+            qual=qual,
+            filter_ids=filters,
+            filter=filter_,
+        )
+        # The C encoder validates NPY_ARRAY_IN_ARRAY on every field and reads
+        # raw buffers via PyArray_DATA, so every field handed to add_*_field
+        # must be C-contiguous. VczReader emits strided views for sample-axis
+        # slices and column gathers — wrap here at the boundary instead of
+        # per-chunk in CachedVariantChunk, so non-VCF callers (benchmarks,
+        # query.py, Python API) avoid the memcpy.
+        if gt is not None:
+            gt = np.ascontiguousarray(gt)
+            gt_phased = np.ascontiguousarray(gt_phased)
+            encoder.add_gt_field(gt, gt_phased)
+        for name, zarray in info_fields.items():
             if zarray.dtype.kind in ("O", "U", "T"):
                 zarray = _as_fixed_length_string(zarray)
-            if len(zarray.shape) == 2:
-                zarray = zarray.reshape((num_variants, num_samples, 1))
+            if len(zarray.shape) == 1:
+                zarray = zarray.reshape((num_variants, 1))
             zarray = np.ascontiguousarray(zarray)
-            encoder.add_format_field(name, zarray)
+            encoder.add_info_field(name, zarray)
 
-    # TODO: (1) make a guess at this based on number of fields and samples,
-    # and (2) log a DEBUG message when we have to double.
-    buflen_hint = 1024
+        if num_samples != 0:
+            for name, zarray in format_fields.items():
+                if zarray.dtype.kind in ("O", "U", "T"):
+                    zarray = _as_fixed_length_string(zarray)
+                if len(zarray.shape) == 2:
+                    zarray = zarray.reshape((num_variants, num_samples, 1))
+                zarray = np.ascontiguousarray(zarray)
+                encoder.add_format_field(name, zarray)
 
-    def encode_block(start, end, buflen):
-        parts = []
-        for j in range(start, end):
-            while True:
-                try:
-                    parts.append(encoder.encode(j, buflen))
-                    break
-                except _vcztools.VczBufferTooSmall:
-                    buflen *= 2
-            parts.append("\n")
-        return "".join(parts)
+        def encode_block(start, end):
+            # TODO: (1) make a guess at this based on number of fields and samples,
+            # and (2) log a DEBUG message when we have to double.
+            buflen = 1024
+            parts = []
+            for j in range(start, end):
+                while True:
+                    try:
+                        parts.append(encoder.encode(j, buflen))
+                        break
+                    except _vcztools.VczBufferTooSmall:
+                        buflen *= 2
+                parts.append("\n")
+            return "".join(parts)
 
-    bytes_written = 0
-    num_blocks = min(executor._max_workers, num_variants)
-    block_size = (num_variants + num_blocks - 1) // num_blocks
-    futures = []
-    for i in range(num_blocks):
-        start = i * block_size
-        end = min(start + block_size, num_variants)
-        if start >= end:
-            break
-        futures.append(executor.submit(encode_block, start, end, buflen_hint))
+        num_blocks = min(self.encode_threads, num_variants)
+        block_size = (num_variants + num_blocks - 1) // num_blocks
+        futures = []
+        for i in range(num_blocks):
+            start = i * block_size
+            end = min(start + block_size, num_variants)
+            if start >= end:
+                break
+            futures.append(self._executor.submit(encode_block, start, end))
 
-    for fut in futures:
-        block_text = fut.result()
-        output.write(block_text)
-        bytes_written += len(block_text)
-    return bytes_written
+        for fut in futures:
+            block_text = fut.result()
+            self.output.write(block_text)
+            self._bytes_written += len(block_text)
+
+
+def write_vcf(
+    reader,
+    output,
+    *,
+    subsetting_samples: bool = False,
+    header_only: bool = False,
+    no_header: bool = False,
+    no_version: bool = False,
+    no_update=None,
+    drop_genotypes: bool = False,
+    encode_threads: int = 1,
+) -> None:
+    """Write a VCF to ``output`` from ``reader``. Thin wrapper around
+    :class:`VcfWriter`; see that class for details on the per-write
+    state, parallel encoding, and the resource lifecycle.
+    """
+    with VcfWriter(
+        reader,
+        output,
+        subsetting_samples=subsetting_samples,
+        no_update=no_update,
+        drop_genotypes=drop_genotypes,
+        encode_threads=encode_threads,
+    ) as writer:
+        if not no_header:
+            writer.write_header(no_version=no_version)
+        if not header_only:
+            writer.write_chunks()
 
 
 def _generate_header(

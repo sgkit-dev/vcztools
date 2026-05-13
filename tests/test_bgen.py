@@ -30,14 +30,16 @@ def _build_geno_block_reference(g, variant_phased):
     ``g`` has shape ``(num_samples, 2)`` int8; ``variant_phased`` is a
     bool. Returns the raw bytes (variable length under mixed ploidy).
 
-    Sentinel rules per sample ``(a, b)``:
+    Sentinel rules per sample ``(a, b)``. Only ``{-2, -1, 0, 1}`` are
+    accepted; any other value raises ``ValueError`` (BGEN is biallelic).
 
-      * ``a >= 0, b >= 0``    -> diploid call, 0x02, 2 prob bytes
-      * ``a >= 0, b == -2``   -> haploid call, 0x01, 1 prob byte
-      * ``a == -1, b == -1``  -> missing diploid, 0x82, 2 zero bytes
-      * ``a == -1, b == -2``  -> missing haploid, 0x81, 1 zero byte
-      * half-missing diploid  -> 0x82, 2 zero bytes
-      * ``a == -2`` (any b)   -> raises ValueError (zero-ploidy)
+      * ``a in {0, 1}, b in {0, 1}``  -> diploid call, 0x02, 2 prob bytes
+      * ``a in {0, 1}, b == -2``      -> haploid call, 0x01, 1 prob byte
+      * ``a == -1, b == -1``          -> missing diploid, 0x82, 2 zero bytes
+      * ``a == -1, b == -2``          -> missing haploid, 0x81, 1 zero byte
+      * half-missing diploid          -> 0x82, 2 zero bytes
+      * ``a == -2`` (any b)           -> raises ValueError (zero-ploidy)
+      * any other value               -> raises ValueError (invalid allele)
 
     Block layout:
 
@@ -58,6 +60,8 @@ def _build_geno_block_reference(g, variant_phased):
     for s in range(num_samples):
         a = int(g[s, 0])
         b = int(g[s, 1])
+        if a not in (-2, -1, 0, 1) or b not in (-2, -1, 0, 1):
+            raise ValueError(f"reference: invalid allele at sample {s}: ({a}, {b})")
         if a == -2:
             raise ValueError(f"reference: -2 in slot 0 at sample {s}")
         if b == -2:
@@ -377,10 +381,11 @@ class TestBuildGenoBlocksAgainstReference:
 
     @pytest.mark.parametrize("phased_value", [False, True])
     def test_single_sample_all_allele_pairs(self, phased_value):
-        # Sweep every (a, b) from {-1, 0, 1, 2} x {-2, -1, 0, 1, 2} as
-        # separate variants. ``a == -2`` is the zero-ploidy error and
-        # is excluded; see test_zero_ploidy_*_raises below.
-        pairs = [(a, b) for a in range(-1, 3) for b in range(-2, 3)]
+        # Sweep every valid (a, b) from {-1, 0, 1} x {-2, -1, 0, 1}
+        # as separate variants. ``a == -2`` is the zero-ploidy error
+        # and out-of-range values are invalid-allele errors; see the
+        # dedicated test_*_raises tests below.
+        pairs = [(a, b) for a in (-1, 0, 1) for b in (-2, -1, 0, 1)]
         G = np.array([[[a, b]] for a, b in pairs], dtype=np.int8)
         phased = np.full(len(pairs), phased_value, dtype=bool)
         self._assert_matches(G, phased)
@@ -442,10 +447,9 @@ class TestBuildGenoBlocksAgainstReference:
     )
     def test_unusual_sample_counts(self, num_samples):
         rng = np.random.default_rng(0)
-        # Draw a in {-1, 0, 1, 2}, b in {-2, -1, 0, 1, 2}; skip the
-        # zero-ploidy case (a == -2).
-        a = rng.integers(-1, 3, size=(2, num_samples), dtype=np.int8)
-        b = rng.integers(-2, 3, size=(2, num_samples), dtype=np.int8)
+        # Draw only valid alleles: a in {-1, 0, 1}, b in {-2, -1, 0, 1}.
+        a = rng.integers(-1, 2, size=(2, num_samples), dtype=np.int8)
+        b = rng.integers(-2, 2, size=(2, num_samples), dtype=np.int8)
         G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = np.array([False, True])
         self._assert_matches(G, phased)
@@ -453,16 +457,16 @@ class TestBuildGenoBlocksAgainstReference:
     @pytest.mark.parametrize("num_variants", [0, 1, 2, 7, 16, 100])
     def test_unusual_variant_counts(self, num_variants):
         rng = np.random.default_rng(1)
-        a = rng.integers(-1, 3, size=(num_variants, 5), dtype=np.int8)
-        b = rng.integers(-2, 3, size=(num_variants, 5), dtype=np.int8)
+        a = rng.integers(-1, 2, size=(num_variants, 5), dtype=np.int8)
+        b = rng.integers(-2, 2, size=(num_variants, 5), dtype=np.int8)
         G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = rng.integers(0, 2, size=num_variants, dtype=np.int8).astype(bool)
         self._assert_matches(G, phased)
 
     def test_random_uniform(self):
         rng = np.random.default_rng(42)
-        a = rng.integers(-1, 3, size=(50, 50), dtype=np.int8)
-        b = rng.integers(-2, 3, size=(50, 50), dtype=np.int8)
+        a = rng.integers(-1, 2, size=(50, 50), dtype=np.int8)
+        b = rng.integers(-2, 2, size=(50, 50), dtype=np.int8)
         G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = rng.integers(0, 2, size=50, dtype=np.int8).astype(bool)
         self._assert_matches(G, phased)
@@ -485,9 +489,9 @@ class TestBuildGenoBlocksAgainstReference:
         num_samples = 200
         v_idx = np.arange(num_variants)[:, None]
         s_idx = np.arange(num_samples)[None, :]
-        # Mix valid values: a in {-1, 0, 1, 2}, b in {-2, -1, 0, 1, 2}.
-        a = (v_idx + s_idx) % 4 - 1
-        b = (v_idx + 2 * s_idx) % 5 - 2
+        # Mix valid values: a in {-1, 0, 1}, b in {-2, -1, 0, 1}.
+        a = (v_idx + s_idx) % 3 - 1
+        b = (v_idx + 2 * s_idx) % 4 - 2
         G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = (np.arange(num_variants) % 2).astype(bool)
         self._assert_matches(G, phased)
@@ -504,13 +508,50 @@ class TestBuildGenoBlocksAgainstReference:
         self._assert_matches(G, phased)
 
     @pytest.mark.parametrize("phased_value", [False, True])
-    @pytest.mark.parametrize("b", [-2, -1, 0, 1, 2])
+    @pytest.mark.parametrize("b", [-2, -1, 0, 1])
     def test_zero_ploidy_raises(self, phased_value, b):
         # -2 in slot 0 is zero-ploidy and not representable in BGEN;
         # surface as ValueError at write time.
         G = np.array([[[-2, b]]], dtype=np.int8)
         phased = np.array([phased_value])
         with pytest.raises(ValueError, match="zero-ploidy"):
+            _vcztools.encode_bgen_geno_blocks(G, phased)
+
+    @pytest.mark.parametrize("phased_value", [False, True])
+    @pytest.mark.parametrize(
+        "g",
+        [
+            # Out-of-range in slot 0 (a).
+            [2, 0],
+            [127, 0],
+            [3, 1],
+            [-3, 0],
+            [-128, -128],
+            # Out-of-range in slot 1 (b).
+            [0, 2],
+            [1, 127],
+            [-1, 5],
+            [0, -3],
+            # Out-of-range haploid call: a invalid, b == -2.
+            [2, -2],
+            [-3, -2],
+        ],
+    )
+    def test_invalid_allele_raises(self, phased_value, g):
+        # BGEN is biallelic; only {-2, -1, 0, 1} are accepted. Anything
+        # else is a data-quality error.
+        G = np.array([[g]], dtype=np.int8)
+        phased = np.array([phased_value])
+        with pytest.raises(ValueError, match="out of range"):
+            _vcztools.encode_bgen_geno_blocks(G, phased)
+
+    def test_invalid_allele_mid_chunk_surfaces(self):
+        # A bad value on variant 2 of a 3-variant chunk surfaces from
+        # the kernel even when earlier variants are clean.
+        G = np.zeros((3, 4, 2), dtype=np.int8)
+        G[2, 1, 0] = 2
+        phased = np.zeros(3, dtype=bool)
+        with pytest.raises(ValueError, match="out of range"):
             _vcztools.encode_bgen_geno_blocks(G, phased)
 
 
@@ -1327,6 +1368,21 @@ class TestBgenMixedPloidyRoundTrip:
         )
         out = tmp_path / "z"
         with pytest.raises(ValueError, match="zero-ploidy"):
+            bgen.write_bgen(reader, out)
+
+    def test_invalid_allele_in_chunk_raises(self, tmp_path):
+        # An out-of-range allele (e.g. 2 in a biallelic store) is a
+        # data-quality error; write_bgen surfaces it from the C kernel
+        # via _prepare_chunk.
+        G = np.array([[[0, 2]]], dtype=np.int8)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            call_genotype=G,
+            ploidy=2,
+        )
+        out = tmp_path / "bad"
+        with pytest.raises(ValueError, match="out of range"):
             bgen.write_bgen(reader, out)
 
 

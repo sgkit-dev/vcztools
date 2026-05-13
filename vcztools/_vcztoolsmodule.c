@@ -698,6 +698,12 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
             "is not representable in BGEN");
         goto out;
     }
+    if (err == VCZ_ERR_BGEN_INVALID_ALLELE) {
+        PyErr_Format(PyExc_ValueError,
+            "BGEN encoder: genotype value out of range; biallelic input "
+            "expects values in {-2, -1, 0, 1}");
+        goto out;
+    }
 
     ret = PyTuple_Pack(2, (PyObject *) encoded, (PyObject *) lens);
     if (ret == NULL) {

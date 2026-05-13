@@ -589,6 +589,24 @@ class TestEncodeBgenGenoBlocks:
         with pytest.raises(ValueError, match="zero-ploidy"):
             _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            (2, 0),
+            (0, 2),
+            (127, -2),
+            (-3, 0),
+            (0, -3),
+            (-128, 1),
+        ],
+    )
+    def test_invalid_allele_raises(self, bad):
+        # Anything outside {-2, -1, 0, 1} is a biallelic data-quality
+        # error; the kernel returns VCZ_ERR_BGEN_INVALID_ALLELE.
+        G = np.array([[[bad[0], bad[1]]]], dtype=np.int8)
+        with pytest.raises(ValueError, match="out of range"):
+            _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
+
     def test_phased_variant_mismatch(self):
         with pytest.raises(
             ValueError,

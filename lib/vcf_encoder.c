@@ -1088,14 +1088,14 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
  * variant header reports the variant's actual Pmin/Pmax.
  *
  * Per-sample interpretation of (a, b) = (gt[2s], gt[2s+1]):
- *   a >= 0, b >= 0           -> diploid call. 0x02. 2 prob bytes.
- *   a >= 0, b == -2          -> haploid call. 0x01. 1 prob byte.
- *   a == -1, b == -1         -> missing diploid. 0x82. 2 zero bytes.
- *   a == -1, b == -2         -> missing haploid. 0x81. 1 zero byte.
- *   a >= 0, b == -1 or
- *   a == -1, b >= 0          -> half-missing diploid. 0x82. 2 zero bytes.
- *   a == -2 (any b)          -> zero-ploidy. Returns
- *                               VCZ_ERR_BGEN_INVALID_PLOIDY.
+ *   a in {0, 1}, b in {0, 1}      -> diploid call. 0x02. 2 prob bytes.
+ *   a in {0, 1}, b == -2          -> haploid call. 0x01. 1 prob byte.
+ *   a == -1, b == -1              -> missing diploid. 0x82. 2 zero bytes.
+ *   a == -1, b == -2              -> missing haploid. 0x81. 1 zero byte.
+ *   half-missing diploid           -> 0x82. 2 zero bytes.
+ *   a == -2 (any b)               -> zero-ploidy. Returns
+ *                                    VCZ_ERR_BGEN_INVALID_PLOIDY.
+ *   a or b outside {-2, -1, 0, 1} -> Returns VCZ_ERR_BGEN_INVALID_ALLELE.
  *
  * buf must be at least num_variants * row_stride bytes; row_stride is
  * typically vcz_bgen_geno_block_row_max_size(num_samples). out_lens[v]
@@ -1127,6 +1127,11 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
             a = gt[2 * s];
             b = gt[2 * s + 1];
 
+            /* The BGEN encoder is biallelic: only {-2, -1, 0, 1} are
+             * accepted; any other value is a data-quality error. */
+            if (a < -2 || a > 1 || b < -2 || b > 1) {
+                return VCZ_ERR_BGEN_INVALID_ALLELE;
+            }
             if (a == VCZ_INT_FILL) {
                 return VCZ_ERR_BGEN_INVALID_PLOIDY;
             }

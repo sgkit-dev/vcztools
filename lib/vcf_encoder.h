@@ -48,6 +48,7 @@
 
 /* BGEN encoder errors */
 #define VCZ_ERR_BGEN_INVALID_PLOIDY (-301)
+#define VCZ_ERR_BGEN_INVALID_ALLELE (-302)
 
 typedef struct {
     // maximum length + 1 for NULL byte

@@ -635,8 +635,12 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
     PyArrayObject *genotypes = NULL;
     PyArrayObject *phased = NULL;
     PyArrayObject *encoded = NULL;
+    PyArrayObject *lens = NULL;
     npy_intp num_variants, num_samples;
     npy_intp out_dims[2];
+    npy_intp lens_dims[1];
+    size_t row_stride;
+    int err;
 
     if (!PyArg_ParseTuple(
             args, "O!O!", &PyArray_Type, &genotypes, &PyArray_Type, &phased)) {
@@ -649,7 +653,9 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
         goto out;
     }
     if (PyArray_DIMS(genotypes)[2] != 2) {
-        PyErr_Format(PyExc_ValueError, "Only diploid genotypes supported");
+        PyErr_Format(PyExc_ValueError,
+            "BGEN encoder expects (V, S, 2) genotypes "
+            "(haploid inputs are normalised to ploidy=2 with -2 padding)");
         goto out;
     }
     if (check_array("phased", phased, 1) != 0) {
@@ -664,24 +670,42 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
         PyErr_Format(PyExc_ValueError, "phased.shape[0] must equal genotypes.shape[0]");
         goto out;
     }
+    row_stride = vcz_bgen_geno_block_row_max_size((size_t) num_samples);
     out_dims[0] = num_variants;
-    out_dims[1] = vcz_bgen_geno_block_row_size(num_samples);
+    out_dims[1] = (npy_intp) row_stride;
     encoded = (PyArrayObject *) PyArray_SimpleNew(2, out_dims, NPY_UINT8);
     if (encoded == NULL) {
+        goto out; // GCOVR_EXCL_LINE
+    }
+    lens_dims[0] = num_variants;
+    lens = (PyArrayObject *) PyArray_SimpleNew(1, lens_dims, NPY_UINT32);
+    if (lens == NULL) {
         goto out; // GCOVR_EXCL_LINE
     }
 
     // clang-format off
     Py_BEGIN_ALLOW_THREADS
-    vcz_encode_bgen_geno_blocks((size_t) num_variants, (size_t) num_samples,
-        PyArray_DATA(genotypes), PyArray_DATA(phased), PyArray_DATA(encoded));
+    err = vcz_encode_bgen_geno_blocks((size_t) num_variants, (size_t) num_samples,
+        PyArray_DATA(genotypes), PyArray_DATA(phased), PyArray_DATA(encoded),
+        row_stride, PyArray_DATA(lens));
     Py_END_ALLOW_THREADS
+        // clang-format on
 
-    ret = (PyObject *) encoded;
-    // clang-format on
-    encoded = NULL;
+        if (err == VCZ_ERR_BGEN_INVALID_PLOIDY)
+    {
+        PyErr_Format(PyExc_ValueError,
+            "BGEN encoder: -2 in genotype slot 0 (zero-ploidy / unused sample) "
+            "is not representable in BGEN");
+        goto out;
+    }
+
+    ret = PyTuple_Pack(2, (PyObject *) encoded, (PyObject *) lens);
+    if (ret == NULL) {
+        goto out; // GCOVR_EXCL_LINE
+    }
 out:
     Py_XDECREF(encoded);
+    Py_XDECREF(lens);
     return ret;
 }
 
@@ -693,7 +717,8 @@ static PyMethodDef vcztools_methods[] = {
     { .ml_name = "encode_bgen_geno_blocks",
         .ml_meth = (PyCFunction) vcztools_encode_bgen_geno_blocks,
         .ml_flags = METH_VARARGS,
-        .ml_doc = "Encode BGEN Layout-2 genotype blocks" },
+        .ml_doc = "Encode BGEN Layout-2 genotype blocks (mixed-ploidy "
+                  "supported). Returns (buffer, lengths)." },
     { NULL } /* Sentinel */
 };
 

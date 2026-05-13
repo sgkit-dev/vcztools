@@ -732,12 +732,25 @@ def chunk_to_vcf_with_executor(chunk, executor):
 class TestParallelEncoding:
 
     @pytest.mark.parametrize("encode_threads", [2, 4])
-    def test_write_vcf_roundtrip(self, tmp_path, fx_sample_vcz, encode_threads):
+    def test_write_vcf_matches_serial(
+        self, tmp_path, fx_sample_vcz, encode_threads
+    ):
         vcz = fx_sample_vcz.directory_path
-        output = tmp_path.joinpath("output.vcf")
+
+        serial_out = StringIO()
         reader = VczReader(open_zarr(vcz, mode="r"))
-        write_vcf(reader, output, no_version=True, encode_threads=encode_threads)
-        assert_vcfs_close(fx_sample_vcz.vcf_path, output)
+        write_vcf(reader, serial_out, no_version=True)
+
+        parallel_out = StringIO()
+        reader = VczReader(open_zarr(vcz, mode="r"))
+        write_vcf(
+            reader,
+            parallel_out,
+            no_version=True,
+            encode_threads=encode_threads,
+        )
+
+        assert parallel_out.getvalue() == serial_out.getvalue()
 
     @pytest.mark.parametrize("num_workers", [2, 4, 8])
     def test_chunk_matches_serial(self, num_workers):

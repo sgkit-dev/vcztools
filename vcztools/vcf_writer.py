@@ -194,7 +194,12 @@ def c_chunk_to_vcf(
             # Default to unphased if call_genotype_phased not present
             gt_phased = np.zeros(gt.shape[:2], dtype=bool)
 
-    for name, array in chunk_data.items():
+    # Iterate sorted keys so info_fields / format_fields insertion order is
+    # deterministic regardless of how the reader assembled chunk_data. The
+    # resulting INFO/FORMAT field ordering in each output line is the
+    # insertion order of these dicts.
+    for name in sorted(chunk_data):
+        array = chunk_data[name]
         if (
             name.startswith("call_")
             and not name.startswith("call_genotype")

@@ -4,7 +4,9 @@
 The `vcztools view-bgen` command writes an Oxford BGEN fileset
 (`.bgen`/`.sample`/`.bgen.bgi`) from a VCZ store. Output profile:
 **layout 2, zlib-compressed, 8 bits per probability, biallelic,
-diploid, embedded sample IDs**. This is the consumer
+embedded sample IDs**. Diploid, haploid (e.g. chrX in males,
+mitochondrial) and mixed-ploidy stores (mixed-sex chrX) are
+supported via per-sample ploidy bytes. This is the consumer
 lowest-common-denominator: REGENIE, SAIGE, BOLT-LMM, BGENIE, qctool,
 and PLINK 2 all accept it without further conversion.
 
@@ -75,21 +77,47 @@ biallelic SNPs. Two ways to handle them:
 - **Split** before conversion with ``bcftools norm -m-``. Each ALT
   allele becomes its own biallelic record.
 
+## Ploidy
+
+`view-bgen` supports both haploid and diploid input, plus mixed
+ploidy where some samples are haploid and some are diploid for the
+same variant (e.g. chrX with both sexes). The classification depends
+on each `(a, b)` pair in `call_genotype`:
+
+| VCZ pair | Meaning | BGEN ploidy byte | Prob bytes |
+| --- | --- | --- | --- |
+| `a >= 0`, `b >= 0` | diploid call | `0x02` | 2 |
+| `a >= 0`, `b == -2` | haploid call | `0x01` | 1 |
+| `a == -1`, `b == -1` | missing diploid | `0x82` | 2 (zero) |
+| `a == -1`, `b == -2` | missing haploid | `0x81` | 1 (zero) |
+| half-missing diploid | missing diploid | `0x82` | 2 (zero) |
+
+VCZ stores haploid data either as `(V, S, 1)` arrays or as `(V, S, 2)`
+arrays with `-2` in the second slot (the haploid-padding sentinel).
+`view-bgen` accepts both: shape `(V, S, 1)` is promoted to the
+`-2`-padded form before encoding. A `-2` in slot 0 (zero-ploidy /
+unused sample) is not representable in BGEN and surfaces as a
+`ValueError`.
+
+The per-variant header `Pmin` / `Pmax` reflect the actual range of
+sample ploidies in each variant.
+
 ## Missingness
 
-A sample is treated as missing for a variant if any of its alleles is
-negative (the VCZ conventions for missing alleles, including `-1` and
-the `-2` haploid-padding sentinel). Missing samples have the BGEN
-ploidy/missing byte's high bit set; their probability bytes are
-zeroed (the BGEN spec says these bytes should be ignored when the
-missing flag is set, but zeroing keeps the output deterministic).
+A sample is treated as missing for a variant if any of its diploid
+alleles is `-1`, or if its haploid allele (under `-2` padding) is
+`-1`. Missing samples have the BGEN ploidy/missing byte's high bit
+set; their probability bytes are zeroed (the BGEN spec says these
+bytes should be ignored when the missing flag is set, but zeroing
+keeps the output deterministic).
 
 ## Limitations
 
 - **Layout 2, 8-bit, zlib only.** Higher precision (16/32-bit) and
   alternative compressions (zstd, none) are not exposed. Adding them
   is straightforward when a downstream tool requires them.
-- **Diploid only.** `view-bgen` raises if `call_genotype.shape[2] != 2`.
+- **Ploidy 1 or 2.** Polyploid input (`call_genotype.shape[2] > 2`)
+  is rejected.
 - **Hard calls only.** Genotype probabilities (`call_GP`) are not
   read; the encoder emits 1.0/0.0 from `call_genotype` only.
 - **Whitespace in sample IDs.** Rejected with a clear error message —
@@ -145,14 +173,25 @@ with bgen.BgenEncoder(reader) as enc:
     chunk = enc.read(0, 4096)
 ```
 
+`BgenEncoder` requires uniform ploidy across the store. The encoder
+auto-detects haploid vs diploid from `reader.call_genotype.shape[2]`
+(1 or 2); a mixed-ploidy store (a `-2` sentinel under declared
+diploid) raises `NotImplementedError` lazily on read with a message
+pointing users at `write_bgen` (the variable-size streaming encoder).
+
 Every per-variant block is exactly `bytes_per_variant` bytes wide, so
 `byte offset → variant index` is O(1):
 
 ```
 bytes_per_variant = 28 + varid_max + rsid_max + chrom_max
                     + 2 * allele_max
-                    + zlib_stored_size(10 + 3 * num_samples)
+                    + zlib_stored_size(geno_size)
+
+geno_size = 10 + (uniform_ploidy + 1) * num_samples
 ```
+
+For haploid stores `geno_size = 10 + 2 * num_samples`; for diploid
+`geno_size = 10 + 3 * num_samples`.
 
 The fixed width is achieved by NUL-padding the variable-length string
 fields (variant id, rsid, chromosome, alleles) to caller-configured

@@ -1,3 +1,4 @@
+import concurrent.futures as cf
 import io
 import logging
 import sys
@@ -77,6 +78,7 @@ def write_vcf(
     no_version: bool = False,
     no_update=None,
     drop_genotypes: bool = False,
+    encode_threads: int = 1,
 ) -> None:
     """Write a VCF to ``output`` from ``reader``.
 
@@ -85,6 +87,13 @@ def write_vcf(
     ``AC``/``AN`` are force-recomputed in the header and per-chunk
     (matching ``bcftools view -s …`` semantics). Callers that already
     configured ``reader.set_samples(...)`` should pass ``True``.
+
+    ``encode_threads`` controls the per-chunk line encoding fan-out.
+    The default of 1 keeps the encode loop in the calling thread. With
+    ``encode_threads > 1`` a :class:`concurrent.futures.ThreadPoolExecutor`
+    is created for the duration of the call and rows in each chunk are
+    split into ``encode_threads`` contiguous blocks encoded in parallel;
+    completed blocks are written to ``output`` in row order.
     """
     start = time.perf_counter()
     bytes_written = 0
@@ -100,17 +109,28 @@ def write_vcf(
             bytes_written += len(vcf_header)
 
         if not header_only:
-            for chunk_data in reader.variant_chunks():
-                bytes_written += c_chunk_to_vcf(
-                    chunk_data,
-                    reader.samples_selection,
-                    reader.contigs,
-                    reader.filters,
-                    output,
-                    drop_genotypes=drop_genotypes,
-                    no_update=no_update,
-                    subsetting_samples=subsetting_samples,
+            executor = None
+            if encode_threads > 1:
+                executor = cf.ThreadPoolExecutor(
+                    max_workers=encode_threads,
+                    thread_name_prefix="vcf-encode",
                 )
+            try:
+                for chunk_data in reader.variant_chunks():
+                    bytes_written += c_chunk_to_vcf(
+                        chunk_data,
+                        reader.samples_selection,
+                        reader.contigs,
+                        reader.filters,
+                        output,
+                        drop_genotypes=drop_genotypes,
+                        no_update=no_update,
+                        subsetting_samples=subsetting_samples,
+                        executor=executor,
+                    )
+            finally:
+                if executor is not None:
+                    executor.shutdown(wait=True)
     elapsed = time.perf_counter() - start
     mib = bytes_written / (1024 * 1024)
     rate = mib / elapsed if elapsed > 0 else 0.0
@@ -127,6 +147,7 @@ def c_chunk_to_vcf(
     drop_genotypes,
     no_update,
     subsetting_samples,
+    executor=None,
 ):
     format_fields = {}
     info_fields = {}
@@ -247,19 +268,43 @@ def c_chunk_to_vcf(
 
     # TODO: (1) make a guess at this based on number of fields and samples,
     # and (2) log a DEBUG message when we have to double.
-    buflen = 1024
+    buflen_hint = 1024
+
+    def encode_block(start, end, buflen):
+        parts = []
+        for j in range(start, end):
+            while True:
+                try:
+                    parts.append(encoder.encode(j, buflen))
+                    break
+                except _vcztools.VczBufferTooSmall:
+                    buflen *= 2
+            parts.append("\n")
+        return "".join(parts)
+
     bytes_written = 0
-    for j in range(num_variants):
-        failed = True
-        while failed:
-            try:
-                line = encoder.encode(j, buflen)
-                failed = False
-            except _vcztools.VczBufferTooSmall:
-                buflen *= 2
-                # print("Bumping buflen to", buflen)
-        print(line, file=output)
-        bytes_written += len(line) + 1
+    if executor is None:
+        block_text = encode_block(0, num_variants, buflen_hint)
+        output.write(block_text)
+        bytes_written += len(block_text)
+        return bytes_written
+
+    max_workers = executor._max_workers
+    num_blocks = max(1, min(max_workers, num_variants))
+    block_size = (num_variants + num_blocks - 1) // num_blocks
+
+    futures = []
+    for i in range(num_blocks):
+        start = i * block_size
+        end = min(start + block_size, num_variants)
+        if start >= end:
+            break
+        futures.append(executor.submit(encode_block, start, end, buflen_hint))
+
+    for fut in futures:
+        block_text = fut.result()
+        output.write(block_text)
+        bytes_written += len(block_text)
     return bytes_written
 
 

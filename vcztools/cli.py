@@ -197,6 +197,16 @@ readahead_buffer_size = click.option(
         "Default: 256MiB."
     ),
 )
+encode_threads = click.option(
+    "--encode-threads",
+    type=int,
+    default=1,
+    help=(
+        "Worker threads for per-chunk VCF line encoding. With >1, each "
+        "chunk is split into this many contiguous row blocks encoded in "
+        "parallel. Default: 1."
+    ),
+)
 
 
 def setup_logging(level: str, log_file: str | None) -> None:
@@ -808,6 +818,7 @@ def query(
 @storage_option
 @readahead_workers
 @readahead_buffer_size
+@encode_threads
 @log_level
 @log_file
 @handle_exception
@@ -836,6 +847,7 @@ def view(
     storage_options,
     readahead_workers,
     readahead_bytes,
+    encode_threads,
     log_level,
     log_file,
 ):
@@ -895,6 +907,7 @@ def view(
             no_version=no_version,
             no_update=no_update,
             drop_genotypes=drop_genotypes,
+            encode_threads=encode_threads,
         )
 
 

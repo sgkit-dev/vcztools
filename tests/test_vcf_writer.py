@@ -1,3 +1,4 @@
+import concurrent.futures as cf
 import re
 from io import StringIO
 
@@ -707,3 +708,54 @@ class TestEncoding:
 
         # with open("zero-ploidy.vcf", "w") as f:
         #     print(chunk_to_vcf_file(chunk), file=f, end="")
+
+
+def chunk_to_vcf_with_executor(chunk, executor):
+    filters = np.array([b"PASS"])
+    contigs = np.array([b"chr1"])
+    num_samples = chunk["call_genotype"].shape[1]
+    output = StringIO()
+    c_chunk_to_vcf(
+        chunk,
+        samples_selection=np.arange(num_samples),
+        contigs=contigs,
+        filters=filters,
+        output=output,
+        drop_genotypes=False,
+        no_update=False,
+        subsetting_samples=False,
+        executor=executor,
+    )
+    return output.getvalue()
+
+
+class TestParallelEncoding:
+
+    @pytest.mark.parametrize("encode_threads", [2, 4])
+    def test_write_vcf_roundtrip(self, tmp_path, fx_sample_vcz, encode_threads):
+        vcz = fx_sample_vcz.directory_path
+        output = tmp_path.joinpath("output.vcf")
+        reader = VczReader(open_zarr(vcz, mode="r"))
+        write_vcf(reader, output, no_version=True, encode_threads=encode_threads)
+        assert_vcfs_close(fx_sample_vcz.vcf_path, output)
+
+    @pytest.mark.parametrize("num_workers", [2, 4, 8])
+    def test_chunk_matches_serial(self, num_workers):
+        chunk = minimal_vcf_chunk(20, 3)
+        serial = chunk_to_vcf(chunk)
+        with cf.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            parallel = chunk_to_vcf_with_executor(chunk, executor)
+        assert parallel == serial
+
+    def test_fewer_variants_than_workers(self):
+        chunk = minimal_vcf_chunk(3, 2)
+        serial = chunk_to_vcf(chunk)
+        with cf.ThreadPoolExecutor(max_workers=8) as executor:
+            parallel = chunk_to_vcf_with_executor(chunk, executor)
+        assert parallel == serial
+
+    def test_empty_chunk_with_executor(self):
+        chunk = minimal_vcf_chunk(0, 2)
+        with cf.ThreadPoolExecutor(max_workers=4) as executor:
+            parallel = chunk_to_vcf_with_executor(chunk, executor)
+        assert parallel == ""

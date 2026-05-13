@@ -512,3 +512,136 @@ class TestEncodePlink:
         enc = _vcztools.encode_plink(G)
         assert enc.dtype == np.uint8
         assert list(enc) == [59, 50, 24]
+
+
+class TestEncodeBgenGenoBlocks:
+    def _phased(self, n, value=False):
+        return np.full(n, value, dtype=bool)
+
+    def test_bad_num_arguments(self):
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_geno_blocks()
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, 2), dtype=np.int8),
+            )
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, 2), dtype=np.int8),
+                self._phased(1),
+                np.zeros(1),
+            )
+
+    @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
+    def test_bad_genotype_type(self, bad_type):
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_geno_blocks(bad_type, self._phased(1))
+
+    @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
+    def test_bad_phased_type(self, bad_type):
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, 2), dtype=np.int8), bad_type
+            )
+
+    def test_wrong_genotype_dims(self):
+        with pytest.raises(ValueError, match="genotypes has wrong dimension"):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1), dtype=np.int8), self._phased(1)
+            )
+
+    def test_wrong_phased_dims(self):
+        with pytest.raises(ValueError, match="phased has wrong dimension"):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, 2), dtype=np.int8),
+                np.zeros((1, 1), dtype=bool),
+            )
+
+    @pytest.mark.parametrize("bad_dtype", [np.int16, np.int64, np.float64, "S1"])
+    def test_bad_genotype_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for genotypes"):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, 2), dtype=bad_dtype), self._phased(1)
+            )
+
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.uint8, np.int32, np.float32])
+    def test_bad_phased_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for phased"):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, 2), dtype=np.int8),
+                np.zeros(1, dtype=bad_dtype),
+            )
+
+    @pytest.mark.parametrize("bad_ploidy", [1, 3])
+    def test_bad_ploidy(self, bad_ploidy):
+        with pytest.raises(ValueError, match="Only diploid genotypes"):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((1, 1, bad_ploidy), dtype=np.int8),
+                self._phased(1),
+            )
+
+    def test_phased_variant_mismatch(self):
+        with pytest.raises(
+            ValueError,
+            match=r"phased\.shape\[0\] must equal genotypes\.shape\[0\]",
+        ):
+            _vcztools.encode_bgen_geno_blocks(
+                np.zeros((3, 2, 2), dtype=np.int8), self._phased(2)
+            )
+
+    def test_non_contiguous_genotypes(self):
+        full = np.zeros((2, 4, 2), dtype=np.int8)
+        view = full[:, ::2, :]
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _vcztools.encode_bgen_geno_blocks(view, self._phased(2))
+
+    def test_non_contiguous_phased(self):
+        G = np.zeros((2, 1, 2), dtype=np.int8)
+        full_phased = np.zeros(4, dtype=bool)
+        view = full_phased[::2]
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _vcztools.encode_bgen_geno_blocks(G, view)
+
+    def test_output_shape_and_dtype(self):
+        G = np.zeros((3, 4, 2), dtype=np.int8)
+        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(3))
+        assert out.dtype == np.uint8
+        assert out.shape == (3, 10 + 3 * 4)
+
+    def test_example_unphased(self):
+        # Mirrors tests/test_bgen.py::test_unphased_basic.
+        G = np.array([[[0, 0], [0, 1], [1, 1]]], dtype=np.int8)
+        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
+        assert bytes(out[0, 0:8]) == bytes([3, 0, 0, 0, 2, 0, 2, 2])
+        assert bytes(out[0, 8:11]) == bytes([0x02, 0x02, 0x02])
+        assert out[0, 11] == 0
+        assert out[0, 12] == 8
+        assert bytes(out[0, 13:19]) == bytes([0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00])
+
+    def test_example_phased(self):
+        G = np.array([[[0, 0], [0, 1], [1, 0], [1, 1]]], dtype=np.int8)
+        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(1, True))
+        assert out[0, 12] == 1
+        assert bytes(out[0, 14:22]) == bytes(
+            [0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00]
+        )
+
+    def test_missing_pattern(self):
+        G = np.array([[[-1, -1], [0, -1], [0, 1]]], dtype=np.int8)
+        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
+        assert bytes(out[0, 8:11]) == bytes([0x82, 0x82, 0x02])
+        assert bytes(out[0, 13:19]) == bytes([0, 0, 0, 0, 0, 0xFF])
+
+    def test_zero_samples(self):
+        G = np.zeros((2, 0, 2), dtype=np.int8)
+        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(2))
+        assert out.shape == (2, 10)
+        for row in out:
+            assert bytes(row[0:8]) == bytes([0, 0, 0, 0, 2, 0, 2, 2])
+            assert row[8] == 0  # phased flag
+            assert row[9] == 8  # B
+
+    def test_zero_variants(self):
+        G = np.zeros((0, 5, 2), dtype=np.int8)
+        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(0))
+        assert out.shape == (0, 25)

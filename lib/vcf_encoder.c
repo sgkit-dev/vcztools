@@ -1072,3 +1072,72 @@ vcz_encode_plink(
     }
     return 0;
 }
+
+size_t
+vcz_bgen_geno_block_row_size(size_t num_samples)
+{
+    return 10 + 3 * num_samples;
+}
+
+/* BGEN Layout 2 / 8-bit / biallelic / diploid genotype block builder.
+ * Writes num_variants rows of (10 + 3 * num_samples) bytes into buf.
+ * See vcztools/bgen.py and the BGEN spec for the byte layout. */
+int
+vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
+    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf)
+{
+    const size_t row_size = vcz_bgen_geno_block_row_size(num_samples);
+    uint8_t header[8];
+    uint8_t *row;
+    uint8_t *ploidy_out;
+    uint8_t *prob_out;
+    const int8_t *gt;
+    int8_t a, b;
+    uint8_t b0, b1, variant_phased;
+    size_t v, s;
+
+    /* The 8-byte header is identical for every variant in the chunk. */
+    header[0] = (uint8_t) (num_samples & 0xFF);
+    header[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
+    header[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
+    header[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
+    header[4] = 2; /* K (n_alleles) low byte */
+    header[5] = 0; /* K high byte */
+    header[6] = 2; /* P_min */
+    header[7] = 2; /* P_max */
+
+    for (v = 0; v < num_variants; v++) {
+        row = buf + v * row_size;
+        gt = genotypes + v * num_samples * 2;
+        ploidy_out = row + 8;
+        prob_out = row + 8 + num_samples + 2;
+        variant_phased = phased[v] ? 1 : 0;
+
+        memcpy(row, header, 8);
+        row[8 + num_samples] = variant_phased;
+        row[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
+
+        for (s = 0; s < num_samples; s++) {
+            a = gt[2 * s];
+            b = gt[2 * s + 1];
+
+            if (a < 0 || b < 0) {
+                ploidy_out[s] = VCZ_BGEN_PLOIDY_MISSING;
+                b0 = 0;
+                b1 = 0;
+            } else {
+                ploidy_out[s] = VCZ_BGEN_PLOIDY_DIPLOID;
+                if (variant_phased) {
+                    b0 = (a == 0) ? 0xFF : 0x00;
+                    b1 = (b == 0) ? 0xFF : 0x00;
+                } else {
+                    b0 = (a == 0 && b == 0) ? 0xFF : 0x00;
+                    b1 = ((a == 0 && b == 1) || (a == 1 && b == 0)) ? 0xFF : 0x00;
+                }
+            }
+            prob_out[2 * s] = b0;
+            prob_out[2 * s + 1] = b1;
+        }
+    }
+    return 0;
+}

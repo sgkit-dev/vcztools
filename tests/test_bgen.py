@@ -136,11 +136,34 @@ class TestBuildHeader:
 # ---------------------------------------------------------------------------
 
 
-class TestEncodeGenotypeBlock:
+def _single_variant_geno_block(G_single, *, phased=False):
+    """Build a one-variant chunk, run `_prepare_chunk`, and return the
+    uncompressed genotype-block bytes for that variant. ``G_single``
+    has shape ``(num_samples, 2)``."""
+    G = G_single[None, ...]  # (1, S, 2)
+    n = G_single.shape[0]
+    chunk = {
+        "call_genotype": G,
+        "variant_allele": np.array([["A", "T"]]),
+        "variant_contig": np.array([0]),
+        "variant_position": np.array([100]),
+    }
+    if phased:
+        chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
+    prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
+    return bytes(prep.geno_blocks[0])
+
+
+class TestPrepareChunkGenoBlocks:
+    """Spec-level byte assertions on the uncompressed genotype-block
+    bytes produced by :func:`_prepare_chunk` (`prep.geno_blocks[i]`).
+    Layout 2 / 8-bit / biallelic / diploid; matches the per-variant
+    byte form the BGEN spec defines."""
+
     def test_unphased_basic(self):
         # Three samples: hom-ref, het, hom-alt.
         G = np.array([[0, 0], [0, 1], [1, 1]], dtype=np.int8)
-        block = bgen._encode_genotype_block(G, phased=False)
+        block = _single_variant_geno_block(G)
         # uint32 N=3, uint16 K=2, uint8 P_min=2, uint8 P_max=2 -> 8 bytes
         (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
         assert (n, k, p_min, p_max) == (3, 2, 2, 2)
@@ -157,13 +180,13 @@ class TestEncodeGenotypeBlock:
 
     def test_unphased_het_reverse_order(self):
         G = np.array([[1, 0]], dtype=np.int8)
-        block = bgen._encode_genotype_block(G, phased=False)
+        block = _single_variant_geno_block(G)
         # (1,0) is also het: P(00)=0, P(01)=0xFF.
         assert block[-2:] == bytes([0x00, 0xFF])
 
     def test_missing_genotype(self):
         G = np.array([[-1, -1], [0, -1], [0, 1]], dtype=np.int8)
-        block = bgen._encode_genotype_block(G, phased=False)
+        block = _single_variant_geno_block(G)
         # Ploidy bytes: 0x82 (missing), 0x82 (any neg → missing), 0x02.
         assert block[8:11] == bytes([0x82, 0x82, 0x02])
         # Probability bytes for missing samples are zeroed; het stays.
@@ -171,14 +194,14 @@ class TestEncodeGenotypeBlock:
 
     def test_haploid_padding_treated_as_missing(self):
         G = np.array([[0, -2]], dtype=np.int8)
-        block = bgen._encode_genotype_block(G, phased=False)
+        block = _single_variant_geno_block(G)
         assert block[8] == 0x82
         assert block[-2:] == bytes([0x00, 0x00])
 
     def test_phased(self):
         # Phased het variants distinguish (0,1) from (1,0).
         G = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int8)
-        block = bgen._encode_genotype_block(G, phased=True)
+        block = _single_variant_geno_block(G, phased=True)
         # Header (8 bytes) + 4 ploidy bytes -> phased flag at offset 12,
         # B at 13, prob bytes start at 14.
         assert block[12] == 1
@@ -192,7 +215,7 @@ class TestEncodeGenotypeBlock:
 
     def test_zero_samples(self):
         G = np.zeros((0, 2), dtype=np.int8)
-        block = bgen._encode_genotype_block(G, phased=False)
+        block = _single_variant_geno_block(G)
         # Header (8 bytes) + 0 ploidy bytes + phased + B (2 bytes) + 0 probs
         assert len(block) == 10
         (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
@@ -202,6 +225,7 @@ class TestEncodeGenotypeBlock:
 class TestEncodeVariantBlock:
     def test_round_trip(self, tmp_path):
         G = np.array([[0, 0], [0, 1]], dtype=np.int8)
+        geno_block_bytes = _single_variant_geno_block(G)
         block = bgen._encode_variant_block(
             varid_bytes=b"rs1",
             rsid_bytes=b"rs1",
@@ -209,8 +233,7 @@ class TestEncodeVariantBlock:
             position=12345,
             allele1_bytes=b"A",
             allele2_bytes=b"T",
-            genotypes=G,
-            phased=False,
+            geno_block_bytes=geno_block_bytes,
             compression_level=-1,
         )
         sample_block = bgen._build_sample_id_block(["s0", "s1"])
@@ -932,7 +955,11 @@ class TestPrepareChunk:
         assert [bytes(b) for b in prep.allele1] == [b"A", b"C"]
         assert [bytes(b) for b in prep.allele2] == [b"T", b"G"]
         np.testing.assert_array_equal(prep.position, [100, 101])
-        np.testing.assert_array_equal(prep.phased, [False, False])
+        # 2 samples → geno-block layout has phased flag at byte 8 + 2 = 10.
+        # Without a call_genotype_phased field every variant is unphased.
+        s = 2
+        assert prep.geno_blocks[0, 8 + s] == 0
+        assert prep.geno_blocks[1, 8 + s] == 0
         assert prep.mixed_phase_count == 0
 
     def test_fixed_mode_pads_to_max_len(self):
@@ -964,9 +991,9 @@ class TestPrepareChunk:
         assert [bytes(b) for b in prep.allele2] == [b".", b"G"]
 
     def test_phase_detection_and_mixed_count(self):
-        # Variant 0: all samples phased → phased=True
-        # Variant 1: some samples phased → mixed → phased=False, mixed++
-        # Variant 2: no samples phased → phased=False
+        # Variant 0: all samples phased → flag=1
+        # Variant 1: some samples phased → mixed → flag=0, mixed++
+        # Variant 2: no samples phased → flag=0
         phased = np.array(
             [
                 [True, True],
@@ -977,7 +1004,9 @@ class TestPrepareChunk:
         alleles = np.array([["A", "T"], ["C", "G"], ["G", "A"]])
         chunk = self._make_chunk(alleles=alleles, phased=phased, num_samples=2)
         prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]))
-        np.testing.assert_array_equal(prep.phased, [True, False, False])
+        # Phased flag lives at byte 8 + num_samples in each geno-block row.
+        flags = prep.geno_blocks[:, 8 + 2]
+        np.testing.assert_array_equal(flags, [1, 0, 0])
         assert prep.mixed_phase_count == 1
 
     def test_varid_overflow_checked_before_rsid(self):

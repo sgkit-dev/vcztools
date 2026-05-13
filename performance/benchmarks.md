@@ -142,7 +142,7 @@ differ by ~2× so a shared chunk count would over- or under-spend.
 ### `vcz_encode_plink` kernel ceiling
 
 The pure C kernel, exercised in isolation by
-`performance/encode_plink_bench.py` on an in-memory genotype array
+`performance/encoding_microbench.py` on an in-memory genotype array
 (no I/O, no readahead, single chunk of 1000 variants × 100 000
 samples × 2):
 

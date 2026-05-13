@@ -116,3 +116,10 @@ int vcz_ftoa(char *buf, float v);
 #define VCZ_PLINK_MISSING 0x1 /* 01 */
 int vcz_encode_plink(
     size_t num_variants, size_t num_samples, const int8_t *genotypes, char *buf);
+
+#define VCZ_BGEN_PLOIDY_DIPLOID 0x02
+#define VCZ_BGEN_PLOIDY_MISSING 0x82
+#define VCZ_BGEN_BITS_PER_PROB 8
+int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
+    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf);
+size_t vcz_bgen_geno_block_row_size(size_t num_samples);

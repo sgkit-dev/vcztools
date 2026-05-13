@@ -32,7 +32,7 @@ from typing import ClassVar
 
 import numpy as np
 
-from vcztools import format_encoder, retrieval
+from vcztools import _vcztools, format_encoder, retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +42,6 @@ COMPRESSION_ZLIB = 1
 SAMPLE_IDS_PRESENT = 1 << 31
 HEADER_LENGTH = 20
 BITS_PER_PROB = 8
-
-_PLOIDY_DIPLOID = 0x02
-_PLOIDY_MISSING = 0x82  # high bit (missing) | ploidy 2
 
 
 def _check_biallelic(alleles):
@@ -252,7 +249,10 @@ def _prepare_chunk(
         mixed_phase_count = 0
         phased = np.zeros(n, dtype=bool)
 
-    geno_blocks = _build_geno_blocks(G, phased)
+    # Sample-subset paths can deliver call_genotype as a non-contiguous
+    # fancy-indexed view; the C kernel requires NPY_ARRAY_IN_ARRAY.
+    G = np.ascontiguousarray(G, dtype=np.int8)
+    geno_blocks = _vcztools.encode_bgen_geno_blocks(G, phased)
 
     return _ChunkBytes(
         varid=varid_b,
@@ -264,63 +264,6 @@ def _prepare_chunk(
         geno_blocks=geno_blocks,
         mixed_phase_count=mixed_phase_count,
     )
-
-
-def _build_geno_blocks(G, phased):
-    """Vectorised build of every variant's uncompressed BGEN
-    genotype-block bytes for one chunk. Returns a
-    ``(V, 10 + 3 * num_samples)`` uint8 array; row ``i`` is the
-    spec-compliant uncompressed block for variant ``i``.
-
-    Layout per row (Layout 2 / 8-bit / biallelic / diploid):
-
-        uint32 N            n_samples
-        uint16 K = 2        n_alleles
-        uint8  P_min = 2
-        uint8  P_max = 2
-        N bytes             ploidy/missing per sample
-        uint8  phased       per-variant flag
-        uint8  B = 8        bits per probability
-        2*N bytes           per-sample probability bytes (B0, B1 interleaved)
-    """
-    v, s, _ = G.shape
-    a = G[..., 0]
-    b = G[..., 1]
-    missing = (a < 0) | (b < 0)
-
-    # Phased and unphased disagree on what B0/B1 carry; compute both
-    # bitwise forms vectorised and select per variant with the phase
-    # mask broadcast over the sample axis.
-    a_zero = a == 0
-    b_zero = b == 0
-    homref = a_zero & b_zero
-    het = (a_zero & (b == 1)) | ((a == 1) & b_zero)
-    phased_row = phased[:, None]
-    b0_bit = np.where(phased_row, a_zero, homref)
-    b1_bit = np.where(phased_row, b_zero, het)
-    # bool's underlying storage is uint8 (0/1), so .view(np.uint8) is
-    # zero-copy; multiplying by uint8(0xFF) keeps the result in uint8 and
-    # avoids the int64 intermediate of np.where(bit, 0xFF, 0).astype(uint8).
-    # Folding ~missing into the AND zeroes missing samples in the same
-    # pass (spec: missing samples' probability bytes are ignored, but we
-    # zero them for deterministic output).
-    valid = ~missing
-    B0 = (b0_bit & valid).view(np.uint8) * np.uint8(0xFF)
-    B1 = (b1_bit & valid).view(np.uint8) * np.uint8(0xFF)
-
-    ploidy = np.where(missing, np.uint8(_PLOIDY_MISSING), np.uint8(_PLOIDY_DIPLOID))
-
-    geno_blocks = np.empty((v, 10 + 3 * s), dtype=np.uint8)
-    header = struct.pack("<IHBB", s, 2, 2, 2)  # 8 bytes; constant per chunk
-    geno_blocks[:, 0:8] = np.frombuffer(header, dtype=np.uint8)
-    geno_blocks[:, 8 : 8 + s] = ploidy
-    geno_blocks[:, 8 + s] = phased.astype(np.uint8)
-    geno_blocks[:, 8 + s + 1] = BITS_PER_PROB
-    # Per-sample probability bytes interleave B0 then B1; matches the
-    # per-variant ordering produced by the legacy genotype block builder.
-    geno_blocks[:, 8 + s + 2 :: 2] = B0
-    geno_blocks[:, 8 + s + 3 :: 2] = B1
-    return geno_blocks
 
 
 def _encode_variant_block(
@@ -359,8 +302,8 @@ def _encode_variant_block(
 
     ``geno_block_bytes`` is the uncompressed BGEN genotype-block bytes
     (spec layout: N/K/Pmin/Pmax header, ploidy, phased flag, B, prob
-    bytes) — assembled at chunk-level by :func:`_build_geno_blocks`
-    in :func:`_prepare_chunk`.
+    bytes) — assembled at chunk-level by
+    ``_vcztools.encode_bgen_geno_blocks`` in :func:`_prepare_chunk`.
 
     bgen-reader strips trailing NULs from variable-length string
     fields, so the NUL-padded form round-trips as the original UTF-8

@@ -965,6 +965,416 @@ test_encode_plink_all_zeros(void)
     test_encode_plink_all_zeros_instance(100, 400);
 }
 
+struct bgen_single_case {
+    int8_t a;
+    int8_t b;
+    uint8_t ploidy;
+    uint8_t b0_unphased;
+    uint8_t b1_unphased;
+    uint8_t b0_phased;
+    uint8_t b1_phased;
+};
+
+static struct bgen_single_case bgen_single_cases[] = {
+    /* a, b,  ploidy,                    B0u,  B1u,  B0p,  B1p */
+    { 0, 0, VCZ_BGEN_PLOIDY_DIPLOID, 0xFF, 0x00, 0xFF, 0xFF },
+    { 0, 1, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0xFF, 0xFF, 0x00 },
+    { 1, 0, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0xFF, 0x00, 0xFF },
+    { 1, 1, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0x00, 0x00 },
+    /* Non-negative values >= 2 are not classed as missing; they fall
+     * through the bool predicates and yield 0x00 for both bytes
+     * (matches the Python reference). */
+    { 0, 2, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0xFF, 0x00 },
+    { 2, 0, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0x00, 0xFF },
+    { 2, 2, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0x00, 0x00 },
+    /* Any negative on either allele -> missing, prob bytes zeroed. */
+    { -1, 0, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { 0, -1, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { -1, -1, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { -2, 0, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { 0, -2, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { -2, -2, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { -2, -1, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { -1, -2, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { 1, -2, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+    { -2, 1, VCZ_BGEN_PLOIDY_MISSING, 0x00, 0x00, 0x00, 0x00 },
+};
+
+static void
+check_single_sample_header(const uint8_t *buf, uint8_t expected_phased)
+{
+    /* Header: N=1 LE, K=2, P_min=2, P_max=2 */
+    CU_ASSERT_EQUAL_FATAL(buf[0], 1);
+    CU_ASSERT_EQUAL_FATAL(buf[1], 0);
+    CU_ASSERT_EQUAL_FATAL(buf[2], 0);
+    CU_ASSERT_EQUAL_FATAL(buf[3], 0);
+    CU_ASSERT_EQUAL_FATAL(buf[4], 2);
+    CU_ASSERT_EQUAL_FATAL(buf[5], 0);
+    CU_ASSERT_EQUAL_FATAL(buf[6], 2);
+    CU_ASSERT_EQUAL_FATAL(buf[7], 2);
+    /* buf[8] is the ploidy byte (variable per case) */
+    CU_ASSERT_EQUAL_FATAL(buf[9], expected_phased);
+    CU_ASSERT_EQUAL_FATAL(buf[10], VCZ_BGEN_BITS_PER_PROB);
+}
+
+static void
+test_bgen_geno_blocks_single_sample_unphased(void)
+{
+    int8_t genotypes[2];
+    uint8_t phased = 0;
+    uint8_t buf[13]; /* 10 + 3*1 */
+    size_t j, num_cases;
+
+    num_cases = sizeof(bgen_single_cases) / sizeof(*bgen_single_cases);
+    for (j = 0; j < num_cases; j++) {
+        genotypes[0] = bgen_single_cases[j].a;
+        genotypes[1] = bgen_single_cases[j].b;
+        memset(buf, 0xCC, sizeof(buf));
+        vcz_encode_bgen_geno_blocks(1, 1, genotypes, &phased, buf);
+        check_single_sample_header(buf, 0);
+        CU_ASSERT_EQUAL_FATAL(buf[8], bgen_single_cases[j].ploidy);
+        CU_ASSERT_EQUAL_FATAL(buf[11], bgen_single_cases[j].b0_unphased);
+        CU_ASSERT_EQUAL_FATAL(buf[12], bgen_single_cases[j].b1_unphased);
+    }
+}
+
+static void
+test_bgen_geno_blocks_single_sample_phased(void)
+{
+    int8_t genotypes[2];
+    uint8_t phased = 1;
+    uint8_t buf[13];
+    size_t j, num_cases;
+
+    num_cases = sizeof(bgen_single_cases) / sizeof(*bgen_single_cases);
+    for (j = 0; j < num_cases; j++) {
+        genotypes[0] = bgen_single_cases[j].a;
+        genotypes[1] = bgen_single_cases[j].b;
+        memset(buf, 0xCC, sizeof(buf));
+        vcz_encode_bgen_geno_blocks(1, 1, genotypes, &phased, buf);
+        check_single_sample_header(buf, 1);
+        CU_ASSERT_EQUAL_FATAL(buf[8], bgen_single_cases[j].ploidy);
+        CU_ASSERT_EQUAL_FATAL(buf[11], bgen_single_cases[j].b0_phased);
+        CU_ASSERT_EQUAL_FATAL(buf[12], bgen_single_cases[j].b1_phased);
+    }
+}
+
+static void
+check_header_for_size(size_t num_samples)
+{
+    int8_t *gt;
+    uint8_t phased = 0;
+    uint8_t *buf;
+    size_t row_size;
+    int ret;
+
+    row_size = 10 + 3 * num_samples;
+    gt = calloc(num_samples > 0 ? num_samples : 1, 2 * sizeof(int8_t));
+    buf = malloc(row_size);
+    CU_ASSERT_FATAL(gt != NULL);
+    CU_ASSERT_FATAL(buf != NULL);
+
+    ret = vcz_encode_bgen_geno_blocks(1, num_samples, gt, &phased, buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    /* N as uint32 LE */
+    CU_ASSERT_EQUAL_FATAL(buf[0], (uint8_t) (num_samples & 0xFF));
+    CU_ASSERT_EQUAL_FATAL(buf[1], (uint8_t) ((num_samples >> 8) & 0xFF));
+    CU_ASSERT_EQUAL_FATAL(buf[2], (uint8_t) ((num_samples >> 16) & 0xFF));
+    CU_ASSERT_EQUAL_FATAL(buf[3], (uint8_t) ((num_samples >> 24) & 0xFF));
+    /* K=2 little-endian, P_min=2, P_max=2 */
+    CU_ASSERT_EQUAL_FATAL(buf[4], 2);
+    CU_ASSERT_EQUAL_FATAL(buf[5], 0);
+    CU_ASSERT_EQUAL_FATAL(buf[6], 2);
+    CU_ASSERT_EQUAL_FATAL(buf[7], 2);
+    /* Phased flag and B byte sit at the expected offsets. */
+    CU_ASSERT_EQUAL_FATAL(buf[8 + num_samples], 0);
+    CU_ASSERT_EQUAL_FATAL(buf[8 + num_samples + 1], VCZ_BGEN_BITS_PER_PROB);
+
+    free(gt);
+    free(buf);
+}
+
+static void
+test_bgen_geno_blocks_header_bytes(void)
+{
+    check_header_for_size(0);
+    check_header_for_size(1);
+    check_header_for_size(4);
+    check_header_for_size(255);
+    check_header_for_size(256);
+    check_header_for_size(65536);
+    check_header_for_size(1000000);
+}
+
+static void
+test_bgen_geno_blocks_zero_samples(void)
+{
+    /* Three variants, no samples: every row is exactly the 10 header
+     * bytes (8) + phased flag (1) + B byte (1). */
+    int8_t genotypes[1] = { 0 }; /* unused but must be a valid pointer */
+    uint8_t phased[3] = { 0, 1, 0 };
+    uint8_t buf[30];
+    size_t v, off;
+    int ret;
+
+    memset(buf, 0xCC, sizeof(buf));
+    ret = vcz_encode_bgen_geno_blocks(3, 0, genotypes, phased, buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    for (v = 0; v < 3; v++) {
+        off = v * 10;
+        CU_ASSERT_EQUAL_FATAL(buf[off + 0], 0);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 1], 0);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 2], 0);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 3], 0);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 4], 2);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 5], 0);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 6], 2);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 7], 2);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 8], phased[v]);
+        CU_ASSERT_EQUAL_FATAL(buf[off + 9], VCZ_BGEN_BITS_PER_PROB);
+    }
+}
+
+static void
+test_bgen_geno_blocks_zero_variants(void)
+{
+    /* Zero variants must not touch buf, regardless of num_samples. */
+    int8_t genotypes[1] = { 0 };
+    uint8_t phased[1] = { 0 };
+    uint8_t buf[64];
+    size_t j;
+    int ret;
+
+    memset(buf, 0xCC, sizeof(buf));
+    ret = vcz_encode_bgen_geno_blocks(0, 5, genotypes, phased, buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    for (j = 0; j < sizeof(buf); j++) {
+        CU_ASSERT_EQUAL_FATAL(buf[j], 0xCC);
+    }
+}
+
+static void
+test_bgen_geno_blocks_example_unphased(void)
+{
+    /* Mirrors tests/test_bgen.py::test_unphased_basic. */
+    int8_t genotypes[] = { 0, 0, 0, 1, 1, 1 }; /* 1 variant, 3 samples */
+    uint8_t phased = 0;
+    uint8_t buf[19]; /* 10 + 3*3 */
+    /* Header (8) + ploidy (3) + phased + B + probs (6) = 19 */
+    uint8_t expected[] = {
+        3, 0, 0, 0, 2, 0, 2, 2,             /* header: N=3, K=2, P_min=2, P_max=2 */
+        0x02, 0x02, 0x02,                   /* ploidy: 3 diploids */
+        0x00,                               /* phased flag */
+        VCZ_BGEN_BITS_PER_PROB,             /* B = 8 */
+        0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, /* hom-ref, het, hom-alt */
+    };
+    size_t j;
+
+    vcz_encode_bgen_geno_blocks(1, 3, genotypes, &phased, buf);
+    for (j = 0; j < sizeof(expected); j++) {
+        CU_ASSERT_EQUAL_FATAL(buf[j], expected[j]);
+    }
+}
+
+static void
+test_bgen_geno_blocks_example_phased(void)
+{
+    /* Mirrors tests/test_bgen.py::test_phased. */
+    // clang-format off
+    int8_t genotypes[] = {
+        0, 0, 0, 1, 1, 0, 1, 1,
+    }; /* 1 variant, 4 samples */
+    uint8_t phased = 1;
+    uint8_t buf[22]; /* 10 + 3*4 */
+    uint8_t expected[] = {
+        4, 0, 0, 0, 2, 0, 2, 2,                         /* header: N=4 */
+        0x02, 0x02, 0x02, 0x02,                         /* ploidy: all diploid */
+        0x01,                                           /* phased flag */
+        VCZ_BGEN_BITS_PER_PROB,
+        0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00,
+    };
+    // clang-format on
+    size_t j;
+
+    vcz_encode_bgen_geno_blocks(1, 4, genotypes, &phased, buf);
+    for (j = 0; j < sizeof(expected); j++) {
+        CU_ASSERT_EQUAL_FATAL(buf[j], expected[j]);
+    }
+}
+
+static void
+test_bgen_geno_blocks_example_missing(void)
+{
+    /* Mirrors tests/test_bgen.py::test_missing_genotype. */
+    int8_t genotypes[] = { -1, -1, 0, -1, 0, 1 }; /* 1 variant, 3 samples */
+    uint8_t phased = 0;
+    uint8_t buf[19];
+    // clang-format off
+    uint8_t expected[] = {
+        3, 0, 0, 0, 2, 0, 2, 2,
+        0x82, 0x82, 0x02,                /* missing, missing, diploid */
+        0x00,
+        VCZ_BGEN_BITS_PER_PROB,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+    };
+    // clang-format on
+    size_t j;
+
+    vcz_encode_bgen_geno_blocks(1, 3, genotypes, &phased, buf);
+    for (j = 0; j < sizeof(expected); j++) {
+        CU_ASSERT_EQUAL_FATAL(buf[j], expected[j]);
+    }
+}
+
+static void
+test_bgen_geno_blocks_mixed_phase(void)
+{
+    /* Same 3-sample genotype repeated for 4 variants with alternating
+     * phase flags; verifies the per-variant flag drives the per-row
+     * branch and that variant rows are independent. */
+    int8_t single[] = { 0, 0, 1, 0, 1, 1 }; /* 3 samples: (0,0),(1,0),(1,1) */
+    int8_t genotypes[24];
+    uint8_t phased[4] = { 0, 1, 0, 1 };
+    uint8_t buf[4 * 19];
+    /* Unphased: (0,0)=homref => B0=FF,B1=00; (1,0)=het => B0=00,B1=FF;
+     * (1,1) => B0=00,B1=00.
+     * Phased: (0,0) => B0=FF,B1=FF; (1,0) => B0=00,B1=FF;
+     * (1,1) => B0=00,B1=00.
+     */
+    uint8_t prob_unphased[] = { 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00 };
+    uint8_t prob_phased[] = { 0xFF, 0xFF, 0x00, 0xFF, 0x00, 0x00 };
+    size_t v, j;
+
+    for (v = 0; v < 4; v++) {
+        memcpy(genotypes + v * 6, single, sizeof(single));
+    }
+    vcz_encode_bgen_geno_blocks(4, 3, genotypes, phased, buf);
+
+    for (v = 0; v < 4; v++) {
+        const uint8_t *row = buf + v * 19;
+        /* Common header */
+        CU_ASSERT_EQUAL_FATAL(row[0], 3);
+        CU_ASSERT_EQUAL_FATAL(row[1], 0);
+        CU_ASSERT_EQUAL_FATAL(row[2], 0);
+        CU_ASSERT_EQUAL_FATAL(row[3], 0);
+        CU_ASSERT_EQUAL_FATAL(row[4], 2);
+        CU_ASSERT_EQUAL_FATAL(row[5], 0);
+        CU_ASSERT_EQUAL_FATAL(row[6], 2);
+        CU_ASSERT_EQUAL_FATAL(row[7], 2);
+        /* All samples non-missing => ploidy 0x02 across the board */
+        CU_ASSERT_EQUAL_FATAL(row[8], 0x02);
+        CU_ASSERT_EQUAL_FATAL(row[9], 0x02);
+        CU_ASSERT_EQUAL_FATAL(row[10], 0x02);
+        CU_ASSERT_EQUAL_FATAL(row[11], phased[v]);
+        CU_ASSERT_EQUAL_FATAL(row[12], VCZ_BGEN_BITS_PER_PROB);
+        for (j = 0; j < 6; j++) {
+            CU_ASSERT_EQUAL_FATAL(
+                row[13 + j], phased[v] ? prob_phased[j] : prob_unphased[j]);
+        }
+    }
+}
+
+/* Independent reference used to validate the large parameter-sweep case.
+ * Spec-derived; not a refactor of the kernel under test. */
+static void
+build_expected_bgen_row(
+    uint8_t *out, size_t num_samples, const int8_t *gt, uint8_t variant_phased)
+{
+    size_t s;
+    int8_t a, b;
+    uint8_t b0, b1;
+
+    out[0] = (uint8_t) (num_samples & 0xFF);
+    out[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
+    out[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
+    out[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
+    out[4] = 2;
+    out[5] = 0;
+    out[6] = 2;
+    out[7] = 2;
+    for (s = 0; s < num_samples; s++) {
+        a = gt[2 * s];
+        b = gt[2 * s + 1];
+        out[8 + s]
+            = (a < 0 || b < 0) ? VCZ_BGEN_PLOIDY_MISSING : VCZ_BGEN_PLOIDY_DIPLOID;
+    }
+    out[8 + num_samples] = variant_phased;
+    out[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
+    for (s = 0; s < num_samples; s++) {
+        a = gt[2 * s];
+        b = gt[2 * s + 1];
+        if (a < 0 || b < 0) {
+            b0 = 0;
+            b1 = 0;
+        } else if (variant_phased) {
+            b0 = (a == 0) ? 0xFF : 0x00;
+            b1 = (b == 0) ? 0xFF : 0x00;
+        } else {
+            b0 = (a == 0 && b == 0) ? 0xFF : 0x00;
+            b1 = ((a == 0 && b == 1) || (a == 1 && b == 0)) ? 0xFF : 0x00;
+        }
+        out[8 + num_samples + 2 + 2 * s] = b0;
+        out[8 + num_samples + 2 + 2 * s + 1] = b1;
+    }
+}
+
+static void
+test_bgen_geno_blocks_large(void)
+{
+    /* 100 variants x 100 samples sweep. Deterministic content covers
+     * the missing/normal/het/half-call branches and both phased states
+     * (alternating per variant). Verified row-by-row against a
+     * separately-coded spec reference. */
+    const size_t num_variants = 100;
+    const size_t num_samples = 100;
+    const size_t row_size = 10 + 3 * num_samples;
+    int8_t *genotypes;
+    uint8_t *phased;
+    uint8_t *buf;
+    uint8_t *expected;
+    size_t v, s, j;
+    int8_t a, b;
+    int ret;
+
+    genotypes = malloc(num_variants * num_samples * 2);
+    phased = malloc(num_variants);
+    buf = malloc(num_variants * row_size);
+    expected = malloc(row_size);
+    CU_ASSERT_FATAL(genotypes != NULL);
+    CU_ASSERT_FATAL(phased != NULL);
+    CU_ASSERT_FATAL(buf != NULL);
+    CU_ASSERT_FATAL(expected != NULL);
+
+    for (v = 0; v < num_variants; v++) {
+        phased[v] = (uint8_t) (v % 2);
+        for (s = 0; s < num_samples; s++) {
+            /* Cycle through {-2, -1, 0, 1, 2} for both alleles
+             * with offset so half-calls, missing, het and hom all
+             * appear in the data. */
+            a = (int8_t) (((v + s) % 5) - 2);
+            b = (int8_t) (((v + 2 * s) % 5) - 2);
+            genotypes[(v * num_samples + s) * 2] = a;
+            genotypes[(v * num_samples + s) * 2 + 1] = b;
+        }
+    }
+
+    ret = vcz_encode_bgen_geno_blocks(num_variants, num_samples, genotypes, phased, buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+
+    for (v = 0; v < num_variants; v++) {
+        build_expected_bgen_row(
+            expected, num_samples, genotypes + v * num_samples * 2, phased[v]);
+        for (j = 0; j < row_size; j++) {
+            CU_ASSERT_EQUAL_FATAL(buf[v * row_size + j], expected[j]);
+        }
+    }
+
+    free(genotypes);
+    free(phased);
+    free(buf);
+    free(expected);
+}
+
 /*=================================================
   Test suite management
   =================================================
@@ -1080,6 +1490,20 @@ main(int argc, char **argv)
         { "test_encode_plink_single_genotype", test_encode_plink_single_genotype },
         { "test_encode_plink_example", test_encode_plink_example },
         { "test_encode_plink_all_zeros", test_encode_plink_all_zeros },
+        { "test_bgen_geno_blocks_single_sample_unphased",
+            test_bgen_geno_blocks_single_sample_unphased },
+        { "test_bgen_geno_blocks_single_sample_phased",
+            test_bgen_geno_blocks_single_sample_phased },
+        { "test_bgen_geno_blocks_header_bytes", test_bgen_geno_blocks_header_bytes },
+        { "test_bgen_geno_blocks_zero_samples", test_bgen_geno_blocks_zero_samples },
+        { "test_bgen_geno_blocks_zero_variants", test_bgen_geno_blocks_zero_variants },
+        { "test_bgen_geno_blocks_example_unphased",
+            test_bgen_geno_blocks_example_unphased },
+        { "test_bgen_geno_blocks_example_phased", test_bgen_geno_blocks_example_phased },
+        { "test_bgen_geno_blocks_example_missing",
+            test_bgen_geno_blocks_example_missing },
+        { "test_bgen_geno_blocks_mixed_phase", test_bgen_geno_blocks_mixed_phase },
+        { "test_bgen_geno_blocks_large", test_bgen_geno_blocks_large },
         { NULL, NULL },
     };
     return test_main(tests, argc, argv);

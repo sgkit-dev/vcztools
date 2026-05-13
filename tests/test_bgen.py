@@ -21,7 +21,60 @@ import numpy.testing as nt
 import pytest
 
 from tests import vcz_builder
-from vcztools import bcftools_filter, bgen, regions, retrieval
+from vcztools import _vcztools, bcftools_filter, bgen, regions, retrieval
+
+_REFERENCE_PLOIDY_DIPLOID = 0x02
+_REFERENCE_PLOIDY_MISSING = 0x82
+
+
+def _build_geno_blocks_reference(G, phased):
+    """Pure-NumPy reference implementation of the BGEN Layout-2
+    genotype-block builder, kept verbatim from the original
+    ``vcztools.bgen._build_geno_blocks`` so the C kernel can be
+    validated against it.
+
+    Layout per row (Layout 2 / 8-bit / biallelic / diploid):
+
+        uint32 N            n_samples
+        uint16 K = 2        n_alleles
+        uint8  P_min = 2
+        uint8  P_max = 2
+        N bytes             ploidy/missing per sample
+        uint8  phased       per-variant flag
+        uint8  B = 8        bits per probability
+        2*N bytes           per-sample probability bytes (B0, B1 interleaved)
+    """
+    v, s, _ = G.shape
+    a = G[..., 0]
+    b = G[..., 1]
+    missing = (a < 0) | (b < 0)
+
+    a_zero = a == 0
+    b_zero = b == 0
+    homref = a_zero & b_zero
+    het = (a_zero & (b == 1)) | ((a == 1) & b_zero)
+    phased_row = phased[:, None]
+    b0_bit = np.where(phased_row, a_zero, homref)
+    b1_bit = np.where(phased_row, b_zero, het)
+    valid = ~missing
+    B0 = (b0_bit & valid).view(np.uint8) * np.uint8(0xFF)
+    B1 = (b1_bit & valid).view(np.uint8) * np.uint8(0xFF)
+
+    ploidy = np.where(
+        missing,
+        np.uint8(_REFERENCE_PLOIDY_MISSING),
+        np.uint8(_REFERENCE_PLOIDY_DIPLOID),
+    )
+
+    geno_blocks = np.empty((v, 10 + 3 * s), dtype=np.uint8)
+    header = struct.pack("<IHBB", s, 2, 2, 2)
+    geno_blocks[:, 0:8] = np.frombuffer(header, dtype=np.uint8)
+    geno_blocks[:, 8 : 8 + s] = ploidy
+    geno_blocks[:, 8 + s] = phased.astype(np.uint8)
+    geno_blocks[:, 8 + s + 1] = bgen.BITS_PER_PROB
+    geno_blocks[:, 8 + s + 2 :: 2] = B0
+    geno_blocks[:, 8 + s + 3 :: 2] = B1
+    return geno_blocks
 
 
 def _build_reader(*, num_variants=2, num_samples=3, **overrides):
@@ -220,6 +273,128 @@ class TestPrepareChunkGenoBlocks:
         assert len(block) == 10
         (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
         assert (n, k, p_min, p_max) == (0, 2, 2, 2)
+
+
+class TestBuildGenoBlocksAgainstReference:
+    """Sweep the C kernel ``_vcztools.encode_bgen_geno_blocks`` against
+    the pure-NumPy ``_build_geno_blocks_reference`` over a range of
+    awkward inputs; the C output must match byte-for-byte."""
+
+    def _assert_matches(self, G, phased):
+        c_out = _vcztools.encode_bgen_geno_blocks(G, phased)
+        ref_out = _build_geno_blocks_reference(G, phased)
+        assert c_out.dtype == np.uint8
+        assert c_out.shape == (G.shape[0], 10 + 3 * G.shape[1])
+        nt.assert_array_equal(c_out, ref_out)
+
+    @pytest.mark.parametrize("phased_value", [False, True])
+    def test_single_sample_all_allele_pairs(self, phased_value):
+        # Sweep every (a, b) from {-2,-1,0,1,2}^2 as separate variants.
+        pairs = [(a, b) for a in range(-2, 3) for b in range(-2, 3)]
+        G = np.array([[[a, b]] for a, b in pairs], dtype=np.int8)
+        phased = np.full(len(pairs), phased_value, dtype=bool)
+        self._assert_matches(G, phased)
+
+    def test_small_unphased_handcrafted(self):
+        G = np.array([[[0, 0], [0, 1], [1, 1]]], dtype=np.int8)
+        self._assert_matches(G, np.array([False]))
+
+    def test_small_phased_handcrafted(self):
+        G = np.array([[[0, 0], [0, 1], [1, 0], [1, 1]]], dtype=np.int8)
+        self._assert_matches(G, np.array([True]))
+
+    def test_mixed_phase_across_variants(self):
+        single = np.array([[0, 0], [1, 0], [1, 1]], dtype=np.int8)
+        G = np.broadcast_to(single, (4, 3, 2)).copy()
+        phased = np.array([True, False, True, False])
+        self._assert_matches(G, phased)
+
+    def test_all_missing(self):
+        G = np.full((5, 7, 2), -1, dtype=np.int8)
+        self._assert_matches(G, np.zeros(5, dtype=bool))
+        self._assert_matches(G, np.ones(5, dtype=bool))
+
+    def test_all_haploid_padded(self):
+        G = np.full((4, 6, 2), -2, dtype=np.int8)
+        self._assert_matches(G, np.zeros(4, dtype=bool))
+
+    def test_partial_missing_patterns(self):
+        # One variant covers every kind of missing/half-call/normal pair.
+        samples = np.array(
+            [
+                [-1, -1],
+                [0, -1],
+                [-1, 0],
+                [-2, 0],
+                [0, -2],
+                [1, -2],
+                [-2, 1],
+                [0, 0],
+                [0, 1],
+                [1, 0],
+                [1, 1],
+            ],
+            dtype=np.int8,
+        )
+        G = samples[np.newaxis, ...]
+        self._assert_matches(G, np.array([False]))
+        self._assert_matches(G, np.array([True]))
+
+    @pytest.mark.parametrize(
+        "num_samples", [0, 1, 2, 3, 5, 7, 8, 9, 16, 17, 255, 256, 1000]
+    )
+    def test_unusual_sample_counts(self, num_samples):
+        rng = np.random.default_rng(0)
+        G = rng.integers(-2, 3, size=(2, num_samples, 2), dtype=np.int8)
+        phased = np.array([False, True])
+        self._assert_matches(G, phased)
+
+    @pytest.mark.parametrize("num_variants", [0, 1, 2, 7, 16, 100])
+    def test_unusual_variant_counts(self, num_variants):
+        rng = np.random.default_rng(1)
+        G = rng.integers(-2, 3, size=(num_variants, 5, 2), dtype=np.int8)
+        phased = rng.integers(0, 2, size=num_variants, dtype=np.int8).astype(bool)
+        self._assert_matches(G, phased)
+
+    def test_random_uniform(self):
+        rng = np.random.default_rng(42)
+        G = rng.integers(-2, 3, size=(50, 50, 2), dtype=np.int8)
+        phased = rng.integers(0, 2, size=50, dtype=np.int8).astype(bool)
+        self._assert_matches(G, phased)
+
+    def test_random_skewed_missing(self):
+        # 30% of samples missing on at least one allele.
+        rng = np.random.default_rng(7)
+        num_variants = 20
+        num_samples = 40
+        G = rng.integers(0, 2, size=(num_variants, num_samples, 2), dtype=np.int8)
+        mask = rng.random((num_variants, num_samples)) < 0.3
+        G[mask, 0] = -1
+        side = rng.integers(0, 2, size=(num_variants, num_samples), dtype=np.int8)
+        G[mask & (side == 1), 1] = -2
+        phased = rng.integers(0, 2, size=num_variants, dtype=np.int8).astype(bool)
+        self._assert_matches(G, phased)
+
+    def test_large(self):
+        num_variants = 500
+        num_samples = 200
+        v_idx = np.arange(num_variants)[:, None, None]
+        s_idx = np.arange(num_samples)[None, :, None]
+        # Mix of all five values across the (V, S) grid.
+        G = ((v_idx + s_idx + np.array([[[0, 1]]])) % 5 - 2).astype(np.int8)
+        phased = (np.arange(num_variants) % 2).astype(bool)
+        self._assert_matches(G, phased)
+
+    def test_phased_from_all_reduction(self):
+        # Real-world: phased flag comes from a 2D bool array's all(axis=1)
+        # in _prepare_chunk. Confirm that source path stays compatible.
+        per_sample_phased = np.array(
+            [[True, True, True], [True, False, True], [True, True, True]]
+        )
+        phased = per_sample_phased.all(axis=1)
+        assert phased.dtype == bool
+        G = np.zeros((3, 3, 2), dtype=np.int8)
+        self._assert_matches(G, phased)
 
 
 class TestEncodeVariantBlock:

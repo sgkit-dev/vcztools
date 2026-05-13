@@ -275,60 +275,138 @@ class TestPhaseDetection:
 # ---------------------------------------------------------------------------
 
 
-class TestBgiIndex:
-    def test_basic(self, tmp_path):
-        entries = [
-            bgen._BgiEntry(
-                chromosome="chr1",
-                position=100,
-                rsid="rs1",
-                number_of_alleles=2,
-                allele1="A",
-                allele2="T",
-                file_start_position=24,
-                size_in_bytes=128,
-            ),
-            bgen._BgiEntry(
-                chromosome="chr1",
-                position=200,
-                rsid="rs2",
-                number_of_alleles=2,
-                allele1="C",
-                allele2="G",
-                file_start_position=24 + 128,
-                size_in_bytes=140,
-            ),
-        ]
+class TestWriteBgenIndex:
+    """``write_bgen_index(reader, bgi_path, variant_offsets)`` — the
+    single seam for ``.bgen.bgi`` generation, used by both
+    :func:`write_bgen` (variable-size, cumulative-block offsets) and
+    :class:`BgenEncoder` (fixed-size, formula-derived offsets via
+    :attr:`BgenEncoder.variant_offsets`)."""
+
+    def test_basic_variant_table(self, tmp_path):
+        # Two variants on contig "chr1" at positions 100, 101. Synthetic
+        # offsets carve out 128-byte and 140-byte blocks after a 24-byte
+        # prefix.
+        reader = _build_reader(num_variants=2, num_samples=2)
+        variant_offsets = np.array([24, 24 + 128, 24 + 128 + 140], dtype=np.int64)
         bgi_path = tmp_path / "out.bgen.bgi"
-        bgen._write_bgi_index(bgi_path, entries)
+        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
         conn = sqlite3.connect(str(bgi_path))
         try:
             rows = conn.execute(
                 "SELECT chromosome, position, rsid, number_of_alleles, "
                 "allele1, allele2, file_start_position, size_in_bytes "
-                "FROM Variant ORDER BY position"
+                "FROM Variant ORDER BY file_start_position"
             ).fetchall()
-            assert rows == [
-                ("chr1", 100, "rs1", 2, "A", "T", 24, 128),
-                ("chr1", 200, "rs2", 2, "C", "G", 152, 140),
-            ]
             tables = [
                 r[0]
                 for r in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             ]
-            assert "Variant" in tables
-            assert "Metadata" not in tables
+        finally:
+            conn.close()
+        assert rows == [
+            ("chr1", 100, ".", 2, "A", "T", 24, 128),
+            ("chr1", 101, ".", 2, "A", "T", 24 + 128, 140),
+        ]
+        assert "Variant" in tables
+        assert "Metadata" not in tables
+
+    def test_index_overwritten(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        variant_offsets = np.array([0, 100, 200], dtype=np.int64)
+        bgi_path = tmp_path / "out.bgen.bgi"
+        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+        # Second write must not raise (PK conflict would if not unlinked).
+        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+
+    def test_offsets_wrong_length_raises(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        bad = np.array([0, 100, 200, 300], dtype=np.int64)
+        with pytest.raises(ValueError, match="must have shape"):
+            bgen.write_bgen_index(reader, tmp_path / "x.bgi", bad)
+
+    def test_offsets_non_integer_raises(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        bad = np.array([0.0, 100.0, 200.0])
+        with pytest.raises(ValueError, match="integer-typed"):
+            bgen.write_bgen_index(reader, tmp_path / "x.bgi", bad)
+
+    def test_variant_id_propagates_to_rsid(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2, variant_id=["rsA", "rsB"])
+        variant_offsets = np.array([0, 100, 200], dtype=np.int64)
+        bgi_path = tmp_path / "out.bgen.bgi"
+        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+        conn = sqlite3.connect(str(bgi_path))
+        try:
+            rsids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT rsid FROM Variant ORDER BY file_start_position"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rsids == ["rsA", "rsB"]
+
+    def test_rejects_multiallelic(self, tmp_path):
+        reader = _build_reader(num_variants=1, num_samples=1, alleles=[("A", "T", "G")])
+        variant_offsets = np.array([0, 100], dtype=np.int64)
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            bgen.write_bgen_index(reader, tmp_path / "out.bgi", variant_offsets)
+
+    def test_encoder_offsets_round_trip(self, tmp_path):
+        # Encoder formula offsets carve up the encoder's byte stream
+        # into contiguous, equal-size blocks ending at total_size.
+        with _build_encoder(num_variants=5, num_samples=4) as enc:
+            reader = enc._reader
+            bgi_path = tmp_path / "x.bgen.bgi"
+            bgen.write_bgen_index(reader, bgi_path, enc.variant_offsets)
+            conn = sqlite3.connect(str(bgi_path))
+            try:
+                rows = conn.execute(
+                    "SELECT file_start_position, size_in_bytes FROM Variant "
+                    "ORDER BY file_start_position"
+                ).fetchall()
+            finally:
+                conn.close()
+            assert rows[0][0] == enc.header_size
+            for (start, size), (next_start, _) in zip(rows, rows[1:]):
+                assert next_start == start + size
+            last_start, last_size = rows[-1]
+            assert last_start + last_size == enc.bgen_size
+
+    def test_write_bgen_and_encoder_paths_agree_on_metadata(self, tmp_path):
+        # The Variant-metadata columns (chrom, pos, rsid, alleles)
+        # produced by the two call sites must match for the same reader.
+        # Offsets/sizes differ (variable- vs fixed-size encoding) and
+        # are excluded from the comparison.
+        kwargs = dict(num_variants=4, num_samples=3)
+
+        out = tmp_path / "wb"
+        bgen.write_bgen(_build_reader(**kwargs), out)
+        wb_bgi = out.with_suffix(".bgen").with_suffix(".bgen.bgi")
+        conn = sqlite3.connect(str(wb_bgi))
+        try:
+            wb_rows = conn.execute(
+                "SELECT chromosome, position, rsid, number_of_alleles, "
+                "allele1, allele2 FROM Variant ORDER BY file_start_position"
+            ).fetchall()
         finally:
             conn.close()
 
-    def test_index_overwritten(self, tmp_path):
-        bgi_path = tmp_path / "out.bgen.bgi"
-        # First write
-        bgen._write_bgi_index(bgi_path, [])
-        # Second write should not raise (PK conflict would if not unlinked).
-        bgen._write_bgi_index(bgi_path, [])
+        with _build_encoder(**kwargs) as enc:
+            enc_bgi = tmp_path / "enc.bgen.bgi"
+            bgen.write_bgen_index(enc._reader, enc_bgi, enc.variant_offsets)
+            conn = sqlite3.connect(str(enc_bgi))
+            try:
+                enc_rows = conn.execute(
+                    "SELECT chromosome, position, rsid, number_of_alleles, "
+                    "allele1, allele2 FROM Variant ORDER BY file_start_position"
+                ).fetchall()
+            finally:
+                conn.close()
+        assert wb_rows == enc_rows
 
 
 # ---------------------------------------------------------------------------
@@ -1188,111 +1266,3 @@ class TestBgenEncoderOverflowRaises:
         with bgen.BgenEncoder(reader) as enc:
             with pytest.raises(ValueError, match="allele1"):
                 enc.read(0, enc.bgen_size)
-
-
-class TestBgenEncoderBgiIndex:
-    def test_variant_rows(self, tmp_path):
-        with _build_encoder(num_variants=3, num_samples=2) as enc:
-            bgi_path = tmp_path / "out.bgen.bgi"
-            enc.write_bgi_index(bgi_path)
-            conn = sqlite3.connect(str(bgi_path))
-            try:
-                rows = conn.execute(
-                    "SELECT chromosome, position, rsid, number_of_alleles, "
-                    "allele1, allele2, file_start_position, size_in_bytes "
-                    "FROM Variant ORDER BY file_start_position"
-                ).fetchall()
-            finally:
-                conn.close()
-            assert len(rows) == 3
-            bpv = enc.bytes_per_variant
-            for i, row in enumerate(rows):
-                assert row[0] == "chr1"
-                assert row[1] == 100 + i
-                assert row[2] == "."
-                assert row[3] == 2
-                assert row[4] == "A"
-                assert row[5] == "T"
-                assert row[6] == enc.header_size + i * bpv
-                assert row[7] == bpv
-
-    def test_offsets_match_byte_stream(self, tmp_path):
-        # For every variant in the .bgi, the slice
-        # [file_start_position, file_start_position+size_in_bytes) of the
-        # encoder's byte stream should be a self-contained variant block.
-        # The simplest invariant: rows are contiguous and the last one
-        # ends at total_size.
-        with _build_encoder(num_variants=5, num_samples=4) as enc:
-            bgi_path = tmp_path / "x.bgen.bgi"
-            enc.write_bgi_index(bgi_path)
-            conn = sqlite3.connect(str(bgi_path))
-            try:
-                rows = conn.execute(
-                    "SELECT file_start_position, size_in_bytes FROM Variant "
-                    "ORDER BY file_start_position"
-                ).fetchall()
-            finally:
-                conn.close()
-            assert rows[0][0] == enc.header_size
-            for (start, size), (next_start, _) in zip(rows, rows[1:]):
-                assert next_start == start + size
-            last_start, last_size = rows[-1]
-            assert last_start + last_size == enc.bgen_size
-
-    def test_equivalent_to_write_bgen_metadata_columns(self, tmp_path):
-        # Variant-metadata columns (chromosome, position, rsid,
-        # number_of_alleles, allele1, allele2) should be identical
-        # between write_bgen and BgenEncoder.write_bgi_index for the
-        # same reader. Offsets and sizes differ (variable vs fixed
-        # widths) and are not compared.
-        kwargs = dict(num_variants=4, num_samples=3)
-
-        out = tmp_path / "wb"
-        bgen.write_bgen(_build_reader(**kwargs), out)
-        write_bgen_bgi = out.with_suffix(".bgen").with_suffix(".bgen.bgi")
-        conn = sqlite3.connect(str(write_bgen_bgi))
-        try:
-            wb_rows = conn.execute(
-                "SELECT chromosome, position, rsid, number_of_alleles, "
-                "allele1, allele2 FROM Variant ORDER BY file_start_position"
-            ).fetchall()
-        finally:
-            conn.close()
-
-        with _build_encoder(**kwargs) as enc:
-            enc_bgi = tmp_path / "enc.bgen.bgi"
-            enc.write_bgi_index(enc_bgi)
-            conn = sqlite3.connect(str(enc_bgi))
-            try:
-                enc_rows = conn.execute(
-                    "SELECT chromosome, position, rsid, number_of_alleles, "
-                    "allele1, allele2 FROM Variant ORDER BY file_start_position"
-                ).fetchall()
-            finally:
-                conn.close()
-        assert wb_rows == enc_rows
-
-    def test_with_variant_id(self, tmp_path):
-        # When variant_id is present in the reader, rsids are propagated
-        # from the field rather than emitted as ".".
-        reader = _build_reader(num_variants=2, num_samples=2, variant_id=["rsA", "rsB"])
-        with bgen.BgenEncoder(reader) as enc:
-            bgi_path = tmp_path / "out.bgen.bgi"
-            enc.write_bgi_index(bgi_path)
-            conn = sqlite3.connect(str(bgi_path))
-            try:
-                rsids = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT rsid FROM Variant ORDER BY file_start_position"
-                    ).fetchall()
-                ]
-            finally:
-                conn.close()
-            assert rsids == ["rsA", "rsB"]
-
-    def test_rejects_multiallelic(self, tmp_path):
-        reader = _build_reader(num_variants=1, num_samples=1, alleles=[("A", "T", "G")])
-        with bgen.BgenEncoder(reader) as enc:
-            with pytest.raises(ValueError, match="Multi-allelic"):
-                enc.write_bgi_index(tmp_path / "out.bgen.bgi")

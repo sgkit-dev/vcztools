@@ -983,12 +983,6 @@ static struct bgen_single_diploid_case bgen_single_diploid_cases[] = {
     { 0, 1, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0xFF, 0xFF, 0x00 },
     { 1, 0, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0xFF, 0x00, 0xFF },
     { 1, 1, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0x00, 0x00 },
-    /* Non-negative values >= 2 are not classed as missing; they fall
-     * through the bool predicates and yield 0x00 for both bytes
-     * (matches the Python reference). */
-    { 0, 2, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0xFF, 0x00 },
-    { 2, 0, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0x00, 0xFF },
-    { 2, 2, VCZ_BGEN_PLOIDY_DIPLOID, 0x00, 0x00, 0x00, 0x00 },
     /* -1 on either diploid allele -> missing diploid, prob bytes zeroed. */
     { -1, 0, VCZ_BGEN_PLOIDY_MISSING_DIPLOID, 0x00, 0x00, 0x00, 0x00 },
     { 0, -1, VCZ_BGEN_PLOIDY_MISSING_DIPLOID, 0x00, 0x00, 0x00, 0x00 },
@@ -1007,7 +1001,6 @@ struct bgen_single_haploid_case {
 static struct bgen_single_haploid_case bgen_single_haploid_cases[] = {
     { 0, VCZ_BGEN_PLOIDY_HAPLOID, 0xFF },
     { 1, VCZ_BGEN_PLOIDY_HAPLOID, 0x00 },
-    { 2, VCZ_BGEN_PLOIDY_HAPLOID, 0x00 },
     { -1, VCZ_BGEN_PLOIDY_MISSING_HAPLOID, 0x00 },
 };
 
@@ -1019,11 +1012,33 @@ struct bgen_single_invalid_case {
     int8_t b;
 };
 
-static struct bgen_single_invalid_case bgen_single_invalid_cases[] = {
+static struct bgen_single_invalid_case bgen_single_invalid_ploidy_cases[] = {
     { -2, 0 },
     { -2, -2 },
     { -2, -1 },
     { -2, 1 },
+};
+
+/* Invalid-allele single-sample inputs: BGEN is biallelic and only
+ * accepts {-2, -1, 0, 1}. Anything else is a data-quality error and
+ * the kernel returns VCZ_ERR_BGEN_INVALID_ALLELE. */
+static struct bgen_single_invalid_case bgen_single_invalid_allele_cases[] = {
+    /* Diploid slot positives out of range. */
+    { 2, 0 },
+    { 0, 2 },
+    { 2, 2 },
+    { 1, 2 },
+    { 2, 1 },
+    /* Haploid slot 0 out of range (slot 1 = -2 sentinel). */
+    { 2, -2 },
+    { 127, -2 },
+    /* Below -2 in either slot. */
+    { -3, 0 },
+    { 0, -3 },
+    { -128, -128 },
+    /* Mixed: invalid allele combined with otherwise-valid sentinel. */
+    { 3, -1 },
+    { -1, 5 },
 };
 
 static void
@@ -1125,7 +1140,7 @@ test_bgen_geno_blocks_single_sample_haploid(void)
 }
 
 static void
-test_bgen_geno_blocks_single_sample_invalid(void)
+test_bgen_geno_blocks_single_sample_invalid_ploidy(void)
 {
     int8_t genotypes[2];
     uint8_t buf[13];
@@ -1134,16 +1149,59 @@ test_bgen_geno_blocks_single_sample_invalid(void)
     size_t p, j, num_cases;
     int ret;
 
-    num_cases = sizeof(bgen_single_invalid_cases) / sizeof(*bgen_single_invalid_cases);
+    num_cases = sizeof(bgen_single_invalid_ploidy_cases)
+                / sizeof(*bgen_single_invalid_ploidy_cases);
     for (p = 0; p < 2; p++) {
         for (j = 0; j < num_cases; j++) {
-            genotypes[0] = bgen_single_invalid_cases[j].a;
-            genotypes[1] = bgen_single_invalid_cases[j].b;
+            genotypes[0] = bgen_single_invalid_ploidy_cases[j].a;
+            genotypes[1] = bgen_single_invalid_ploidy_cases[j].b;
             ret = vcz_encode_bgen_geno_blocks(
                 1, 1, genotypes, &phased_flags[p], buf, sizeof(buf), lens);
             CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_BGEN_INVALID_PLOIDY);
         }
     }
+}
+
+static void
+test_bgen_geno_blocks_single_sample_invalid_allele(void)
+{
+    int8_t genotypes[2];
+    uint8_t buf[13];
+    uint32_t lens[1];
+    uint8_t phased_flags[2] = { 0, 1 };
+    size_t p, j, num_cases;
+    int ret;
+
+    num_cases = sizeof(bgen_single_invalid_allele_cases)
+                / sizeof(*bgen_single_invalid_allele_cases);
+    for (p = 0; p < 2; p++) {
+        for (j = 0; j < num_cases; j++) {
+            genotypes[0] = bgen_single_invalid_allele_cases[j].a;
+            genotypes[1] = bgen_single_invalid_allele_cases[j].b;
+            ret = vcz_encode_bgen_geno_blocks(
+                1, 1, genotypes, &phased_flags[p], buf, sizeof(buf), lens);
+            CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_BGEN_INVALID_ALLELE);
+        }
+    }
+}
+
+static void
+test_bgen_geno_blocks_invalid_allele_mid_chunk(void)
+{
+    /* Invalid allele on sample 1 (slot 0) of variant 2 of a 3-variant
+     * chunk: the error must surface from the kernel even when the
+     * earlier rows look fine. */
+    int8_t genotypes[3 * 4 * 2];
+    uint8_t phased[3] = { 0, 0, 0 };
+    uint8_t buf[3 * 22];
+    uint32_t lens[3];
+    int ret;
+
+    memset(genotypes, 0, sizeof(genotypes));
+    /* Plant a 2 in variant 2, sample 1, slot 0. */
+    genotypes[2 * 4 * 2 + 1 * 2] = 2;
+    ret = vcz_encode_bgen_geno_blocks(3, 4, genotypes, phased, buf, 22, lens);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_BGEN_INVALID_ALLELE);
 }
 
 static void
@@ -1581,12 +1639,12 @@ test_bgen_geno_blocks_large(void)
     for (v = 0; v < num_variants; v++) {
         phased[v] = (uint8_t) (v % 2);
         for (s = 0; s < num_samples; s++) {
-            /* Cycle a through {-1, 0, 1, 2} (skipping -2 in slot 0
-             * which is the zero-ploidy error case). Cycle b through
-             * {-2, -1, 0, 1, 2} so haploid (b=-2), half-missing,
-             * missing, het and hom all appear. */
-            a = (int8_t) (((v + s) % 4) - 1);
-            b = (int8_t) (((v + 2 * s) % 5) - 2);
+            /* a in {-1, 0, 1} (omitting -2 -> zero-ploidy error;
+             * omitting 2+ -> invalid-allele error).
+             * b in {-2, -1, 0, 1}, so haploid (b=-2), missing,
+             * half-missing, het and hom all appear. */
+            a = (int8_t) (((v + s) % 3) - 1);
+            b = (int8_t) (((v + 2 * s) % 4) - 2);
             genotypes[(v * num_samples + s) * 2] = a;
             genotypes[(v * num_samples + s) * 2 + 1] = b;
         }
@@ -1734,8 +1792,12 @@ main(int argc, char **argv)
             test_bgen_geno_blocks_single_sample_diploid_phased },
         { "test_bgen_geno_blocks_single_sample_haploid",
             test_bgen_geno_blocks_single_sample_haploid },
-        { "test_bgen_geno_blocks_single_sample_invalid",
-            test_bgen_geno_blocks_single_sample_invalid },
+        { "test_bgen_geno_blocks_single_sample_invalid_ploidy",
+            test_bgen_geno_blocks_single_sample_invalid_ploidy },
+        { "test_bgen_geno_blocks_single_sample_invalid_allele",
+            test_bgen_geno_blocks_single_sample_invalid_allele },
+        { "test_bgen_geno_blocks_invalid_allele_mid_chunk",
+            test_bgen_geno_blocks_invalid_allele_mid_chunk },
         { "test_bgen_geno_blocks_header_bytes", test_bgen_geno_blocks_header_bytes },
         { "test_bgen_geno_blocks_zero_samples", test_bgen_geno_blocks_zero_samples },
         { "test_bgen_geno_blocks_zero_variants", test_bgen_geno_blocks_zero_variants },

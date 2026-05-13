@@ -97,7 +97,10 @@ arrays with `-2` in the second slot (the haploid-padding sentinel).
 `view-bgen` accepts both: shape `(V, S, 1)` is promoted to the
 `-2`-padded form before encoding. A `-2` in slot 0 (zero-ploidy /
 unused sample) is not representable in BGEN and surfaces as a
-`ValueError`.
+`ValueError`. The encoder is biallelic and rejects any
+``call_genotype`` value outside ``{-2, -1, 0, 1}`` with a
+``ValueError``; pre-split multi-allelic input with ``bcftools norm
+-m-`` if your store has higher allele indices.
 
 The per-variant header `Pmin` / `Pmax` reflect the actual range of
 sample ploidies in each variant.

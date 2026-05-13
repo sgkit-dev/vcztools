@@ -17,6 +17,15 @@ Features:
   the AND combinator (previously rejected). `view-plink` still
   rejects sample-scope filters, since the .bed format has no
   per-sample channel to mask into.
+- `view-bgen` now supports haploid (e.g. chrX in males, mtDNA) and
+  mixed-ploidy stores. Per-sample BGEN ploidy bytes follow the
+  spec: haploid calls get `0x01` and one probability byte; diploid
+  calls stay at `0x02` and two probability bytes. VCZ stores haploid
+  data either as `call_genotype.shape[2] == 1` or as
+  `call_genotype.shape[2] == 2` with `-2` haploid-padding in slot 1;
+  both forms are accepted. The fixed-size `BgenEncoder` class
+  requires uniform ploidy (all haploid or all diploid) across the
+  store; mixed-ploidy stores must go through `write_bgen`.
 
 Bug fixes:
 

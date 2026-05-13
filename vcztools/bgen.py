@@ -2,7 +2,8 @@
 Convert VCZ to Oxford BGEN format (``.bgen`` + ``.sample`` + ``.bgen.bgi``).
 
 The CLI verb is ``view-bgen``. Output profile: layout 2, zlib-compressed,
-8 bits/probability, biallelic, diploid, embedded sample IDs. This is the
+8 bits/probability, biallelic, embedded sample IDs. Haploid and mixed-
+ploidy stores are supported via per-sample ploidy bytes; this is the
 consumer lowest-common-denominator: REGENIE, SAIGE, BOLT-LMM, BGENIE,
 qctool, and PLINK 2 all accept it without further conversion.
 
@@ -11,10 +12,17 @@ Hard calls in ``call_genotype`` are encoded as 1.0/0.0 probabilities; at
 from ``call_genotype_phased`` if present (a variant emits phased iff
 every sample is phased for that variant).
 
+VCZ stores haploid genotypes one of two ways: as ``(V, S, 1)`` arrays,
+or as ``(V, S, 2)`` arrays where slot 1 contains the ``-2`` haploid-
+padding sentinel. The encoder accepts both; ``(V, S, 1)`` is promoted
+to the ``-2``-padded form before the C kernel sees it.
+
 For FUSE / HTTP-range-serving applications that need random-access into
 the encoded byte stream, :class:`BgenEncoder` is a sibling of
 :class:`vcztools.plink.BedEncoder` that produces a fixed-size BGEN
-stream (Python API only).
+stream (Python API only). :class:`BgenEncoder` requires uniform ploidy
+across the store (all haploid or all diploid); mixed-ploidy stores
+must go through :func:`write_bgen`.
 
 For the user-facing reference — multi-allelic policy, downstream-tool
 compatibility, sidecar conventions — see ``docs/bgen.md``.
@@ -42,6 +50,7 @@ COMPRESSION_ZLIB = 1
 SAMPLE_IDS_PRESENT = 1 << 31
 HEADER_LENGTH = 20
 BITS_PER_PROB = 8
+VCZ_INT_FILL = -2
 
 
 def _check_biallelic(alleles):
@@ -56,12 +65,27 @@ def _check_biallelic(alleles):
         )
 
 
-def _check_diploid(genotypes):
-    if genotypes.ndim != 3 or genotypes.shape[2] != 2:
+def _check_ploidy_dim(genotypes):
+    """Accept either pure haploid ``(V, S, 1)`` or diploid-shaped
+    ``(V, S, 2)`` (with optional ``-2`` haploid padding in slot 1)."""
+    if genotypes.ndim != 3 or genotypes.shape[2] not in (1, 2):
         raise ValueError(
-            f"BGEN output requires diploid genotypes "
-            f"(call_genotype.shape[2] == 2); got shape {genotypes.shape!r}."
+            f"BGEN output requires call_genotype.shape[2] in (1, 2); "
+            f"got shape {genotypes.shape!r}."
         )
+
+
+def _normalize_genotype_ploidy(genotypes):
+    """Promote a ``(V, S, 1)`` haploid array to the ``(V, S, 2)`` with
+    ``-2`` in slot 1 convention the C kernel expects. Pass-through for
+    ``(V, S, 2)``."""
+    if genotypes.shape[2] == 1:
+        v, s, _ = genotypes.shape
+        out = np.empty((v, s, 2), dtype=np.int8)
+        out[:, :, 0] = genotypes[:, :, 0]
+        out[:, :, 1] = VCZ_INT_FILL
+        return out
+    return genotypes
 
 
 def _flags_word():
@@ -161,8 +185,12 @@ class _ChunkBytes:
 
     ``geno_blocks`` holds the uncompressed BGEN genotype-block bytes
     for every variant in the chunk: shape ``(V, 10 + 3 * num_samples)``
-    uint8. ``_encode_variant_block`` zlib-compresses one row at a time
-    and packs the surrounding variant-block framing.
+    uint8 (worst-case diploid stride). ``geno_block_lens[v]`` is the
+    actual byte count of variant ``v`` — for uniform diploid every
+    entry equals the stride; for haploid or mixed-ploidy variants the
+    actual length is smaller. ``_encode_variant_block`` zlib-compresses
+    ``geno_blocks[v, :geno_block_lens[v]]`` and packs the surrounding
+    variant-block framing.
     """
 
     varid: np.ndarray
@@ -172,6 +200,7 @@ class _ChunkBytes:
     allele2: np.ndarray
     position: np.ndarray
     geno_blocks: np.ndarray
+    geno_block_lens: np.ndarray
     mixed_phase_count: int
 
 
@@ -220,7 +249,8 @@ def _prepare_chunk(
         phased_arr = phased_arr[start:end]
 
     _check_biallelic(alleles)
-    _check_diploid(G)
+    _check_ploidy_dim(G)
+    G = _normalize_genotype_ploidy(G)
     n = G.shape[0]
 
     chrom_arr = np.asarray(contig_ids)[contigs]
@@ -252,7 +282,7 @@ def _prepare_chunk(
     # Sample-subset paths can deliver call_genotype as a non-contiguous
     # fancy-indexed view; the C kernel requires NPY_ARRAY_IN_ARRAY.
     G = np.ascontiguousarray(G, dtype=np.int8)
-    geno_blocks = _vcztools.encode_bgen_geno_blocks(G, phased)
+    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
 
     return _ChunkBytes(
         varid=varid_b,
@@ -262,6 +292,7 @@ def _prepare_chunk(
         allele2=a2_b,
         position=positions,
         geno_blocks=geno_blocks,
+        geno_block_lens=geno_block_lens,
         mixed_phase_count=mixed_phase_count,
     )
 
@@ -349,6 +380,7 @@ def _encode_chunk_slice(chunk, contig_ids, start, end, *, compression_level):
     out = bytearray()
     lens = []
     for j in range(n):
+        block_len = int(prep.geno_block_lens[j])
         block = _encode_variant_block(
             varid_bytes=prep.varid[j],
             rsid_bytes=prep.rsid[j],
@@ -356,7 +388,7 @@ def _encode_chunk_slice(chunk, contig_ids, start, end, *, compression_level):
             position=int(prep.position[j]),
             allele1_bytes=prep.allele1[j],
             allele2_bytes=prep.allele2[j],
-            geno_block_bytes=bytes(prep.geno_blocks[j]),
+            geno_block_bytes=bytes(prep.geno_blocks[j, :block_len]),
             compression_level=compression_level,
         )
         out.extend(block)
@@ -390,11 +422,16 @@ class BgenEncoder(format_encoder.FormatEncoder):
 
         bytes_per_variant
           = 28 + varid_max + rsid_max + chrom_max
-              + 2 * allele_max + zlib_stored_size(10 + 3 * num_samples)
+              + 2 * allele_max + zlib_stored_size(geno_size)
+
+        geno_size = 10 + (uniform_ploidy + 1) * num_samples
 
     where the constant 28 = 3 * 2 (string length prefixes, uint16) + 4
     (position) + 2 (K) + 2 * 4 (allele length prefixes, uint32) + 2 * 4
-    (C and D length prefixes, uint32).
+    (C and D length prefixes, uint32). ``uniform_ploidy`` is derived
+    from ``reader.call_genotype.shape[2]`` and is either 1 (haploid;
+    ``geno_size = 10 + 2 * num_samples``) or 2 (diploid;
+    ``geno_size = 10 + 3 * num_samples``).
 
     Variable-length string fields (variant id, rsid, chromosome, alleles)
     are NUL-padded to the configured ``*_max`` widths. The bgen-reader
@@ -410,8 +447,13 @@ class BgenEncoder(format_encoder.FormatEncoder):
     derived from ``reader.contig_ids`` — no manual knob. Indel or SV
     stores must opt in to larger ``allele_max`` / ``rsid_max`` values.
 
-    Variant scope: biallelic and diploid (multi-allelic / non-diploid
-    raises ``ValueError`` lazily as chunks are decoded).
+    Variant scope: biallelic and uniform ploidy. ``call_genotype``
+    must have ``shape[2] == 1`` (haploid) or ``shape[2] == 2``
+    (diploid). Even within the diploid path, every sample must remain
+    diploid — a chunk that contains the ``-2`` haploid-padding
+    sentinel raises :class:`NotImplementedError` on read; use
+    :func:`write_bgen` for mixed-ploidy stores. Multi-allelic input
+    raises ``ValueError`` lazily as chunks are decoded.
 
     The encoder serves only the ``.bgen`` byte stream. The matching
     bgenix ``.bgi`` SQLite sidecar can be produced by passing
@@ -488,11 +530,27 @@ class BgenEncoder(format_encoder.FormatEncoder):
         self._mixed_phase_count = 0
 
         num_samples = int(reader.sample_ids.size)
+        # Uniform per-variant block width requires uniform ploidy. The
+        # source ploidy dimension drives the geno block size: haploid
+        # (shape[2]==1) stores 1 ploidy + 1 prob byte per sample,
+        # diploid (shape[2]==2) stores 1 ploidy + 2 prob bytes per
+        # sample. Mixed-ploidy stores (any -2 sentinel under shape[2]==2)
+        # break the fixed-size contract and are rejected lazily in
+        # _encode_variant_range with a NotImplementedError.
+        gt_info = reader.get_field_info("call_genotype")
+        uniform_ploidy = gt_info.shape[2]
+        if uniform_ploidy not in (1, 2):
+            raise ValueError(
+                f"BgenEncoder requires call_genotype.shape[2] in (1, 2); "
+                f"got {gt_info.shape!r}."
+            )
+        self._uniform_ploidy = uniform_ploidy
         # Pre-compute the zlib-stored size of one genotype block.
         # zlib.compress(level=0) emits stored DEFLATE blocks whose output
         # size is a deterministic function of the input length, so every
         # variant block is the same width.
-        geno_size = 10 + 3 * num_samples
+        geno_size = 10 + (uniform_ploidy + 1) * num_samples
+        self._uniform_geno_size = geno_size
         compressed_geno_size = len(zlib.compress(b"\x00" * geno_size, 0))
         self._compressed_geno_size = compressed_geno_size
         bytes_per_variant = (
@@ -574,6 +632,13 @@ class BgenEncoder(format_encoder.FormatEncoder):
         phase_counts.append(prep.mixed_phase_count)
         bpv = self._bytes_per_variant
         n = end - start
+        uniform_len = self._uniform_geno_size
+        if not (prep.geno_block_lens == uniform_len).all():
+            raise NotImplementedError(
+                "BgenEncoder requires uniform ploidy across all samples "
+                "and variants; this chunk contains mixed ploidy. Use "
+                "write_bgen() instead."
+            )
         out = bytearray(n * bpv)
         for j in range(n):
             block = _encode_variant_block(
@@ -583,7 +648,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 position=int(prep.position[j]),
                 allele1_bytes=prep.allele1[j],
                 allele2_bytes=prep.allele2[j],
-                geno_block_bytes=bytes(prep.geno_blocks[j]),
+                geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
                 compression_level=0,
             )
             out[j * bpv : (j + 1) * bpv] = block

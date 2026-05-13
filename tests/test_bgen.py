@@ -23,58 +23,85 @@ import pytest
 from tests import vcz_builder
 from vcztools import _vcztools, bcftools_filter, bgen, regions, retrieval
 
-_REFERENCE_PLOIDY_DIPLOID = 0x02
-_REFERENCE_PLOIDY_MISSING = 0x82
 
+def _build_geno_block_reference(g, variant_phased):
+    """Pure-Python reference for one BGEN Layout-2 genotype block.
 
-def _build_geno_blocks_reference(G, phased):
-    """Pure-NumPy reference implementation of the BGEN Layout-2
-    genotype-block builder, kept verbatim from the original
-    ``vcztools.bgen._build_geno_blocks`` so the C kernel can be
-    validated against it.
+    ``g`` has shape ``(num_samples, 2)`` int8; ``variant_phased`` is a
+    bool. Returns the raw bytes (variable length under mixed ploidy).
 
-    Layout per row (Layout 2 / 8-bit / biallelic / diploid):
+    Sentinel rules per sample ``(a, b)``:
+
+      * ``a >= 0, b >= 0``    -> diploid call, 0x02, 2 prob bytes
+      * ``a >= 0, b == -2``   -> haploid call, 0x01, 1 prob byte
+      * ``a == -1, b == -1``  -> missing diploid, 0x82, 2 zero bytes
+      * ``a == -1, b == -2``  -> missing haploid, 0x81, 1 zero byte
+      * half-missing diploid  -> 0x82, 2 zero bytes
+      * ``a == -2`` (any b)   -> raises ValueError (zero-ploidy)
+
+    Block layout:
 
         uint32 N            n_samples
         uint16 K = 2        n_alleles
-        uint8  P_min = 2
-        uint8  P_max = 2
+        uint8  P_min        actual min ploidy in this variant
+        uint8  P_max        actual max ploidy in this variant
         N bytes             ploidy/missing per sample
         uint8  phased       per-variant flag
         uint8  B = 8        bits per probability
-        2*N bytes           per-sample probability bytes (B0, B1 interleaved)
+        sum_s K_s bytes     per-sample probability bytes
     """
-    v, s, _ = G.shape
-    a = G[..., 0]
-    b = G[..., 1]
-    missing = (a < 0) | (b < 0)
+    num_samples = g.shape[0]
+    ploidy_bytes = bytearray()
+    prob_bytes = bytearray()
+    pmin, pmax = 2, 1
 
-    a_zero = a == 0
-    b_zero = b == 0
-    homref = a_zero & b_zero
-    het = (a_zero & (b == 1)) | ((a == 1) & b_zero)
-    phased_row = phased[:, None]
-    b0_bit = np.where(phased_row, a_zero, homref)
-    b1_bit = np.where(phased_row, b_zero, het)
-    valid = ~missing
-    B0 = (b0_bit & valid).view(np.uint8) * np.uint8(0xFF)
-    B1 = (b1_bit & valid).view(np.uint8) * np.uint8(0xFF)
+    for s in range(num_samples):
+        a = int(g[s, 0])
+        b = int(g[s, 1])
+        if a == -2:
+            raise ValueError(f"reference: -2 in slot 0 at sample {s}")
+        if b == -2:
+            if a == -1:
+                ploidy_bytes.append(0x81)
+                prob_bytes.append(0x00)
+            else:
+                ploidy_bytes.append(0x01)
+                prob_bytes.append(0xFF if a == 0 else 0x00)
+            pmin = min(pmin, 1)
+        elif a < 0 or b < 0:
+            ploidy_bytes.append(0x82)
+            prob_bytes.extend([0x00, 0x00])
+            pmax = max(pmax, 2)
+        else:
+            ploidy_bytes.append(0x02)
+            if variant_phased:
+                prob_bytes.append(0xFF if a == 0 else 0x00)
+                prob_bytes.append(0xFF if b == 0 else 0x00)
+            else:
+                prob_bytes.append(0xFF if (a == 0 and b == 0) else 0x00)
+                het = (a == 0 and b == 1) or (a == 1 and b == 0)
+                prob_bytes.append(0xFF if het else 0x00)
+            pmax = max(pmax, 2)
 
-    ploidy = np.where(
-        missing,
-        np.uint8(_REFERENCE_PLOIDY_MISSING),
-        np.uint8(_REFERENCE_PLOIDY_DIPLOID),
-    )
+    if num_samples == 0:
+        pmin, pmax = 2, 2
 
-    geno_blocks = np.empty((v, 10 + 3 * s), dtype=np.uint8)
-    header = struct.pack("<IHBB", s, 2, 2, 2)
-    geno_blocks[:, 0:8] = np.frombuffer(header, dtype=np.uint8)
-    geno_blocks[:, 8 : 8 + s] = ploidy
-    geno_blocks[:, 8 + s] = phased.astype(np.uint8)
-    geno_blocks[:, 8 + s + 1] = bgen.BITS_PER_PROB
-    geno_blocks[:, 8 + s + 2 :: 2] = B0
-    geno_blocks[:, 8 + s + 3 :: 2] = B1
-    return geno_blocks
+    row = bytearray()
+    row.extend(struct.pack("<IHBB", num_samples, 2, pmin, pmax))
+    row.extend(ploidy_bytes)
+    row.append(1 if variant_phased else 0)
+    row.append(bgen.BITS_PER_PROB)
+    row.extend(prob_bytes)
+    return bytes(row)
+
+
+def _build_geno_blocks_reference(G, phased):
+    """List of per-variant byte blocks; one call to
+    :func:`_build_geno_block_reference` per variant."""
+    blocks = []
+    for v in range(G.shape[0]):
+        blocks.append(_build_geno_block_reference(G[v], bool(phased[v])))
+    return blocks
 
 
 def _build_reader(*, num_variants=2, num_samples=3, **overrides):
@@ -191,9 +218,10 @@ class TestBuildHeader:
 
 def _single_variant_geno_block(G_single, *, phased=False):
     """Build a one-variant chunk, run `_prepare_chunk`, and return the
-    uncompressed genotype-block bytes for that variant. ``G_single``
-    has shape ``(num_samples, 2)``."""
-    G = G_single[None, ...]  # (1, S, 2)
+    uncompressed genotype-block bytes for that variant, trimmed to the
+    actual length (variable under mixed-ploidy). ``G_single`` has shape
+    ``(num_samples, 2)`` or ``(num_samples, 1)``."""
+    G = G_single[None, ...]
     n = G_single.shape[0]
     chunk = {
         "call_genotype": G,
@@ -204,14 +232,15 @@ def _single_variant_geno_block(G_single, *, phased=False):
     if phased:
         chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
     prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=1)
-    return bytes(prep.geno_blocks[0])
+    block_len = int(prep.geno_block_lens[0])
+    return bytes(prep.geno_blocks[0, :block_len])
 
 
 class TestPrepareChunkGenoBlocks:
     """Spec-level byte assertions on the uncompressed genotype-block
-    bytes produced by :func:`_prepare_chunk` (`prep.geno_blocks[i]`).
-    Layout 2 / 8-bit / biallelic / diploid; matches the per-variant
-    byte form the BGEN spec defines."""
+    bytes produced by :func:`_prepare_chunk` (`prep.geno_blocks[i]`,
+    trimmed by ``prep.geno_block_lens[i]``). Layout 2 / 8-bit /
+    biallelic with per-sample ploidy."""
 
     def test_unphased_basic(self):
         # Three samples: hom-ref, het, hom-alt.
@@ -245,11 +274,62 @@ class TestPrepareChunkGenoBlocks:
         # Probability bytes for missing samples are zeroed; het stays.
         assert block[13:19] == bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0xFF])
 
-    def test_haploid_padding_treated_as_missing(self):
+    def test_haploid_padding_emits_ploidy_one(self):
+        # Single haploid sample (allele 0): one ploidy byte (0x01),
+        # one probability byte (0xFF for ref). Total block length:
+        # 8 header + 1 ploidy + 2 flags + 1 prob = 12.
         G = np.array([[0, -2]], dtype=np.int8)
         block = _single_variant_geno_block(G)
-        assert block[8] == 0x82
-        assert block[-2:] == bytes([0x00, 0x00])
+        assert len(block) == 12
+        (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
+        assert (n, k, p_min, p_max) == (1, 2, 1, 1)
+        assert block[8] == 0x01
+        assert block[9] == 0
+        assert block[10] == 8
+        assert block[11] == 0xFF
+
+    def test_haploid_padding_missing_allele(self):
+        # Haploid sample with missing allele: ploidy = 0x81, one zero
+        # probability byte.
+        G = np.array([[-1, -2]], dtype=np.int8)
+        block = _single_variant_geno_block(G)
+        assert len(block) == 12
+        (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
+        assert (n, k, p_min, p_max) == (1, 2, 1, 1)
+        assert block[8] == 0x81
+        assert block[11] == 0x00
+
+    def test_mixed_ploidy_within_variant(self):
+        # Sample 0 diploid (0, 0), sample 1 haploid (1, -2).
+        # Block length: 8 + 2 ploidy + 2 flags + (2 + 1) prob = 15.
+        # Pmin = 1, Pmax = 2.
+        G = np.array([[0, 0], [1, -2]], dtype=np.int8)
+        block = _single_variant_geno_block(G)
+        assert len(block) == 15
+        (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
+        assert (n, k, p_min, p_max) == (2, 2, 1, 2)
+        assert block[8:10] == bytes([0x02, 0x01])
+        # 2 prob bytes for diploid (0,0)=homref then 1 byte for haploid
+        # allele 1.
+        assert block[12:15] == bytes([0xFF, 0x00, 0x00])
+
+    def test_haploid_shape_one(self):
+        # Shape (V, S, 1) input is promoted by _prepare_chunk to the
+        # -2-padded form before reaching the C kernel.
+        G = np.array([[0], [1], [-1]], dtype=np.int8)
+        block = _single_variant_geno_block(G)
+        # 3 haploid samples: 8 + 3 ploidy + 2 flags + 3 prob = 16.
+        assert len(block) == 16
+        (n, k, p_min, p_max) = struct.unpack_from("<IHBB", block, 0)
+        assert (n, k, p_min, p_max) == (3, 2, 1, 1)
+        assert block[8:11] == bytes([0x01, 0x01, 0x81])
+        assert block[13:16] == bytes([0xFF, 0x00, 0x00])
+
+    def test_zero_ploidy_raises(self):
+        # -2 in slot 0 has no BGEN representation; surface as an error.
+        G = np.array([[-2, 0]], dtype=np.int8)
+        with pytest.raises(ValueError, match="zero-ploidy"):
+            _single_variant_geno_block(G)
 
     def test_phased(self):
         # Phased het variants distinguish (0,1) from (1,0).
@@ -277,20 +357,30 @@ class TestPrepareChunkGenoBlocks:
 
 class TestBuildGenoBlocksAgainstReference:
     """Sweep the C kernel ``_vcztools.encode_bgen_geno_blocks`` against
-    the pure-NumPy ``_build_geno_blocks_reference`` over a range of
-    awkward inputs; the C output must match byte-for-byte."""
+    the pure-Python ``_build_geno_blocks_reference`` over a range of
+    awkward inputs; the C output must match byte-for-byte. Inputs may
+    include any of: diploid calls, haploid (``b == -2``), missing
+    diploid, missing haploid, half-missing diploid. ``a == -2`` is the
+    zero-ploidy error case and is exercised separately."""
 
     def _assert_matches(self, G, phased):
-        c_out = _vcztools.encode_bgen_geno_blocks(G, phased)
-        ref_out = _build_geno_blocks_reference(G, phased)
-        assert c_out.dtype == np.uint8
-        assert c_out.shape == (G.shape[0], 10 + 3 * G.shape[1])
-        nt.assert_array_equal(c_out, ref_out)
+        c_buf, c_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
+        ref_blocks = _build_geno_blocks_reference(G, phased)
+        assert c_buf.dtype == np.uint8
+        assert c_lens.dtype == np.uint32
+        assert c_buf.shape == (G.shape[0], 10 + 3 * G.shape[1])
+        assert len(ref_blocks) == G.shape[0]
+        for v in range(G.shape[0]):
+            block_len = int(c_lens[v])
+            assert block_len == len(ref_blocks[v])
+            assert bytes(c_buf[v, :block_len]) == ref_blocks[v]
 
     @pytest.mark.parametrize("phased_value", [False, True])
     def test_single_sample_all_allele_pairs(self, phased_value):
-        # Sweep every (a, b) from {-2,-1,0,1,2}^2 as separate variants.
-        pairs = [(a, b) for a in range(-2, 3) for b in range(-2, 3)]
+        # Sweep every (a, b) from {-1, 0, 1, 2} x {-2, -1, 0, 1, 2} as
+        # separate variants. ``a == -2`` is the zero-ploidy error and
+        # is excluded; see test_zero_ploidy_*_raises below.
+        pairs = [(a, b) for a in range(-1, 3) for b in range(-2, 3)]
         G = np.array([[[a, b]] for a, b in pairs], dtype=np.int8)
         phased = np.full(len(pairs), phased_value, dtype=bool)
         self._assert_matches(G, phased)
@@ -314,21 +404,28 @@ class TestBuildGenoBlocksAgainstReference:
         self._assert_matches(G, np.zeros(5, dtype=bool))
         self._assert_matches(G, np.ones(5, dtype=bool))
 
-    def test_all_haploid_padded(self):
-        G = np.full((4, 6, 2), -2, dtype=np.int8)
-        self._assert_matches(G, np.zeros(4, dtype=bool))
+    def test_all_haploid(self):
+        # All-haploid block: every sample is (allele, -2). Both phased
+        # and unphased produce identical single-byte probabilities for
+        # K=1 biallelic.
+        v, s = 4, 6
+        G = np.empty((v, s, 2), dtype=np.int8)
+        G[:, :, 0] = np.arange(v * s, dtype=np.int8).reshape(v, s) % 3 - 1
+        G[:, :, 1] = -2
+        self._assert_matches(G, np.zeros(v, dtype=bool))
+        self._assert_matches(G, np.ones(v, dtype=bool))
 
-    def test_partial_missing_patterns(self):
-        # One variant covers every kind of missing/half-call/normal pair.
+    def test_partial_ploidy_patterns(self):
+        # One variant covers every valid (a, b) shape: diploid, haploid,
+        # missing diploid, missing haploid, half-missing diploid.
         samples = np.array(
             [
                 [-1, -1],
                 [0, -1],
                 [-1, 0],
-                [-2, 0],
                 [0, -2],
                 [1, -2],
-                [-2, 1],
+                [-1, -2],
                 [0, 0],
                 [0, 1],
                 [1, 0],
@@ -345,20 +442,28 @@ class TestBuildGenoBlocksAgainstReference:
     )
     def test_unusual_sample_counts(self, num_samples):
         rng = np.random.default_rng(0)
-        G = rng.integers(-2, 3, size=(2, num_samples, 2), dtype=np.int8)
+        # Draw a in {-1, 0, 1, 2}, b in {-2, -1, 0, 1, 2}; skip the
+        # zero-ploidy case (a == -2).
+        a = rng.integers(-1, 3, size=(2, num_samples), dtype=np.int8)
+        b = rng.integers(-2, 3, size=(2, num_samples), dtype=np.int8)
+        G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = np.array([False, True])
         self._assert_matches(G, phased)
 
     @pytest.mark.parametrize("num_variants", [0, 1, 2, 7, 16, 100])
     def test_unusual_variant_counts(self, num_variants):
         rng = np.random.default_rng(1)
-        G = rng.integers(-2, 3, size=(num_variants, 5, 2), dtype=np.int8)
+        a = rng.integers(-1, 3, size=(num_variants, 5), dtype=np.int8)
+        b = rng.integers(-2, 3, size=(num_variants, 5), dtype=np.int8)
+        G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = rng.integers(0, 2, size=num_variants, dtype=np.int8).astype(bool)
         self._assert_matches(G, phased)
 
     def test_random_uniform(self):
         rng = np.random.default_rng(42)
-        G = rng.integers(-2, 3, size=(50, 50, 2), dtype=np.int8)
+        a = rng.integers(-1, 3, size=(50, 50), dtype=np.int8)
+        b = rng.integers(-2, 3, size=(50, 50), dtype=np.int8)
+        G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = rng.integers(0, 2, size=50, dtype=np.int8).astype(bool)
         self._assert_matches(G, phased)
 
@@ -378,10 +483,12 @@ class TestBuildGenoBlocksAgainstReference:
     def test_large(self):
         num_variants = 500
         num_samples = 200
-        v_idx = np.arange(num_variants)[:, None, None]
-        s_idx = np.arange(num_samples)[None, :, None]
-        # Mix of all five values across the (V, S) grid.
-        G = ((v_idx + s_idx + np.array([[[0, 1]]])) % 5 - 2).astype(np.int8)
+        v_idx = np.arange(num_variants)[:, None]
+        s_idx = np.arange(num_samples)[None, :]
+        # Mix valid values: a in {-1, 0, 1, 2}, b in {-2, -1, 0, 1, 2}.
+        a = (v_idx + s_idx) % 4 - 1
+        b = (v_idx + 2 * s_idx) % 5 - 2
+        G = np.stack([a, b], axis=-1).astype(np.int8)
         phased = (np.arange(num_variants) % 2).astype(bool)
         self._assert_matches(G, phased)
 
@@ -395,6 +502,79 @@ class TestBuildGenoBlocksAgainstReference:
         assert phased.dtype == bool
         G = np.zeros((3, 3, 2), dtype=np.int8)
         self._assert_matches(G, phased)
+
+    @pytest.mark.parametrize("phased_value", [False, True])
+    @pytest.mark.parametrize("b", [-2, -1, 0, 1, 2])
+    def test_zero_ploidy_raises(self, phased_value, b):
+        # -2 in slot 0 is zero-ploidy and not representable in BGEN;
+        # surface as ValueError at write time.
+        G = np.array([[[-2, b]]], dtype=np.int8)
+        phased = np.array([phased_value])
+        with pytest.raises(ValueError, match="zero-ploidy"):
+            _vcztools.encode_bgen_geno_blocks(G, phased)
+
+
+class TestPloidyNormalization:
+    """Cover the Python-layer shape promotion that lets the encoder
+    accept either ``(V, S, 1)`` or ``(V, S, 2)`` call_genotype arrays
+    while the C kernel always sees the ``(V, S, 2)``-with-``-2``-pad
+    form."""
+
+    def test_check_ploidy_dim_accepts_haploid(self):
+        G = np.zeros((2, 3, 1), dtype=np.int8)
+        bgen._check_ploidy_dim(G)
+
+    def test_check_ploidy_dim_accepts_diploid(self):
+        G = np.zeros((2, 3, 2), dtype=np.int8)
+        bgen._check_ploidy_dim(G)
+
+    def test_check_ploidy_dim_rejects_polyploid(self):
+        G = np.zeros((2, 3, 3), dtype=np.int8)
+        with pytest.raises(ValueError, match="shape"):
+            bgen._check_ploidy_dim(G)
+
+    def test_check_ploidy_dim_rejects_2d(self):
+        G = np.zeros((2, 3), dtype=np.int8)
+        with pytest.raises(ValueError, match="shape"):
+            bgen._check_ploidy_dim(G)
+
+    def test_normalize_haploid_promotes_to_padded(self):
+        G = np.array([[[0], [1], [-1]]], dtype=np.int8)
+        normalised = bgen._normalize_genotype_ploidy(G)
+        assert normalised.shape == (1, 3, 2)
+        assert normalised.dtype == np.int8
+        nt.assert_array_equal(normalised[..., 0], G[..., 0])
+        nt.assert_array_equal(normalised[..., 1], [[-2, -2, -2]])
+
+    def test_normalize_diploid_unchanged(self):
+        G = np.array([[[0, 1], [1, -2], [-1, -1]]], dtype=np.int8)
+        normalised = bgen._normalize_genotype_ploidy(G)
+        assert normalised is G
+
+    def test_prepare_chunk_haploid_matches_padded(self):
+        # (V, S, 1) input must produce the same per-variant geno blocks
+        # as the equivalent (V, S, 2) input with -2 in slot 1.
+        G_haploid = np.array([[[0], [1], [-1], [0]]], dtype=np.int8)
+        G_padded = np.array([[[0, -2], [1, -2], [-1, -2], [0, -2]]], dtype=np.int8)
+
+        def prepare(G):
+            chunk = {
+                "call_genotype": G,
+                "variant_allele": np.array([["A", "T"]]),
+                "variant_contig": np.array([0]),
+                "variant_position": np.array([100]),
+            }
+            return bgen._prepare_chunk(
+                chunk, contig_ids=np.array(["chr1"]), start=0, end=1
+            )
+
+        prep1 = prepare(G_haploid)
+        prep2 = prepare(G_padded)
+        nt.assert_array_equal(prep1.geno_block_lens, prep2.geno_block_lens)
+        block_len = int(prep1.geno_block_lens[0])
+        nt.assert_array_equal(
+            prep1.geno_blocks[0, :block_len], prep2.geno_blocks[0, :block_len]
+        )
 
 
 class TestEncodeVariantBlock:
@@ -440,14 +620,18 @@ class TestChecks:
         alleles = np.array([["A", "T", ""]], dtype="<U2")
         bgen._check_biallelic(alleles)
 
-    def test_non_diploid_raises(self):
+    def test_polyploid_raises(self):
         G = np.zeros((2, 3, 3), dtype=np.int8)
-        with pytest.raises(ValueError, match="diploid"):
-            bgen._check_diploid(G)
+        with pytest.raises(ValueError, match="shape"):
+            bgen._check_ploidy_dim(G)
 
     def test_diploid_ok(self):
         G = np.zeros((2, 3, 2), dtype=np.int8)
-        bgen._check_diploid(G)
+        bgen._check_ploidy_dim(G)
+
+    def test_haploid_ok(self):
+        G = np.zeros((2, 3, 1), dtype=np.int8)
+        bgen._check_ploidy_dim(G)
 
 
 class TestPhaseDetection:

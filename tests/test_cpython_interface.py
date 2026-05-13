@@ -574,11 +574,20 @@ class TestEncodeBgenGenoBlocks:
 
     @pytest.mark.parametrize("bad_ploidy", [1, 3])
     def test_bad_ploidy(self, bad_ploidy):
-        with pytest.raises(ValueError, match="Only diploid genotypes"):
+        # The C wrapper only accepts (V, S, 2); shape (V, S, 1) is
+        # promoted to (V, S, 2) with -2 padding by the Python layer.
+        with pytest.raises(ValueError, match=r"\(V, S, 2\)"):
             _vcztools.encode_bgen_geno_blocks(
                 np.zeros((1, 1, bad_ploidy), dtype=np.int8),
                 self._phased(1),
             )
+
+    def test_zero_ploidy_in_slot_0_raises(self):
+        # -2 in slot 0 has no BGEN representation; the kernel returns
+        # an error code mapped to ValueError.
+        G = np.array([[[-2, 0]]], dtype=np.int8)
+        with pytest.raises(ValueError, match="zero-ploidy"):
+            _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
 
     def test_phased_variant_mismatch(self):
         with pytest.raises(
@@ -604,44 +613,64 @@ class TestEncodeBgenGenoBlocks:
 
     def test_output_shape_and_dtype(self):
         G = np.zeros((3, 4, 2), dtype=np.int8)
-        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(3))
-        assert out.dtype == np.uint8
-        assert out.shape == (3, 10 + 3 * 4)
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(3))
+        assert buf.dtype == np.uint8
+        assert buf.shape == (3, 10 + 3 * 4)
+        assert lens.dtype == np.uint32
+        assert lens.shape == (3,)
+        # All-zero diploid: every variant fills the worst-case row.
+        assert (lens == 10 + 3 * 4).all()
 
     def test_example_unphased(self):
         # Mirrors tests/test_bgen.py::test_unphased_basic.
         G = np.array([[[0, 0], [0, 1], [1, 1]]], dtype=np.int8)
-        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
-        assert bytes(out[0, 0:8]) == bytes([3, 0, 0, 0, 2, 0, 2, 2])
-        assert bytes(out[0, 8:11]) == bytes([0x02, 0x02, 0x02])
-        assert out[0, 11] == 0
-        assert out[0, 12] == 8
-        assert bytes(out[0, 13:19]) == bytes([0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00])
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
+        assert lens[0] == 19
+        assert bytes(buf[0, 0:8]) == bytes([3, 0, 0, 0, 2, 0, 2, 2])
+        assert bytes(buf[0, 8:11]) == bytes([0x02, 0x02, 0x02])
+        assert buf[0, 11] == 0
+        assert buf[0, 12] == 8
+        assert bytes(buf[0, 13:19]) == bytes([0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00])
 
     def test_example_phased(self):
         G = np.array([[[0, 0], [0, 1], [1, 0], [1, 1]]], dtype=np.int8)
-        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(1, True))
-        assert out[0, 12] == 1
-        assert bytes(out[0, 14:22]) == bytes(
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(1, True))
+        assert lens[0] == 22
+        assert buf[0, 12] == 1
+        assert bytes(buf[0, 14:22]) == bytes(
             [0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00]
         )
 
     def test_missing_pattern(self):
         G = np.array([[[-1, -1], [0, -1], [0, 1]]], dtype=np.int8)
-        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
-        assert bytes(out[0, 8:11]) == bytes([0x82, 0x82, 0x02])
-        assert bytes(out[0, 13:19]) == bytes([0, 0, 0, 0, 0, 0xFF])
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
+        assert lens[0] == 19
+        assert bytes(buf[0, 8:11]) == bytes([0x82, 0x82, 0x02])
+        assert bytes(buf[0, 13:19]) == bytes([0, 0, 0, 0, 0, 0xFF])
+
+    def test_mixed_ploidy(self):
+        # 2 samples: diploid (0, 0), haploid (1, -2). Block length:
+        # 8 + 2 ploidy + 2 flags + (2 + 1) probs = 15.
+        G = np.array([[[0, 0], [1, -2]]], dtype=np.int8)
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(1))
+        assert lens[0] == 15
+        # Pmin=1, Pmax=2.
+        assert bytes(buf[0, 0:8]) == bytes([2, 0, 0, 0, 2, 0, 1, 2])
+        assert bytes(buf[0, 8:10]) == bytes([0x02, 0x01])
+        assert bytes(buf[0, 12:15]) == bytes([0xFF, 0x00, 0x00])
 
     def test_zero_samples(self):
         G = np.zeros((2, 0, 2), dtype=np.int8)
-        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(2))
-        assert out.shape == (2, 10)
-        for row in out:
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(2))
+        assert buf.shape == (2, 10)
+        assert (lens == 10).all()
+        for row in buf:
             assert bytes(row[0:8]) == bytes([0, 0, 0, 0, 2, 0, 2, 2])
             assert row[8] == 0  # phased flag
             assert row[9] == 8  # B
 
     def test_zero_variants(self):
         G = np.zeros((0, 5, 2), dtype=np.int8)
-        out = _vcztools.encode_bgen_geno_blocks(G, self._phased(0))
-        assert out.shape == (0, 25)
+        buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(0))
+        assert buf.shape == (0, 25)
+        assert lens.shape == (0,)

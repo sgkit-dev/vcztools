@@ -445,6 +445,91 @@ class TestVariantChunksReadOnly:
         writable[0] = 0
 
 
+class TestVczReaderArraysReadOnly:
+    """Every numpy array ``VczReader`` exposes to a caller must be
+    read-only.
+
+    Many of these arrays are cached and reused: ``contig_ids``,
+    ``filter_ids``, ``sample_ids``, ``raw_sample_ids``, etc. are
+    ``@cached_property``; ``samples_selection`` / ``sample_ids`` are
+    set once in ``set_samples`` (or the lazy default resolver) and
+    then handed back on every subsequent property access. A mutation
+    by a caller would silently change what every later caller sees.
+    """
+
+    # Array-valued attributes on VczReader. Each entry is
+    # (attr_name, optional). "Optional" attrs may legally return None
+    # for a store that lacks the underlying field; the test skips the
+    # read-only assertion when the value is None.
+    ATTRS = [
+        ("contig_ids", False),
+        ("filter_ids", False),
+        ("contigs", False),
+        ("filters", False),
+        ("raw_sample_ids", False),
+        ("non_null_sample_indices", False),
+        ("sample_ids", False),
+        ("samples_selection", False),
+        ("contig_lengths", True),
+        ("filter_descriptions", True),
+        ("region_index", True),
+    ]
+
+    @pytest.mark.parametrize(("attr", "optional"), ATTRS)
+    def test_property_read_only(self, fx_sample_vcz, attr, optional):
+        reader = VczReader(fx_sample_vcz.group)
+        value = getattr(reader, attr)
+        if value is None:
+            if not optional:
+                pytest.fail(f"{attr} unexpectedly returned None")
+            pytest.skip(f"{attr} not present in fixture")
+        assert isinstance(value, np.ndarray), f"{attr} must be ndarray"
+        assert not value.flags.writeable, f"{attr} must be read-only"
+        with pytest.raises(ValueError, match="read-only"):
+            value.flat[0] = value.flat[0]
+
+    def test_variant_counts_per_chunk_read_only(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        counts = reader.variant_counts_per_chunk()
+        assert not counts.flags.writeable
+        with pytest.raises(ValueError, match="read-only"):
+            counts[0] = 0
+
+    def test_cached_property_returns_same_object(self, fx_sample_vcz):
+        # Sanity: the read-only flag set on a ``cached_property`` array
+        # is the same array on every subsequent access. Regression
+        # guard against a future refactor that returns a fresh
+        # (writeable) array each time.
+        reader = VczReader(fx_sample_vcz.group)
+        assert reader.contig_ids is reader.contig_ids
+        assert reader.raw_sample_ids is reader.raw_sample_ids
+
+    def test_set_samples_does_not_freeze_caller_input(self, fx_sample_vcz):
+        # ``set_samples`` must own its internal copy: freezing
+        # ``samples_selection`` for the reader's cache must not silently
+        # lock the caller's input array. Regression guard for the
+        # ``np.array`` (copy) vs. ``np.asarray`` (view) choice in
+        # ``_normalize_sample_indexes``.
+        reader = VczReader(fx_sample_vcz.group)
+        caller_input = np.array([0, 2], dtype=np.int64)
+        reader.set_samples(caller_input)
+        assert not reader.samples_selection.flags.writeable
+        # Caller's original input is still writeable.
+        assert caller_input.flags.writeable
+        caller_input[0] = 1  # must not raise
+
+    def test_static_field_cache_returns_read_only(self, fx_sample_vcz):
+        # ``_load_static_field`` results are also exposed indirectly
+        # via ``variant_chunks``; the cache itself must hand back
+        # read-only arrays so the first reader of the cache cannot
+        # corrupt later readers.
+        reader = VczReader(fx_sample_vcz.group)
+        arr = reader._load_static_field("filter_id")
+        assert not arr.flags.writeable
+        # Repeated load returns the same (still-frozen) object.
+        assert reader._load_static_field("filter_id") is arr
+
+
 def _make_stream_reader(
     root,
     *,

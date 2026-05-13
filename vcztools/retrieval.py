@@ -66,6 +66,16 @@ def _one_line_repr(obj) -> str:
     return " ".join(repr(obj).split())
 
 
+def _freeze(arr: np.ndarray) -> np.ndarray:
+    """Mark an array read-only and return it. Used at every site where
+    ``VczReader`` hands an internally-cached array back to a caller —
+    a mutation by the caller would corrupt the cache or a sibling
+    view into a shared buffer.
+    """
+    arr.flags.writeable = False
+    return arr
+
+
 class _PrefetchIterator:
     """One-deep prefetch wrapper around an iterator.
 
@@ -830,7 +840,7 @@ class VczReader:
         cached = self._static_field_cache.get(name)
         if cached is not None:
             return cached
-        value = self.root[name][:]
+        value = _freeze(self.root[name][:])
         self._static_field_cache[name] = value
         logger.debug(
             f"Loaded static field: {name} (shape={value.shape}, "
@@ -842,8 +852,8 @@ class VczReader:
         if self._samples_selection is not None:
             return
         raw_sample_ids = self.raw_sample_ids
-        self._samples_selection = np.flatnonzero(raw_sample_ids != "")
-        self._sample_ids = raw_sample_ids[self._samples_selection]
+        self._samples_selection = _freeze(np.flatnonzero(raw_sample_ids != ""))
+        self._sample_ids = _freeze(raw_sample_ids[self._samples_selection])
         self._sample_chunk_plan = samples_mod.build_chunk_plan(
             self._samples_selection,
             samples_chunk_size=self.samples_chunk_size,
@@ -900,8 +910,8 @@ class VczReader:
         if self._samples_selection is not None:
             raise RuntimeError("samples already configured")
         samples_selection = self._normalize_sample_indexes(samples, label="sample")
-        self._samples_selection = samples_selection
-        self._sample_ids = self.raw_sample_ids[samples_selection]
+        self._samples_selection = _freeze(samples_selection)
+        self._sample_ids = _freeze(self.raw_sample_ids[samples_selection])
         self._sample_chunk_plan = samples_mod.build_chunk_plan(
             samples_selection,
             samples_chunk_size=self.samples_chunk_size,
@@ -921,8 +931,10 @@ class VczReader:
         for consumers (e.g. PLINK BED encoders) that need to size
         per-chunk output without reading any data.
         """
-        return np.array(
-            [cr.num_selected for cr in self.variant_chunk_plan], dtype=np.int64
+        return _freeze(
+            np.array(
+                [cr.num_selected for cr in self.variant_chunk_plan], dtype=np.int64
+            )
         )
 
     def set_variants(self, variants) -> None:
@@ -1058,7 +1070,9 @@ class VczReader:
         into error messages.
         """
         _validate_samples_input(value)
-        arr = np.asarray(value, dtype=np.int64)
+        # ``np.array`` (not ``asarray``): always produce an owned copy so
+        # freezing the result for caching never locks the caller's input.
+        arr = np.array(value, dtype=np.int64)
         if arr.size > 0:
             lo = arr.min()
             hi = arr.max()
@@ -1092,24 +1106,26 @@ class VczReader:
         coerce to the modern variable-length StringDType so downstream
         callers get a uniform array type regardless of on-disk layout.
         """
-        return np.asarray(self.root["contig_id"][:], dtype=np.dtypes.StringDType())
+        return _freeze(
+            np.array(self.root["contig_id"][:], dtype=np.dtypes.StringDType())
+        )
 
     @functools.cached_property
     def filter_ids(self):
         """Filter IDs as raw zarr strings."""
-        return self.root["filter_id"][:]
+        return _freeze(self.root["filter_id"][:])
 
     @functools.cached_property
     def contigs(self):
         """Contig IDs as fixed-length bytes (for VcfEncoder)."""
-        return _as_fixed_length_string(self.root["contig_id"][:])
+        return _freeze(_as_fixed_length_string(self.root["contig_id"][:]))
 
     @functools.cached_property
     def filters(self):
         """Filter IDs as fixed-length bytes (for VcfEncoder).
         Returns a single ``b"PASS"`` entry when the store has no
         ``filter_id`` array."""
-        return _get_filter_ids(self.root)
+        return _freeze(_get_filter_ids(self.root))
 
     @functools.cached_property
     def num_variants(self) -> int:
@@ -1144,20 +1160,20 @@ class VczReader:
         """Full ``sample_id`` array from the store, including any
         null-string entries. For the post-subset order used when
         encoding rows, see :attr:`sample_ids`."""
-        return self.root["sample_id"][:]
+        return _freeze(self.root["sample_id"][:])
 
     @functools.cached_property
     def non_null_sample_indices(self) -> np.ndarray:
         """Global indices of non-null samples in ``sample_id``. Sorted;
         empty if every entry is null."""
-        return np.flatnonzero(self.raw_sample_ids != "")
+        return _freeze(np.flatnonzero(self.raw_sample_ids != ""))
 
     @functools.cached_property
     def contig_lengths(self) -> np.ndarray | None:
         """``contig_length`` array, or ``None`` if absent."""
         if "contig_length" not in self.root:
             return None
-        return self.root["contig_length"][:]
+        return _freeze(self.root["contig_length"][:])
 
     @functools.cached_property
     def region_index(self) -> np.ndarray:
@@ -1169,14 +1185,14 @@ class VczReader:
                 "Could not load 'region_index' variable. "
                 "Use 'vcz2zarr' to create an index."
             )
-        return self.root["region_index"][:]
+        return _freeze(self.root["region_index"][:])
 
     @functools.cached_property
     def filter_descriptions(self) -> np.ndarray | None:
         """Per-filter descriptions, or ``None`` if absent."""
         if "filter_description" not in self.root:
             return None
-        return self.root["filter_description"][:]
+        return _freeze(self.root["filter_description"][:])
 
     @functools.cached_property
     def source(self) -> str | None:

@@ -113,65 +113,6 @@ def _build_header(num_variants, num_samples, sample_id_block):
     return bytes(out)
 
 
-def _encode_genotype_block(genotypes, phased):
-    """Encode one variant's uncompressed genotype probability block.
-
-    ``genotypes`` is the per-variant slice of ``call_genotype`` with shape
-    ``(num_samples, 2)`` and dtype int8. Negative entries (``-1`` or
-    ``-2``) mark missing alleles; a sample is treated as missing iff any
-    of its alleles is negative. ``phased`` is a bool.
-
-    Layout 2 / 8-bit / biallelic / diploid:
-
-        uint32 N            n_samples
-        uint16 K = 2        n_alleles
-        uint8  P_min = 2
-        uint8  P_max = 2
-        N bytes             ploidy/missing per sample
-        uint8  phased
-        uint8  B = 8        bits per probability
-        2*N bytes           per-sample probability bytes
-    """
-    a = genotypes[:, 0]
-    b = genotypes[:, 1]
-    n = a.shape[0]
-    missing = (a < 0) | (b < 0)
-
-    if phased:
-        # Per-haplotype P(allele 0) at 8-bit precision: 0xFF if the
-        # haplotype carries the reference allele, 0x00 if it carries
-        # the alternate.
-        B0 = np.where(a == 0, 0xFF, 0x00).astype(np.uint8)
-        B1 = np.where(b == 0, 0xFF, 0x00).astype(np.uint8)
-    else:
-        # Unphased biallelic diploid stores P(00), P(01); P(11) is
-        # implicit. In colex order over multisets of size 2 from
-        # {0, 1}: (0,0), (0,1), (1,1).
-        homref = (a == 0) & (b == 0)
-        het = ((a == 0) & (b == 1)) | ((a == 1) & (b == 0))
-        B0 = np.where(homref, 0xFF, 0x00).astype(np.uint8)
-        B1 = np.where(het, 0xFF, 0x00).astype(np.uint8)
-
-    # Spec says missing samples' probability bytes should be ignored;
-    # zero them to keep the bytes deterministic for testing / hashing.
-    B0[missing] = 0
-    B1[missing] = 0
-
-    ploidy_bytes = np.full(n, _PLOIDY_DIPLOID, dtype=np.uint8)
-    ploidy_bytes[missing] = _PLOIDY_MISSING
-
-    prob_bytes = np.empty(2 * n, dtype=np.uint8)
-    prob_bytes[0::2] = B0
-    prob_bytes[1::2] = B1
-
-    out = bytearray()
-    out += struct.pack("<IHBB", n, 2, 2, 2)
-    out += ploidy_bytes.tobytes()
-    out += struct.pack("<BB", 1 if phased else 0, BITS_PER_PROB)
-    out += prob_bytes.tobytes()
-    return bytes(out)
-
-
 def _encode_field_chunk(values, *, max_len=None, field_name=None):
     """Vectorised UTF-8 byte preparation for a chunk's worth of variant
     string-field values.
@@ -213,12 +154,17 @@ def _encode_field_chunk(values, *, max_len=None, field_name=None):
 class _ChunkBytes:
     """Per-chunk byte-prepared inputs to the BGEN variant-block encoder.
 
-    All five ``*`` byte arrays follow :func:`_encode_field_chunk`'s
+    The five string ``*`` arrays follow :func:`_encode_field_chunk`'s
     dtype convention: an ``S``-dtype array in variable mode (length of
     element ``i`` is the actual UTF-8 byte length) or a
     ``(N, max_len) uint8`` view in fixed mode (length of element ``i``
     is ``max_len``). Either way ``len(arr[i])`` equals the BGEN
     length-prefix value that :func:`_encode_variant_block` writes.
+
+    ``geno_blocks`` holds the uncompressed BGEN genotype-block bytes
+    for every variant in the chunk: shape ``(V, 10 + 3 * num_samples)``
+    uint8. ``_encode_variant_block`` zlib-compresses one row at a time
+    and packs the surrounding variant-block framing.
     """
 
     varid: np.ndarray
@@ -227,8 +173,7 @@ class _ChunkBytes:
     allele1: np.ndarray
     allele2: np.ndarray
     position: np.ndarray
-    genotypes: np.ndarray
-    phased: np.ndarray
+    geno_blocks: np.ndarray
     mixed_phase_count: int
 
 
@@ -295,6 +240,8 @@ def _prepare_chunk(
         mixed_phase_count = 0
         phased = np.zeros(n, dtype=bool)
 
+    geno_blocks = _build_geno_blocks(G, phased)
+
     return _ChunkBytes(
         varid=varid_b,
         rsid=rsid_b,
@@ -302,10 +249,64 @@ def _prepare_chunk(
         allele1=a1_b,
         allele2=a2_b,
         position=positions,
-        genotypes=G,
-        phased=phased,
+        geno_blocks=geno_blocks,
         mixed_phase_count=mixed_phase_count,
     )
+
+
+def _build_geno_blocks(G, phased):
+    """Vectorised build of every variant's uncompressed BGEN
+    genotype-block bytes for one chunk. Returns a
+    ``(V, 10 + 3 * num_samples)`` uint8 array; row ``i`` is the
+    spec-compliant uncompressed block for variant ``i``.
+
+    Layout per row (Layout 2 / 8-bit / biallelic / diploid):
+
+        uint32 N            n_samples
+        uint16 K = 2        n_alleles
+        uint8  P_min = 2
+        uint8  P_max = 2
+        N bytes             ploidy/missing per sample
+        uint8  phased       per-variant flag
+        uint8  B = 8        bits per probability
+        2*N bytes           per-sample probability bytes (B0, B1 interleaved)
+    """
+    v, s, _ = G.shape
+    a = G[..., 0]
+    b = G[..., 1]
+    missing = (a < 0) | (b < 0)
+
+    # Phased and unphased disagree on what B0/B1 carry; compute both
+    # bitwise forms vectorised and select per variant with the phase
+    # mask broadcast over the sample axis.
+    a_zero = a == 0
+    b_zero = b == 0
+    homref = a_zero & b_zero
+    het = (a_zero & (b == 1)) | ((a == 1) & b_zero)
+    phased_row = phased[:, None]
+    b0_bit = np.where(phased_row, a_zero, homref)
+    b1_bit = np.where(phased_row, b_zero, het)
+    B0 = np.where(b0_bit, 0xFF, 0).astype(np.uint8)
+    B1 = np.where(b1_bit, 0xFF, 0).astype(np.uint8)
+    # Spec says missing samples' probability bytes should be ignored;
+    # zero them so the bytes are deterministic for testing / hashing.
+    B0[missing] = 0
+    B1[missing] = 0
+
+    ploidy = np.full((v, s), _PLOIDY_DIPLOID, dtype=np.uint8)
+    ploidy[missing] = _PLOIDY_MISSING
+
+    geno_blocks = np.empty((v, 10 + 3 * s), dtype=np.uint8)
+    header = struct.pack("<IHBB", s, 2, 2, 2)  # 8 bytes; constant per chunk
+    geno_blocks[:, 0:8] = np.frombuffer(header, dtype=np.uint8)
+    geno_blocks[:, 8 : 8 + s] = ploidy
+    geno_blocks[:, 8 + s] = phased.astype(np.uint8)
+    geno_blocks[:, 8 + s + 1] = BITS_PER_PROB
+    # Per-sample probability bytes interleave B0 then B1; matches the
+    # per-variant ordering produced by the legacy genotype block builder.
+    geno_blocks[:, 8 + s + 2 :: 2] = B0
+    geno_blocks[:, 8 + s + 3 :: 2] = B1
+    return geno_blocks
 
 
 def _encode_variant_block(
@@ -316,8 +317,7 @@ def _encode_variant_block(
     position,
     allele1_bytes,
     allele2_bytes,
-    genotypes,
-    phased,
+    geno_block_bytes,
     compression_level,
 ):
     """Encode one full BGEN variant data block (identifying data +
@@ -343,14 +343,18 @@ def _encode_variant_block(
     Either way ``len(bytes)`` is the length-prefix that goes on the
     wire, so the encoder doesn't need to know which mode it's in.
 
+    ``geno_block_bytes`` is the uncompressed BGEN genotype-block bytes
+    (spec layout: N/K/Pmin/Pmax header, ploidy, phased flag, B, prob
+    bytes) — assembled at chunk-level by :func:`_build_geno_blocks`
+    in :func:`_prepare_chunk`.
+
     bgen-reader strips trailing NULs from variable-length string
     fields, so the NUL-padded form round-trips as the original UTF-8
     string. ``compression_level`` is forwarded verbatim to
     :func:`zlib.compress`; :class:`BgenEncoder` always passes ``0``
     (stored) to keep block sizes deterministic.
     """
-    geno_block = _encode_genotype_block(genotypes, phased)
-    compressed = zlib.compress(geno_block, compression_level)
+    compressed = zlib.compress(geno_block_bytes, compression_level)
 
     out = bytearray()
     out += struct.pack("<H", len(varid_bytes))
@@ -367,7 +371,7 @@ def _encode_variant_block(
     out.extend(allele2_bytes)
     # C includes its own 4-byte size of D plus the compressed payload.
     C = 4 + len(compressed)
-    D = len(geno_block)
+    D = len(geno_block_bytes)
     out += struct.pack("<II", C, D)
     out += compressed
     return bytes(out)
@@ -564,7 +568,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
             return self._encode_variant_range(prep, start, end)
 
         return self._parallel_encode(
-            num_variants=prep.genotypes.shape[0],
+            num_variants=prep.geno_blocks.shape[0],
             encode_range=encode_range,
         )
 
@@ -579,8 +583,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 position=int(prep.position[j]),
                 allele1_bytes=prep.allele1[j],
                 allele2_bytes=prep.allele2[j],
-                genotypes=prep.genotypes[j],
-                phased=bool(prep.phased[j]),
+                geno_block_bytes=bytes(prep.geno_blocks[j]),
                 compression_level=0,
             )
             local = j - start
@@ -850,7 +853,7 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
             mixed_phase_count += prep.mixed_phase_count
             encode_seconds += time.perf_counter() - t_prep
 
-            n = prep.genotypes.shape[0]
+            n = prep.geno_blocks.shape[0]
             for j in range(n):
                 t0 = time.perf_counter()
                 block = _encode_variant_block(
@@ -860,8 +863,7 @@ def _stream_bgen_to_file(reader, bgen_path, *, compression_level: int):
                     position=int(prep.position[j]),
                     allele1_bytes=prep.allele1[j],
                     allele2_bytes=prep.allele2[j],
-                    genotypes=prep.genotypes[j],
-                    phased=bool(prep.phased[j]),
+                    geno_block_bytes=bytes(prep.geno_blocks[j]),
                     compression_level=compression_level,
                 )
                 t1 = time.perf_counter()

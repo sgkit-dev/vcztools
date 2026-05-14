@@ -9,13 +9,11 @@
 
 #include "vcf_encoder.h"
 
-// clang-format off
 typedef struct {
     PyObject_HEAD
     vcz_variant_encoder_t *vcf_encoder;
     PyObject *arrays;
 } VcfEncoder;
-// clang-format on
 
 static PyObject *VczBufferTooSmall;
 
@@ -471,10 +469,11 @@ VcfEncoder_encode(VcfEncoder *self, PyObject *args)
         PyErr_NoMemory();
         goto out;
     }
-    Py_BEGIN_ALLOW_THREADS line_length = vcz_variant_encoder_encode(
+    Py_BEGIN_ALLOW_THREADS
+    line_length = vcz_variant_encoder_encode(
         self->vcf_encoder, (size_t) row, buf, (size_t) bufsize);
-    Py_END_ALLOW_THREADS if (line_length < 0)
-    {
+    Py_END_ALLOW_THREADS
+    if (line_length < 0) {
         handle_library_error((int) line_length);
         goto out;
     }
@@ -562,8 +561,8 @@ static PyMethodDef VcfEncoder_methods[] = {
     { NULL } /* Sentinel */
 };
 
+// clang-format off
 static PyTypeObject VcfEncoderType = {
-    // clang-format off
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "_vcztools.VcfEncoder",
     .tp_basicsize = sizeof(VcfEncoder),
@@ -574,8 +573,8 @@ static PyTypeObject VcfEncoderType = {
     .tp_init = (initproc) VcfEncoder_init,
     .tp_new = PyType_GenericNew,
     .tp_getset = VcfEncoder_getsetters,
-    // clang-format on
 };
+// clang-format on
 
 /*===================================================================
  * Module level code.
@@ -614,14 +613,12 @@ vcztools_encode_plink(PyObject *self, PyObject *args)
         goto out; // GCOVR_EXCL_LINE
     }
 
-    // clang-format off
     Py_BEGIN_ALLOW_THREADS
     vcz_encode_plink((size_t) num_variants, (size_t) num_samples,
         PyArray_DATA(genotypes), PyArray_DATA(encoded));
     Py_END_ALLOW_THREADS
 
     ret = (PyObject *) encoded;
-    // clang-format on
     encoded = NULL;
 out:
     Py_XDECREF(encoded);
@@ -683,16 +680,13 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
         goto out; // GCOVR_EXCL_LINE
     }
 
-    // clang-format off
     Py_BEGIN_ALLOW_THREADS
     err = vcz_encode_bgen_geno_blocks((size_t) num_variants, (size_t) num_samples,
-        PyArray_DATA(genotypes), PyArray_DATA(phased), PyArray_DATA(encoded),
-        row_stride, PyArray_DATA(lens));
+        PyArray_DATA(genotypes), PyArray_DATA(phased), PyArray_DATA(encoded), row_stride,
+        PyArray_DATA(lens));
     Py_END_ALLOW_THREADS
-        // clang-format on
 
-        if (err == VCZ_ERR_BGEN_INVALID_PLOIDY)
-    {
+    if (err == VCZ_ERR_BGEN_INVALID_PLOIDY) {
         PyErr_Format(PyExc_ValueError,
             "BGEN encoder: -2 in genotype slot 0 (zero-ploidy / unused sample) "
             "is not representable in BGEN");

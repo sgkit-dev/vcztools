@@ -25,6 +25,16 @@ handle_library_error(int err)
             PyErr_Format(
                 VczBufferTooSmall, "Error: %d; specified buffer size is too small", err);
             break;
+        case VCZ_ERR_BGEN_INVALID_PLOIDY:
+            PyErr_Format(PyExc_ValueError,
+                "BGEN encoder: -2 in genotype slot 0 (zero-ploidy / unused sample) "
+                "is not representable in BGEN");
+            break;
+        case VCZ_ERR_BGEN_INVALID_ALLELE:
+            PyErr_Format(PyExc_ValueError,
+                "BGEN encoder: genotype value out of range; biallelic input "
+                "expects values in {-2, -1, 0, 1}");
+            break;
         // TODO handle the other error types.
         default:
             PyErr_Format(PyExc_ValueError, "Error occured: %d: ", err);
@@ -686,23 +696,11 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
         PyArray_DATA(lens));
     Py_END_ALLOW_THREADS
 
-    if (err == VCZ_ERR_BGEN_INVALID_PLOIDY) {
-        PyErr_Format(PyExc_ValueError,
-            "BGEN encoder: -2 in genotype slot 0 (zero-ploidy / unused sample) "
-            "is not representable in BGEN");
+    if (err != 0) {
+        handle_library_error(err);
         goto out;
     }
-    if (err == VCZ_ERR_BGEN_INVALID_ALLELE) {
-        PyErr_Format(PyExc_ValueError,
-            "BGEN encoder: genotype value out of range; biallelic input "
-            "expects values in {-2, -1, 0, 1}");
-        goto out;
-    }
-
-    ret = PyTuple_Pack(2, (PyObject *) encoded, (PyObject *) lens);
-    if (ret == NULL) {
-        goto out; // GCOVR_EXCL_LINE
-    }
+    ret = Py_BuildValue("(OO)", (PyObject *) encoded, (PyObject *) lens);
 out:
     Py_XDECREF(encoded);
     Py_XDECREF(lens);

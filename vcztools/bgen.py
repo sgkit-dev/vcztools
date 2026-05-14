@@ -871,7 +871,7 @@ def write_bgen(
     write_bgi: bool = True,
     write_sample: bool = True,
     embed_header_samples: bool = True,
-    compression_level: int = -1,
+    compression_level: int = 1,
     encode_threads: int | None = None,
 ):
     """Write an Oxford BGEN payload for ``reader`` to ``output``.
@@ -906,8 +906,15 @@ def write_bgen(
     ``compression_level`` is forwarded to :func:`zlib.compress` for each
     variant's genotype probability block; accepts ``-1..9`` (``-1`` =
     zlib default ≈ level 6; ``0`` = stored, still framed as zlib;
-    ``9`` = maximum). The BGEN flag word always advertises
-    ``COMPRESSION_ZLIB`` regardless of level.
+    ``9`` = maximum). The default is ``1`` — fast compression. Hard-call
+    BGEN payloads are short, low-entropy byte runs (mostly 1.0/0.0 in
+    8-bit form, repeated across samples), so the marginal compression
+    above level 1 is small relative to the CPU cost: level 6 (zlib
+    default) typically shrinks the file by ~10-30% but spends several
+    times more CPU. Since the BGEN flag word always advertises
+    ``COMPRESSION_ZLIB`` regardless of level, every reader handles the
+    output. Pass ``--compression-level 9`` (or ``compression_level=9``)
+    when archival size matters more than encode throughput.
 
     ``encode_threads`` sizes the worker pool that runs per-slice
     :func:`_prepare_chunk` + per-variant ``_encode_variant_block`` for

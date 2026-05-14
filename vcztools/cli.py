@@ -1017,12 +1017,13 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
 @click.option(
     "--compression-level",
     type=click.IntRange(-1, 9),
-    default=-1,
+    default=1,
     show_default=True,
     help=(
         "zlib compression level for the BGEN genotype probability "
-        "blocks. -1 = zlib default (~6); 0 = stored (no compression); "
-        "9 = max."
+        "blocks. 1 (default) is fast and within ~10-30% of the size of "
+        "level 6 on hard-call BGEN; -1 = zlib default (~6); 0 = stored "
+        "(no compression); 9 = max."
     ),
 )
 @log_options

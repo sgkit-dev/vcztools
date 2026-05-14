@@ -228,12 +228,18 @@ class BedEncoder(format_encoder.FormatEncoder):
     Per-chunk PLINK encoding parallelises across variant-axis
     sub-blocks via a :class:`concurrent.futures.ThreadPoolExecutor`
     owned by the encoder. ``encode_threads`` (default 4) sets the
-    pool size; ``encode_block_bytes`` (default 10 MiB) is the
+    pool size; ``encode_block_bytes`` (default 1 MiB) is the
     input-bytes target per sub-block. Chunks at or below the
     threshold encode synchronously on the calling thread.
+
+    The 1 MiB block default targets typical L2 cache size; PLINK
+    encoding is a tight memory-walk loop and benefits from each
+    thread's working set fitting in L2. Bump for very wide cohorts
+    if profiling shows scheduling overhead dominates encode time.
     """
 
     BED_MAGIC: ClassVar[bytes] = BED_MAGIC
+    _default_encode_block_bytes: ClassVar[int] = 1 * 1024 * 1024
 
     def __init__(
         self,

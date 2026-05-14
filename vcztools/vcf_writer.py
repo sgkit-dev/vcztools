@@ -84,9 +84,9 @@ class VcfWriter:
     configured ``reader.set_samples(...)`` should pass ``True``.
 
     ``encode_threads`` sets the size of the per-chunk line encoding
-    thread pool. Each chunk's rows are split into ``encode_threads``
-    contiguous blocks encoded in parallel; completed blocks are written
-    to ``output`` in row order.
+    thread pool (default 4). Each chunk's rows are split into
+    ``encode_threads`` contiguous blocks encoded in parallel; completed
+    blocks are written to ``output`` in row order.
     """
 
     def __init__(
@@ -97,8 +97,12 @@ class VcfWriter:
         subsetting_samples: bool = False,
         no_update=None,
         drop_genotypes: bool = False,
-        encode_threads: int = 1,
+        encode_threads: int | None = None,
     ):
+        if encode_threads is None:
+            encode_threads = 4
+        if encode_threads < 1:
+            raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
         self.reader = reader
         self._output_arg = output
         self.subsetting_samples = subsetting_samples
@@ -320,7 +324,7 @@ def write_vcf(
     no_version: bool = False,
     no_update=None,
     drop_genotypes: bool = False,
-    encode_threads: int = 1,
+    encode_threads: int | None = None,
 ) -> None:
     """Write a VCF to ``output`` from ``reader``. Thin wrapper around
     :class:`VcfWriter`; see that class for details on the per-write

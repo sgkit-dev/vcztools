@@ -46,6 +46,7 @@ import abc
 import concurrent.futures as cf
 import logging
 from collections.abc import Callable
+from typing import ClassVar
 
 import numpy as np
 
@@ -57,7 +58,14 @@ class FormatEncoder(abc.ABC):
 
     See module docstring for the shared contract and subclass authoring
     guidelines. The only mandatory hook is :meth:`_encode_chunk`.
+
+    Subclasses may override :attr:`_default_encode_block_bytes` to pick
+    a format-specific default sub-block size (peak encoder rates differ
+    by format — plink benefits from smaller blocks that fit in L2,
+    bgen's zlib-bound encode is insensitive).
     """
+
+    _default_encode_block_bytes: ClassVar[int] = 10 * 1024 * 1024
 
     def __init__(
         self,
@@ -72,7 +80,7 @@ class FormatEncoder(abc.ABC):
         if encode_threads is None:
             encode_threads = 4
         if encode_block_bytes is None:
-            encode_block_bytes = 10 * 1024 * 1024
+            encode_block_bytes = self._default_encode_block_bytes
 
         if reader.variant_filter is not None:
             raise NotImplementedError(

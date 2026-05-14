@@ -200,11 +200,11 @@ readahead_buffer_size = click.option(
 encode_threads = click.option(
     "--encode-threads",
     type=int,
-    default=1,
+    default=4,
     help=(
         "Worker threads for per-chunk VCF line encoding. With >1, each "
         "chunk is split into this many contiguous row blocks encoded in "
-        "parallel. Default: 1."
+        "parallel. Default: 4."
     ),
 )
 

@@ -1,23 +1,47 @@
 (sec-bgen)=
 # BGEN output
 
-The `vcztools view-bgen` command writes an Oxford BGEN fileset
-(`.bgen`/`.sample`/`.bgen.bgi`) from a VCZ store. Output profile:
-**layout 2, zlib-compressed, 8 bits per probability, biallelic,
-embedded sample IDs**. Diploid, haploid (e.g. chrX in males,
-mitochondrial) and mixed-ploidy stores (mixed-sex chrX) are
-supported via per-sample ploidy bytes. This is the consumer
+The `vcztools view-bgen` command writes Oxford BGEN output from a VCZ
+store. Output profile: **layout 2, zlib-compressed, 8 bits per
+probability, biallelic, embedded sample IDs**. Diploid, haploid (e.g.
+chrX in males, mitochondrial) and mixed-ploidy stores (mixed-sex chrX)
+are supported via per-sample ploidy bytes. This is the consumer
 lowest-common-denominator: REGENIE, SAIGE, BOLT-LMM, BGENIE, qctool,
 and PLINK 2 all accept it without further conversion.
 
+Default: stream the `.bgen` payload to stdout (mirroring `vcztools
+view`). Pass `-o STEM` to write files including the `.bgen.bgi` (bgenix
+SQLite index) and `.sample` (Oxford text) sidecars, both on by default
+and individually suppressible.
+
 ```bash
-vcztools view-bgen sample.vcz --out sample
-# produces sample.bgen, sample.sample, sample.bgen.bgi
+# Streaming: pipe straight into another tool, or redirect to a file.
+vcztools view-bgen sample.vcz > sample.bgen
+
+# File output with the full sidecar set.
+vcztools view-bgen sample.vcz -o sample
+# produces sample.bgen, sample.bgen.bgi, sample.sample
+
+# File output, .bgen only.
+vcztools view-bgen sample.vcz -o sample --no-bgi --no-sample-file
 ```
+
+The `-o` value is a stem taken **verbatim** — `-o sample` produces
+`sample.bgen`, `sample.bgen.bgi`, `sample.sample`; `-o sample.bgen`
+would produce `sample.bgen.bgen` etc.
 
 Sample, region and filter selection mirrors `vcztools view`
 (`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`/`-v`/`-V`/`-m`/`-M`); the
 per-flag reference is in {ref}`sec-cli-ref`.
+
+## Sample-ID embedding
+
+By default the BGEN header carries sample IDs (the `SAMPLE_IDS_PRESENT`
+flag is set), so the `.bgen` is self-describing. Pass `--no-header-samples`
+to clear the flag and omit the sample-ID block; in that case downstream
+tools must rely on the `.sample` sidecar — combining `--no-header-samples`
+with `--no-sample-file` leaves sample IDs nowhere and logs a warning
+(most readers will refuse the resulting BGEN).
 
 ## Hard calls and probabilities
 
@@ -39,17 +63,23 @@ silently to unphased and a warning is logged.) Stores without
 
 ## Sidecars
 
-`view-bgen` writes three files for every run:
+With `-o STEM`, `view-bgen` writes the `.bgen` payload plus, by default,
+two sidecar files:
 
-| File | Format | Purpose |
-| --- | --- | --- |
-| `<out>.bgen` | binary | the BGEN payload (header + variant blocks) |
-| `<out>.sample` | text | Oxford `.sample` (sample IDs); required by SAIGE, accepted by REGENIE |
-| `<out>.bgen.bgi` | SQLite | bgenix index; required by SAIGE Step 2; strongly recommended for REGENIE |
+| File | Format | Default | Suppress with | Purpose |
+| --- | --- | --- | --- | --- |
+| `<stem>.bgen` | binary | always | — | the BGEN payload (header + variant blocks) |
+| `<stem>.bgen.bgi` | SQLite | on | `--no-bgi` | bgenix index; required by SAIGE Step 2; strongly recommended for REGENIE |
+| `<stem>.sample` | text | on | `--no-sample-file` | Oxford `.sample` (sample IDs); required by SAIGE, accepted by REGENIE |
 
 The `.bgen` header also embeds sample IDs, so consumers that read sample
 names from the BGEN itself (qctool, BGENIE, PLINK 2) work without the
-`.sample` sidecar. SAIGE Step 2 still requires the `.sample` file.
+`.sample` sidecar. SAIGE Step 2 still requires the `.sample` file. Pass
+`--no-header-samples` to drop the in-header IDs (e.g. for samples whose
+identifiers must not appear in the binary).
+
+Streaming mode (no `-o`) writes only the `.bgen` payload to stdout;
+sidecar flags have no effect.
 
 ## Reading `view-bgen` output with downstream tools
 
@@ -71,7 +101,7 @@ biallelic SNPs. Two ways to handle them:
 - **Skip** with `--max-alleles 2`:
 
   ```bash
-  vcztools view-bgen sample.vcz --out sample --max-alleles 2
+  vcztools view-bgen sample.vcz -o sample --max-alleles 2
   ```
 
 - **Split** before conversion with ``bcftools norm -m-``. Each ALT

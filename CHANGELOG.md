@@ -26,6 +26,23 @@ Features:
   both forms are accepted. The fixed-size `BgenEncoder` class
   requires uniform ploidy (all haploid or all diploid) across the
   store; mixed-ploidy stores must go through `write_bgen`.
+- `view-bgen` now streams the `.bgen` payload to stdout by default
+  (mirroring `vcztools view`). Pass `-o STEM` to write files plus the
+  `.bgen.bgi` and `.sample` sidecars; suppress sidecars individually
+  with `--no-bgi` / `--no-sample-file`. New `--no-header-samples`
+  clears the BGEN `SAMPLE_IDS_PRESENT` flag and omits the in-header
+  sample-ID block.
+- `view-plink` gains `--no-bim` / `--no-fam` to suppress those
+  sidecars (`.bed` is always written).
+
+Breaking changes:
+
+- `view-bgen` and `view-plink`: the `--out PREFIX` flag has been
+  replaced by `-o/--output STEM`. The stem is now taken **verbatim**
+  rather than going through `pathlib.with_suffix`, so `-o sample.bgen`
+  produces `sample.bgen.bgen` etc.; pass an unsuffixed stem.
+  `view-bgen` no longer requires `-o` (default = stream to stdout);
+  `view-plink` still requires it.
 
 Bug fixes:
 

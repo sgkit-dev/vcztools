@@ -308,12 +308,14 @@ def search(a, v):
 
 
 @contextmanager
-def open_file_like(file):
+def open_file_like(file, mode="w"):
     """A context manager for opening a file path or string (and closing on exit),
-    or passing a file-like object through."""
+    or passing a file-like object through. ``mode`` is forwarded to
+    :func:`open` for path inputs and ignored for already-open streams.
+    """
     with ExitStack() as stack:
         if isinstance(file, (str, Path)):
-            file = stack.enter_context(open(file, mode="w"))
+            file = stack.enter_context(open(file, mode=mode))
         yield file
 
 

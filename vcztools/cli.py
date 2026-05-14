@@ -3,6 +3,7 @@ import dataclasses
 import json
 import logging
 import os
+import pathlib
 import sys
 import warnings
 from functools import wraps
@@ -1063,23 +1064,27 @@ def view_bgen(
     embed_header_samples = not no_header_samples
     with make_reader_from_options(path, options) as reader:
         if output is None:
-            # Default: stream .bgen to stdout. Sidecar flags become no-ops
-            # since there is no stem to derive paths from.
+            # Stream .bgen to stdout. Sidecars have no stem to derive
+            # paths from, so they're omitted (sample_path/bgi_path=None).
             with handle_broken_pipe(sys.stdout.buffer):
                 bgen.write_bgen(
                     reader,
                     sys.stdout.buffer,
-                    write_bgi=False,
-                    write_sample=False,
                     embed_header_samples=embed_header_samples,
                     compression_level=compression_level,
                 )
         else:
+            # Stem is taken verbatim — no suffix stripping. "foo" -> foo.bgen
+            # / foo.sample / foo.bgen.bgi (the bgenix filename convention).
+            out_stem = str(output)
+            bgen_path = pathlib.Path(out_stem + ".bgen")
+            sample_path = None if no_sample_file else pathlib.Path(out_stem + ".sample")
+            bgi_path = None if no_bgi else pathlib.Path(str(bgen_path) + ".bgi")
             bgen.write_bgen(
                 reader,
-                output,
-                write_bgi=not no_bgi,
-                write_sample=not no_sample_file,
+                bgen_path,
+                sample_path=sample_path,
+                bgi_path=bgi_path,
                 embed_header_samples=embed_header_samples,
                 compression_level=compression_level,
             )

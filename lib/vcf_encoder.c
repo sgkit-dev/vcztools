@@ -1105,6 +1105,7 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens)
 {
+    int ret = 0;
     uint8_t *row;
     uint8_t *ploidy_out;
     uint8_t *prob_out;
@@ -1130,10 +1131,12 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
             /* The BGEN encoder is biallelic: only {-2, -1, 0, 1} are
              * accepted; any other value is a data-quality error. */
             if (a < -2 || a > 1 || b < -2 || b > 1) {
-                return VCZ_ERR_BGEN_INVALID_ALLELE;
+                ret = VCZ_ERR_BGEN_INVALID_ALLELE;
+                goto out;
             }
             if (a == VCZ_INT_FILL) {
-                return VCZ_ERR_BGEN_INVALID_PLOIDY;
+                ret = VCZ_ERR_BGEN_INVALID_PLOIDY;
+                goto out;
             }
             if (b == VCZ_INT_FILL) {
                 /* Haploid call: ploidy=1. */
@@ -1192,5 +1195,6 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
 
         out_lens[v] = (uint32_t) (8 + num_samples + 2 + prob_offset);
     }
-    return 0;
+out:
+    return ret;
 }

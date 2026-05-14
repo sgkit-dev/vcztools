@@ -103,13 +103,40 @@ class FixtureOutputs:
 
 
 BGEN_LEVELS = ["lvl=-1", "lvl=0", "encoder"]
+BGEN_CLI_LEVELS = ["lvl=-1", "lvl=0"]
+"""``BGEN_LEVELS`` without ``encoder``. Used by mixed-ploidy
+parametrisations: :class:`vcztools.bgen.BgenEncoder` is uniform-ploidy
+only, so it has no output flavour for the mixed fixture."""
 
 
-def bgen_for_level(fx: FixtureOutputs, level: str) -> tuple[pathlib.Path, pathlib.Path]:
+@dataclasses.dataclass
+class BgenOnlyFixture:
+    """Like :class:`FixtureOutputs` but without the PLINK and phenotype
+    fields. Used by ploidy fixtures where PLINK / REGENIE / BOLT do not
+    apply. ``bgen_encoder`` and ``bgen_encoder_sample`` are ``None``
+    when the source store is mixed-ploidy (BgenEncoder is uniform-only).
+    """
+
+    name: str
+    vcz_path: pathlib.Path
+    bgen_minus1: pathlib.Path
+    bgen_stored: pathlib.Path
+    bgen_encoder: pathlib.Path | None
+    sample_path: pathlib.Path
+    bgen_encoder_sample: pathlib.Path | None
+
+
+def bgen_for_level(
+    fx: FixtureOutputs | BgenOnlyFixture, level: str
+) -> tuple[pathlib.Path, pathlib.Path]:
     """Return ``(bgen_path, sample_path)`` for one of the three BGEN
     flavours produced by the fixture. The encoder needs its own .sample
     because it does not share the CLI's filter/sample plumbing."""
     if level == "encoder":
+        if fx.bgen_encoder is None:
+            raise ValueError(
+                "fixture has no BgenEncoder flavour (encoder is uniform-ploidy only)"
+            )
         return fx.bgen_encoder, fx.bgen_encoder_sample
     if level == "lvl=-1":
         return fx.bgen_minus1, fx.sample_path
@@ -193,3 +220,63 @@ def large_unphased_fixture(tmp_path_factory) -> FixtureOutputs:
 def large_phased_fixture(tmp_path_factory) -> FixtureOutputs:
     work = tmp_path_factory.mktemp("large_phased_outputs")
     return _build_outputs("large", "phased", work)
+
+
+def _require_ploidy_fixture(name: str) -> pathlib.Path:
+    """Resolve ``data/<name>.vcz``; skip if its marker file is missing."""
+    vcz = DATA_DIR / f"{name}.vcz"
+    if not (DATA_DIR / f"{name}.vcz.ready").exists():
+        pytest.skip(
+            f"{name}.vcz fixture missing — run `make -C validation data` to generate it"
+        )
+    return vcz
+
+
+def _build_bgen_only_outputs(
+    name: str, work: pathlib.Path, *, with_encoder: bool
+) -> BgenOnlyFixture:
+    """Build the two CLI BGEN flavours (and optionally the encoder
+    flavour) from a single-store ploidy fixture. PLINK is skipped: it
+    has no haploid / mixed-ploidy concept."""
+    vcz = _require_ploidy_fixture(name)
+    bgen_minus1 = work / "bgen_lvl_minus1"
+    bgen_stored = work / "bgen_lvl_stored"
+
+    extra = "--max-alleles 2"
+    helpers.run_view_bgen(vcz, bgen_minus1, compression_level=-1, extra_args=extra)
+    helpers.run_view_bgen(vcz, bgen_stored, compression_level=0, extra_args=extra)
+    sample_path = bgen_minus1.with_suffix(".sample")
+    if not sample_path.exists():
+        raise AssertionError(f"missing .sample file at {sample_path}")
+
+    bgen_encoder_path: pathlib.Path | None = None
+    encoder_sample_path: pathlib.Path | None = None
+    if with_encoder:
+        bgen_encoder = work / "bgen_encoder"
+        helpers.run_bgen_encoder(vcz, bgen_encoder)
+        bgen_encoder_path = bgen_encoder.with_suffix(".bgen")
+        encoder_sample_path = bgen_encoder.with_suffix(".sample")
+        if not encoder_sample_path.exists():
+            raise AssertionError(f"missing .sample file at {encoder_sample_path}")
+
+    return BgenOnlyFixture(
+        name=name,
+        vcz_path=vcz,
+        bgen_minus1=bgen_minus1.with_suffix(".bgen"),
+        bgen_stored=bgen_stored.with_suffix(".bgen"),
+        bgen_encoder=bgen_encoder_path,
+        sample_path=sample_path,
+        bgen_encoder_sample=encoder_sample_path,
+    )
+
+
+@pytest.fixture(scope="session")
+def haploid_fixture(tmp_path_factory) -> BgenOnlyFixture:
+    work = tmp_path_factory.mktemp("haploid_outputs")
+    return _build_bgen_only_outputs("haploid", work, with_encoder=True)
+
+
+@pytest.fixture(scope="session")
+def mixed_ploidy_fixture(tmp_path_factory) -> BgenOnlyFixture:
+    work = tmp_path_factory.mktemp("mixed_ploidy_outputs")
+    return _build_bgen_only_outputs("mixed_ploidy", work, with_encoder=False)

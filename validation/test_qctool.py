@@ -137,6 +137,58 @@ class TestQctoolVariantIds:
         np.testing.assert_array_equal(df["alternate_ids"].astype(str).to_numpy(), ids)
 
 
+class TestQctoolHaploid:
+    """qctool reads vcztools' uniform-haploid BGEN output and reports the
+    ALT-allele frequency we compute from the source. The diploid-suite
+    test recomputes ``alt_freq`` from integer columns using
+    ``2 * (total - NULL)`` to dodge the formatted-precision rounding;
+    that recomputation hardcodes ploidy=2 and is wrong for haploid, so
+    we compare the already-formatted ``alleleB_frequency`` column
+    directly with an ``atol`` that absorbs qctool's 6-decimal printing.
+    """
+
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_alt_allele_frequency_matches_reference(
+        self, tmp_path, qctool_bin, haploid_fixture, level
+    ):
+        bgen, sample = cfg.bgen_for_level(haploid_fixture, level)
+        out = tmp_path / "snp_stats.tsv"
+        df = _qctool_snp_stats(qctool_bin, bgen, sample, out)
+
+        ref = reference.compute_variant_stats(haploid_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        assert len(df) == int(biallelic.sum())
+        np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
+        np.testing.assert_allclose(
+            df["alleleB_frequency"].to_numpy(),
+            ref.alt_freq[biallelic],
+            atol=1e-6,
+        )
+
+
+class TestQctoolMixedPloidy:
+    """qctool reads vcztools' mixed-ploidy BGEN output. Only the two
+    view-bgen flavours apply: BgenEncoder is uniform-only."""
+
+    @pytest.mark.parametrize("level", cfg.BGEN_CLI_LEVELS)
+    def test_alt_allele_frequency_matches_reference(
+        self, tmp_path, qctool_bin, mixed_ploidy_fixture, level
+    ):
+        bgen, sample = cfg.bgen_for_level(mixed_ploidy_fixture, level)
+        out = tmp_path / "snp_stats.tsv"
+        df = _qctool_snp_stats(qctool_bin, bgen, sample, out)
+
+        ref = reference.compute_variant_stats(mixed_ploidy_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        assert len(df) == int(biallelic.sum())
+        np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
+        np.testing.assert_allclose(
+            df["alleleB_frequency"].to_numpy(),
+            ref.alt_freq[biallelic],
+            atol=1e-6,
+        )
+
+
 class TestQctoolPhasedBgen:
     """qctool refuses vcztools' phased BGEN layout — it raises
     ``genfile::BadArgumentError`` complaining that the

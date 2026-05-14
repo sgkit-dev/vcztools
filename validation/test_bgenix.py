@@ -210,6 +210,111 @@ def _read_variant_table(bgi_path: pathlib.Path) -> list[tuple]:
     ]
 
 
+class TestBgenixHaploid:
+    """bgenix reads vcztools' uniform-haploid BGEN output. All three
+    BGEN flavours are exercised (view-bgen lvl=-1, lvl=0, BgenEncoder).
+    Allele set and ALT-allele frequency are unchanged from the diploid
+    source — `compute_variant_stats` treats slot-0-only haploid stores
+    the same way it treats diploid (negative values are missing)."""
+
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_variant_positions_match_reference(
+        self, tmp_path, bgenix_bin, haploid_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(haploid_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(haploid_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        assert len(df) == int(biallelic.sum())
+        np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
+
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_alleles_match_reference(
+        self, tmp_path, bgenix_bin, haploid_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(haploid_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(haploid_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        np.testing.assert_array_equal(
+            df["first_allele"].astype(str).to_numpy(), ref.ref[biallelic]
+        )
+        np.testing.assert_array_equal(
+            df["alternative_alleles"].astype(str).to_numpy(), ref.alt[biallelic]
+        )
+
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_variant_table_matches_bgenix(
+        self, tmp_path, bgenix_bin, haploid_fixture, level
+    ):
+        bgen_src, _ = cfg.bgen_for_level(haploid_fixture, level)
+        vcztools_bgi = pathlib.Path(str(bgen_src) + ".bgi")
+        assert vcztools_bgi.exists(), (
+            f"expected vcztools-produced .bgi alongside {bgen_src}"
+        )
+
+        bgenix_bgen = _stage_with_index(bgenix_bin, bgen_src, tmp_path / "ref.bgen")
+        bgenix_bgi = pathlib.Path(str(bgenix_bgen) + ".bgi")
+
+        ours = _read_variant_table(vcztools_bgi)
+        theirs = _read_variant_table(bgenix_bgi)
+        assert ours == theirs
+
+
+class TestBgenixMixedPloidy:
+    """bgenix reads vcztools' mixed-ploidy BGEN output. Only the two
+    view-bgen flavours are exercised: BgenEncoder is uniform-only and
+    has no mixed-ploidy build (see ``_build_bgen_only_outputs`` /
+    ``vcztools.bgen.BgenEncoder``)."""
+
+    @pytest.mark.parametrize("level", cfg.BGEN_CLI_LEVELS)
+    def test_variant_positions_match_reference(
+        self, tmp_path, bgenix_bin, mixed_ploidy_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(mixed_ploidy_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(mixed_ploidy_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        assert len(df) == int(biallelic.sum())
+        np.testing.assert_array_equal(df["position"].to_numpy(), ref.pos[biallelic])
+
+    @pytest.mark.parametrize("level", cfg.BGEN_CLI_LEVELS)
+    def test_alleles_match_reference(
+        self, tmp_path, bgenix_bin, mixed_ploidy_fixture, level
+    ):
+        src, _ = cfg.bgen_for_level(mixed_ploidy_fixture, level)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(mixed_ploidy_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        np.testing.assert_array_equal(
+            df["first_allele"].astype(str).to_numpy(), ref.ref[biallelic]
+        )
+        np.testing.assert_array_equal(
+            df["alternative_alleles"].astype(str).to_numpy(), ref.alt[biallelic]
+        )
+
+    @pytest.mark.parametrize("level", cfg.BGEN_CLI_LEVELS)
+    def test_variant_table_matches_bgenix(
+        self, tmp_path, bgenix_bin, mixed_ploidy_fixture, level
+    ):
+        bgen_src, _ = cfg.bgen_for_level(mixed_ploidy_fixture, level)
+        vcztools_bgi = pathlib.Path(str(bgen_src) + ".bgi")
+        assert vcztools_bgi.exists(), (
+            f"expected vcztools-produced .bgi alongside {bgen_src}"
+        )
+
+        bgenix_bgen = _stage_with_index(bgenix_bin, bgen_src, tmp_path / "ref.bgen")
+        bgenix_bgi = pathlib.Path(str(bgenix_bgen) + ".bgi")
+
+        ours = _read_variant_table(vcztools_bgi)
+        theirs = _read_variant_table(bgenix_bgi)
+        assert ours == theirs
+
+
 class TestBgenixIndexEquality:
     """The ``.bgi`` we produce alongside each BGEN flavour is row-equal
     to the one bgenix builds from the same ``.bgen``.

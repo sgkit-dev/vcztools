@@ -915,13 +915,31 @@ def view(
 @click.argument("path", type=click.Path())
 @view_plink_options
 @click.option(
-    "--out",
-    default="plink",
-    help="Output prefix for the .bed/.bim/.fam fileset.",
+    "-o",
+    "--output",
+    "output",
+    required=True,
+    type=str,
+    help=(
+        "Output stem; taken verbatim. -o foo writes foo.bed, plus foo.bim "
+        "and foo.fam unless --no-bim/--no-fam is given."
+    ),
+)
+@click.option(
+    "--no-bim",
+    is_flag=True,
+    default=False,
+    help="Skip the .bim variant-info sidecar.",
+)
+@click.option(
+    "--no-fam",
+    is_flag=True,
+    default=False,
+    help="Skip the .fam sample-info sidecar.",
 )
 @log_options
 @handle_exception
-def view_plink(path, out, **kwargs):
+def view_plink(path, output, no_bim, no_fam, **kwargs):
     """
     Generate a PLINK 1 binary fileset (.bed/.bim/.fam) from a VCZ
     dataset.
@@ -942,7 +960,12 @@ def view_plink(path, out, **kwargs):
     options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
     with make_reader_from_options(path, options) as reader:
-        plink.write_plink(reader, out)
+        plink.write_plink(
+            reader,
+            output,
+            write_bim=not no_bim,
+            write_fam=not no_fam,
+        )
 
 
 # view_plink_options / ViewPlinkOptions are reused below: their option set
@@ -952,9 +975,44 @@ def view_plink(path, out, **kwargs):
 @click.argument("path", type=click.Path())
 @view_plink_options
 @click.option(
-    "--out",
-    default="bgen",
-    help="Output prefix for the .bgen/.sample/.bgen.bgi fileset.",
+    "-o",
+    "--output",
+    "output",
+    type=str,
+    default=None,
+    help=(
+        "Output stem; taken verbatim. Absent: stream .bgen to stdout "
+        "(no sidecars). Present: -o foo writes foo.bgen plus, by default, "
+        "foo.bgen.bgi and foo.sample."
+    ),
+)
+@click.option(
+    "--no-bgi",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip the bgenix .bgen.bgi SQLite index sidecar. No effect when "
+        "streaming to stdout."
+    ),
+)
+@click.option(
+    "--no-sample-file",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip the Oxford .sample sidecar. No effect when streaming to "
+        "stdout. Distinct from -S/--samples-file, which filters input."
+    ),
+)
+@click.option(
+    "--no-header-samples",
+    is_flag=True,
+    default=False,
+    help=(
+        "Omit sample IDs from the BGEN header (clears SAMPLE_IDS_PRESENT). "
+        "Combine with --no-sample-file at your peril: most downstream tools "
+        "require sample IDs from one source or the other."
+    ),
 )
 @click.option(
     "--compression-level",
@@ -969,10 +1027,21 @@ def view_plink(path, out, **kwargs):
 )
 @log_options
 @handle_exception
-def view_bgen(path, out, compression_level, **kwargs):
+def view_bgen(
+    path,
+    output,
+    no_bgi,
+    no_sample_file,
+    no_header_samples,
+    compression_level,
+    **kwargs,
+):
     """
-    Generate an Oxford BGEN fileset (.bgen / .sample / .bgen.bgi) from
-    a VCZ dataset.
+    Generate Oxford BGEN output from a VCZ dataset.
+
+    Default: stream the .bgen payload to stdout (symmetric with `view`).
+    With -o STEM, write foo.bgen + foo.bgen.bgi + foo.sample; sidecars
+    are individually suppressible (--no-bgi, --no-sample-file).
 
     Output profile: layout 2, zlib-compressed, 8 bits/probability,
     biallelic, diploid, embedded sample IDs. Hard calls in
@@ -990,8 +1059,29 @@ def view_bgen(path, out, compression_level, **kwargs):
     LogConfig.pop_from_click_kwargs(kwargs).apply()
     options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
+    embed_header_samples = not no_header_samples
     with make_reader_from_options(path, options) as reader:
-        bgen.write_bgen(reader, out, compression_level=compression_level)
+        if output is None:
+            # Default: stream .bgen to stdout. Sidecar flags become no-ops
+            # since there is no stem to derive paths from.
+            with handle_broken_pipe(sys.stdout.buffer):
+                bgen.write_bgen(
+                    reader,
+                    sys.stdout.buffer,
+                    write_bgi=False,
+                    write_sample=False,
+                    embed_header_samples=embed_header_samples,
+                    compression_level=compression_level,
+                )
+        else:
+            bgen.write_bgen(
+                reader,
+                output,
+                write_bgi=not no_bgi,
+                write_sample=not no_sample_file,
+                embed_header_samples=embed_header_samples,
+                compression_level=compression_level,
+            )
 
 
 @version

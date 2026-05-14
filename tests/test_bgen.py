@@ -10,6 +10,7 @@ Round-trip checks parse the bytes produced by ``write_bgen`` with the
 ``bgen-reader`` reference reader.
 """
 
+import io
 import logging
 import sqlite3
 import struct
@@ -159,6 +160,22 @@ class TestGenerateSample:
         assert lines[2] == "sample_0 sample_0 0"
         assert lines[3] == "sample_2 sample_2 0"
         assert len(lines) == 4
+
+
+class TestWriteBgenSamples:
+    """The top-level on-disk companion of :func:`generate_sample`."""
+
+    def test_path_output_matches_generate_sample(self, tmp_path):
+        reader = _build_reader(num_samples=3)
+        out = tmp_path / "x.sample"
+        bgen.write_bgen_samples(reader, out)
+        assert out.read_text() == bgen.generate_sample(reader)
+
+    def test_file_like_output_matches_generate_sample(self):
+        reader = _build_reader(num_samples=3)
+        buf = io.StringIO()
+        bgen.write_bgen_samples(reader, buf)
+        assert buf.getvalue() == bgen.generate_sample(reader)
 
 
 class TestBuildSampleIdBlock:
@@ -822,9 +839,9 @@ class TestWriteBgenIndex:
         # are excluded from the comparison.
         kwargs = dict(num_variants=4, num_samples=3)
 
-        out = tmp_path / "wb"
-        bgen.write_bgen(_build_reader(**kwargs), out)
-        wb_bgi = out.with_suffix(".bgen").with_suffix(".bgen.bgi")
+        wb_bgen = tmp_path / "wb.bgen"
+        wb_bgi = tmp_path / "wb.bgen.bgi"
+        bgen.write_bgen(_build_reader(**kwargs), wb_bgen, bgi_path=wb_bgi)
         conn = sqlite3.connect(str(wb_bgi))
         try:
             wb_rows = conn.execute(
@@ -863,27 +880,29 @@ class TestWriteBgenEndToEnd:
 
     def test_sidecar_files_written(self, tmp_path):
         reader = _build_reader(num_variants=1, num_samples=2)
-        out = tmp_path / "out"
-        bgen.write_bgen(reader, out)
-        assert out.with_suffix(".bgen").exists()
-        assert out.with_suffix(".sample").exists()
-        assert out.with_suffix(".bgen").with_suffix(".bgen.bgi").exists()
+        bgen_path = tmp_path / "out.bgen"
+        sample_path = tmp_path / "out.sample"
+        bgi_path = tmp_path / "out.bgen.bgi"
+        bgen.write_bgen(reader, bgen_path, sample_path=sample_path, bgi_path=bgi_path)
+        assert bgen_path.exists()
+        assert sample_path.exists()
+        assert bgi_path.exists()
 
     def test_sample_text_matches(self, tmp_path):
         reader = _build_reader(num_variants=1, num_samples=2)
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        text = (out.with_suffix(".sample")).read_text()
+        bgen_path = tmp_path / "x.bgen"
+        sample_path = tmp_path / "x.sample"
+        bgen.write_bgen(reader, bgen_path, sample_path=sample_path)
+        text = sample_path.read_text()
         assert text.startswith("ID_1 ID_2 missing\n0 0 0\n")
         assert "sample_0 sample_0 0\n" in text
         assert "sample_1 sample_1 0\n" in text
 
     def test_bgi_offsets_consistent_with_bgen(self, tmp_path):
         reader = _build_reader(num_variants=3, num_samples=2)
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        bgen_path = out.with_suffix(".bgen")
-        bgi_path = bgen_path.with_suffix(".bgen.bgi")
+        bgen_path = tmp_path / "x.bgen"
+        bgi_path = tmp_path / "x.bgen.bgi"
+        bgen.write_bgen(reader, bgen_path, bgi_path=bgi_path)
 
         # Header offset: first 4 bytes of the BGEN file give the byte
         # offset (relative to byte 4) of the first variant block.
@@ -907,6 +926,36 @@ class TestWriteBgenEndToEnd:
         last_start, last_size = rows[-1]
         assert last_start + last_size == bgen_path.stat().st_size
 
+    def test_bytesio_output_round_trips(self, tmp_path):
+        # File-like (no .name) output: write to an in-memory buffer,
+        # spill to disk so bgen-reader can parse it back.
+        reader = _build_reader(num_variants=2, num_samples=2)
+        buf = io.BytesIO()
+        bgen.write_bgen(reader, buf)
+        bgen_path = tmp_path / "out.bgen"
+        bgen_path.write_bytes(buf.getvalue())
+        with br.open_bgen(bgen_path, verbose=False) as bg:
+            assert bg.nvariants == 2
+            assert bg.nsamples == 2
+
+    def test_no_sidecars_when_paths_none(self, tmp_path):
+        # sample_path/bgi_path default to None: only the .bgen file is
+        # written; no sidecars appear in the same directory.
+        reader = _build_reader(num_variants=1, num_samples=2)
+        bgen_path = tmp_path / "out.bgen"
+        bgen.write_bgen(reader, bgen_path)
+        assert bgen_path.exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["out.bgen"]
+
+    def test_warn_when_no_sample_ids_anywhere(self, tmp_path, caplog):
+        # embed_header_samples=False and sample_path=None means downstream
+        # tools won't be able to associate genotypes with sample IDs.
+        reader = _build_reader(num_variants=1, num_samples=2)
+        bgen_path = tmp_path / "out.bgen"
+        with caplog.at_level(logging.WARNING, logger="vcztools.bgen"):
+            bgen.write_bgen(reader, bgen_path, embed_header_samples=False)
+        assert any("sample IDs nowhere" in rec.message for rec in caplog.records)
+
     def test_sample_subset_to_empty_via_filter(self, tmp_path):
         # An empty axis isn't a configuration vcz_builder supports
         # directly; produce a reader-side empty axis by selecting no
@@ -919,9 +968,8 @@ class TestWriteBgenEndToEnd:
             min_chunk=reader.variants_chunk_size,
         )
         reader.set_variants(empty_plan)
-        out = tmp_path / "x"
-        bgen.write_bgen(reader, out)
-        bgen_path = out.with_suffix(".bgen")
+        bgen_path = tmp_path / "x.bgen"
+        bgen.write_bgen(reader, bgen_path)
         data = bgen_path.read_bytes()
         (offset,) = struct.unpack_from("<I", data, 0)
         (_, n_variants, n_samples) = struct.unpack_from("<III", data, 4)
@@ -940,9 +988,9 @@ class TestCompressionLevel:
             [[[0, 0], [0, 1], [1, 1]], [[1, 1], [0, 1], [0, 0]]], dtype=np.int8
         )
         reader = _build_reader(num_variants=2, num_samples=3, call_genotype=G)
-        out = tmp_path / f"out_l{level}"
-        bgen.write_bgen(reader, out, compression_level=level)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen_file:
+        bgen_path = tmp_path / f"out_l{level}.bgen"
+        bgen.write_bgen(reader, bgen_path, compression_level=level)
+        with br.open_bgen(bgen_path, verbose=False) as bgen_file:
             probs = bgen_file.read()
         # bgen-reader returns shape (n_samples, n_variants, 3).
         assert probs.shape == (3, 2, 3)
@@ -963,12 +1011,12 @@ class TestCompressionLevel:
             num_samples=num_samples,
             call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
         )
-        out0 = tmp_path / "l0"
+        out0 = tmp_path / "l0.bgen"
         bgen.write_bgen(_build_reader(**reader_kwargs), out0, compression_level=0)
-        out9 = tmp_path / "l9"
+        out9 = tmp_path / "l9.bgen"
         bgen.write_bgen(_build_reader(**reader_kwargs), out9, compression_level=9)
-        size_l0 = out0.with_suffix(".bgen").stat().st_size
-        size_l9 = out9.with_suffix(".bgen").stat().st_size
+        size_l0 = out0.stat().st_size
+        size_l9 = out9.stat().st_size
         assert size_l9 < size_l0
 
 
@@ -996,7 +1044,7 @@ def write_to_bgen(request, tmp_path):
     def write(reader):
         bgen_path = tmp_path / "out.bgen"
         if interface == "write_bgen":
-            bgen.write_bgen(reader, tmp_path / "out")
+            bgen.write_bgen(reader, bgen_path)
         else:
             with bgen.BgenEncoder(reader) as enc:
                 buf = _drain(enc)
@@ -1305,11 +1353,9 @@ class TestBgenMixedPloidyRoundTrip:
             call_genotype=G,
             ploidy=2,
         )
-        out = tmp_path / "mp"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(
-            out.with_suffix(".bgen"), verbose=False, allow_complex=True
-        ) as bg:
+        bgen_path = tmp_path / "mp.bgen"
+        bgen.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
             assert bg.nvariants == 2
             assert bg.nsamples == 3
             # Each variant has both diploid (K=2 -> 3 combos) and haploid
@@ -1339,11 +1385,9 @@ class TestBgenMixedPloidyRoundTrip:
             call_genotype=G,
             ploidy=1,
         )
-        out = tmp_path / "h"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(
-            out.with_suffix(".bgen"), verbose=False, allow_complex=True
-        ) as bg:
+        bgen_path = tmp_path / "h.bgen"
+        bgen.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
             nt.assert_array_equal(bg.ncombinations, [2, 2])
             probs, missing = bg.read(return_missings=True)
         nt.assert_array_equal(probs[0, 0, :2], [1.0, 0.0])
@@ -1360,11 +1404,9 @@ class TestBgenMixedPloidyRoundTrip:
             call_genotype=G,
             ploidy=2,
         )
-        out = tmp_path / "hm"
-        bgen.write_bgen(reader, out)
-        with br.open_bgen(
-            out.with_suffix(".bgen"), verbose=False, allow_complex=True
-        ) as bg:
+        bgen_path = tmp_path / "hm.bgen"
+        bgen.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
             probs, missing = bg.read(return_missings=True)
         nt.assert_array_equal(missing[:, 0], [False, False, True, False, False])
         nt.assert_array_equal(probs[0, 0, :2], [1.0, 0.0])
@@ -1383,7 +1425,7 @@ class TestBgenMixedPloidyRoundTrip:
             call_genotype=G,
             ploidy=2,
         )
-        out = tmp_path / "z"
+        out = tmp_path / "z.bgen"
         with pytest.raises(ValueError, match="zero-ploidy"):
             bgen.write_bgen(reader, out)
 
@@ -1398,7 +1440,7 @@ class TestBgenMixedPloidyRoundTrip:
             call_genotype=G,
             ploidy=2,
         )
-        out = tmp_path / "bad"
+        out = tmp_path / "bad.bgen"
         with pytest.raises(ValueError, match="out of range"):
             bgen.write_bgen(reader, out)
 

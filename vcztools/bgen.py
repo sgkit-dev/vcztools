@@ -4,7 +4,10 @@ Convert VCZ to Oxford BGEN format.
 The CLI verb is ``view-bgen``. By default the ``.bgen`` payload is streamed
 to stdout; passing ``-o STEM`` switches to file output with the ``.bgen.bgi``
 (bgenix SQLite index) and ``.sample`` (Oxford text) sidecars also produced
-by default and individually suppressible. Output profile: layout 2,
+by default and individually suppressible. The Python API
+(:func:`write_bgen`) is shaped the same way: the BGEN payload destination
+is path-or-file-like, and each sidecar is requested by passing a
+filesystem path (``None`` skips it). Output profile: layout 2,
 zlib-compressed, 8 bits/probability, biallelic, embedded sample IDs in the
 ``.bgen`` header. Haploid and mixed-ploidy stores are supported via
 per-sample ploidy bytes; this is the consumer lowest-common-denominator:
@@ -44,7 +47,7 @@ from typing import ClassVar
 
 import numpy as np
 
-from vcztools import _vcztools, format_encoder, retrieval
+from vcztools import _vcztools, format_encoder, retrieval, utils
 
 logger = logging.getLogger(__name__)
 
@@ -864,24 +867,42 @@ def write_bgen_index(reader, bgi_path, variant_offsets):
     )
 
 
+def write_bgen_samples(reader, output):
+    """Write the Oxford ``.sample`` text for ``reader`` to ``output``.
+
+    ``output`` is either a filesystem path (``str`` / ``pathlib.Path``)
+    or a writable text file-like object. The body is produced by
+    :func:`generate_sample`; this function is the on-disk companion,
+    mirroring :func:`write_bgen_index` for the SQLite sidecar.
+    """
+    with utils.open_file_like(output, mode="w") as f:
+        f.write(generate_sample(reader))
+
+
 def write_bgen(
     reader,
     output,
     *,
-    write_bgi: bool = True,
-    write_sample: bool = True,
-    embed_header_samples: bool = True,
-    compression_level: int = 1,
+    sample_path=None,
+    bgi_path=None,
+    embed_header_samples: bool | None = None,
+    compression_level: int | None = None,
     encode_threads: int | None = None,
 ):
     """Write an Oxford BGEN payload for ``reader`` to ``output``.
 
-    ``output`` is either a filesystem stem (``str`` or ``pathlib.Path``,
-    treated verbatim — e.g. ``"foo"`` produces ``foo.bgen``, ``foo.bgen.bgi``,
-    ``foo.sample``) or a writable binary file-like object (anything with a
-    ``.write`` method, including ``sys.stdout.buffer``). Streams receive
-    only the ``.bgen`` payload; ``write_bgi`` / ``write_sample`` must be
-    ``False`` for stream outputs.
+    ``output`` is either a filesystem path (``str`` / ``pathlib.Path``)
+    or a writable binary file-like object (anything with a ``.write``
+    method, including ``sys.stdout.buffer``); paths are opened via
+    :func:`vcztools.utils.open_file_like` in ``"wb"`` mode. The function
+    never seeks the output.
+
+    ``sample_path`` and ``bgi_path`` request the optional Oxford
+    ``.sample`` text sidecar and the bgenix ``.bgen.bgi`` SQLite sidecar
+    at the given filesystem paths; ``None`` (default) skips that
+    sidecar. The ``.sample`` is written first; the ``.bgi`` is written
+    last using the variant-block byte offsets accumulated while
+    streaming the BGEN payload.
 
     If a variant filter is configured on the reader, it is resolved
     in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
@@ -893,9 +914,6 @@ def write_bgen(
     probability on the called genotype (8-bit precision round-trips
     exactly). Phase: per-variant from ``call_genotype_phased`` if the
     field exists in the store; otherwise unphased.
-
-    ``write_bgi`` / ``write_sample`` control the bgenix SQLite index and
-    the Oxford ``.sample`` text sidecar; both default on for stem outputs.
 
     ``embed_header_samples`` controls whether the BGEN header carries
     sample IDs. When False, the ``SAMPLE_IDS_PRESENT`` flag is cleared
@@ -926,81 +944,29 @@ def write_bgen(
         encode_threads = 4
     if encode_threads < 1:
         raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
+    if embed_header_samples is None:
+        embed_header_samples = True
+    if compression_level is None:
+        compression_level = 1
 
     reader.materialise_variant_filter()
 
-    output_is_stream = hasattr(output, "write")
-    if output_is_stream:
-        if write_bgi or write_sample:
-            raise ValueError(
-                "write_bgi / write_sample require a stem output; "
-                "stream outputs receive only the .bgen payload."
-            )
-        if not embed_header_samples:
-            logger.warning(
-                "write_bgen: embed_header_samples=False with a stream "
-                "output leaves sample IDs nowhere in the result."
-            )
-        _stream_bgen(
-            reader,
-            output,
-            embed_header_samples=embed_header_samples,
-            compression_level=compression_level,
-            encode_threads=encode_threads,
-            display_name="<stdout>",
-        )
-        return
-
-    # Stem is taken verbatim — no suffix stripping. "foo" -> foo.bgen /
-    # foo.sample / foo.bgen.bgi (the bgenix filename convention).
-    out_stem = str(output)
-    bgen_path = pathlib.Path(out_stem + ".bgen")
-    sample_path = pathlib.Path(out_stem + ".sample")
-    bgi_path = pathlib.Path(str(bgen_path) + ".bgi")
-
-    if not embed_header_samples and not write_sample:
+    if not embed_header_samples and sample_path is None:
         logger.warning(
-            "write_bgen: embed_header_samples=False and write_sample=False "
+            "write_bgen: embed_header_samples=False and sample_path=None "
             "leave sample IDs nowhere in the output; downstream tools "
             "(REGENIE, SAIGE, bgen-reader) will not be able to associate "
             "genotypes with sample IDs."
         )
 
-    if write_sample:
-        with open(sample_path, "w") as f:
-            f.write(generate_sample(reader))
+    if sample_path is not None:
+        write_bgen_samples(reader, sample_path)
 
-    with open(bgen_path, "wb") as bgen_file:
-        variant_offsets = _stream_bgen(
-            reader,
-            bgen_file,
-            embed_header_samples=embed_header_samples,
-            compression_level=compression_level,
-            encode_threads=encode_threads,
-            display_name=str(bgen_path),
-        )
+    if isinstance(output, (str, pathlib.Path)):
+        display_name = str(output)
+    else:
+        display_name = getattr(output, "name", "<stream>")
 
-    if write_bgi:
-        write_bgen_index(reader, bgi_path, variant_offsets)
-
-
-def _stream_bgen(
-    reader,
-    bgen_stream,
-    *,
-    embed_header_samples: bool,
-    compression_level: int,
-    encode_threads: int,
-    display_name: str,
-):
-    """Stream BGEN bytes (header + variant blocks) to ``bgen_stream``.
-
-    ``bgen_stream`` is any binary file-like object; the function never seeks,
-    so streams that don't support seek (e.g. ``sys.stdout.buffer``) work.
-    ``display_name`` is the label used in log lines (a file path string for
-    file outputs, ``"<stdout>"`` for stdout). Returns ``variant_offsets``
-    suitable for :func:`write_bgen_index`.
-    """
     start = time.perf_counter()
     encode_seconds = 0.0
     write_seconds = 0.0
@@ -1036,10 +1002,13 @@ def _stream_bgen(
     mixed_phase_count = 0
     idx = 0
 
-    with cf.ThreadPoolExecutor(
-        max_workers=encode_threads,
-        thread_name_prefix="write-bgen-encode",
-    ) as executor:
+    with (
+        utils.open_file_like(output, mode="wb") as bgen_stream,
+        cf.ThreadPoolExecutor(
+            max_workers=encode_threads,
+            thread_name_prefix="write-bgen-encode",
+        ) as executor,
+    ):
         bgen_stream.write(header_bytes)
         bytes_written += len(header_bytes)
 
@@ -1093,4 +1062,6 @@ def _stream_bgen(
             "across samples; emitted as unphased (BGEN has one phase flag "
             "per variant)."
         )
-    return variant_offsets
+
+    if bgi_path is not None:
+        write_bgen_index(reader, bgi_path, variant_offsets)

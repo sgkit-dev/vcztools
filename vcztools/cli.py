@@ -56,6 +56,44 @@ def handle_exception(func):
     return wrapper
 
 
+# Help-text section ordering for ``GroupedCommand.format_options``. Options
+# without an explicit ``help_group`` render under ``"Options"`` (category 4 —
+# command-specific). The other three categories form the long-term stable
+# CLI groupings exposed to biofuse and other downstream consumers.
+GROUP_ORDER = (
+    "Options",
+    "Zarr store options",
+    "Reader options",
+    "Logging options",
+)
+
+
+class GroupedOption(click.Option):
+    """A click Option tagged with the help-text section it belongs to."""
+
+    def __init__(self, *args, help_group="Options", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.help_group = help_group
+
+
+class GroupedCommand(click.Command):
+    """A click Command that renders options grouped by ``help_group``."""
+
+    def format_options(self, ctx, formatter):
+        buckets: dict[str, list] = {g: [] for g in GROUP_ORDER}
+        for param in self.get_params(ctx):
+            record = param.get_help_record(ctx)
+            if record is None:
+                continue
+            group = getattr(param, "help_group", "Options")
+            buckets.setdefault(group, []).append(record)
+        for group in GROUP_ORDER:
+            rows = buckets[group]
+            if len(rows) > 0:
+                with formatter.section(group):
+                    formatter.write_dl(rows)
+
+
 include = click.option(
     "-i", "--include", type=str, help="Filter expression to include variant sites."
 )
@@ -154,12 +192,16 @@ log_level = click.option(
     default="WARNING",
     show_default=True,
     help="Logging verbosity.",
+    cls=GroupedOption,
+    help_group="Logging options",
 )
 log_file = click.option(
     "--log-file",
     type=click.Path(dir_okay=False, writable=True),
     default=None,
     help="Write log output to FILE instead of stderr.",
+    cls=GroupedOption,
+    help_group="Logging options",
 )
 
 
@@ -186,6 +228,8 @@ readahead_workers = click.option(
     type=int,
     default=None,
     help=("Worker threads servicing the cross-chunk readahead pool. Default: 32."),
+    cls=GroupedOption,
+    help_group="Reader options",
 )
 readahead_buffer_size = click.option(
     "--readahead-buffer-size",
@@ -197,6 +241,8 @@ readahead_buffer_size = click.option(
         "size string with suffix (e.g. '100M', '2G', '256MiB'). "
         "Default: 256MiB."
     ),
+    cls=GroupedOption,
+    help_group="Reader options",
 )
 encode_threads = click.option(
     "--encode-threads",
@@ -249,6 +295,8 @@ _backend_storage_option = click.option(
         "and local directories → LocalStore; URLs require an explicit "
         "backend."
     ),
+    cls=GroupedOption,
+    help_group="Zarr store options",
 )
 _zarr_backend_storage_alias_option = click.option(
     "--zarr-backend-storage",
@@ -259,15 +307,7 @@ _zarr_backend_storage_alias_option = click.option(
     callback=_zarr_backend_storage_alias_callback,
     hidden=True,
 )
-
-
-def backend_storage(f):
-    """Decorator stack: primary ``--backend-storage`` option plus the
-    deprecated, hidden ``--zarr-backend-storage`` alias."""
-    return _backend_storage_option(_zarr_backend_storage_alias_option(f))
-
-
-storage_option = click.option(
+_storage_option = click.option(
     "--storage-option",
     "storage_options",
     multiple=True,
@@ -276,7 +316,19 @@ storage_option = click.option(
         "Backend storage option as KEY=VALUE (repeatable). VALUE is parsed "
         "as JSON if possible, falling back to a string."
     ),
+    cls=GroupedOption,
+    help_group="Zarr store options",
 )
+
+
+def zarr_store_options(f):
+    """Decorator stack for category 1 (Zarr store): ``--backend-storage``
+    plus ``--storage-option`` (and the hidden, deprecated
+    ``--zarr-backend-storage`` alias). Public API: stable for downstream
+    consumers such as biofuse."""
+    return _backend_storage_option(
+        _zarr_backend_storage_alias_option(_storage_option(f))
+    )
 
 
 def _parse_storage_options(pairs: tuple[str, ...]) -> dict | None:
@@ -498,13 +550,72 @@ def make_reader(
 
 
 @dataclasses.dataclass(frozen=True)
-class ViewPlinkOptions:
-    """Bundled options that drive ``make_reader`` for view-plink-shaped
-    consumers (``vcztools view-plink``, ``biofuse mount-plink``).
+class ZarrStoreOptions:
+    """Bundled category-1 (Zarr store) options.
 
-    Field names match ``make_reader``'s keyword arguments 1:1; adding a new
-    filtering option to ``make_reader`` means adding a field here and an
-    option to :func:`view_plink_options`.
+    Public API: stable for downstream consumers such as biofuse. Pair this
+    with the :func:`zarr_store_options` Click decorator.
+    """
+
+    backend_storage: str | None = None
+    storage_options: dict | None = None
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "ZarrStoreOptions":
+        """Pop the Zarr store fields out of ``kwargs``.
+
+        Click's repeatable ``KEY=VALUE`` tuple is parsed to a ``dict | None``
+        at this seam so consumers always see the resolved dict.
+        """
+        raw_pairs = kwargs.pop("storage_options", ())
+        return cls(
+            backend_storage=kwargs.pop("backend_storage", None),
+            storage_options=_parse_storage_options(raw_pairs),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class ReaderOptions:
+    """Bundled category-2 (Reader) options. Pair with :func:`reader_options`."""
+
+    readahead_workers: int | None = None
+    readahead_bytes: int | None = None
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "ReaderOptions":
+        return cls(
+            readahead_workers=kwargs.pop("readahead_workers", None),
+            readahead_bytes=kwargs.pop("readahead_bytes", None),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LogOptions:
+    """Bundled category-3 (Logging) options. Pair with :func:`log_options`."""
+
+    log_level: str = "WARNING"
+    log_file: str | None = None
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "LogOptions":
+        return cls(
+            log_level=kwargs.pop("log_level", "WARNING"),
+            log_file=kwargs.pop("log_file", None),
+        )
+
+    def apply(self) -> None:
+        setup_logging(self.log_level, self.log_file)
+
+
+@dataclasses.dataclass(frozen=True)
+class SelectionOptions:
+    """Bundled bcftools-view-shaped selection options (regions / targets /
+    samples / include / exclude / types / min-max-alleles).
+
+    Lives under category 4 (command-specific) at the help-text layer, but
+    factored into a reusable bundle here because the same set is consumed by
+    multiple commands (view / view-plink / view-bgen) and by downstream tools
+    like biofuse. Pair with :func:`bcftools_selection_options`.
     """
 
     regions: str | None = None
@@ -520,89 +631,79 @@ class ViewPlinkOptions:
     exclude_types: str | None = None
     min_alleles: int | None = None
     max_alleles: int | None = None
-    backend_storage: str | None = None
-    storage_options: dict | None = None
-    readahead_workers: int | None = None
-    readahead_bytes: int | None = None
 
     @classmethod
-    def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewPlinkOptions":
-        """Pop the recognised view-plink option fields out of ``kwargs`` and
-        return a populated :class:`ViewPlinkOptions`.
-
-        ``storage_options`` is parsed from Click's repeatable ``KEY=VALUE``
-        tuple at this seam so consumers always get a ``dict | None``.
-        """
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "SelectionOptions":
         field_names = {f.name for f in dataclasses.fields(cls)}
-        raw = {k: kwargs.pop(k) for k in list(kwargs) if k in field_names}
-        raw["storage_options"] = _parse_storage_options(raw.get("storage_options", ()))
-        return cls(**raw)
+        return cls(**{k: kwargs.pop(k) for k in list(kwargs) if k in field_names})
 
 
-def view_plink_options(f):
-    """Stack every Click option needed to build a :class:`ViewPlinkOptions`.
+def reader_options(f):
+    """Decorator stack for category 2 (Reader): ``--readahead-workers`` plus
+    ``--readahead-buffer-size``. Public API."""
+    return readahead_workers(readahead_buffer_size(f))
 
-    Order matches ``vcztools view-plink --help`` so help-text rows stay
-    identical between ``vcztools view-plink`` and any consumer that applies
-    this decorator.
+
+def log_options(f):
+    """Decorator stack for category 3 (Logging): ``--log-level`` plus
+    ``--log-file``. Public API."""
+    return log_level(log_file(f))
+
+
+def bcftools_selection_options(f):
+    """Decorator stack for the bcftools-view-shaped selection options
+    (regions / targets / samples / include / exclude / types /
+    min-max-alleles). Public API; pair with :class:`SelectionOptions`.
+
+    Order matches ``vcztools view --help`` so help-text rows stay identical
+    between ``vcztools view`` and any consumer that applies this decorator.
     """
     decorators = [
         regions,
         regions_file,
-        force_samples,
-        samples,
-        samples_file,
         targets,
         targets_file,
+        samples,
+        samples_file,
+        force_samples,
         include,
         exclude,
         types_opt,
         exclude_types_opt,
         min_alleles_opt,
         max_alleles_opt,
-        backend_storage,
-        storage_option,
-        readahead_workers,
-        readahead_buffer_size,
     ]
     for d in reversed(decorators):
         f = d(f)
     return f
 
 
-@dataclasses.dataclass(frozen=True)
-class LogConfig:
-    """Bundled logging options corresponding to :func:`log_options`."""
-
-    log_level: str = "WARNING"
-    log_file: str | None = None
-
-    @classmethod
-    def pop_from_click_kwargs(cls, kwargs: dict) -> "LogConfig":
-        return cls(
-            log_level=kwargs.pop("log_level", "WARNING"),
-            log_file=kwargs.pop("log_file", None),
-        )
-
-    def apply(self) -> None:
-        setup_logging(self.log_level, self.log_file)
-
-
-def log_options(f):
-    """Stack ``--log-level`` + ``--log-file``."""
-    return log_level(log_file(f))
-
-
-def make_reader_from_options(
-    path: str, options: ViewPlinkOptions
+def make_reader_from_groups(
+    path: str,
+    *,
+    selection: SelectionOptions | None = None,
+    zarr_store: ZarrStoreOptions | None = None,
+    reader: ReaderOptions | None = None,
+    view_semantics: bool = False,
+    drop_genotypes: bool = False,
 ) -> retrieval.VczReader:
-    """Construct a :class:`VczReader` from a :class:`ViewPlinkOptions`.
-
-    Single seam between the bundled dataclass and :func:`make_reader`; new
-    fields added to :class:`ViewPlinkOptions` flow through here without
-    callers needing to update.
-    """
-    return make_reader(path, **dataclasses.asdict(options))
+    """Construct a :class:`VczReader` from the category-aligned option
+    bundles. Single seam between the public dataclasses and
+    :func:`make_reader`."""
+    if selection is None:
+        selection = SelectionOptions()
+    if zarr_store is None:
+        zarr_store = ZarrStoreOptions()
+    if reader is None:
+        reader = ReaderOptions()
+    return make_reader(
+        path,
+        view_semantics=view_semantics,
+        drop_genotypes=drop_genotypes,
+        **dataclasses.asdict(selection),
+        **dataclasses.asdict(zarr_store),
+        **dataclasses.asdict(reader),
+    )
 
 
 class NaturalOrderGroup(click.Group):
@@ -614,7 +715,7 @@ class NaturalOrderGroup(click.Group):
         return self.commands.keys()
 
 
-@click.command
+@click.command(cls=GroupedCommand)
 @click.argument("path", type=click.Path())
 @click.option(
     "-n",
@@ -628,18 +729,18 @@ class NaturalOrderGroup(click.Group):
     is_flag=True,
     help="Print per contig stats.",
 )
-@backend_storage
-@storage_option
-@log_level
-@log_file
+@zarr_store_options
+@log_options
 @handle_exception
-def index(path, nrecords, stats, backend_storage, storage_options, log_level, log_file):
+def index(path, nrecords, stats, **kwargs):
     """
     Query the number of records in a VCZ dataset. This subcommand only
     implements the --nrecords and --stats options and does not build any
     indexes.
     """
-    setup_logging(log_level, log_file)
+    LogOptions.pop_from_click_kwargs(kwargs).apply()
+    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+    assert kwargs == {}, kwargs
     if nrecords and stats:
         raise click.UsageError("Expected only one of --stats or --nrecords options")
     if not nrecords and not stats:
@@ -647,8 +748,8 @@ def index(path, nrecords, stats, backend_storage, storage_options, log_level, lo
     root = open_zarr(
         path,
         mode="r",
-        backend_storage=backend_storage,
-        storage_options=_parse_storage_options(storage_options),
+        backend_storage=zarr_store.backend_storage,
+        storage_options=zarr_store.storage_options,
     )
     with retrieval.VczReader(root) as reader:
         if nrecords:
@@ -657,7 +758,7 @@ def index(path, nrecords, stats, backend_storage, storage_options, log_level, lo
             stats_module.stats(reader, sys.stdout)
 
 
-@click.command
+@click.command(cls=GroupedCommand)
 @click.argument("path", type=click.Path())
 @output
 @click.option(
@@ -689,34 +790,17 @@ def index(path, nrecords, stats, backend_storage, storage_options, log_level, lo
     help="Disable automatic addition of a missing newline character at the end "
     "of the formatting expression.",
 )
-@backend_storage
-@storage_option
-@readahead_workers
-@readahead_buffer_size
-@log_level
-@log_file
+@zarr_store_options
+@reader_options
+@log_options
 @handle_exception
 def query(
     path,
     output,
     list_samples,
     format,
-    regions,
-    regions_file,
-    targets,
-    targets_file,
-    force_samples,
-    samples,
-    samples_file,
-    include,
-    exclude,
     disable_automatic_newline,
-    backend_storage,
-    storage_options,
-    readahead_workers,
-    readahead_bytes,
-    log_level,
-    log_file,
+    **kwargs,
 ):
     """
     Transform VCZ into user-defined formats with efficient subsetting and
@@ -727,16 +811,19 @@ def query(
     particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
-    setup_logging(log_level, log_file)
-    parsed_storage_options = _parse_storage_options(storage_options)
+    LogOptions.pop_from_click_kwargs(kwargs).apply()
+    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+    reader_opts = ReaderOptions.pop_from_click_kwargs(kwargs)
+    selection = SelectionOptions.pop_from_click_kwargs(kwargs)
+    assert kwargs == {}, kwargs
     if list_samples:
         # bcftools query -l ignores the --output option and always writes to stdout
         output = sys.stdout
         root = open_zarr(
             path,
             mode="r",
-            backend_storage=backend_storage,
-            storage_options=parsed_storage_options,
+            backend_storage=zarr_store.backend_storage,
+            storage_options=zarr_store.storage_options,
         )
         with retrieval.VczReader(root) as reader, handle_broken_pipe(output):
             query_module.list_samples(reader, output)
@@ -745,21 +832,11 @@ def query(
     if format is None:
         raise click.UsageError("Missing option -f / --format")
 
-    reader = make_reader(
+    reader = make_reader_from_groups(
         path,
-        regions=regions,
-        regions_file=regions_file,
-        targets=targets,
-        targets_file=targets_file,
-        samples=samples,
-        samples_file=samples_file,
-        include=include,
-        exclude=exclude,
-        force_samples=force_samples,
-        backend_storage=backend_storage,
-        storage_options=parsed_storage_options,
-        readahead_workers=readahead_workers,
-        readahead_bytes=readahead_bytes,
+        selection=selection,
+        zarr_store=zarr_store,
+        reader=reader_opts,
     )
     with reader, handle_broken_pipe(output):
         query_module.write_query(
@@ -770,7 +847,7 @@ def query(
         )
 
 
-@click.command
+@click.command(cls=GroupedCommand)
 @click.argument("path", type=click.Path())
 @output
 @click.option(
@@ -790,38 +867,23 @@ def query(
     is_flag=True,
     help="Do not append version and command line information to the output VCF header.",
 )
-@regions
-@regions_file
-@force_samples
 @click.option(
     "-I",
     "--no-update",
     is_flag=True,
     help="Do not recalculate INFO fields for the sample subset.",
 )
-@samples
-@samples_file
 @click.option(
     "-G",
     "--drop-genotypes",
     is_flag=True,
     help="Drop genotypes.",
 )
-@targets
-@targets_file
-@include
-@exclude
-@types_opt
-@exclude_types_opt
-@min_alleles_opt
-@max_alleles_opt
-@backend_storage
-@storage_option
-@readahead_workers
-@readahead_buffer_size
+@bcftools_selection_options
 @encode_threads
-@log_level
-@log_file
+@zarr_store_options
+@reader_options
+@log_options
 @handle_exception
 def view(
     path,
@@ -829,28 +891,10 @@ def view(
     header_only,
     no_header,
     no_version,
-    regions,
-    regions_file,
-    targets,
-    targets_file,
-    force_samples,
     no_update,
-    samples,
-    samples_file,
     drop_genotypes,
-    include,
-    exclude,
-    types,
-    exclude_types,
-    min_alleles,
-    max_alleles,
-    backend_storage,
-    storage_options,
-    readahead_workers,
-    readahead_bytes,
     encode_threads,
-    log_level,
-    log_file,
+    **kwargs,
 ):
     """
     Convert VCZ dataset to VCF with efficient subsetting and filtering.
@@ -861,7 +905,12 @@ def view(
     particular piece of functionality please open an issue at
     https://github.com/sgkit-dev/vcztools/issues
     """
-    setup_logging(log_level, log_file)
+    LogOptions.pop_from_click_kwargs(kwargs).apply()
+    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+    reader_opts = ReaderOptions.pop_from_click_kwargs(kwargs)
+    selection = SelectionOptions.pop_from_click_kwargs(kwargs)
+    assert kwargs == {}, kwargs
+
     suffix = output.name.split(".")[-1]
     # Exclude suffixes which require bgzipped or BCF output:
     # https://github.com/samtools/htslib/blob/329e7943b7ba3f0af15b0eaa00a367a1ac15bd83/vcf.c#L3815
@@ -870,33 +919,21 @@ def view(
             f"Only uncompressed VCF output supported, suffix .{suffix} not allowed"
         )
 
-    if (samples or samples_file) and drop_genotypes:
+    if (selection.samples or selection.samples_file) and drop_genotypes:
         raise ValueError("Cannot select samples and drop genotypes.")
 
-    reader = make_reader(
+    reader = make_reader_from_groups(
         path,
-        regions=regions,
-        regions_file=regions_file,
-        targets=targets,
-        targets_file=targets_file,
-        samples=samples,
-        samples_file=samples_file,
-        include=include,
-        exclude=exclude,
-        types=types,
-        exclude_types=exclude_types,
-        min_alleles=min_alleles,
-        max_alleles=max_alleles,
+        selection=selection,
+        zarr_store=zarr_store,
+        reader=reader_opts,
         view_semantics=True,
-        force_samples=force_samples,
         drop_genotypes=drop_genotypes,
-        backend_storage=backend_storage,
-        storage_options=_parse_storage_options(storage_options),
-        readahead_workers=readahead_workers,
-        readahead_bytes=readahead_bytes,
     )
     subsetting_samples = (
-        samples is not None or samples_file is not None or drop_genotypes
+        selection.samples is not None
+        or selection.samples_file is not None
+        or drop_genotypes
     )
     with reader, handle_broken_pipe(output):
         vcf_writer.write_vcf(
@@ -912,9 +949,8 @@ def view(
         )
 
 
-@click.command
+@click.command(cls=GroupedCommand)
 @click.argument("path", type=click.Path())
-@view_plink_options
 @click.option(
     "-o",
     "--output",
@@ -938,6 +974,9 @@ def view(
     default=False,
     help="Skip the .fam sample-info sidecar.",
 )
+@bcftools_selection_options
+@zarr_store_options
+@reader_options
 @log_options
 @handle_exception
 def view_plink(path, output, no_bim, no_fam, **kwargs):
@@ -957,10 +996,18 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
     (``--keep-allele-order``), REGENIE, BOLT-LMM, and other
     downstream tools.
     """
-    LogConfig.pop_from_click_kwargs(kwargs).apply()
-    options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+    LogOptions.pop_from_click_kwargs(kwargs).apply()
+    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+    reader_opts = ReaderOptions.pop_from_click_kwargs(kwargs)
+    selection = SelectionOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
-    with make_reader_from_options(path, options) as reader:
+    reader = make_reader_from_groups(
+        path,
+        selection=selection,
+        zarr_store=zarr_store,
+        reader=reader_opts,
+    )
+    with reader:
         plink.write_plink(
             reader,
             output,
@@ -969,12 +1016,8 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
         )
 
 
-# view_plink_options / ViewPlinkOptions are reused below: their option set
-# (regions/targets/samples/include/exclude/types/min-max-alleles + storage
-# /readahead) is format-agnostic and shared with view-bgen.
-@click.command
+@click.command(cls=GroupedCommand)
 @click.argument("path", type=click.Path())
-@view_plink_options
 @click.option(
     "-o",
     "--output",
@@ -1027,6 +1070,9 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
         "(no compression); 9 = max."
     ),
 )
+@bcftools_selection_options
+@zarr_store_options
+@reader_options
 @log_options
 @handle_exception
 def view_bgen(
@@ -1058,8 +1104,10 @@ def view_bgen(
     including downstream-tool compatibility (REGENIE, SAIGE,
     BOLT-LMM, BGENIE, qctool, PLINK 2) and sidecar conventions.
     """
-    LogConfig.pop_from_click_kwargs(kwargs).apply()
-    options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+    LogOptions.pop_from_click_kwargs(kwargs).apply()
+    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+    reader_opts = ReaderOptions.pop_from_click_kwargs(kwargs)
+    selection = SelectionOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
     embed_header_samples = not no_header_samples
     if output is None:
@@ -1077,7 +1125,13 @@ def view_bgen(
         sample_path = None if no_sample_file else pathlib.Path(out_stem + ".sample")
         bgi_path = None if no_bgi else pathlib.Path(str(bgen_dest) + ".bgi")
         pipe_context = contextlib.nullcontext()
-    with make_reader_from_options(path, options) as reader, pipe_context:
+    reader = make_reader_from_groups(
+        path,
+        selection=selection,
+        zarr_store=zarr_store,
+        reader=reader_opts,
+    )
+    with reader, pipe_context:
         bgen.write_bgen(
             reader,
             bgen_dest,

@@ -41,12 +41,15 @@ import time
 import click
 import numpy as np
 
-from vcztools import bgen, plink, vcf_writer
+from vcztools import bgen, plink, retrieval, vcf_writer
 
-# Mix of values that exercises every branch in encode_diploid_fixed:
-# 0/1 (REF/ALT calls), 2 (out-of-range diploid), -1 (missing
-# sentinel), -2 (haploid sentinel paired with 0/1/2 in the b slot).
-_GENOTYPE_VALUES = np.array([0, 1, 0, 0, 1, 1, 2, -1, -2, 0], dtype=np.int8)
+# Mix of values valid for biallelic input across all three encoders:
+# 0/1 (REF/ALT calls) and -1 (missing sentinel). The BGEN C kernel
+# rejects values outside {-2, -1, 0, 1} for biallelic, and further
+# rejects -2 in slot 0 (haploid sentinel must sit in slot 1), so the
+# pattern stays in the all-diploid-biallelic regime that all three
+# encoders share — sufficient for an encode-rate microbench.
+_GENOTYPE_VALUES = np.array([0, 1, 0, 1, 0, 0, 1, 1, -1, 0], dtype=np.int8)
 
 _SWEEP_THREADS = (1, 2, 4, 8)
 _SWEEP_BLOCK_BYTES = (1 << 20, 4 << 20, 10 << 20, 40 << 20)
@@ -119,9 +122,22 @@ class _FakeReader:
         self.contigs = np.array([b"1"], dtype="S1")
         self.filters = np.array([b"PASS"], dtype="S4")
         self._counts = np.array([num_variants], dtype=np.int64)
+        self._num_variants = num_variants
+        self._num_samples = num_samples
 
     def variant_counts_per_chunk(self) -> np.ndarray:
         return self._counts
+
+    def get_field_info(self, name: str) -> retrieval.FieldInfo:
+        if name == "call_genotype":
+            return retrieval.FieldInfo(
+                name=name,
+                dtype=np.dtype("int8"),
+                shape=(self._num_variants, self._num_samples, 2),
+                dims=("variants", "samples", "ploidy"),
+                attrs={},
+            )
+        raise KeyError(name)
 
 
 class _CountingNull:

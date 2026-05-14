@@ -96,7 +96,7 @@ def run_plink2_expect_error(args: str, vcf_path: Path, out_prefix: Path) -> str:
 
 def run_view_plink(args: str, vcz_path: Path, out_prefix: Path) -> Path:
     """Run ``vcztools view-plink`` and return the output prefix."""
-    cmd = f"view-plink {vcz_path.as_posix()} --out {out_prefix.as_posix()} {args}"
+    cmd = f"view-plink {vcz_path.as_posix()} -o {out_prefix.as_posix()} {args}"
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
     if result.exit_code != 0:
@@ -109,7 +109,7 @@ def run_view_plink(args: str, vcz_path: Path, out_prefix: Path) -> Path:
 
 
 def run_view_plink_expect_error(args: str, vcz_path: Path, out_prefix: Path) -> str:
-    cmd = f"view-plink {vcz_path.as_posix()} --out {out_prefix.as_posix()} {args}"
+    cmd = f"view-plink {vcz_path.as_posix()} -o {out_prefix.as_posix()} {args}"
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
     assert result.exit_code != 0

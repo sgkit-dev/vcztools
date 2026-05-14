@@ -680,7 +680,7 @@ class TestWritePlinkEndToEnd:
             pathlib.Path("p"),
         ],
     )
-    def test_path_suffix_handling(self, tmp_path, out_arg):
+    def test_stem_verbatim(self, tmp_path, out_arg):
         reader = _build_reader(
             num_variants=1,
             num_samples=1,
@@ -688,11 +688,35 @@ class TestWritePlinkEndToEnd:
         )
         out = tmp_path / out_arg
         plink.write_plink(reader, out)
-        # All three paths share the stem of `out` (suffix gets replaced).
-        stem = pathlib.Path(out).stem
-        assert (tmp_path / f"{stem}.bed").exists()
-        assert (tmp_path / f"{stem}.bim").exists()
-        assert (tmp_path / f"{stem}.fam").exists()
+        # Stem is taken verbatim — extensions are appended, not replaced.
+        # `out=p.bed` produces p.bed.bed / p.bed.bim / p.bed.fam.
+        assert (tmp_path / f"{out_arg}.bed").exists()
+        assert (tmp_path / f"{out_arg}.bim").exists()
+        assert (tmp_path / f"{out_arg}.fam").exists()
+
+    def test_write_bim_toggle(self, tmp_path):
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
+        )
+        out = tmp_path / "p"
+        plink.write_plink(reader, out, write_bim=False)
+        assert (tmp_path / "p.bed").exists()
+        assert not (tmp_path / "p.bim").exists()
+        assert (tmp_path / "p.fam").exists()
+
+    def test_write_fam_toggle(self, tmp_path):
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=1,
+            call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
+        )
+        out = tmp_path / "p"
+        plink.write_plink(reader, out, write_fam=False)
+        assert (tmp_path / "p.bed").exists()
+        assert (tmp_path / "p.bim").exists()
+        assert not (tmp_path / "p.fam").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -1077,10 +1077,9 @@ class TestDeprecatedZarrBackendStorageAlias:
         assert deprecation_warnings == []
 
 
-class TestViewPlinkOptions:
-    """Unit tests for the bundled ViewPlinkOptions / make_reader_from_options
-    reuse surface — exercised end-to-end by ``view-plink`` and intended for
-    downstream consumers (e.g. biofuse mount-plink)."""
+class TestSelectionOptions:
+    """Unit tests for the bcftools-shaped SelectionOptions bundle (category 4
+    reusable surface; consumed by view / view-plink / view-bgen / biofuse)."""
 
     def test_pop_populates_fields(self):
         kwargs = {
@@ -1089,75 +1088,207 @@ class TestViewPlinkOptions:
             "force_samples": True,
             "min_alleles": 2,
             "max_alleles": 4,
-            "backend_storage": "fsspec",
-            "storage_options": ("k1=42", "k2=foo"),
             # Unrelated keys must be left in the dict for the caller.
             "out": "plink",
             "log_level": "INFO",
         }
-        options = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
-        assert options.regions == "1:100-200"
-        assert options.samples == "s1,s2"
-        assert options.force_samples is True
-        assert options.min_alleles == 2
-        assert options.max_alleles == 4
-        assert options.backend_storage == "fsspec"
-        assert options.storage_options == {"k1": 42, "k2": "foo"}
+        selection = cli.SelectionOptions.pop_from_click_kwargs(kwargs)
+        assert selection.regions == "1:100-200"
+        assert selection.samples == "s1,s2"
+        assert selection.force_samples is True
+        assert selection.min_alleles == 2
+        assert selection.max_alleles == 4
         assert kwargs == {"out": "plink", "log_level": "INFO"}
 
     def test_pop_defaults_when_unset(self):
-        # An empty kwargs (no view-plink options collected) still yields a
-        # well-formed ViewPlinkOptions populated entirely with defaults; the
-        # raw empty storage_options tuple parses to None.
         kwargs = {}
-        options = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
-        assert options == cli.ViewPlinkOptions()
-        assert options.storage_options is None
+        selection = cli.SelectionOptions.pop_from_click_kwargs(kwargs)
+        assert selection == cli.SelectionOptions()
 
-    def test_make_reader_from_options_matches_make_reader(self, monkeypatch):
-        captured_args = []
-
-        def spy(path, **kwargs):
-            captured_args.append((path, kwargs))
-            return object()
-
-        monkeypatch.setattr(cli, "make_reader", spy)
-        options = cli.ViewPlinkOptions(
-            regions="1:100-200",
-            samples="s1,s2",
-            force_samples=True,
-            min_alleles=2,
-            backend_storage="fsspec",
-            storage_options={"k": 1},
-        )
-        cli.make_reader_from_options("/tmp/x.vcz", options)
-        assert len(captured_args) == 1
-        path, kwargs = captured_args[0]
-        assert path == "/tmp/x.vcz"
-        # The shim forwards every dataclass field as a kwarg.
-        for field in [
-            "regions",
-            "samples",
-            "force_samples",
-            "min_alleles",
-            "backend_storage",
-            "storage_options",
-        ]:
-            assert kwargs[field] == getattr(options, field)
+    def test_pop_ignores_unrelated_fields(self):
+        # SelectionOptions only pops its own fields. Reader / zarr-store /
+        # log fields are left for their respective dataclasses to claim.
+        kwargs = {
+            "regions": "1:100-200",
+            "backend_storage": "fsspec",
+            "storage_options": (),
+            "readahead_workers": 4,
+            "log_level": "INFO",
+        }
+        selection = cli.SelectionOptions.pop_from_click_kwargs(kwargs)
+        assert selection.regions == "1:100-200"
+        assert kwargs == {
+            "backend_storage": "fsspec",
+            "storage_options": (),
+            "readahead_workers": 4,
+            "log_level": "INFO",
+        }
 
 
-class TestLogConfig:
+class TestZarrStoreOptions:
+    """Unit tests for the ZarrStoreOptions bundle (category 1)."""
+
+    def test_pop_populates_fields(self):
+        kwargs = {
+            "backend_storage": "fsspec",
+            "storage_options": ("k1=42", "k2=foo"),
+            "regions": "1:100-200",
+        }
+        zarr_store = cli.ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+        assert zarr_store.backend_storage == "fsspec"
+        assert zarr_store.storage_options == {"k1": 42, "k2": "foo"}
+        assert kwargs == {"regions": "1:100-200"}
+
+    def test_pop_defaults_when_unset(self):
+        kwargs = {}
+        zarr_store = cli.ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+        assert zarr_store == cli.ZarrStoreOptions()
+        assert zarr_store.storage_options is None
+
+    def test_pop_empty_storage_options_tuple_parses_to_none(self):
+        kwargs = {"storage_options": ()}
+        zarr_store = cli.ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+        assert zarr_store.storage_options is None
+
+
+class TestReaderOptions:
+    """Unit tests for the ReaderOptions bundle (category 2)."""
+
+    def test_pop_populates_fields(self):
+        kwargs = {
+            "readahead_workers": 8,
+            "readahead_bytes": 1024 * 1024,
+            "regions": "1:100-200",
+        }
+        reader_opts = cli.ReaderOptions.pop_from_click_kwargs(kwargs)
+        assert reader_opts.readahead_workers == 8
+        assert reader_opts.readahead_bytes == 1024 * 1024
+        assert kwargs == {"regions": "1:100-200"}
+
+    def test_pop_defaults_when_unset(self):
+        kwargs = {}
+        reader_opts = cli.ReaderOptions.pop_from_click_kwargs(kwargs)
+        assert reader_opts == cli.ReaderOptions()
+
+
+class TestLogOptions:
+    """Unit tests for the LogOptions bundle (category 3)."""
+
     def test_pop_populates_fields(self):
         kwargs = {"log_level": "DEBUG", "log_file": "/tmp/log", "out": "plink"}
-        config = cli.LogConfig.pop_from_click_kwargs(kwargs)
+        config = cli.LogOptions.pop_from_click_kwargs(kwargs)
         assert config.log_level == "DEBUG"
         assert config.log_file == "/tmp/log"
         assert kwargs == {"out": "plink"}
 
     def test_pop_defaults(self):
         kwargs = {}
-        config = cli.LogConfig.pop_from_click_kwargs(kwargs)
-        assert config == cli.LogConfig()
+        config = cli.LogOptions.pop_from_click_kwargs(kwargs)
+        assert config == cli.LogOptions()
+
+
+class TestMakeReaderFromGroups:
+    """``make_reader_from_groups`` is the seam between the option bundles and
+    :func:`make_reader`. Verify every field flows through."""
+
+    def test_forwards_every_field(self, monkeypatch):
+        captured = []
+
+        def spy(path, **kwargs):
+            captured.append((path, kwargs))
+            return object()
+
+        monkeypatch.setattr(cli, "make_reader", spy)
+        selection = cli.SelectionOptions(
+            regions="1:100-200",
+            samples="s1,s2",
+            force_samples=True,
+            min_alleles=2,
+        )
+        zarr_store = cli.ZarrStoreOptions(
+            backend_storage="fsspec",
+            storage_options={"k": 1},
+        )
+        reader_opts = cli.ReaderOptions(
+            readahead_workers=4,
+            readahead_bytes=2048,
+        )
+        cli.make_reader_from_groups(
+            "/tmp/x.vcz",
+            selection=selection,
+            zarr_store=zarr_store,
+            reader=reader_opts,
+        )
+        assert len(captured) == 1
+        path, kwargs = captured[0]
+        assert path == "/tmp/x.vcz"
+        for field, expected in [
+            ("regions", "1:100-200"),
+            ("samples", "s1,s2"),
+            ("force_samples", True),
+            ("min_alleles", 2),
+            ("backend_storage", "fsspec"),
+            ("storage_options", {"k": 1}),
+            ("readahead_workers", 4),
+            ("readahead_bytes", 2048),
+        ]:
+            assert kwargs[field] == expected
+
+    def test_defaults_when_no_bundles_passed(self, monkeypatch):
+        captured = []
+
+        def spy(path, **kwargs):
+            captured.append((path, kwargs))
+            return object()
+
+        monkeypatch.setattr(cli, "make_reader", spy)
+        cli.make_reader_from_groups("/tmp/x.vcz")
+        path, kwargs = captured[0]
+        assert path == "/tmp/x.vcz"
+        # Every field from every bundle resolves to its dataclass default.
+        assert kwargs["regions"] is None
+        assert kwargs["backend_storage"] is None
+        assert kwargs["storage_options"] is None
+        assert kwargs["readahead_workers"] is None
+        assert kwargs["force_samples"] is False
+
+
+class TestHelpGroups:
+    """Smoke tests that the four category headers render in ``--help`` for
+    each command that exposes options in that category."""
+
+    @pytest.mark.parametrize(
+        ("subcommand", "expected_groups"),
+        [
+            ("index", ["Zarr store options", "Logging options"]),
+            (
+                "query",
+                ["Zarr store options", "Reader options", "Logging options"],
+            ),
+            (
+                "view",
+                ["Zarr store options", "Reader options", "Logging options"],
+            ),
+            (
+                "view-plink",
+                ["Zarr store options", "Reader options", "Logging options"],
+            ),
+            (
+                "view-bgen",
+                ["Zarr store options", "Reader options", "Logging options"],
+            ),
+        ],
+    )
+    def test_help_includes_group_headers(self, subcommand, expected_groups):
+        runner = ct.CliRunner()
+        result = runner.invoke(cli.vcztools_main, [subcommand, "--help"])
+        assert result.exit_code == 0
+        # The default ``Options:`` section always appears.
+        assert "Options:" in result.output
+        for group in expected_groups:
+            assert group in result.output, (
+                f"missing group {group!r} in {subcommand} --help:\n{result.output}"
+            )
 
 
 class TestReadaheadOptions:

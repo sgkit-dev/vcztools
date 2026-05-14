@@ -1060,6 +1060,14 @@ OUTPUT_BGEN_COMPRESSION_LEVELS = (0, 1, 6)
 LONG_OUTPUT_VCF_CHUNKS = 1000
 LONG_OUTPUT_PLINK_CHUNKS = 1500
 LONG_OUTPUT_BED_STREAM_CHUNKS = 3500
+# The filter_m2 BED task pays a second full variant_allele scan
+# (materialise_variant_filter) on top of the encode, so it lands at
+# roughly half the chunk count for the same wall.
+LONG_OUTPUT_BED_STREAM_FILTER_M2_CHUNKS = 1750
+# BgenEncoder direct (no .sample/.bgi I/O, always zlib stored): per-variant
+# header serialisation dominates on the 10-sample long shape, so far
+# fewer chunks than BED for the same wall time.
+LONG_OUTPUT_BGEN_STREAM_CHUNKS = 500
 
 
 class _CountingTextWriter:
@@ -1188,22 +1196,72 @@ _BED_STREAM_READ_SIZE = 1 << 20
 
 
 def _run_output_bed_stream(reader, ctx):
-    bytes_written = 0
-    with plink.BedEncoder(reader) as enc:
-        bed_size = enc.bed_size
-        num_variants = enc.num_variants
-        off = 0
-        while off < bed_size:
-            chunk = enc.read(off, _BED_STREAM_READ_SIZE)
-            bytes_written += len(chunk)
-            off += len(chunk)
-    return RunStats(records=num_variants, bytes_written=bytes_written)
+    return _drain_encoder(reader, plink.BedEncoder)
 
 
 def _build_output_bgen(root, ctx):
     reader = retrieval.VczReader(root)
     reader.set_variants(_biallelic_first_chunks_plan(root, OUTPUT_BGEN_CHUNKS))
     return reader
+
+
+def _set_first_chunks_with_max_alleles_2(reader, num_chunks):
+    """Configure ``reader`` with a first-N-variant-chunks scope plus a
+    ``max_alleles=2`` BcftoolsFilter (``N_ALT <= 1``).
+
+    Used by the ``*_filter_m2`` benchmarks to mimic the typical biofuse
+    flow: scope the work, install a variant filter, hand to an encoder
+    (which calls :meth:`materialise_variant_filter` internally before
+    streaming bytes). The filter resolution cost is therefore part of
+    the timed run.
+    """
+    num_variant_chunks = math.ceil(reader.num_variants / reader.variants_chunk_size)
+    take_chunks = min(num_chunks, num_variant_chunks)
+    chunk_size = reader.variants_chunk_size
+    plan_length = min(take_chunks * chunk_size, reader.num_variants)
+    reader.set_variants(vcz_utils.ChunkRead.simple_plan(plan_length, chunk_size))
+    vf = bcftools_filter.BcftoolsFilter(
+        field_names=reader.field_names, include="N_ALT <= 1"
+    )
+    reader.set_variant_filter(vf)
+
+
+def _drain_encoder(reader, encoder_cls):
+    """Construct ``encoder_cls(reader)`` and stream every byte through
+    :meth:`read`, returning a ``RunStats`` populated with the encoder's
+    variant count and the total bytes drained."""
+    bytes_written = 0
+    with encoder_cls(reader) as enc:
+        total = enc.total_size
+        num_variants = enc.num_variants
+        off = 0
+        while off < total:
+            chunk = enc.read(off, _BED_STREAM_READ_SIZE)
+            bytes_written += len(chunk)
+            off += len(chunk)
+    return RunStats(records=num_variants, bytes_written=bytes_written)
+
+
+def _build_output_bed_stream_filter_m2(root, ctx):
+    reader = retrieval.VczReader(root)
+    _set_first_chunks_with_max_alleles_2(reader, OUTPUT_BED_STREAM_CHUNKS)
+    return reader
+
+
+def _run_output_bed_stream_filter_m2(reader, ctx):
+    reader.materialise_variant_filter()
+    return _drain_encoder(reader, plink.BedEncoder)
+
+
+def _build_output_bgen_stream_filter_m2(root, ctx):
+    reader = retrieval.VczReader(root)
+    _set_first_chunks_with_max_alleles_2(reader, OUTPUT_BGEN_CHUNKS)
+    return reader
+
+
+def _run_output_bgen_stream_filter_m2(reader, ctx):
+    reader.materialise_variant_filter()
+    return _drain_encoder(reader, bgen.BgenEncoder)
 
 
 def _run_output_bgen(reader, ctx, compression_level):
@@ -1259,6 +1317,20 @@ def _build_long_output_bed_stream(root, ctx):
     reader.set_variants(
         _biallelic_first_chunks_plan(root, LONG_OUTPUT_BED_STREAM_CHUNKS)
     )
+    return reader
+
+
+def _build_long_output_bed_stream_filter_m2(root, ctx):
+    reader = retrieval.VczReader(root)
+    _set_first_chunks_with_max_alleles_2(
+        reader, LONG_OUTPUT_BED_STREAM_FILTER_M2_CHUNKS
+    )
+    return reader
+
+
+def _build_long_output_bgen_stream_filter_m2(root, ctx):
+    reader = retrieval.VczReader(root)
+    _set_first_chunks_with_max_alleles_2(reader, LONG_OUTPUT_BGEN_STREAM_CHUNKS)
     return reader
 
 
@@ -1375,6 +1447,18 @@ TASKS: list[Task] = [
         for level in OUTPUT_BGEN_COMPRESSION_LEVELS
     ],
     Task(
+        "output_bed_stream_filter_m2",
+        _build_output_bed_stream_filter_m2,
+        run=_run_output_bed_stream_filter_m2,
+        backends=OUTPUT_BACKENDS,
+    ),
+    Task(
+        "output_bgen_stream_filter_m2",
+        _build_output_bgen_stream_filter_m2,
+        run=_run_output_bgen_stream_filter_m2,
+        backends=OUTPUT_BACKENDS,
+    ),
+    Task(
         "full_genotypes",
         _build_full_genotypes,
         ["call_genotype"],
@@ -1398,6 +1482,20 @@ TASKS: list[Task] = [
         "long_output_bed_stream",
         _build_long_output_bed_stream,
         run=_run_output_bed_stream,
+        backends=OUTPUT_BACKENDS,
+        shapes=LONG_ONLY_SHAPES,
+    ),
+    Task(
+        "long_output_bed_stream_filter_m2",
+        _build_long_output_bed_stream_filter_m2,
+        run=_run_output_bed_stream_filter_m2,
+        backends=OUTPUT_BACKENDS,
+        shapes=LONG_ONLY_SHAPES,
+    ),
+    Task(
+        "long_output_bgen_stream_filter_m2",
+        _build_long_output_bgen_stream_filter_m2,
+        run=_run_output_bgen_stream_filter_m2,
         backends=OUTPUT_BACKENDS,
         shapes=LONG_ONLY_SHAPES,
     ),

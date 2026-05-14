@@ -1267,11 +1267,17 @@ def _run_output_bgen_stream_filter_m2(reader, ctx):
 def _run_output_bgen(reader, ctx, compression_level):
     records = _plan_records(reader)
     with tempfile.TemporaryDirectory(prefix="vcztools-bench-bgen-") as tmp:
-        out_prefix = pathlib.Path(tmp) / "out"
-        bgen.write_bgen(reader, out_prefix, compression_level=compression_level)
-        bgen_path = out_prefix.with_suffix(".bgen")
-        sample_path = out_prefix.with_suffix(".sample")
-        bgi_path = pathlib.Path(str(bgen_path) + ".bgi")
+        out_dir = pathlib.Path(tmp)
+        bgen_path = out_dir / "out.bgen"
+        sample_path = out_dir / "out.sample"
+        bgi_path = out_dir / "out.bgen.bgi"
+        bgen.write_bgen(
+            reader,
+            bgen_path,
+            sample_path=sample_path,
+            bgi_path=bgi_path,
+            compression_level=compression_level,
+        )
         bytes_written = (
             bgen_path.stat().st_size
             + sample_path.stat().st_size

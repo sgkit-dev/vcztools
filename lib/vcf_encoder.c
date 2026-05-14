@@ -922,12 +922,12 @@ vcz_variant_encoder_add_gt_field(vcz_variant_encoder_t *self, size_t item_size,
     return vcz_field_init(&self->gt, "GT", VCZ_TYPE_INT, item_size, num_columns, data);
 }
 
-#define CHROM_FIELD_INDEX 0
-#define POS_FIELD_INDEX 1
-#define ID_FIELD_INDEX 2
-#define REF_FIELD_INDEX 3
-#define ALT_FIELD_INDEX 4
-#define QUAL_FIELD_INDEX 5
+#define CHROM_FIELD_INDEX  0
+#define POS_FIELD_INDEX    1
+#define ID_FIELD_INDEX     2
+#define REF_FIELD_INDEX    3
+#define ALT_FIELD_INDEX    4
+#define QUAL_FIELD_INDEX   5
 #define FILTER_FIELD_INDEX 6
 
 int

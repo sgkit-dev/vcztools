@@ -15,35 +15,35 @@
 /* #error CHAR_BIT MUST EQUAL 8 */
 /* #endif */
 
-#define VCZ_INT_MISSING -1
-#define VCZ_INT_FILL -2
-#define VCZ_STRING_MISSING '.'
-#define VCZ_STRING_FILL '\0'
+#define VCZ_INT_MISSING              -1
+#define VCZ_INT_FILL                 -2
+#define VCZ_STRING_MISSING           '.'
+#define VCZ_STRING_FILL              '\0'
 #define VCZ_FLOAT32_MISSING_AS_INT32 0x7F800001
-#define VCZ_FLOAT32_FILL_AS_INT32 0x7F800002
+#define VCZ_FLOAT32_FILL_AS_INT32    0x7F800002
 
 #define VCZ_NUM_FIXED_FIELDS 6
 
-#define VCZ_TYPE_INT 1
-#define VCZ_TYPE_FLOAT 2
+#define VCZ_TYPE_INT    1
+#define VCZ_TYPE_FLOAT  2
 #define VCZ_TYPE_STRING 3
-#define VCZ_TYPE_BOOL 4
+#define VCZ_TYPE_BOOL   4
 
 // arbitrary - we can increase if needs be
 #define VCZ_MAX_FIELD_NAME_LEN 255
-#define VCZ_INT32_BUF_SIZE 12 // 10 digits, leading '-' and terminating NULL
+#define VCZ_INT32_BUF_SIZE     12 // 10 digits, leading '-' and terminating NULL
 // Safe limit, no point in trying to make it too tight as it's easy to represent
 // certain very large numbers of floating point.
 #define VCZ_FLOAT32_BUF_SIZE 256
 
-#define VCZ_ERR_NO_MEMORY (-100)
-#define VCZ_ERR_BUFFER_OVERFLOW (-101)
+#define VCZ_ERR_NO_MEMORY             (-100)
+#define VCZ_ERR_BUFFER_OVERFLOW       (-101)
 #define VCZ_ERR_VARIANT_OUT_OF_BOUNDS (-102)
 
 /* Built-in-limitations */
-#define VCZ_ERR_FIELD_NAME_TOO_LONG (-201)
-#define VCZ_ERR_FIELD_UNSUPPORTED_TYPE (-202)
-#define VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE (-203)
+#define VCZ_ERR_FIELD_NAME_TOO_LONG           (-201)
+#define VCZ_ERR_FIELD_UNSUPPORTED_TYPE        (-202)
+#define VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE   (-203)
 #define VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS (-204)
 
 /* BGEN encoder errors */
@@ -114,18 +114,18 @@ int64_t vcz_variant_encoder_encode(
 int vcz_itoa(char *buf, int64_t v);
 int vcz_ftoa(char *buf, float v);
 
-#define VCZ_PLINK_HOM_A1 0x0  /* 00 */
-#define VCZ_PLINK_HOM_A2 0x3  /* 11 */
-#define VCZ_PLINK_HET 0x2     /* 10 */
+#define VCZ_PLINK_HOM_A1  0x0 /* 00 */
+#define VCZ_PLINK_HOM_A2  0x3 /* 11 */
+#define VCZ_PLINK_HET     0x2 /* 10 */
 #define VCZ_PLINK_MISSING 0x1 /* 01 */
 int vcz_encode_plink(
     size_t num_variants, size_t num_samples, const int8_t *genotypes, char *buf);
 
-#define VCZ_BGEN_PLOIDY_HAPLOID 0x01
-#define VCZ_BGEN_PLOIDY_DIPLOID 0x02
+#define VCZ_BGEN_PLOIDY_HAPLOID         0x01
+#define VCZ_BGEN_PLOIDY_DIPLOID         0x02
 #define VCZ_BGEN_PLOIDY_MISSING_HAPLOID 0x81
 #define VCZ_BGEN_PLOIDY_MISSING_DIPLOID 0x82
-#define VCZ_BGEN_BITS_PER_PROB 8
+#define VCZ_BGEN_BITS_PER_PROB          8
 int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens);

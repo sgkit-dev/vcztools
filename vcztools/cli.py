@@ -356,16 +356,6 @@ _storage_option = click.option(
 )
 
 
-def zarr_store_options(f):
-    """Decorator stack for category 1 (Zarr store): ``--backend-storage``
-    plus ``--storage-option`` (and the hidden, deprecated
-    ``--zarr-backend-storage`` alias). Public API: stable for downstream
-    consumers such as biofuse."""
-    return _backend_storage_option(
-        _zarr_backend_storage_alias_option(_storage_option(f))
-    )
-
-
 def _parse_storage_options(pairs: tuple[str, ...]) -> dict | None:
     """Convert a tuple of ``KEY=VALUE`` strings into a dict.
 
@@ -589,11 +579,19 @@ class ZarrStoreOptions:
     """Bundled category-1 (Zarr store) options.
 
     Public API: stable for downstream consumers such as biofuse. Pair this
-    with the :func:`zarr_store_options` Click decorator.
+    dataclass with the :meth:`decorator` Click decorator on the same class.
     """
 
     backend_storage: str | None = None
     storage_options: dict | None = None
+
+    @staticmethod
+    def decorator(f):
+        """Click decorator: add ``--backend-storage`` plus ``--storage-option``
+        (and the hidden, deprecated ``--zarr-backend-storage`` alias) to f."""
+        return _backend_storage_option(
+            _zarr_backend_storage_alias_option(_storage_option(f))
+        )
 
     @classmethod
     def pop_from_click_kwargs(cls, kwargs: dict) -> "ZarrStoreOptions":
@@ -611,10 +609,17 @@ class ZarrStoreOptions:
 
 @dataclasses.dataclass(frozen=True)
 class ReaderOptions:
-    """Bundled category-2 (Reader) options. Pair with :func:`reader_options`."""
+    """Bundled category-2 (Reader) options. Pair this dataclass with the
+    :meth:`decorator` Click decorator on the same class."""
 
     readahead_workers: int | None = None
     readahead_bytes: int | None = None
+
+    @staticmethod
+    def decorator(f):
+        """Click decorator: add ``--readahead-workers`` plus
+        ``--readahead-buffer-size`` to f."""
+        return readahead_workers(readahead_buffer_size(f))
 
     @classmethod
     def pop_from_click_kwargs(cls, kwargs: dict) -> "ReaderOptions":
@@ -626,10 +631,16 @@ class ReaderOptions:
 
 @dataclasses.dataclass(frozen=True)
 class LogOptions:
-    """Bundled category-3 (Logging) options. Pair with :func:`log_options`."""
+    """Bundled category-3 (Logging) options. Pair this dataclass with the
+    :meth:`decorator` Click decorator on the same class."""
 
     log_level: str = "WARNING"
     log_file: str | None = None
+
+    @staticmethod
+    def decorator(f):
+        """Click decorator: add ``--log-level`` plus ``--log-file`` to f."""
+        return log_level(log_file(f))
 
     @classmethod
     def pop_from_click_kwargs(cls, kwargs: dict) -> "LogOptions":
@@ -649,7 +660,8 @@ class SelectionOptions:
 
     Renders as its own ``Selection options`` section in ``--help``. Consumed
     by multiple commands (view / view-plink / view-bgen) and by downstream
-    tools like biofuse. Pair with :func:`bcftools_selection_options`.
+    tools like biofuse. Pair this dataclass with the :meth:`decorator` Click
+    decorator on the same class.
     """
 
     regions: str | None = None
@@ -666,50 +678,38 @@ class SelectionOptions:
     min_alleles: int | None = None
     max_alleles: int | None = None
 
+    @staticmethod
+    def decorator(f):
+        """Click decorator: add the bcftools-view-shaped selection options
+        to f.
+
+        Order matches ``vcztools view --help`` so help-text rows stay
+        identical between ``vcztools view`` and any consumer that applies
+        this decorator.
+        """
+        decorators = [
+            regions,
+            regions_file,
+            targets,
+            targets_file,
+            samples,
+            samples_file,
+            force_samples,
+            include,
+            exclude,
+            types_opt,
+            exclude_types_opt,
+            min_alleles_opt,
+            max_alleles_opt,
+        ]
+        for d in reversed(decorators):
+            f = d(f)
+        return f
+
     @classmethod
     def pop_from_click_kwargs(cls, kwargs: dict) -> "SelectionOptions":
         field_names = {f.name for f in dataclasses.fields(cls)}
         return cls(**{k: kwargs.pop(k) for k in list(kwargs) if k in field_names})
-
-
-def reader_options(f):
-    """Decorator stack for category 2 (Reader): ``--readahead-workers`` plus
-    ``--readahead-buffer-size``. Public API."""
-    return readahead_workers(readahead_buffer_size(f))
-
-
-def log_options(f):
-    """Decorator stack for category 3 (Logging): ``--log-level`` plus
-    ``--log-file``. Public API."""
-    return log_level(log_file(f))
-
-
-def bcftools_selection_options(f):
-    """Decorator stack for the bcftools-view-shaped selection options
-    (regions / targets / samples / include / exclude / types /
-    min-max-alleles). Public API; pair with :class:`SelectionOptions`.
-
-    Order matches ``vcztools view --help`` so help-text rows stay identical
-    between ``vcztools view`` and any consumer that applies this decorator.
-    """
-    decorators = [
-        regions,
-        regions_file,
-        targets,
-        targets_file,
-        samples,
-        samples_file,
-        force_samples,
-        include,
-        exclude,
-        types_opt,
-        exclude_types_opt,
-        min_alleles_opt,
-        max_alleles_opt,
-    ]
-    for d in reversed(decorators):
-        f = d(f)
-    return f
 
 
 def make_reader_from_groups(
@@ -763,8 +763,8 @@ class NaturalOrderGroup(click.Group):
     is_flag=True,
     help="Print per contig stats.",
 )
-@zarr_store_options
-@log_options
+@ZarrStoreOptions.decorator
+@LogOptions.decorator
 @handle_exception
 def index(path, nrecords, stats, **kwargs):
     """
@@ -824,9 +824,9 @@ def index(path, nrecords, stats, **kwargs):
     help="Disable automatic addition of a missing newline character at the end "
     "of the formatting expression.",
 )
-@zarr_store_options
-@reader_options
-@log_options
+@ZarrStoreOptions.decorator
+@ReaderOptions.decorator
+@LogOptions.decorator
 @handle_exception
 def query(
     path,
@@ -913,11 +913,11 @@ def query(
     is_flag=True,
     help="Drop genotypes.",
 )
-@bcftools_selection_options
+@SelectionOptions.decorator
 @encode_threads
-@zarr_store_options
-@reader_options
-@log_options
+@ZarrStoreOptions.decorator
+@ReaderOptions.decorator
+@LogOptions.decorator
 @handle_exception
 def view(
     path,
@@ -1008,10 +1008,10 @@ def view(
     default=False,
     help="Skip the .fam sample-info sidecar.",
 )
-@bcftools_selection_options
-@zarr_store_options
-@reader_options
-@log_options
+@SelectionOptions.decorator
+@ZarrStoreOptions.decorator
+@ReaderOptions.decorator
+@LogOptions.decorator
 @handle_exception
 def view_plink(path, output, no_bim, no_fam, **kwargs):
     """
@@ -1104,10 +1104,10 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
         "(no compression); 9 = max."
     ),
 )
-@bcftools_selection_options
-@zarr_store_options
-@reader_options
-@log_options
+@SelectionOptions.decorator
+@ZarrStoreOptions.decorator
+@ReaderOptions.decorator
+@LogOptions.decorator
 @handle_exception
 def view_bgen(
     path,

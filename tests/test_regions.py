@@ -6,6 +6,7 @@ from pandas.testing import assert_frame_equal
 
 from tests import vcz_builder
 from vcztools import regions, retrieval
+from vcztools import utils as utils_mod
 
 ALL_CONTIGS = ["chr1", "chr2", "chr3"]
 
@@ -389,6 +390,111 @@ class TestChunkPlanFromIndexes:
         assert [cr.index for cr in plan] == [0, 1]
         assert_array_equal(plan[0].selection, [0, 2])
         assert plan[1].selection is None
+
+    def test_single_index(self):
+        plan = regions.chunk_plan_from_indexes(np.array([7]), min_chunk=3)
+        assert [cr.index for cr in plan] == [2]
+        assert plan[0].selection == slice(1, 2)
+
+    def test_all_in_last_chunk(self):
+        plan = regions.chunk_plan_from_indexes(np.array([6, 7, 8]), min_chunk=3)
+        assert [cr.index for cr in plan] == [2]
+        assert plan[0].selection is None
+
+    def test_skipped_chunks(self):
+        # Gaps between chunks: chunks 0 and 5 populated, 1-4 empty.
+        # No empty-chunk placeholders should appear in the plan.
+        plan = regions.chunk_plan_from_indexes(np.array([0, 1, 15, 16]), min_chunk=3)
+        assert [cr.index for cr in plan] == [0, 5]
+        assert plan[0].selection == slice(0, 2)
+        assert plan[1].selection == slice(0, 2)
+
+    def test_min_chunk_size_one(self):
+        # Degenerate but legal: every index lands in its own chunk.
+        plan = regions.chunk_plan_from_indexes(np.array([0, 2, 5]), min_chunk=1)
+        assert [cr.index for cr in plan] == [0, 2, 5]
+        assert all(cr.selection is None for cr in plan)
+        assert [cr.num_selected for cr in plan] == [1, 1, 1]
+
+    def test_accepts_int32_input(self):
+        plan = regions.chunk_plan_from_indexes(
+            np.array([0, 1, 4, 5], dtype=np.int32), min_chunk=3
+        )
+        assert [cr.index for cr in plan] == [0, 1]
+        assert plan[0].selection == slice(0, 2)
+        assert plan[1].selection == slice(1, 3)
+
+    def test_sparse_many_chunks(self):
+        # One variant per chunk across many chunks — exercises the
+        # per-chunk-segment hot path with C close to N.
+        min_chunk = 4
+        indexes = np.array([i * min_chunk for i in range(500)])
+        plan = regions.chunk_plan_from_indexes(indexes, min_chunk=min_chunk)
+        assert len(plan) == 500
+        assert [cr.index for cr in plan] == list(range(500))
+        for cr in plan:
+            assert cr.selection == slice(0, 1)
+            assert cr.num_selected == 1
+
+    def test_dense_many_full_chunks(self):
+        # Every variant in every chunk for 200 consecutive chunks.
+        # The O(N+C) segmenter must collapse each full chunk to None.
+        min_chunk = 50
+        num_chunks = 200
+        indexes = np.arange(num_chunks * min_chunk)
+        plan = regions.chunk_plan_from_indexes(indexes, min_chunk=min_chunk)
+        assert len(plan) == num_chunks
+        assert [cr.index for cr in plan] == list(range(num_chunks))
+        assert all(cr.selection is None for cr in plan)
+        assert all(cr.num_selected == min_chunk for cr in plan)
+
+    @pytest.mark.parametrize("seed", range(8))
+    def test_matches_reference_implementation(self, seed):
+        # Property-style cross-check: every observable on the plan
+        # (chunk index, num_selected, selection form and contents)
+        # must match a slow per-element reference for a randomised
+        # sorted index set spanning many partially-populated chunks.
+        rng = np.random.default_rng(seed)
+        min_chunk = 7
+        num_variants = 600
+        mask = rng.random(num_variants) < 0.4
+        indexes = np.flatnonzero(mask).astype(np.int64)
+        expected = _reference_chunk_plan_from_indexes(indexes, min_chunk=min_chunk)
+        plan = regions.chunk_plan_from_indexes(indexes, min_chunk=min_chunk)
+        assert len(plan) == len(expected)
+        for got, ref in zip(plan, expected):
+            assert got.index == ref.index
+            assert got.num_selected == ref.num_selected
+            if isinstance(ref.selection, np.ndarray):
+                assert_array_equal(got.selection, ref.selection)
+            else:
+                assert got.selection == ref.selection
+
+
+def _reference_chunk_plan_from_indexes(variant_indexes, *, min_chunk):
+    """Slow per-element reference for cross-checking the optimised
+    :func:`regions.chunk_plan_from_indexes`. Buckets each index into
+    its chunk via a Python dict and delegates selection collapsing to
+    the same :func:`utils.normalise_local_selection` the production
+    path uses, so the only behavioural difference is asymptotic cost.
+    """
+    if variant_indexes.size == 0:
+        return []
+    buckets: dict[int, list[int]] = {}
+    for idx in variant_indexes:
+        ci = int(idx) // min_chunk
+        buckets.setdefault(ci, []).append(int(idx) - ci * min_chunk)
+    plan = []
+    for ci in sorted(buckets):
+        local_sel = np.array(buckets[ci], dtype=np.int64)
+        plan.append(
+            utils_mod.ChunkRead(
+                index=ci,
+                num_selected=int(local_sel.size),
+                selection=utils_mod.normalise_local_selection(local_sel, min_chunk),
+            )
+        )
+    return plan
 
 
 class TestBuildChunkPlan:

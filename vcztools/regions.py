@@ -327,16 +327,29 @@ def chunk_plan_from_indexes(
     :func:`~vcztools.utils.normalise_local_selection` so a contiguous
     range becomes a ``slice`` (basic-index view) and a full chunk
     becomes ``None`` (raw block, no slicing).
+
+    ``variant_indexes`` must be sorted ascending. Callers always
+    concatenate the monotonically-increasing ``variant_index`` field
+    in iteration order, so the precondition holds in practice. Runs
+    in O(N + C) where N is the number of indexes and C the number of
+    distinct chunks they fall into.
     """
     variant_indexes = np.asarray(variant_indexes, dtype=np.int64)
+    if variant_indexes.size == 0:
+        return []
     chunk_of_each = variant_indexes // min_chunk
-    chunk_indexes = np.unique(chunk_of_each)
+    # Sorted input means chunk_of_each is non-decreasing, so segment
+    # boundaries are exactly the positions where the chunk index
+    # changes — found in a single np.diff pass.
+    boundaries = np.flatnonzero(np.diff(chunk_of_each)) + 1
+    segments = np.split(variant_indexes, boundaries)
     plan = []
-    for ci in chunk_indexes:
-        local_sel = variant_indexes[chunk_of_each == ci] - (ci * min_chunk)
+    for seg in segments:
+        ci = int(seg[0]) // min_chunk
+        local_sel = seg - (ci * min_chunk)
         plan.append(
             utils.ChunkRead(
-                index=int(ci),
+                index=ci,
                 num_selected=int(local_sel.size),
                 selection=utils.normalise_local_selection(local_sel, min_chunk),
             )

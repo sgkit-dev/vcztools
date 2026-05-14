@@ -116,7 +116,9 @@ def _make_variant_ids(positions: np.ndarray, contigs: np.ndarray) -> np.ndarray:
     return out
 
 
-def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path, *, phased: bool) -> None:
+def _convert_to_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> zarr.Group:
+    """Run ``bio2zarr.tskit.convert`` into ``vcz_path`` (overwriting any
+    existing store) and return the opened group in r+ mode."""
     if vcz_path.exists():
         # bio2zarr refuses to overwrite an existing store; clean up first.
         shutil.rmtree(vcz_path)
@@ -128,18 +130,18 @@ def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path, *, phased: bool) -
         worker_processes=0,
         show_progress=False,
     )
-    group = zarr.open_group(str(vcz_path), mode="r+")
-    # tskit data is always phased; bio2zarr writes call_genotype_phased
-    # = True. The unphased variant flattens the flag so vcztools emits
-    # standard unphased BGEN (and PLINK, which has no phase concept).
-    # The phased variant leaves the flag set, exercising vcztools'
-    # phased-BGEN code path against downstream tools.
-    if not phased and "call_genotype_phased" in group.array_keys():
-        group["call_genotype_phased"][...] = False
-    # bio2zarr.tskit.convert does not populate variant_id (tskit uses
-    # positional numbering, not RS-style IDs). Inject deterministic
-    # variable-length IDs so the downstream-tool round-trip checks have
-    # a non-trivial signal to verify.
+    return zarr.open_group(str(vcz_path), mode="r+")
+
+
+def _inject_variant_ids(group: zarr.Group) -> None:
+    """Add a ``variant_id`` array to ``group`` with deterministic
+    variable-length IDs derived from variant position and contig.
+
+    bio2zarr.tskit.convert does not populate variant_id (tskit uses
+    positional numbering, not RS-style IDs). Inject deterministic
+    variable-length IDs so the downstream-tool round-trip checks have a
+    non-trivial signal to verify.
+    """
     positions = group["variant_position"][:]
     contigs = group["variant_contig"][:]
     ids = _make_variant_ids(positions, contigs)
@@ -156,8 +158,77 @@ def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path, *, phased: bool) -
     # every variant-scoped field. bio2zarr writes v2 by default, so
     # set the v2 attribute on the array we just appended.
     variant_id_arr.attrs["_ARRAY_DIMENSIONS"] = ["variants"]
+
+
+def write_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path, *, phased: bool) -> None:
+    group = _convert_to_vcz(ts, vcz_path)
+    # tskit data is always phased; bio2zarr writes call_genotype_phased
+    # = True. The unphased variant flattens the flag so vcztools emits
+    # standard unphased BGEN (and PLINK, which has no phase concept).
+    # The phased variant leaves the flag set, exercising vcztools'
+    # phased-BGEN code path against downstream tools.
+    if not phased and "call_genotype_phased" in group.array_keys():
+        group["call_genotype_phased"][...] = False
+    _inject_variant_ids(group)
     _inject_missing_calls(group, fraction=MISSING_FRACTION)
     logger.info("Wrote VCZ store at %s", vcz_path)
+
+
+def write_haploid_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> None:
+    """Write a uniform-haploid VCZ store derived from a diploid
+    simulation. The first allele of every diploid call becomes the
+    haploid call; the ploidy axis is collapsed to size 1.
+    """
+    group = _convert_to_vcz(ts, vcz_path)
+    gt = group["call_genotype"]
+    diploid_values = gt[...]
+    haploid_values = diploid_values[:, :, 0:1].copy()
+    chunks = gt.chunks
+    haploid_chunks = (chunks[0], chunks[1], 1)
+    del group["call_genotype"]
+    haploid_arr = group.create_array(
+        "call_genotype",
+        shape=haploid_values.shape,
+        chunks=haploid_chunks,
+        dtype=np.int8,
+    )
+    haploid_arr[:] = haploid_values
+    haploid_arr.attrs["_ARRAY_DIMENSIONS"] = ["variants", "samples", "ploidy"]
+    if "call_genotype_phased" in group.array_keys():
+        group["call_genotype_phased"][...] = False
+    _inject_variant_ids(group)
+    logger.info("Wrote haploid VCZ store at %s", vcz_path)
+
+
+HAPLOID_SAMPLE_STRIDE = 3
+"""Sample-index modulus for haploid samples in the mixed-ploidy fixture
+(``idx % HAPLOID_SAMPLE_STRIDE == 0`` => haploid). 1/3 of samples are
+haploid, matching X-chromosome-style data where the haploid fraction
+is the male subset.
+"""
+
+
+def write_mixed_ploidy_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> None:
+    """Write a mixed-ploidy VCZ store. Some samples are haploid (slot 1
+    masked to ``-2``, the BGEN haploid-padding sentinel), the rest stay
+    diploid.
+    """
+    group = _convert_to_vcz(ts, vcz_path)
+    gt = group["call_genotype"]
+    values = gt[...]
+    n_samples = values.shape[1]
+    haploid_mask = np.arange(n_samples) % HAPLOID_SAMPLE_STRIDE == 0
+    values[:, haploid_mask, 1] = -2
+    gt[:] = values
+    if "call_genotype_phased" in group.array_keys():
+        group["call_genotype_phased"][...] = False
+    _inject_variant_ids(group)
+    logger.info(
+        "Wrote mixed-ploidy VCZ store at %s (%d/%d samples haploid)",
+        vcz_path,
+        int(haploid_mask.sum()),
+        n_samples,
+    )
 
 
 MISSING_FRACTION = 0.01
@@ -285,6 +356,40 @@ def build_fixture(size: str) -> None:
     )
 
 
+PLOIDY_KINDS = ("haploid", "mixed_ploidy")
+"""Supported ``--kind`` values: single-store ploidy fixtures derived
+from the ``small`` simulation. ``data/<kind>.vcz`` plus a
+``data/<kind>.vcz.ready`` marker."""
+
+
+def build_ploidy_fixture(kind: str) -> None:
+    """Build the ``haploid`` or ``mixed_ploidy`` single-store fixture.
+
+    Both reuse the ``small`` simulation so genotype content matches
+    what the diploid fixtures see. No phenotype file is generated:
+    REGENIE / BOLT (the only phenotype consumers) are diploid-only and
+    are not exercised on these stores.
+    """
+    if kind not in PLOIDY_KINDS:
+        raise ValueError(f"unknown ploidy kind {kind!r}")
+    spec = SPECS["small"]
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    vcz_path = DATA_DIR / f"{kind}.vcz"
+
+    ts = simulate(spec)
+    if kind == "haploid":
+        write_haploid_vcz(ts, vcz_path)
+    else:
+        write_mixed_ploidy_vcz(ts, vcz_path)
+
+    marker = DATA_DIR / f"{kind}.vcz.ready"
+    marker.write_text(
+        f"kind={kind}\nnum_samples={spec.num_samples}\n"
+        f"num_variants={ts.num_sites}\nseed={spec.seed}\n"
+    )
+    logger.info("Ploidy fixture %s ready (%s)", kind, vcz_path)
+
+
 def check_fixture(size: str) -> None:
     spec = SPECS[size]
     pheno_path = DATA_DIR / f"{size}.pheno.tsv"
@@ -313,7 +418,13 @@ def check_fixture(size: str) -> None:
     "--size",
     type=click.Choice(list(SPECS)),
     default=None,
-    help="Which fixture to generate.",
+    help="Which size fixture (diploid) to generate.",
+)
+@click.option(
+    "--kind",
+    type=click.Choice(list(PLOIDY_KINDS)),
+    default=None,
+    help="Which ploidy fixture (single store, small simulation) to generate.",
 )
 @click.option(
     "--check",
@@ -326,7 +437,7 @@ def check_fixture(size: str) -> None:
     is_flag=True,
     help="Generate every fixture.",
 )
-def main(size: str | None, check: bool, all_sizes: bool) -> None:
+def main(size: str | None, kind: str | None, check: bool, all_sizes: bool) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -338,12 +449,18 @@ def main(size: str | None, check: bool, all_sizes: bool) -> None:
             check_fixture(t)
         return
 
+    if kind is not None:
+        if size is not None or all_sizes:
+            raise click.UsageError("--kind is mutually exclusive with --size / --all")
+        build_ploidy_fixture(kind)
+        return
+
     if all_sizes:
         targets = list(SPECS)
     elif size is not None:
         targets = [size]
     else:
-        raise click.UsageError("either --size or --all is required")
+        raise click.UsageError("one of --size, --kind, or --all is required")
     for t in targets:
         build_fixture(t)
 

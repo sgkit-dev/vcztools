@@ -214,6 +214,23 @@ class TestBuildHeader:
         # Sample-id block follows.
         assert header[24:] == sample_block
 
+    def test_no_embedded_samples(self):
+        header = bgen._build_header(
+            num_variants=10,
+            num_samples=2,
+            sample_id_block=b"",
+            embed_samples=False,
+        )
+        # No sample-id block: offset = HEADER_LENGTH and the header
+        # ends at byte 24.
+        (offset,) = struct.unpack_from("<I", header, 0)
+        assert offset == bgen.HEADER_LENGTH
+        assert len(header) == 4 + bgen.HEADER_LENGTH
+        (flags,) = struct.unpack_from("<I", header, 20)
+        assert flags & 0b11 == bgen.COMPRESSION_ZLIB
+        assert (flags >> 2) & 0xF == bgen.LAYOUT_2
+        assert (flags & bgen.SAMPLE_IDS_PRESENT) == 0
+
 
 # ---------------------------------------------------------------------------
 # Genotype block / variant block byte-level encoding
@@ -1664,6 +1681,19 @@ class TestBgenEncoderMetadata:
             variant_contig=[0],
         ) as enc:
             assert enc._chrom_max == len(long_contig)
+
+    def test_embed_header_samples_false(self, tmp_path):
+        # With embed_header_samples=False the SAMPLE_IDS_PRESENT flag is
+        # cleared, the sample-id block is absent, and header_size shrinks
+        # to the bare 4-byte offset + 20-byte header.
+        reader = _build_reader(num_variants=2, num_samples=3)
+        with bgen.BgenEncoder(reader, embed_header_samples=False) as enc:
+            assert enc.header_size == 4 + bgen.HEADER_LENGTH
+            head = enc.read(0, enc.header_size)
+            (offset,) = struct.unpack_from("<I", head, 0)
+            assert offset == bgen.HEADER_LENGTH
+            (flags,) = struct.unpack_from("<I", head, 20)
+            assert (flags & bgen.SAMPLE_IDS_PRESENT) == 0
 
 
 class TestBgenEncoderSequential:

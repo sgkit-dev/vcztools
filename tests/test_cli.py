@@ -432,32 +432,25 @@ class TestViewPlink:
         out = tmp_path / "p"
         result, _ = run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()}"
         )
         assert (tmp_path / "p.bed").exists()
         assert (tmp_path / "p.bim").exists()
         assert (tmp_path / "p.fam").exists()
 
-    def test_default_output_prefix(self, tmp_path, fx_vcz_path):
-        # Without --out, files land at "plink.{bed,bim,fam}" in cwd.
-        runner = ct.CliRunner()
-        with runner.isolated_filesystem(tmp_path) as cwd:
-            result = runner.invoke(
-                cli.vcztools_main,
-                f"view-plink {fx_vcz_path} --max-alleles 2 -e 'CHROM==\"X\"'",
-                catch_exceptions=False,
-            )
-            assert result.exit_code == 0
-            cwd_path = pathlib.Path(cwd)
-            assert (cwd_path / "plink.bed").exists()
-            assert (cwd_path / "plink.bim").exists()
-            assert (cwd_path / "plink.fam").exists()
+    def test_output_required(self, fx_vcz_path):
+        # -o is required; missing it is a Click usage error.
+        _, err = run_vcztools(
+            f"view-plink {fx_vcz_path} --max-alleles 2",
+            expect_error=True,
+        )
+        assert "-o" in err or "--output" in err
 
     def test_path_required(self):
         runner = ct.CliRunner()
         result = runner.invoke(
             cli.vcztools_main,
-            "view-plink",
+            "view-plink -o /tmp/p",
             catch_exceptions=False,
         )
         assert result.exit_code != 0
@@ -466,7 +459,7 @@ class TestViewPlink:
         # No --max-alleles: vcztools encounters a 3-ALT site and raises.
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-plink {fx_vcz_path} --out {out.as_posix()}",
+            f"view-plink {fx_vcz_path} -o {out.as_posix()}",
             expect_error=True,
         )
         assert "Multi-allelic" in err
@@ -475,7 +468,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         result, _ = run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         # sample.vcf.gz has 9 variants. The 1 chrX variant is multi-
@@ -488,7 +481,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' -s NA00001,NA00003 --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -s NA00001,NA00003 -o {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
         assert len(fam) == 2
@@ -500,7 +493,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' -s ^NA00002 --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -s ^NA00002 -o {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
         iids = [line.split("\t")[1] for line in fam]
@@ -511,7 +504,7 @@ class TestViewPlink:
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -S tests/data/txt/samples.txt "
-            f"--out {out.as_posix()}"
+            f"-o {out.as_posix()}"
         )
         fam = self._read_fam(tmp_path / "p.fam")
         iids = [line.split("\t")[1] for line in fam]
@@ -521,7 +514,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-r '20:1230237-' --out {out.as_posix()}"
+            f"-r '20:1230237-' -o {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         # All bim rows must be on contig 20 with pos >= 1230237.
@@ -535,7 +528,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-t '20:1230237-' --out {out.as_posix()}"
+            f"-t '20:1230237-' -o {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         for line in bim_lines:
@@ -546,7 +539,7 @@ class TestViewPlink:
     def test_targets_complement(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         run_vcztools(
-            f"view-plink {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
+            f"view-plink {fx_vcz_path} --max-alleles 2 -t '^20' -o {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         for line in bim_lines:
@@ -557,7 +550,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-i 'POS>1000000' --out {out.as_posix()}"
+            f"-i 'POS>1000000' -o {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         for line in bim_lines:
@@ -569,7 +562,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-i 'POS>1000000' --out {out.as_posix()}"
+            f"-i 'POS>1000000' -o {out.as_posix()}"
         )
         bim_lines = self._read_bim(tmp_path / "p.bim")
         # All rows must satisfy both POS>1000000 AND ≤2 alleles.
@@ -586,7 +579,7 @@ class TestViewPlink:
         out = tmp_path / "p"
         _, err = run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-i 'FMT/DP>3' --out {out.as_posix()}",
+            f"-i 'FMT/DP>3' -o {out.as_posix()}",
             expect_error=True,
         )
         assert "Sample-scope variant filters" in err
@@ -595,7 +588,7 @@ class TestViewPlink:
         # Without -m, --max-alleles 2 alone keeps the two REF-only
         # sites at 20:1230237 and 20:1235237; -m 2 drops them.
         out = tmp_path / "p"
-        run_vcztools(f"view-plink {fx_vcz_path} -m 2 -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-plink {fx_vcz_path} -m 2 -M 2 -o {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
         positions = [int(line.split("\t")[3]) for line in bim_lines]
         assert 1230237 not in positions
@@ -605,7 +598,7 @@ class TestViewPlink:
         # -v snps + -M 2 keeps only the biallelic SNP rows. The two
         # REF-only sites also drop (no SNP allele).
         out = tmp_path / "p"
-        run_vcztools(f"view-plink {fx_vcz_path} -v snps -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-plink {fx_vcz_path} -v snps -M 2 -o {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
         positions = [int(line.split("\t")[3]) for line in bim_lines]
         # 4 biallelic SNP sites in the fixture: 19:111, 19:112, 20:14370, 20:17330.
@@ -615,7 +608,7 @@ class TestViewPlink:
         # -V snps drops SNP sites. With -M 2 to skip the multiallelics,
         # only the two monomorphic-REF sites survive.
         out = tmp_path / "p"
-        run_vcztools(f"view-plink {fx_vcz_path} -V snps -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-plink {fx_vcz_path} -V snps -M 2 -o {out.as_posix()}")
         bim_lines = self._read_bim(tmp_path / "p.bim")
         positions = [int(line.split("\t")[3]) for line in bim_lines]
         assert sorted(positions) == [1230237, 1235237]
@@ -623,7 +616,7 @@ class TestViewPlink:
     def test_unsupported_type_keyword(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-plink {fx_vcz_path} -v indels -M 2 --out {out.as_posix()}",
+            f"view-plink {fx_vcz_path} -v indels -M 2 -o {out.as_posix()}",
             expect_error=True,
         )
         assert "TYPE field" in err
@@ -631,22 +624,52 @@ class TestViewPlink:
     def test_types_and_exclude_types_mutually_exclusive(self, tmp_path, fx_vcz_path):
         out = tmp_path / "p"
         _, err = run_vcztools(
-            f"view-plink {fx_vcz_path} -v snps -V refs --out {out.as_posix()}",
+            f"view-plink {fx_vcz_path} -v snps -V refs -o {out.as_posix()}",
             expect_error=True,
         )
         assert "Cannot use --types and --exclude-types together" in err
 
-    def test_out_prefix_normalisation(self, tmp_path, fx_vcz_path):
-        # `--out p.bed` should still write to p.bed/p.bim/p.fam (the
-        # writer drops/normalises the suffix).
+    def test_stem_taken_verbatim(self, tmp_path, fx_vcz_path):
+        # `-o p.bed` is a literal stem now — the writer appends .bed/.bim
+        # /.fam to it, so files land at p.bed.bed / p.bed.bim / p.bed.fam.
         out = tmp_path / "p.bed"
         run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()}"
+        )
+        assert (tmp_path / "p.bed.bed").exists()
+        assert (tmp_path / "p.bed.bim").exists()
+        assert (tmp_path / "p.bed.fam").exists()
+
+    def test_no_bim(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-bim"
+        )
+        assert (tmp_path / "p.bed").exists()
+        assert not (tmp_path / "p.bim").exists()
+        assert (tmp_path / "p.fam").exists()
+
+    def test_no_fam(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-fam"
         )
         assert (tmp_path / "p.bed").exists()
         assert (tmp_path / "p.bim").exists()
-        assert (tmp_path / "p.fam").exists()
+        assert not (tmp_path / "p.fam").exists()
+
+    def test_no_bim_no_fam(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "p"
+        run_vcztools(
+            f"view-plink {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-bim --no-fam"
+        )
+        assert (tmp_path / "p.bed").exists()
+        assert not (tmp_path / "p.bim").exists()
+        assert not (tmp_path / "p.fam").exists()
 
 
 class TestViewBgen:
@@ -675,13 +698,14 @@ class TestViewBgen:
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()}"
         )
         assert (tmp_path / "b.bgen").exists()
         assert (tmp_path / "b.sample").exists()
         assert (tmp_path / "b.bgen.bgi").exists()
 
-    def test_default_output_prefix(self, tmp_path, fx_vcz_path):
+    def test_default_streams_to_stdout(self, tmp_path, fx_vcz_path):
+        # Without -o the .bgen payload streams to stdout; no sidecars.
         runner = ct.CliRunner()
         with runner.isolated_filesystem(tmp_path) as cwd:
             result = runner.invoke(
@@ -690,10 +714,14 @@ class TestViewBgen:
                 catch_exceptions=False,
             )
             assert result.exit_code == 0
+            stdout_bytes = result.stdout_bytes
+            # Bytes 8-19 are: num_variants (uint32) + num_samples (uint32)
+            # + BGEN_MAGIC. The magic confirms we wrote a BGEN payload.
+            assert stdout_bytes[16:20] == b"bgen"
             cwd_path = pathlib.Path(cwd)
-            assert (cwd_path / "bgen.bgen").exists()
-            assert (cwd_path / "bgen.sample").exists()
-            assert (cwd_path / "bgen.bgen.bgi").exists()
+            assert not any(cwd_path.glob("*.bgen"))
+            assert not any(cwd_path.glob("*.bgi"))
+            assert not any(cwd_path.glob("*.sample"))
 
     def test_path_required(self):
         runner = ct.CliRunner()
@@ -707,7 +735,7 @@ class TestViewBgen:
     def test_multiallelic_without_max_alleles_errors(self, tmp_path, fx_vcz_path):
         out = tmp_path / "b"
         _, err = run_vcztools(
-            f"view-bgen {fx_vcz_path} --out {out.as_posix()}",
+            f"view-bgen {fx_vcz_path} -o {out.as_posix()}",
             expect_error=True,
         )
         assert "Multi-allelic" in err
@@ -718,7 +746,7 @@ class TestViewBgen:
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()}"
         )
         rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
         assert len(rows) == 6
@@ -727,7 +755,7 @@ class TestViewBgen:
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' -s NA00001,NA00003 --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -s NA00001,NA00003 -o {out.as_posix()}"
         )
         sample_lines = self._read_sample(tmp_path / "b.sample")
         # Drop the two header rows.
@@ -738,7 +766,7 @@ class TestViewBgen:
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' -s ^NA00002 --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -s ^NA00002 -o {out.as_posix()}"
         )
         sample_lines = self._read_sample(tmp_path / "b.sample")
         ids = [line.split()[0] for line in sample_lines[2:]]
@@ -748,7 +776,7 @@ class TestViewBgen:
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-r '20:1230237-' --out {out.as_posix()}"
+            f"-r '20:1230237-' -o {out.as_posix()}"
         )
         rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
         for chrom, pos, *_ in rows:
@@ -758,7 +786,7 @@ class TestViewBgen:
     def test_targets_complement(self, tmp_path, fx_vcz_path):
         out = tmp_path / "b"
         run_vcztools(
-            f"view-bgen {fx_vcz_path} --max-alleles 2 -t '^20' --out {out.as_posix()}"
+            f"view-bgen {fx_vcz_path} --max-alleles 2 -t '^20' -o {out.as_posix()}"
         )
         rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
         for chrom, *_ in rows:
@@ -768,7 +796,7 @@ class TestViewBgen:
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-i 'POS>1000000' --out {out.as_posix()}"
+            f"-i 'POS>1000000' -o {out.as_posix()}"
         )
         rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
         for _chrom, pos, *_ in rows:
@@ -776,23 +804,86 @@ class TestViewBgen:
 
     def test_types_snps_only(self, tmp_path, fx_vcz_path):
         out = tmp_path / "b"
-        run_vcztools(f"view-bgen {fx_vcz_path} -v snps -M 2 --out {out.as_posix()}")
+        run_vcztools(f"view-bgen {fx_vcz_path} -v snps -M 2 -o {out.as_posix()}")
         rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
         positions = sorted(pos for _chrom, pos, *_ in rows)
         # Same 4 biallelic SNP sites the view-plink tests rely on.
         assert positions == [111, 112, 14370, 17330]
 
-    def test_out_prefix_with_bgen_suffix(self, tmp_path, fx_vcz_path):
-        # `--out p.bgen` resolves to p.bgen/p.sample/p.bgen.bgi
-        # (``.with_suffix(".bgen")`` is idempotent).
+    def test_stem_taken_verbatim(self, tmp_path, fx_vcz_path):
+        # `-o p.bgen` is a literal stem — appended files land at
+        # p.bgen.bgen / p.bgen.sample / p.bgen.bgen.bgi.
         out = tmp_path / "p.bgen"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
-            f"-e 'CHROM==\"X\"' --out {out.as_posix()}"
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()}"
         )
-        assert (tmp_path / "p.bgen").exists()
-        assert (tmp_path / "p.sample").exists()
-        assert (tmp_path / "p.bgen.bgi").exists()
+        assert (tmp_path / "p.bgen.bgen").exists()
+        assert (tmp_path / "p.bgen.sample").exists()
+        assert (tmp_path / "p.bgen.bgen.bgi").exists()
+
+    def test_no_bgi(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-bgi"
+        )
+        assert (tmp_path / "b.bgen").exists()
+        assert (tmp_path / "b.sample").exists()
+        assert not (tmp_path / "b.bgen.bgi").exists()
+
+    def test_no_sample_file(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-sample-file"
+        )
+        assert (tmp_path / "b.bgen").exists()
+        assert (tmp_path / "b.bgen.bgi").exists()
+        assert not (tmp_path / "b.sample").exists()
+
+    def test_no_bgi_no_sample_file(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-bgi --no-sample-file"
+        )
+        assert (tmp_path / "b.bgen").exists()
+        assert not (tmp_path / "b.bgen.bgi").exists()
+        assert not (tmp_path / "b.sample").exists()
+
+    def test_no_header_samples_clears_flag(self, tmp_path, fx_vcz_path):
+        # SAMPLE_IDS_PRESENT bit (1 << 31) must be 0 in the BGEN flag
+        # word; the sample-id block is omitted (offset = HEADER_LENGTH).
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --no-header-samples"
+        )
+        data = (tmp_path / "b.bgen").read_bytes()
+        # Offset is little-endian uint32 at bytes [0:4]; equals
+        # HEADER_LENGTH (20) when no sample-id block is embedded.
+        offset = int.from_bytes(data[0:4], "little")
+        assert offset == 20
+        # Flag word: bytes [16:20] are BGEN_MAGIC, [20:24] is flags.
+        flags = int.from_bytes(data[20:24], "little")
+        assert (flags & (1 << 31)) == 0
+
+    def test_no_header_samples_no_sample_file_warns(self, tmp_path, fx_vcz_path):
+        # Both off → sample IDs nowhere; expect a logger.warning.
+        # vcztools' setup_logging force-replaces handlers, so caplog won't
+        # see the warning; route it to a --log-file instead.
+        out = tmp_path / "b"
+        log = tmp_path / "warn.log"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} "
+            f"--no-header-samples --no-sample-file "
+            f"--log-file {log.as_posix()}"
+        )
+        log_text = log.read_text()
+        assert "WARNING" in log_text
+        assert "sample IDs nowhere" in log_text
 
 
 class TestIndex:
@@ -1163,7 +1254,7 @@ class TestReadaheadOptions:
             cli.vcztools_main,
             f"view-plink --max-alleles 2 -e 'CHROM==\"X\"' "
             f"--readahead-workers 8 --readahead-buffer-size 2M "
-            f"{fx_vcz_path} --out {out.as_posix()}",
+            f"{fx_vcz_path} -o {out.as_posix()}",
             catch_exceptions=False,
         )
         assert result.exit_code == 0

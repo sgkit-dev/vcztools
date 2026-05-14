@@ -43,7 +43,7 @@ PLINK2 = shutil.which("plink2")
 def run_view_bgen(args: str, vcz_path: Path, out_prefix: Path) -> Path:
     """Invoke ``vcztools view-bgen`` via CliRunner; assert exit 0; return
     the output prefix."""
-    cmd = f"view-bgen {Path(vcz_path).as_posix()} --out {out_prefix.as_posix()} {args}"
+    cmd = f"view-bgen {Path(vcz_path).as_posix()} -o {out_prefix.as_posix()} {args}"
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
     if result.exit_code != 0:

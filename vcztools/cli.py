@@ -1062,32 +1062,30 @@ def view_bgen(
     options = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
     embed_header_samples = not no_header_samples
-    with make_reader_from_options(path, options) as reader:
-        if output is None:
-            # Stream .bgen to stdout. Sidecars have no stem to derive
-            # paths from, so they're omitted (sample_path/bgi_path=None).
-            with handle_broken_pipe(sys.stdout.buffer):
-                bgen.write_bgen(
-                    reader,
-                    sys.stdout.buffer,
-                    embed_header_samples=embed_header_samples,
-                    compression_level=compression_level,
-                )
-        else:
-            # Stem is taken verbatim — no suffix stripping. "foo" -> foo.bgen
-            # / foo.sample / foo.bgen.bgi (the bgenix filename convention).
-            out_stem = str(output)
-            bgen_path = pathlib.Path(out_stem + ".bgen")
-            sample_path = None if no_sample_file else pathlib.Path(out_stem + ".sample")
-            bgi_path = None if no_bgi else pathlib.Path(str(bgen_path) + ".bgi")
-            bgen.write_bgen(
-                reader,
-                bgen_path,
-                sample_path=sample_path,
-                bgi_path=bgi_path,
-                embed_header_samples=embed_header_samples,
-                compression_level=compression_level,
-            )
+    if output is None:
+        # Stream .bgen to stdout. Sidecars have no stem to derive paths
+        # from, so they're omitted.
+        bgen_dest = sys.stdout.buffer
+        sample_path = None
+        bgi_path = None
+        pipe_context = handle_broken_pipe(sys.stdout.buffer)
+    else:
+        # Stem is taken verbatim — no suffix stripping. "foo" -> foo.bgen
+        # / foo.sample / foo.bgen.bgi (the bgenix filename convention).
+        out_stem = str(output)
+        bgen_dest = pathlib.Path(out_stem + ".bgen")
+        sample_path = None if no_sample_file else pathlib.Path(out_stem + ".sample")
+        bgi_path = None if no_bgi else pathlib.Path(str(bgen_dest) + ".bgi")
+        pipe_context = contextlib.nullcontext()
+    with make_reader_from_options(path, options) as reader, pipe_context:
+        bgen.write_bgen(
+            reader,
+            bgen_dest,
+            sample_path=sample_path,
+            bgi_path=bgi_path,
+            embed_header_samples=embed_header_samples,
+            compression_level=compression_level,
+        )
 
 
 @version

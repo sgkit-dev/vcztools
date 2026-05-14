@@ -1227,9 +1227,9 @@ def _run_output_bgen(reader, ctx, compression_level):
 # ---------------------------------------------------------------------------
 #
 # These tasks make sense only on the long dataset (10 samples × ~28M
-# variants). The ``full_*`` outputs run the same encoder code as the
-# wide ``output_*`` tasks against the long-shape store, taking the
-# first N variant chunks where N is per-task tuned to land ~10s.
+# variants). The ``long_output_*`` tasks run the same encoder code as
+# the wide ``output_*`` tasks against the long-shape store, taking
+# the first N variant chunks where N is per-task tuned to land ~10s.
 
 WIDE_LONG_SHAPES = frozenset({"wide", "long"})
 LONG_ONLY_SHAPES = frozenset({"long"})
@@ -1242,19 +1242,19 @@ def _build_full_genotypes(root, ctx):
     return retrieval.VczReader(root)
 
 
-def _build_full_output_vcf(root, ctx):
+def _build_long_output_vcf(root, ctx):
     reader = retrieval.VczReader(root)
     reader.set_variants(_biallelic_first_chunks_plan(root, LONG_OUTPUT_VCF_CHUNKS))
     return reader
 
 
-def _build_full_output_plink(root, ctx):
+def _build_long_output_plink(root, ctx):
     reader = retrieval.VczReader(root)
     reader.set_variants(_biallelic_first_chunks_plan(root, LONG_OUTPUT_PLINK_CHUNKS))
     return reader
 
 
-def _build_full_output_bed_stream(root, ctx):
+def _build_long_output_bed_stream(root, ctx):
     reader = retrieval.VczReader(root)
     reader.set_variants(
         _biallelic_first_chunks_plan(root, LONG_OUTPUT_BED_STREAM_CHUNKS)
@@ -1381,22 +1381,22 @@ TASKS: list[Task] = [
         shapes=LONG_ONLY_SHAPES,
     ),
     Task(
-        "full_output_vcf",
-        _build_full_output_vcf,
+        "long_output_vcf",
+        _build_long_output_vcf,
         run=_run_output_vcf,
         backends=OUTPUT_BACKENDS,
         shapes=LONG_ONLY_SHAPES,
     ),
     Task(
-        "full_output_plink",
-        _build_full_output_plink,
+        "long_output_plink",
+        _build_long_output_plink,
         run=_run_output_plink,
         backends=OUTPUT_BACKENDS,
         shapes=LONG_ONLY_SHAPES,
     ),
     Task(
-        "full_output_bed_stream",
-        _build_full_output_bed_stream,
+        "long_output_bed_stream",
+        _build_long_output_bed_stream,
         run=_run_output_bed_stream,
         backends=OUTPUT_BACKENDS,
         shapes=LONG_ONLY_SHAPES,

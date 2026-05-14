@@ -34,6 +34,12 @@ Features:
   sample-ID block.
 - `view-plink` gains `--no-bim` / `--no-fam` to suppress those
   sidecars (`.bed` is always written).
+- `view-bgen` default `--compression-level` is now `1` (was `-1` =
+  zlib default ≈ 6). Hard-call BGEN payloads are low-entropy enough
+  that level 1 captures most of the size win at a fraction of the CPU
+  cost; level 6 only buys ~10-30% smaller files for several times
+  the encode time. Pass `--compression-level 9` for archival output
+  or `--compression-level 0` for stored / fastest.
 
 Breaking changes:
 

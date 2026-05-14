@@ -144,6 +144,28 @@ set; their probability bytes are zeroed (the BGEN spec says these
 bytes should be ignored when the missing flag is set, but zeroing
 keeps the output deterministic).
 
+## Compression level
+
+`view-bgen` zlib-compresses each variant's genotype-probability block
+independently. The level is controlled by `--compression-level`, which
+accepts the standard zlib values (`-1` = zlib default ≈ 6; `0` =
+stored, no DEFLATE; `1`-`9` = fastest to maximum). The BGEN flag word
+always advertises `COMPRESSION_ZLIB` regardless of level, so every
+reader handles the output identically.
+
+**The default is `--compression-level 1`.** Hard-call BGEN payloads
+are short, repetitive byte runs (mostly 1.0/0.0 in 8-bit form,
+duplicated across samples), so the longer-match Lempel-Ziv search at
+level 6 (zlib default) buys very little: in our benchmarks level 6
+shrinks the file by ~10-30% but spends several times more CPU than
+level 1. Most BGEN workloads are write-once-and-read-by-one-tool, so
+encode throughput wins.
+
+If you're producing an archival BGEN (write once, read many),
+`--compression-level 9` is worth the time. If you're streaming
+through a tool that re-compresses anyway, `--compression-level 0`
+(stored) is fastest.
+
 ## Limitations
 
 - **Layout 2, 8-bit, zlib only.** Higher precision (16/32-bit) and

@@ -283,9 +283,9 @@ class TestBgenReaderRoundtrip:
             call_fields={"genotype_phased": phased},
         )
         reader = retrieval.VczReader(root)
-        out = tmp_path / "p"
-        bgen_mod.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen:
+        bgen_path = tmp_path / "p.bgen"
+        bgen_mod.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False) as bgen:
             assert all(bool(p) for p in bgen.phased)
             probs = bgen.read()
         hap1 = np.argmax(probs[..., 0:2], axis=-1).T
@@ -309,9 +309,9 @@ class TestBgenReaderRoundtrip:
             call_genotype=G,
         )
         reader = retrieval.VczReader(root)
-        out = tmp_path / "m"
-        bgen_mod.write_bgen(reader, out)
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen:
+        bgen_path = tmp_path / "m.bgen"
+        bgen_mod.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False) as bgen:
             probs, missing_mask = bgen.read(return_missings=True)
         # bgen-reader missing_mask is (n_samples, n_variants).
         expected_missing = (G < 0).any(axis=-1).T  # (n_samples, n_variants)
@@ -357,11 +357,9 @@ class TestBgenReaderHaploidRoundtrip:
             ploidy=1,
         )
         reader = retrieval.VczReader(root)
-        out = tmp_path / "h"
-        bgen_mod.write_bgen(reader, out)
-        with br.open_bgen(
-            out.with_suffix(".bgen"), verbose=False, allow_complex=True
-        ) as bg:
+        bgen_path = tmp_path / "h.bgen"
+        bgen_mod.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
             assert bg.nvariants == 3
             assert bg.nsamples == 4
             np.testing.assert_array_equal(bg.ncombinations, [2, 2, 2])
@@ -396,11 +394,9 @@ class TestBgenReaderHaploidRoundtrip:
             ploidy=2,
         )
         reader = retrieval.VczReader(root)
-        out = tmp_path / "mp"
-        bgen_mod.write_bgen(reader, out)
-        with br.open_bgen(
-            out.with_suffix(".bgen"), verbose=False, allow_complex=True
-        ) as bg:
+        bgen_path = tmp_path / "mp.bgen"
+        bgen_mod.write_bgen(reader, bgen_path)
+        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
             assert bg.nvariants == 2
             assert bg.nsamples == 4
             # Both variants have diploid + haploid samples -> max combos = 3.

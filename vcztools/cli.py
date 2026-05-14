@@ -712,6 +712,143 @@ class SelectionOptions:
         return cls(**{k: kwargs.pop(k) for k in list(kwargs) if k in field_names})
 
 
+@dataclasses.dataclass(frozen=True)
+class ViewPlinkOptions:
+    """Bundled options for ``view-plink``-shaped commands — every option
+    except ``-o/--output``.
+
+    Composes the four category groups (Selection / Zarr store / Reader /
+    Log) plus the PLINK-specific sidecar flags ``--no-bim`` and
+    ``--no-fam``. The output target is intentionally excluded so consumers
+    can declare it themselves (e.g. biofuse ``mount-plink`` accepts a
+    mount point rather than a file stem).
+    """
+
+    selection: SelectionOptions = dataclasses.field(default_factory=SelectionOptions)
+    zarr_store: ZarrStoreOptions = dataclasses.field(default_factory=ZarrStoreOptions)
+    reader: ReaderOptions = dataclasses.field(default_factory=ReaderOptions)
+    log: LogOptions = dataclasses.field(default_factory=LogOptions)
+    no_bim: bool = False
+    no_fam: bool = False
+
+    @staticmethod
+    def decorator(f):
+        """Click decorator: add every view-plink option except ``-o`` to f."""
+        f = LogOptions.decorator(f)
+        f = ReaderOptions.decorator(f)
+        f = ZarrStoreOptions.decorator(f)
+        f = SelectionOptions.decorator(f)
+        f = click.option(
+            "--no-fam",
+            is_flag=True,
+            default=False,
+            help="Skip the .fam sample-info sidecar.",
+        )(f)
+        f = click.option(
+            "--no-bim",
+            is_flag=True,
+            default=False,
+            help="Skip the .bim variant-info sidecar.",
+        )(f)
+        return f
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewPlinkOptions":
+        return cls(
+            selection=SelectionOptions.pop_from_click_kwargs(kwargs),
+            zarr_store=ZarrStoreOptions.pop_from_click_kwargs(kwargs),
+            reader=ReaderOptions.pop_from_click_kwargs(kwargs),
+            log=LogOptions.pop_from_click_kwargs(kwargs),
+            no_bim=kwargs.pop("no_bim", False),
+            no_fam=kwargs.pop("no_fam", False),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class ViewBgenOptions:
+    """Bundled options for ``view-bgen``-shaped commands — every option
+    except ``-o/--output``.
+
+    Composes the four category groups (Selection / Zarr store / Reader /
+    Log) plus the BGEN-specific sidecar and encoding flags. The output
+    target is intentionally excluded so consumers can declare it
+    themselves.
+    """
+
+    selection: SelectionOptions = dataclasses.field(default_factory=SelectionOptions)
+    zarr_store: ZarrStoreOptions = dataclasses.field(default_factory=ZarrStoreOptions)
+    reader: ReaderOptions = dataclasses.field(default_factory=ReaderOptions)
+    log: LogOptions = dataclasses.field(default_factory=LogOptions)
+    no_bgi: bool = False
+    no_sample_file: bool = False
+    no_header_samples: bool = False
+    compression_level: int = 1
+
+    @staticmethod
+    def decorator(f):
+        """Click decorator: add every view-bgen option except ``-o`` to f."""
+        f = LogOptions.decorator(f)
+        f = ReaderOptions.decorator(f)
+        f = ZarrStoreOptions.decorator(f)
+        f = SelectionOptions.decorator(f)
+        f = click.option(
+            "--compression-level",
+            type=click.IntRange(-1, 9),
+            default=1,
+            show_default=True,
+            help=(
+                "zlib compression level for the BGEN genotype probability "
+                "blocks. 1 (default) is fast and within ~10-30% of the size "
+                "of level 6 on hard-call BGEN; -1 = zlib default (~6); 0 = "
+                "stored (no compression); 9 = max."
+            ),
+        )(f)
+        f = click.option(
+            "--no-header-samples",
+            is_flag=True,
+            default=False,
+            help=(
+                "Omit sample IDs from the BGEN header (clears "
+                "SAMPLE_IDS_PRESENT). Combine with --no-sample-file at your "
+                "peril: most downstream tools require sample IDs from one "
+                "source or the other."
+            ),
+        )(f)
+        f = click.option(
+            "--no-sample-file",
+            is_flag=True,
+            default=False,
+            help=(
+                "Skip the Oxford .sample sidecar. No effect when streaming "
+                "to stdout. Distinct from -S/--samples-file, which filters "
+                "input."
+            ),
+        )(f)
+        f = click.option(
+            "--no-bgi",
+            is_flag=True,
+            default=False,
+            help=(
+                "Skip the bgenix .bgen.bgi SQLite index sidecar. No effect "
+                "when streaming to stdout."
+            ),
+        )(f)
+        return f
+
+    @classmethod
+    def pop_from_click_kwargs(cls, kwargs: dict) -> "ViewBgenOptions":
+        return cls(
+            selection=SelectionOptions.pop_from_click_kwargs(kwargs),
+            zarr_store=ZarrStoreOptions.pop_from_click_kwargs(kwargs),
+            reader=ReaderOptions.pop_from_click_kwargs(kwargs),
+            log=LogOptions.pop_from_click_kwargs(kwargs),
+            no_bgi=kwargs.pop("no_bgi", False),
+            no_sample_file=kwargs.pop("no_sample_file", False),
+            no_header_samples=kwargs.pop("no_header_samples", False),
+            compression_level=kwargs.pop("compression_level", 1),
+        )
+
+
 def make_reader_from_groups(
     path: str,
     *,
@@ -996,24 +1133,9 @@ def view(
         "and foo.fam unless --no-bim/--no-fam is given."
     ),
 )
-@click.option(
-    "--no-bim",
-    is_flag=True,
-    default=False,
-    help="Skip the .bim variant-info sidecar.",
-)
-@click.option(
-    "--no-fam",
-    is_flag=True,
-    default=False,
-    help="Skip the .fam sample-info sidecar.",
-)
-@SelectionOptions.decorator
-@ZarrStoreOptions.decorator
-@ReaderOptions.decorator
-@LogOptions.decorator
+@ViewPlinkOptions.decorator
 @handle_exception
-def view_plink(path, output, no_bim, no_fam, **kwargs):
+def view_plink(path, output, **kwargs):
     """
     Generate a PLINK 1 binary fileset (.bed/.bim/.fam) from a VCZ
     dataset.
@@ -1030,23 +1152,21 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
     (``--keep-allele-order``), REGENIE, BOLT-LMM, and other
     downstream tools.
     """
-    LogOptions.pop_from_click_kwargs(kwargs).apply()
-    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
-    reader_opts = ReaderOptions.pop_from_click_kwargs(kwargs)
-    selection = SelectionOptions.pop_from_click_kwargs(kwargs)
+    opts = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
+    opts.log.apply()
     reader = make_reader_from_groups(
         path,
-        selection=selection,
-        zarr_store=zarr_store,
-        reader=reader_opts,
+        selection=opts.selection,
+        zarr_store=opts.zarr_store,
+        reader=opts.reader,
     )
     with reader:
         plink.write_plink(
             reader,
             output,
-            write_bim=not no_bim,
-            write_fam=not no_fam,
+            write_bim=not opts.no_bim,
+            write_fam=not opts.no_fam,
         )
 
 
@@ -1064,60 +1184,9 @@ def view_plink(path, output, no_bim, no_fam, **kwargs):
         "foo.bgen.bgi and foo.sample."
     ),
 )
-@click.option(
-    "--no-bgi",
-    is_flag=True,
-    default=False,
-    help=(
-        "Skip the bgenix .bgen.bgi SQLite index sidecar. No effect when "
-        "streaming to stdout."
-    ),
-)
-@click.option(
-    "--no-sample-file",
-    is_flag=True,
-    default=False,
-    help=(
-        "Skip the Oxford .sample sidecar. No effect when streaming to "
-        "stdout. Distinct from -S/--samples-file, which filters input."
-    ),
-)
-@click.option(
-    "--no-header-samples",
-    is_flag=True,
-    default=False,
-    help=(
-        "Omit sample IDs from the BGEN header (clears SAMPLE_IDS_PRESENT). "
-        "Combine with --no-sample-file at your peril: most downstream tools "
-        "require sample IDs from one source or the other."
-    ),
-)
-@click.option(
-    "--compression-level",
-    type=click.IntRange(-1, 9),
-    default=1,
-    show_default=True,
-    help=(
-        "zlib compression level for the BGEN genotype probability "
-        "blocks. 1 (default) is fast and within ~10-30% of the size of "
-        "level 6 on hard-call BGEN; -1 = zlib default (~6); 0 = stored "
-        "(no compression); 9 = max."
-    ),
-)
-@SelectionOptions.decorator
-@ZarrStoreOptions.decorator
-@ReaderOptions.decorator
-@LogOptions.decorator
+@ViewBgenOptions.decorator
 @handle_exception
-def view_bgen(
-    path,
-    output,
-    no_bgi,
-    no_sample_file,
-    no_header_samples,
-    compression_level,
-    **kwargs,
-):
+def view_bgen(path, output, **kwargs):
     """
     Generate Oxford BGEN output from a VCZ dataset.
 
@@ -1138,12 +1207,10 @@ def view_bgen(
     including downstream-tool compatibility (REGENIE, SAIGE,
     BOLT-LMM, BGENIE, qctool, PLINK 2) and sidecar conventions.
     """
-    LogOptions.pop_from_click_kwargs(kwargs).apply()
-    zarr_store = ZarrStoreOptions.pop_from_click_kwargs(kwargs)
-    reader_opts = ReaderOptions.pop_from_click_kwargs(kwargs)
-    selection = SelectionOptions.pop_from_click_kwargs(kwargs)
+    opts = ViewBgenOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
-    embed_header_samples = not no_header_samples
+    opts.log.apply()
+    embed_header_samples = not opts.no_header_samples
     if output is None:
         # Stream .bgen to stdout. Sidecars have no stem to derive paths
         # from, so they're omitted.
@@ -1156,14 +1223,16 @@ def view_bgen(
         # / foo.sample / foo.bgen.bgi (the bgenix filename convention).
         out_stem = str(output)
         bgen_dest = pathlib.Path(out_stem + ".bgen")
-        sample_path = None if no_sample_file else pathlib.Path(out_stem + ".sample")
-        bgi_path = None if no_bgi else pathlib.Path(str(bgen_dest) + ".bgi")
+        sample_path = (
+            None if opts.no_sample_file else pathlib.Path(out_stem + ".sample")
+        )
+        bgi_path = None if opts.no_bgi else pathlib.Path(str(bgen_dest) + ".bgi")
         pipe_context = contextlib.nullcontext()
     reader = make_reader_from_groups(
         path,
-        selection=selection,
-        zarr_store=zarr_store,
-        reader=reader_opts,
+        selection=opts.selection,
+        zarr_store=opts.zarr_store,
+        reader=opts.reader,
     )
     with reader, pipe_context:
         bgen.write_bgen(
@@ -1172,7 +1241,7 @@ def view_bgen(
             sample_path=sample_path,
             bgi_path=bgi_path,
             embed_header_samples=embed_header_samples,
-            compression_level=compression_level,
+            compression_level=opts.compression_level,
         )
 
 

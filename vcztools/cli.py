@@ -62,6 +62,7 @@ def handle_exception(func):
 # CLI groupings exposed to biofuse and other downstream consumers.
 GROUP_ORDER = (
     "Options",
+    "Selection options",
     "Zarr store options",
     "Reader options",
     "Logging options",
@@ -95,13 +96,27 @@ class GroupedCommand(click.Command):
 
 
 include = click.option(
-    "-i", "--include", type=str, help="Filter expression to include variant sites."
+    "-i",
+    "--include",
+    type=str,
+    help="Filter expression to include variant sites.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 exclude = click.option(
-    "-e", "--exclude", type=str, help="Filter expression to exclude variant sites."
+    "-e",
+    "--exclude",
+    type=str,
+    help="Filter expression to exclude variant sites.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 force_samples = click.option(
-    "--force-samples", is_flag=True, help="Only warn about unknown sample subsets."
+    "--force-samples",
+    is_flag=True,
+    help="Only warn about unknown sample subsets.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 output = click.option(
     "-o",
@@ -116,6 +131,8 @@ regions = click.option(
     type=str,
     default=None,
     help="Regions to include.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 regions_file = click.option(
     "-R",
@@ -123,6 +140,8 @@ regions_file = click.option(
     type=str,
     default=None,
     help="File of regions to include.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 samples = click.option(
     "-s",
@@ -130,6 +149,8 @@ samples = click.option(
     type=str,
     default=None,
     help="Samples to include.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 samples_file = click.option(
     "-S",
@@ -137,6 +158,8 @@ samples_file = click.option(
     type=str,
     default=None,
     help="File of sample names to include.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 targets = click.option(
     "-t",
@@ -144,6 +167,8 @@ targets = click.option(
     type=str,
     default=None,
     help="Target regions to include.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 targets_file = click.option(
     "-T",
@@ -151,6 +176,8 @@ targets_file = click.option(
     type=str,
     default=None,
     help="File of target regions to include.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 types_opt = click.option(
     "-v",
@@ -162,6 +189,8 @@ types_opt = click.option(
         "(snps,indels,mnps,other). A site is selected if any of its "
         "alleles matches one of the listed types."
     ),
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 exclude_types_opt = click.option(
     "-V",
@@ -169,6 +198,8 @@ exclude_types_opt = click.option(
     type=str,
     default=None,
     help="Comma-separated list of variant types to exclude.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 min_alleles_opt = click.option(
     "-m",
@@ -176,6 +207,8 @@ min_alleles_opt = click.option(
     type=int,
     default=None,
     help="Print sites with at least INT alleles listed in REF and ALT.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 max_alleles_opt = click.option(
     "-M",
@@ -183,6 +216,8 @@ max_alleles_opt = click.option(
     type=int,
     default=None,
     help="Print sites with at most INT alleles listed in REF and ALT.",
+    cls=GroupedOption,
+    help_group="Selection options",
 )
 version = click.version_option(version=f"{provenance.__version__}")
 
@@ -612,10 +647,9 @@ class SelectionOptions:
     """Bundled bcftools-view-shaped selection options (regions / targets /
     samples / include / exclude / types / min-max-alleles).
 
-    Lives under category 4 (command-specific) at the help-text layer, but
-    factored into a reusable bundle here because the same set is consumed by
-    multiple commands (view / view-plink / view-bgen) and by downstream tools
-    like biofuse. Pair with :func:`bcftools_selection_options`.
+    Renders as its own ``Selection options`` section in ``--help``. Consumed
+    by multiple commands (view / view-plink / view-bgen) and by downstream
+    tools like biofuse. Pair with :func:`bcftools_selection_options`.
     """
 
     regions: str | None = None

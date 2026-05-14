@@ -1263,19 +1263,39 @@ class TestHelpGroups:
             ("index", ["Zarr store options", "Logging options"]),
             (
                 "query",
-                ["Zarr store options", "Reader options", "Logging options"],
+                [
+                    "Selection options",
+                    "Zarr store options",
+                    "Reader options",
+                    "Logging options",
+                ],
             ),
             (
                 "view",
-                ["Zarr store options", "Reader options", "Logging options"],
+                [
+                    "Selection options",
+                    "Zarr store options",
+                    "Reader options",
+                    "Logging options",
+                ],
             ),
             (
                 "view-plink",
-                ["Zarr store options", "Reader options", "Logging options"],
+                [
+                    "Selection options",
+                    "Zarr store options",
+                    "Reader options",
+                    "Logging options",
+                ],
             ),
             (
                 "view-bgen",
-                ["Zarr store options", "Reader options", "Logging options"],
+                [
+                    "Selection options",
+                    "Zarr store options",
+                    "Reader options",
+                    "Logging options",
+                ],
             ),
         ],
     )

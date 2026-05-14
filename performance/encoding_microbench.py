@@ -269,6 +269,18 @@ def _sweep_one_format(fmt: str, chunk: dict, reader: _FakeReader, repeats: int) 
     _, bytes_out = _time_repeats(fmt, chunk, reader, 1, _SWEEP_BLOCK_BYTES[0], 1)
     out_mib = bytes_out / (1024 * 1024)
 
+    # Collect median times once, then derive both input-MiB/s and
+    # output-MiB/s from them — avoids running the sweep twice.
+    if fmt == "vcf":
+        block_bytes_axis = (_SWEEP_BLOCK_BYTES[0],)
+    else:
+        block_bytes_axis = _SWEEP_BLOCK_BYTES
+    medians: dict[tuple[int, int], float] = {}
+    for threads in _SWEEP_THREADS:
+        for block_bytes in block_bytes_axis:
+            times, _ = _time_repeats(fmt, chunk, reader, threads, block_bytes, repeats)
+            medians[(threads, block_bytes)] = statistics.median(times)
+
     click.echo(f"# encode_{fmt} parallel sweep")
     click.echo(
         f"# shape: {num_variants} variants x {num_samples} samples "
@@ -276,30 +288,33 @@ def _sweep_one_format(fmt: str, chunk: dict, reader: _FakeReader, repeats: int) 
     )
     click.echo("")
 
-    if fmt == "vcf":
-        click.echo("| threads | MiB/s |")
-        click.echo("|---|---|")
-        for threads in _SWEEP_THREADS:
-            times, _ = _time_repeats(
-                fmt, chunk, reader, threads, _SWEEP_BLOCK_BYTES[0], repeats
-            )
-            rate = in_mib / statistics.median(times)
-            click.echo(f"| {threads} | {rate:.0f} |")
-    else:
-        headers = ["threads"] + [f"{b // (1 << 20)} MiB" for b in _SWEEP_BLOCK_BYTES]
-        click.echo("| " + " | ".join(headers) + " |")
-        click.echo("|" + "|".join(["---"] * len(headers)) + "|")
-        for threads in _SWEEP_THREADS:
-            row = [str(threads)]
-            for block_bytes in _SWEEP_BLOCK_BYTES:
-                times, _ = _time_repeats(
-                    fmt, chunk, reader, threads, block_bytes, repeats
-                )
-                rate = in_mib / statistics.median(times)
-                row.append(f"{rate:.0f}")
-            click.echo("| " + " | ".join(row) + " |")
-    click.echo("")
-    click.echo("# Cell values are input-MiB/s (median of repeats).")
+    def emit_table(label: str, total_mib: float) -> None:
+        if fmt == "vcf":
+            click.echo(f"## {label}")
+            click.echo("| threads | MiB/s |")
+            click.echo("|---|---|")
+            for threads in _SWEEP_THREADS:
+                rate = total_mib / medians[(threads, _SWEEP_BLOCK_BYTES[0])]
+                click.echo(f"| {threads} | {rate:.0f} |")
+        else:
+            click.echo(f"## {label}")
+            headers = ["threads"] + [
+                f"{b // (1 << 20)} MiB" for b in _SWEEP_BLOCK_BYTES
+            ]
+            click.echo("| " + " | ".join(headers) + " |")
+            click.echo("|" + "|".join(["---"] * len(headers)) + "|")
+            for threads in _SWEEP_THREADS:
+                row = [str(threads)]
+                for block_bytes in _SWEEP_BLOCK_BYTES:
+                    rate = total_mib / medians[(threads, block_bytes)]
+                    row.append(f"{rate:.0f}")
+                click.echo("| " + " | ".join(row) + " |")
+        click.echo("")
+
+    emit_table("input MiB/s", in_mib)
+    emit_table("output MiB/s", out_mib)
+    click.echo("# Cell values are MiB/s (median of repeats); input table")
+    click.echo("# divides bytes_in by median time, output table divides bytes_out.")
 
 
 @click.command()

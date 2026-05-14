@@ -5,7 +5,6 @@ from .cli import (  # noqa F401
     ViewBgenOptions,
     ViewPlinkOptions,
     ZarrStoreOptions,
-    make_reader,
     make_reader_from_groups,
 )
 from .plink import BedEncoder  # noqa F401

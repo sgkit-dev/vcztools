@@ -1052,6 +1052,15 @@ OUTPUT_BED_STREAM_CHUNKS = 20
 OUTPUT_BGEN_CHUNKS = 5
 OUTPUT_BGEN_COMPRESSION_LEVELS = (0, 1, 6)
 
+# Long-shape (10 samples × ~28M variants) output-task chunk counts.
+# Sized so each task lands ~10s wall on local-dir; VCF is the slowest
+# per chunk (its INFO+FORMAT field set dominates the read), plink and
+# bed_stream encode 10-sample chunks much more cheaply, so they get
+# proportionally more chunks.
+LONG_OUTPUT_VCF_CHUNKS = 1000
+LONG_OUTPUT_PLINK_CHUNKS = 1500
+LONG_OUTPUT_BED_STREAM_CHUNKS = 3500
+
 
 class _CountingTextWriter:
     """File-like text proxy that counts UTF-8 bytes written.
@@ -1217,46 +1226,39 @@ def _run_output_bgen(reader, ctx, compression_level):
 # Long-only tasks
 # ---------------------------------------------------------------------------
 #
-# These tasks make sense only on the long dataset (10 samples × ~100M
-# variants). The ``full_*`` outputs walk every variant chunk; on the
-# wide dataset the equivalent run would not terminate in a reasonable
-# time. They share encoder code with the wide ``output_*`` tasks.
+# These tasks make sense only on the long dataset (10 samples × ~28M
+# variants). The ``full_*`` outputs run the same encoder code as the
+# wide ``output_*`` tasks against the long-shape store, taking the
+# first N variant chunks where N is per-task tuned to land ~10s.
 
 WIDE_LONG_SHAPES = frozenset({"wide", "long"})
 LONG_ONLY_SHAPES = frozenset({"long"})
 
 
-def _biallelic_full_plan(root):
-    """``_biallelic_first_chunks_plan`` extended to every variant chunk."""
-    with retrieval.VczReader(root) as discovery:
-        num_variant_chunks = math.ceil(
-            discovery.num_variants / discovery.variants_chunk_size
-        )
-    return _biallelic_first_chunks_plan(root, num_variant_chunks)
-
-
 def _build_full_genotypes(root, ctx):
-    """Read every (variant, sample) genotype on long_bench (~100M
-    variants × 10 samples × 2 ≈ 2 GB raw). Tests bulk variant-axis
+    """Read every (variant, sample) genotype on long_bench (~28M
+    variants × 10 samples × 2 ≈ 0.6 GB raw). Tests bulk variant-axis
     throughput at the long dataset's high call-axis chunk count."""
     return retrieval.VczReader(root)
 
 
 def _build_full_output_vcf(root, ctx):
     reader = retrieval.VczReader(root)
-    reader.set_variants(_biallelic_full_plan(root))
+    reader.set_variants(_biallelic_first_chunks_plan(root, LONG_OUTPUT_VCF_CHUNKS))
     return reader
 
 
 def _build_full_output_plink(root, ctx):
     reader = retrieval.VczReader(root)
-    reader.set_variants(_biallelic_full_plan(root))
+    reader.set_variants(_biallelic_first_chunks_plan(root, LONG_OUTPUT_PLINK_CHUNKS))
     return reader
 
 
 def _build_full_output_bed_stream(root, ctx):
     reader = retrieval.VczReader(root)
-    reader.set_variants(_biallelic_full_plan(root))
+    reader.set_variants(
+        _biallelic_first_chunks_plan(root, LONG_OUTPUT_BED_STREAM_CHUNKS)
+    )
     return reader
 
 

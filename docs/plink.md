@@ -7,9 +7,20 @@ one PLINK 1, 1.9 and 2 all read; the `.bed` payload is byte-identical
 to `plink2 --vcf X --make-bed` for biallelic variants.
 
 ```bash
-vcztools view-plink sample.vcz --out sample
+vcztools view-plink sample.vcz -o sample
 # produces sample.bed, sample.bim, sample.fam
 ```
+
+The `-o` value is a stem taken **verbatim** — `-o sample` produces
+`sample.bed`/`sample.bim`/`sample.fam`; `-o sample.bed` would produce
+`sample.bed.bed` etc. Unlike `view-bgen`, `view-plink` does not stream
+to stdout: the PLINK triplet isn't a single output stream, so `-o` is
+required.
+
+The `.bim` and `.fam` sidecars are written by default; pass `--no-bim`
+or `--no-fam` to suppress one of them. (`.bed` alone isn't a valid
+PLINK fileset, so these toggles exist mostly for niche pipelines that
+generate the sidecars separately.)
 
 Sample, region and filter selection mirrors `vcztools view`
 (`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`); the per-flag reference is
@@ -48,7 +59,7 @@ variants"). Two ways to handle them:
 - **Skip** with `--max-alleles 2`:
 
   ```bash
-  vcztools view-plink sample.vcz --out sample --max-alleles 2
+  vcztools view-plink sample.vcz -o sample --max-alleles 2
   ```
 
   Drops every variant whose record lists more than two alleles. The

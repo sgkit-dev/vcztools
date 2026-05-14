@@ -145,9 +145,13 @@ def generate_bim(reader):
     return df.to_csv(header=False, sep="\t", index=False, lineterminator="\n")
 
 
-def write_plink(reader, out):
-    """Write PLINK 1 binary fileset (``.bed`` / ``.bim`` / ``.fam``) for
-    ``reader`` under prefix ``out``.
+def write_plink(reader, output, *, write_bim: bool = True, write_fam: bool = True):
+    """Write PLINK 1 binary fileset for ``reader`` under stem ``output``.
+
+    ``output`` is a filesystem stem (``str`` or ``pathlib.Path``) taken
+    verbatim — ``"foo"`` produces ``foo.bed`` plus, by default, ``foo.bim``
+    and ``foo.fam``. The ``.bed`` payload is always written; ``write_bim``
+    and ``write_fam`` toggle the matching sidecars.
 
     If a variant filter is configured on the reader, it is resolved
     in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
@@ -157,15 +161,17 @@ def write_plink(reader, out):
     per-sample filtering doesn't translate.
     """
     reader.materialise_variant_filter()
-    out_prefix = pathlib.Path(out)
-    bed_path = out_prefix.with_suffix(".bed")
-    bim_path = out_prefix.with_suffix(".bim")
-    fam_path = out_prefix.with_suffix(".fam")
+    out_stem = str(output)
+    bed_path = pathlib.Path(out_stem + ".bed")
+    bim_path = pathlib.Path(out_stem + ".bim")
+    fam_path = pathlib.Path(out_stem + ".fam")
 
-    with open(fam_path, "w") as f:
-        f.write(generate_fam(reader))
-    with open(bim_path, "w") as f:
-        f.write(generate_bim(reader))
+    if write_fam:
+        with open(fam_path, "w") as f:
+            f.write(generate_fam(reader))
+    if write_bim:
+        with open(bim_path, "w") as f:
+            f.write(generate_bim(reader))
     _stream_bed_to_file(reader, bed_path)
 
 

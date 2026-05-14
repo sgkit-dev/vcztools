@@ -1,11 +1,15 @@
 """
-Convert VCZ to Oxford BGEN format (``.bgen`` + ``.sample`` + ``.bgen.bgi``).
+Convert VCZ to Oxford BGEN format.
 
-The CLI verb is ``view-bgen``. Output profile: layout 2, zlib-compressed,
-8 bits/probability, biallelic, embedded sample IDs. Haploid and mixed-
-ploidy stores are supported via per-sample ploidy bytes; this is the
-consumer lowest-common-denominator: REGENIE, SAIGE, BOLT-LMM, BGENIE,
-qctool, and PLINK 2 all accept it without further conversion.
+The CLI verb is ``view-bgen``. By default the ``.bgen`` payload is streamed
+to stdout; passing ``-o STEM`` switches to file output with the ``.bgen.bgi``
+(bgenix SQLite index) and ``.sample`` (Oxford text) sidecars also produced
+by default and individually suppressible. Output profile: layout 2,
+zlib-compressed, 8 bits/probability, biallelic, embedded sample IDs in the
+``.bgen`` header. Haploid and mixed-ploidy stores are supported via
+per-sample ploidy bytes; this is the consumer lowest-common-denominator:
+REGENIE, SAIGE, BOLT-LMM, BGENIE, qctool, and PLINK 2 all accept it
+without further conversion.
 
 Hard calls in ``call_genotype`` are encoded as 1.0/0.0 probabilities; at
 8-bit precision this round-trips exactly. Phase is propagated per-variant
@@ -88,8 +92,11 @@ def _normalize_genotype_ploidy(genotypes):
     return genotypes
 
 
-def _flags_word():
-    return COMPRESSION_ZLIB | (LAYOUT_2 << 2) | SAMPLE_IDS_PRESENT
+def _flags_word(embed_samples=True):
+    flags = COMPRESSION_ZLIB | (LAYOUT_2 << 2)
+    if embed_samples:
+        flags |= SAMPLE_IDS_PRESENT
+    return flags
 
 
 def _build_sample_id_block(sample_ids):
@@ -119,8 +126,13 @@ def _build_sample_id_block(sample_ids):
     return b"".join(parts)
 
 
-def _build_header(num_variants, num_samples, sample_id_block):
-    """Build the 4-byte offset prefix + 20-byte header + sample-id block."""
+def _build_header(num_variants, num_samples, sample_id_block, embed_samples=True):
+    """Build the 4-byte offset prefix + 20-byte header + sample-id block.
+
+    When ``embed_samples`` is False the ``SAMPLE_IDS_PRESENT`` flag bit is
+    cleared and the caller must pass ``sample_id_block=b""``; the resulting
+    BGEN has ``offset = HEADER_LENGTH`` (the sample-id block is absent).
+    """
     # offset is measured from the end of itself (i.e. from byte 4): it
     # equals the header length plus the sample-id block length.
     offset = HEADER_LENGTH + len(sample_id_block)
@@ -130,7 +142,7 @@ def _build_header(num_variants, num_samples, sample_id_block):
     out += struct.pack("<I", num_variants)
     out += struct.pack("<I", num_samples)
     out += BGEN_MAGIC
-    out += struct.pack("<I", _flags_word())
+    out += struct.pack("<I", _flags_word(embed_samples))
     out += sample_id_block
     return bytes(out)
 
@@ -371,7 +383,7 @@ def _encode_chunk_slice(chunk, contig_ids, start, end, *, compression_level):
     mixed_phase_count)``.
 
     Self-contained for worker-thread use by the parallel
-    :func:`_stream_bgen_to_file` path: holds no encoder/reader state,
+    :func:`_stream_bgen` path: holds no encoder/reader state,
     only reads from the chunk arrays. ``_prepare_chunk`` runs inside
     so each worker handles its slice's vectorised numpy prep too.
     """
@@ -477,6 +489,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
         varid_max: int | None = None,
         rsid_max: int | None = None,
         allele_max: int | None = None,
+        embed_header_samples: bool = True,
         encode_threads: int | None = None,
         encode_block_bytes: int | None = None,
     ):
@@ -562,9 +575,17 @@ class BgenEncoder(format_encoder.FormatEncoder):
             + compressed_geno_size
         )
 
-        sample_id_block = _build_sample_id_block(reader.sample_ids)
+        if embed_header_samples:
+            sample_id_block = _build_sample_id_block(reader.sample_ids)
+        else:
+            sample_id_block = b""
         num_variants = int(reader.variant_counts_per_chunk().sum())
-        prefix_bytes = _build_header(num_variants, num_samples, sample_id_block)
+        prefix_bytes = _build_header(
+            num_variants,
+            num_samples,
+            sample_id_block,
+            embed_samples=embed_header_samples,
+        )
 
         iterator_fields = [
             "call_genotype",
@@ -845,13 +866,22 @@ def write_bgen_index(reader, bgi_path, variant_offsets):
 
 def write_bgen(
     reader,
-    out,
+    output,
     *,
+    write_bgi: bool = True,
+    write_sample: bool = True,
+    embed_header_samples: bool = True,
     compression_level: int = -1,
     encode_threads: int | None = None,
 ):
-    """Write an Oxford BGEN fileset (``.bgen`` / ``.sample`` /
-    ``.bgen.bgi``) for ``reader`` under prefix ``out``.
+    """Write an Oxford BGEN payload for ``reader`` to ``output``.
+
+    ``output`` is either a filesystem stem (``str`` or ``pathlib.Path``,
+    treated verbatim — e.g. ``"foo"`` produces ``foo.bgen``, ``foo.bgen.bgi``,
+    ``foo.sample``) or a writable binary file-like object (anything with a
+    ``.write`` method, including ``sys.stdout.buffer``). Streams receive
+    only the ``.bgen`` payload; ``write_bgi`` / ``write_sample`` must be
+    ``False`` for stream outputs.
 
     If a variant filter is configured on the reader, it is resolved
     in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
@@ -864,6 +894,15 @@ def write_bgen(
     exactly). Phase: per-variant from ``call_genotype_phased`` if the
     field exists in the store; otherwise unphased.
 
+    ``write_bgi`` / ``write_sample`` control the bgenix SQLite index and
+    the Oxford ``.sample`` text sidecar; both default on for stem outputs.
+
+    ``embed_header_samples`` controls whether the BGEN header carries
+    sample IDs. When False, the ``SAMPLE_IDS_PRESENT`` flag is cleared
+    and the sample-id block is omitted. Most downstream tools require
+    sample IDs from either the BGEN header or a ``.sample`` sidecar; if
+    neither is produced the function logs a warning.
+
     ``compression_level`` is forwarded to :func:`zlib.compress` for each
     variant's genotype probability block; accepts ``-1..9`` (``-1`` =
     zlib default ≈ level 6; ``0`` = stored, still framed as zlib;
@@ -872,9 +911,9 @@ def write_bgen(
 
     ``encode_threads`` sizes the worker pool that runs per-slice
     :func:`_prepare_chunk` + per-variant ``_encode_variant_block`` for
-    each chunk. Slice bytes are written back to ``bgen_path`` in
-    variant order on the main thread so byte layout and ``.bgi``
-    offsets stay deterministic. ``None`` selects the default (4).
+    each chunk. Slice bytes are written back to the output in variant
+    order on the main thread so byte layout and ``.bgi`` offsets stay
+    deterministic. ``None`` selects the default (4).
     """
     if encode_threads is None:
         encode_threads = 4
@@ -882,26 +921,79 @@ def write_bgen(
         raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
 
     reader.materialise_variant_filter()
-    out_prefix = pathlib.Path(out)
-    bgen_path = out_prefix.with_suffix(".bgen")
-    sample_path = out_prefix.with_suffix(".sample")
+
+    output_is_stream = hasattr(output, "write")
+    if output_is_stream:
+        if write_bgi or write_sample:
+            raise ValueError(
+                "write_bgi / write_sample require a stem output; "
+                "stream outputs receive only the .bgen payload."
+            )
+        if not embed_header_samples:
+            logger.warning(
+                "write_bgen: embed_header_samples=False with a stream "
+                "output leaves sample IDs nowhere in the result."
+            )
+        _stream_bgen(
+            reader,
+            output,
+            embed_header_samples=embed_header_samples,
+            compression_level=compression_level,
+            encode_threads=encode_threads,
+            display_name="<stdout>",
+        )
+        return
+
+    # Stem is taken verbatim — no suffix stripping. "foo" -> foo.bgen /
+    # foo.sample / foo.bgen.bgi (the bgenix filename convention).
+    out_stem = str(output)
+    bgen_path = pathlib.Path(out_stem + ".bgen")
+    sample_path = pathlib.Path(out_stem + ".sample")
     bgi_path = pathlib.Path(str(bgen_path) + ".bgi")
 
-    with open(sample_path, "w") as f:
-        f.write(generate_sample(reader))
+    if not embed_header_samples and not write_sample:
+        logger.warning(
+            "write_bgen: embed_header_samples=False and write_sample=False "
+            "leave sample IDs nowhere in the output; downstream tools "
+            "(REGENIE, SAIGE, bgen-reader) will not be able to associate "
+            "genotypes with sample IDs."
+        )
 
-    variant_offsets = _stream_bgen_to_file(
-        reader,
-        bgen_path,
-        compression_level=compression_level,
-        encode_threads=encode_threads,
-    )
-    write_bgen_index(reader, bgi_path, variant_offsets)
+    if write_sample:
+        with open(sample_path, "w") as f:
+            f.write(generate_sample(reader))
+
+    with open(bgen_path, "wb") as bgen_file:
+        variant_offsets = _stream_bgen(
+            reader,
+            bgen_file,
+            embed_header_samples=embed_header_samples,
+            compression_level=compression_level,
+            encode_threads=encode_threads,
+            display_name=str(bgen_path),
+        )
+
+    if write_bgi:
+        write_bgen_index(reader, bgi_path, variant_offsets)
 
 
-def _stream_bgen_to_file(
-    reader, bgen_path, *, compression_level: int, encode_threads: int
+def _stream_bgen(
+    reader,
+    bgen_stream,
+    *,
+    embed_header_samples: bool,
+    compression_level: int,
+    encode_threads: int,
+    display_name: str,
 ):
+    """Stream BGEN bytes (header + variant blocks) to ``bgen_stream``.
+
+    ``bgen_stream`` is any binary file-like object; the function never seeks,
+    so streams that don't support seek (e.g. ``sys.stdout.buffer``) work.
+    ``display_name`` is the label used in log lines (a file path string for
+    file outputs, ``"<stdout>"`` for stdout). Returns ``variant_offsets``
+    suitable for :func:`write_bgen_index`.
+    """
     start = time.perf_counter()
     encode_seconds = 0.0
     write_seconds = 0.0
@@ -921,22 +1013,27 @@ def _stream_bgen_to_file(
     if has_phased:
         fields.append("call_genotype_phased")
 
-    sample_id_block = _build_sample_id_block(sample_ids)
-    header_bytes = _build_header(num_variants, num_samples, sample_id_block)
+    if embed_header_samples:
+        sample_id_block = _build_sample_id_block(sample_ids)
+    else:
+        sample_id_block = b""
+    header_bytes = _build_header(
+        num_variants,
+        num_samples,
+        sample_id_block,
+        embed_samples=embed_header_samples,
+    )
 
     variant_offsets = np.empty(num_variants + 1, dtype=np.int64)
     variant_offsets[0] = len(header_bytes)
     mixed_phase_count = 0
     idx = 0
 
-    with (
-        cf.ThreadPoolExecutor(
-            max_workers=encode_threads,
-            thread_name_prefix="write-bgen-encode",
-        ) as executor,
-        open(bgen_path, "wb") as bgen_file,
-    ):
-        bgen_file.write(header_bytes)
+    with cf.ThreadPoolExecutor(
+        max_workers=encode_threads,
+        thread_name_prefix="write-bgen-encode",
+    ) as executor:
+        bgen_stream.write(header_bytes)
         bytes_written += len(header_bytes)
 
         for chunk in reader.variant_chunks(fields=fields):
@@ -964,7 +1061,7 @@ def _stream_bgen_to_file(
                 slice_bytes, lens, slice_mpc = fut.result()
                 t_after_enc = time.perf_counter()
                 encode_seconds += t_after_enc - t_enc
-                bgen_file.write(slice_bytes)
+                bgen_stream.write(slice_bytes)
                 write_seconds += time.perf_counter() - t_after_enc
                 t_enc = time.perf_counter()
 
@@ -978,7 +1075,7 @@ def _stream_bgen_to_file(
     mib = bytes_written / (1024 * 1024)
     rate = mib / elapsed if elapsed > 0 else 0.0
     logger.info(
-        f"write_bgen: wrote {mib:.1f} MiB to {bgen_path} in "
+        f"write_bgen: wrote {mib:.1f} MiB to {display_name} in "
         f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
         f"compression_level={compression_level}, encode_threads={encode_threads}; "
         f"encode={encode_seconds:.2f}s, write={write_seconds:.2f}s"

@@ -1062,12 +1062,12 @@ LONG_OUTPUT_PLINK_CHUNKS = 1500
 LONG_OUTPUT_BED_STREAM_CHUNKS = 3500
 # The filter_m2 BED task pays a second full variant_allele scan
 # (materialise_variant_filter) on top of the encode, so it lands at
-# roughly half the chunk count for the same wall.
-LONG_OUTPUT_BED_STREAM_FILTER_M2_CHUNKS = 1750
+# ~85% of the unfiltered chunk count for the same wall.
+LONG_OUTPUT_BED_STREAM_FILTER_M2_CHUNKS = 3000
 # BgenEncoder direct (no .sample/.bgi I/O, always zlib stored): per-variant
 # header serialisation dominates on the 10-sample long shape, so far
 # fewer chunks than BED for the same wall time.
-LONG_OUTPUT_BGEN_STREAM_CHUNKS = 500
+LONG_OUTPUT_BGEN_STREAM_CHUNKS = 700
 
 
 class _CountingTextWriter:

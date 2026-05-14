@@ -1187,6 +1187,81 @@ class TestLogOptions:
         assert config == cli.LogOptions()
 
 
+class TestViewPlinkOptions:
+    """Unit tests for the ViewPlinkOptions command-level bundle."""
+
+    def test_pop_populates_every_section(self):
+        kwargs = {
+            "regions": "1:100-200",
+            "force_samples": True,
+            "backend_storage": "fsspec",
+            "storage_options": ("k=1",),
+            "readahead_workers": 4,
+            "readahead_bytes": 2048,
+            "log_level": "DEBUG",
+            "log_file": "/tmp/log",
+            "no_bim": True,
+            "no_fam": True,
+        }
+        opts = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+        assert opts.selection.regions == "1:100-200"
+        assert opts.selection.force_samples is True
+        assert opts.zarr_store.backend_storage == "fsspec"
+        assert opts.zarr_store.storage_options == {"k": 1}
+        assert opts.reader.readahead_workers == 4
+        assert opts.reader.readahead_bytes == 2048
+        assert opts.log.log_level == "DEBUG"
+        assert opts.log.log_file == "/tmp/log"
+        assert opts.no_bim is True
+        assert opts.no_fam is True
+        assert kwargs == {}
+
+    def test_pop_defaults_when_unset(self):
+        kwargs = {}
+        opts = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+        assert opts == cli.ViewPlinkOptions()
+
+
+class TestViewBgenOptions:
+    """Unit tests for the ViewBgenOptions command-level bundle."""
+
+    def test_pop_populates_every_section(self):
+        kwargs = {
+            "regions": "1:100-200",
+            "max_alleles": 2,
+            "backend_storage": "fsspec",
+            "storage_options": ("k=1",),
+            "readahead_workers": 4,
+            "readahead_bytes": 2048,
+            "log_level": "DEBUG",
+            "log_file": "/tmp/log",
+            "no_bgi": True,
+            "no_sample_file": True,
+            "no_header_samples": True,
+            "compression_level": 9,
+        }
+        opts = cli.ViewBgenOptions.pop_from_click_kwargs(kwargs)
+        assert opts.selection.regions == "1:100-200"
+        assert opts.selection.max_alleles == 2
+        assert opts.zarr_store.backend_storage == "fsspec"
+        assert opts.zarr_store.storage_options == {"k": 1}
+        assert opts.reader.readahead_workers == 4
+        assert opts.reader.readahead_bytes == 2048
+        assert opts.log.log_level == "DEBUG"
+        assert opts.log.log_file == "/tmp/log"
+        assert opts.no_bgi is True
+        assert opts.no_sample_file is True
+        assert opts.no_header_samples is True
+        assert opts.compression_level == 9
+        assert kwargs == {}
+
+    def test_pop_defaults_when_unset(self):
+        kwargs = {}
+        opts = cli.ViewBgenOptions.pop_from_click_kwargs(kwargs)
+        assert opts == cli.ViewBgenOptions()
+        assert opts.compression_level == 1
+
+
 class TestMakeReaderFromGroups:
     """``make_reader_from_groups`` is the seam between the option bundles and
     :func:`make_reader`. Verify every field flows through."""

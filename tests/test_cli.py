@@ -1367,41 +1367,41 @@ class TestHelpGroups:
     @pytest.mark.parametrize(
         ("subcommand", "expected_groups"),
         [
-            ("index", ["Zarr store options", "Logging options"]),
+            ("index", [cli.OptionGroup.ZARR_STORE, cli.OptionGroup.LOGGING]),
             (
                 "query",
                 [
-                    "Selection options",
-                    "Zarr store options",
-                    "Reader options",
-                    "Logging options",
+                    cli.OptionGroup.SELECTION,
+                    cli.OptionGroup.ZARR_STORE,
+                    cli.OptionGroup.READER,
+                    cli.OptionGroup.LOGGING,
                 ],
             ),
             (
                 "view",
                 [
-                    "Selection options",
-                    "Zarr store options",
-                    "Reader options",
-                    "Logging options",
+                    cli.OptionGroup.SELECTION,
+                    cli.OptionGroup.ZARR_STORE,
+                    cli.OptionGroup.READER,
+                    cli.OptionGroup.LOGGING,
                 ],
             ),
             (
                 "view-plink",
                 [
-                    "Selection options",
-                    "Zarr store options",
-                    "Reader options",
-                    "Logging options",
+                    cli.OptionGroup.SELECTION,
+                    cli.OptionGroup.ZARR_STORE,
+                    cli.OptionGroup.READER,
+                    cli.OptionGroup.LOGGING,
                 ],
             ),
             (
                 "view-bgen",
                 [
-                    "Selection options",
-                    "Zarr store options",
-                    "Reader options",
-                    "Logging options",
+                    cli.OptionGroup.SELECTION,
+                    cli.OptionGroup.ZARR_STORE,
+                    cli.OptionGroup.READER,
+                    cli.OptionGroup.LOGGING,
                 ],
             ),
         ],

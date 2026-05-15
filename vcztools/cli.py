@@ -870,6 +870,7 @@ class ViewBgenOptions:
     no_bgi: bool = False
     no_sample_file: bool = False
     no_header_samples: bool = False
+    unphased: bool = False
 
     @staticmethod
     def decorator(f):
@@ -879,6 +880,16 @@ class ViewBgenOptions:
         f = ReaderOptions.decorator(f)
         f = ZarrStoreOptions.decorator(f)
         f = SelectionOptions.decorator(f)
+        f = click.option(
+            "--unphased",
+            is_flag=True,
+            default=False,
+            help=(
+                "Force every variant's phased flag to 0, ignoring "
+                "call_genotype_phased. Required for qctool -snp-stats, "
+                "which rejects per-haplotype-per-allele probabilities."
+            ),
+        )(f)
         f = click.option(
             "--no-header-samples",
             is_flag=True,
@@ -917,6 +928,7 @@ class ViewBgenOptions:
             no_bgi=kwargs.get("no_bgi", False),
             no_sample_file=kwargs.get("no_sample_file", False),
             no_header_samples=kwargs.get("no_header_samples", False),
+            unphased=kwargs.get("unphased", False),
         )
 
     def make_reader(self, path: str) -> retrieval.VczReader:
@@ -1282,10 +1294,12 @@ def view_bgen(path, output, compression_level, **kwargs):
     biallelic, diploid, embedded sample IDs. Hard calls in
     ``call_genotype`` are encoded as 1.0 probabilities (round-trips
     exactly at 8-bit). Phase is propagated per-variant from
-    ``call_genotype_phased`` if present. Sample/region/filter selection
-    mirrors bcftools view (-s/-S/-r/-R/-t/-T/-i/-e/-v/-V/-m/-M).
-    Multi-allelic variants are rejected by default; pass ``-M 2`` (or
-    ``--max-alleles 2``) to skip them.
+    ``call_genotype_phased`` if present; pass ``--unphased`` to force
+    every variant unphased (required for qctool's ``-snp-stats``).
+    Sample/region/filter selection mirrors bcftools view
+    (-s/-S/-r/-R/-t/-T/-i/-e/-v/-V/-m/-M). Multi-allelic variants are
+    rejected by default; pass ``-M 2`` (or ``--max-alleles 2``) to skip
+    them.
 
     See the "BGEN output" documentation page for the full reference,
     including downstream-tool compatibility (REGENIE, SAIGE,
@@ -1320,6 +1334,7 @@ def view_bgen(path, output, compression_level, **kwargs):
             bgi_path=bgi_path,
             embed_header_samples=embed_header_samples,
             compression_level=compression_level,
+            unphased=opts.unphased,
         )
 
 

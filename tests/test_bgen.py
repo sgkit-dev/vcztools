@@ -1133,6 +1133,30 @@ class TestBgenRoundTripViaBgenReader:
         with br.open_bgen(path, verbose=False) as bg:
             assert not bool(bg.phased[0])
 
+    def test_unphased_flag_overrides_phased_field(self, request, tmp_path):
+        # Reader has call_genotype_phased=True for every sample/variant,
+        # but unphased=True must force the BGEN payload to phased=0.
+        G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
+        phased = np.ones((1, 2), dtype=bool)
+        reader = _build_reader(
+            num_variants=1,
+            num_samples=2,
+            call_genotype=G,
+            call_fields={"genotype_phased": phased},
+        )
+        bgen_path = tmp_path / "out.bgen"
+        bgen.write_bgen(reader, bgen_path, unphased=True)
+        with br.open_bgen(bgen_path, verbose=False) as bg:
+            assert not bool(bg.phased[0])
+
+        # BgenEncoder path: same input, unphased=True.
+        bgen_path2 = tmp_path / "out2.bgen"
+        with bgen.BgenEncoder(reader, unphased=True) as enc:
+            buf = _drain(enc)
+        bgen_path2.write_bytes(buf)
+        with br.open_bgen(bgen_path2, verbose=False) as bg:
+            assert not bool(bg.phased[0])
+
     def test_mixed_phase_degrades_to_unphased(self, write_to_bgen, caplog):
         G = np.array([[[0, 1], [1, 0]]], dtype=np.int8)
         phased = np.array([[True, False]], dtype=bool)

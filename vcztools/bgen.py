@@ -481,6 +481,10 @@ class BgenEncoder(format_encoder.FormatEncoder):
     supported and raises ``NotImplementedError`` at construction;
     materialise the filter or use ``set_variants`` first. Unlike
     :func:`write_bgen`, the encoder is I/O-free in ``__init__``.
+
+    ``unphased=True`` forces every variant's phased flag to ``0``,
+    ignoring ``call_genotype_phased`` if present — see
+    :func:`write_bgen` for the use case.
     """
 
     HEADER_FLAGS: ClassVar[int] = _flags_word()
@@ -495,6 +499,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
         embed_header_samples: bool = True,
         encode_threads: int | None = None,
         encode_block_bytes: int | None = None,
+        unphased: bool = False,
     ):
         has_variant_id = "variant_id" in reader.field_names
         if rsid_max is None:
@@ -541,7 +546,9 @@ class BgenEncoder(format_encoder.FormatEncoder):
         self._chrom_max = chrom_max
         self._allele_max = allele_max
         self._has_variant_id = has_variant_id
-        self._has_phased = "call_genotype_phased" in reader.field_names
+        self._has_phased = (
+            not unphased
+        ) and "call_genotype_phased" in reader.field_names
         self._contig_ids = contig_ids
         self._mixed_phase_count = 0
 
@@ -886,6 +893,7 @@ def write_bgen(
     embed_header_samples: bool | None = None,
     compression_level: int | None = None,
     encode_threads: int | None = None,
+    unphased: bool = False,
 ):
     """Write an Oxford BGEN payload for ``reader`` to ``output``.
 
@@ -937,6 +945,12 @@ def write_bgen(
     each chunk. Slice bytes are written back to the output in variant
     order on the main thread so byte layout and ``.bgi`` offsets stay
     deterministic. ``None`` selects the default (4).
+
+    ``unphased=True`` forces every variant's phased flag to ``0``,
+    ignoring ``call_genotype_phased`` if present. Use this when the
+    downstream tool only accepts unphased BGEN (e.g. qctool's
+    ``-snp-stats``, whose ``ToGP`` setter rejects per-haplotype-per-
+    allele probabilities).
     """
     if encode_threads is None:
         encode_threads = 4
@@ -976,7 +990,7 @@ def write_bgen(
 
     contig_id = reader.contig_ids
     has_variant_id = "variant_id" in reader.field_names
-    has_phased = "call_genotype_phased" in reader.field_names
+    has_phased = (not unphased) and "call_genotype_phased" in reader.field_names
 
     fields = ["call_genotype", "variant_allele", "variant_contig", "variant_position"]
     if has_variant_id:

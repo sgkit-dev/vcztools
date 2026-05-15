@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from unittest import mock
 
+import bgen_reader as br
 import click
 import click.testing as ct
 import numpy as np
@@ -869,6 +870,18 @@ class TestViewBgen:
         # Flag word: bytes [16:20] are BGEN_MAGIC, [20:24] is flags.
         flags = int.from_bytes(data[20:24], "little")
         assert (flags & (1 << 31)) == 0
+
+    def test_unphased_forces_unphased_output(self, tmp_path, fx_vcz_path):
+        # Wiring check: --unphased reaches write_bgen and clears every
+        # variant's phased flag in the output payload. Byte-level
+        # correctness lives in tests/test_bgen.py.
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --unphased"
+        )
+        with br.open_bgen(tmp_path / "b.bgen", verbose=False) as bg:
+            assert not bg.phased.any()
 
     def test_no_header_samples_no_sample_file_warns(self, tmp_path, fx_vcz_path):
         # Both off → sample IDs nowhere; expect a logger.warning.

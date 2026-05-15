@@ -714,14 +714,42 @@ class SelectionOptions:
 
 @dataclasses.dataclass(frozen=True)
 class ViewPlinkOptions:
-    """Bundled options for ``view-plink``-shaped commands — every option
-    except ``-o/--output``.
+    """Public API bundle of every ``view-plink`` option except
+    ``-o/--output``.
 
-    Composes the four category groups (Selection / Zarr store / Reader /
-    Log) plus the PLINK-specific sidecar flags ``--no-bim`` and
-    ``--no-fam``. The output target is intentionally excluded so consumers
-    can declare it themselves (e.g. biofuse ``mount-plink`` accepts a
-    mount point rather than a file stem).
+    Designed for downstream consumers (e.g. biofuse) that re-expose
+    ``vcztools view-plink`` under a different output model — a FUSE
+    mount, a generated stem, etc. — and therefore want every
+    selection / sidecar flag without inheriting the file-output
+    contract that ``-o`` implies.
+
+    Stable public surface:
+
+    * The dataclass fields: ``selection`` / ``zarr_store`` / ``reader``
+      / ``log`` sub-bundles plus the PLINK-specific sidecar flags
+      ``no_bim`` and ``no_fam``. Adding new fields is non-breaking
+      (they ship with defaults); renaming or removing existing fields
+      is breaking.
+    * :meth:`decorator` — Click decorator that attaches every bundled
+      option to a command function. Help-text order matches
+      ``vcztools view-plink --help``.
+    * :meth:`pop_from_click_kwargs` — constructs the bundle from a
+      Click handler's ``**kwargs`` dict, popping the matching keys.
+    * :meth:`make_reader` — opens ``path`` as a :class:`VczReader`
+      configured from the ``selection`` / ``zarr_store`` / ``reader``
+      fields.
+
+    Typical use::
+
+        @click.command()
+        @click.argument("path")
+        @click.option("--mount-point")
+        @ViewPlinkOptions.decorator
+        def mount_plink(path, mount_point, **kwargs):
+            opts = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+            opts.log.apply()
+            with opts.make_reader(path) as reader:
+                ...  # use mount_point + reader
     """
 
     selection: SelectionOptions = dataclasses.field(default_factory=SelectionOptions)
@@ -763,16 +791,55 @@ class ViewPlinkOptions:
             no_fam=kwargs.pop("no_fam", False),
         )
 
+    def make_reader(self, path: str) -> retrieval.VczReader:
+        """Open ``path`` as a :class:`VczReader` configured with this
+        bundle's Selection / Zarr store / Reader options."""
+        return make_reader_from_groups(
+            path,
+            selection=self.selection,
+            zarr_store=self.zarr_store,
+            reader=self.reader,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class ViewBgenOptions:
-    """Bundled options for ``view-bgen``-shaped commands — every option
-    except ``-o/--output``.
+    """Public API bundle of every ``view-bgen`` option except
+    ``-o/--output``.
 
-    Composes the four category groups (Selection / Zarr store / Reader /
-    Log) plus the BGEN-specific sidecar and encoding flags. The output
-    target is intentionally excluded so consumers can declare it
-    themselves.
+    Designed for downstream consumers (e.g. biofuse) that re-expose
+    ``vcztools view-bgen`` under a different output model — a FUSE
+    mount, a generated stem, etc. — and therefore want every
+    selection / encoding / sidecar flag without inheriting the
+    file-output contract that ``-o`` implies.
+
+    Stable public surface:
+
+    * The dataclass fields: ``selection`` / ``zarr_store`` / ``reader``
+      / ``log`` sub-bundles plus the BGEN-specific flags ``no_bgi``,
+      ``no_sample_file``, ``no_header_samples``, ``compression_level``.
+      Adding new fields is non-breaking (they ship with defaults);
+      renaming or removing existing fields is breaking.
+    * :meth:`decorator` — Click decorator that attaches every bundled
+      option to a command function. Help-text order matches
+      ``vcztools view-bgen --help``.
+    * :meth:`pop_from_click_kwargs` — constructs the bundle from a
+      Click handler's ``**kwargs`` dict, popping the matching keys.
+    * :meth:`make_reader` — opens ``path`` as a :class:`VczReader`
+      configured from the ``selection`` / ``zarr_store`` / ``reader``
+      fields.
+
+    Typical use::
+
+        @click.command()
+        @click.argument("path")
+        @click.option("--mount-point")
+        @ViewBgenOptions.decorator
+        def mount_bgen(path, mount_point, **kwargs):
+            opts = ViewBgenOptions.pop_from_click_kwargs(kwargs)
+            opts.log.apply()
+            with opts.make_reader(path) as reader:
+                ...  # use mount_point + reader
     """
 
     selection: SelectionOptions = dataclasses.field(default_factory=SelectionOptions)
@@ -819,19 +886,15 @@ class ViewBgenOptions:
             is_flag=True,
             default=False,
             help=(
-                "Skip the Oxford .sample sidecar. No effect when streaming "
-                "to stdout. Distinct from -S/--samples-file, which filters "
-                "input."
+                "Skip the Oxford .sample sidecar. Distinct from "
+                "-S/--samples-file, which filters input."
             ),
         )(f)
         f = click.option(
             "--no-bgi",
             is_flag=True,
             default=False,
-            help=(
-                "Skip the bgenix .bgen.bgi SQLite index sidecar. No effect "
-                "when streaming to stdout."
-            ),
+            help=("Skip the bgenix .bgen.bgi SQLite index sidecar."),
         )(f)
         return f
 
@@ -846,6 +909,16 @@ class ViewBgenOptions:
             no_sample_file=kwargs.pop("no_sample_file", False),
             no_header_samples=kwargs.pop("no_header_samples", False),
             compression_level=kwargs.pop("compression_level", 1),
+        )
+
+    def make_reader(self, path: str) -> retrieval.VczReader:
+        """Open ``path`` as a :class:`VczReader` configured with this
+        bundle's Selection / Zarr store / Reader options."""
+        return make_reader_from_groups(
+            path,
+            selection=self.selection,
+            zarr_store=self.zarr_store,
+            reader=self.reader,
         )
 
 
@@ -1155,12 +1228,7 @@ def view_plink(path, output, **kwargs):
     opts = ViewPlinkOptions.pop_from_click_kwargs(kwargs)
     assert kwargs == {}, kwargs
     opts.log.apply()
-    reader = make_reader_from_groups(
-        path,
-        selection=opts.selection,
-        zarr_store=opts.zarr_store,
-        reader=opts.reader,
-    )
+    reader = opts.make_reader(path)
     with reader:
         plink.write_plink(
             reader,
@@ -1228,12 +1296,7 @@ def view_bgen(path, output, **kwargs):
         )
         bgi_path = None if opts.no_bgi else pathlib.Path(str(bgen_dest) + ".bgi")
         pipe_context = contextlib.nullcontext()
-    reader = make_reader_from_groups(
-        path,
-        selection=opts.selection,
-        zarr_store=opts.zarr_store,
-        reader=opts.reader,
-    )
+    reader = opts.make_reader(path)
     with reader, pipe_context:
         bgen.write_bgen(
             reader,

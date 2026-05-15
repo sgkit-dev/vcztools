@@ -1,3 +1,4 @@
+import copy
 import pathlib
 import sqlite3
 import sys
@@ -1081,33 +1082,31 @@ class TestSelectionOptions:
     """Unit tests for the bcftools-shaped SelectionOptions bundle (category 4
     reusable surface; consumed by view / view-plink / view-bgen / biofuse)."""
 
-    def test_pop_populates_fields(self):
+    def test_from_click_kwargs_populates_fields(self):
         kwargs = {
             "regions": "1:100-200",
             "samples": "s1,s2",
             "force_samples": True,
             "min_alleles": 2,
             "max_alleles": 4,
-            # Unrelated keys must be left in the dict for the caller.
             "out": "plink",
             "log_level": "INFO",
         }
-        selection = cli.SelectionOptions.pop_from_click_kwargs(kwargs)
+        snapshot = copy.deepcopy(kwargs)
+        selection = cli.SelectionOptions.from_click_kwargs(kwargs)
         assert selection.regions == "1:100-200"
         assert selection.samples == "s1,s2"
         assert selection.force_samples is True
         assert selection.min_alleles == 2
         assert selection.max_alleles == 4
-        assert kwargs == {"out": "plink", "log_level": "INFO"}
+        assert kwargs == snapshot
 
-    def test_pop_defaults_when_unset(self):
+    def test_from_click_kwargs_defaults_when_unset(self):
         kwargs = {}
-        selection = cli.SelectionOptions.pop_from_click_kwargs(kwargs)
+        selection = cli.SelectionOptions.from_click_kwargs(kwargs)
         assert selection == cli.SelectionOptions()
 
-    def test_pop_ignores_unrelated_fields(self):
-        # SelectionOptions only pops its own fields. Reader / zarr-store /
-        # log fields are left for their respective dataclasses to claim.
+    def test_from_click_kwargs_ignores_unrelated_fields(self):
         kwargs = {
             "regions": "1:100-200",
             "backend_storage": "fsspec",
@@ -1115,82 +1114,81 @@ class TestSelectionOptions:
             "readahead_workers": 4,
             "log_level": "INFO",
         }
-        selection = cli.SelectionOptions.pop_from_click_kwargs(kwargs)
+        snapshot = copy.deepcopy(kwargs)
+        selection = cli.SelectionOptions.from_click_kwargs(kwargs)
         assert selection.regions == "1:100-200"
-        assert kwargs == {
-            "backend_storage": "fsspec",
-            "storage_options": (),
-            "readahead_workers": 4,
-            "log_level": "INFO",
-        }
+        assert kwargs == snapshot
 
 
 class TestZarrStoreOptions:
     """Unit tests for the ZarrStoreOptions bundle (category 1)."""
 
-    def test_pop_populates_fields(self):
+    def test_from_click_kwargs_populates_fields(self):
         kwargs = {
             "backend_storage": "fsspec",
             "storage_options": ("k1=42", "k2=foo"),
             "regions": "1:100-200",
         }
-        zarr_store = cli.ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+        snapshot = copy.deepcopy(kwargs)
+        zarr_store = cli.ZarrStoreOptions.from_click_kwargs(kwargs)
         assert zarr_store.backend_storage == "fsspec"
         assert zarr_store.storage_options == {"k1": 42, "k2": "foo"}
-        assert kwargs == {"regions": "1:100-200"}
+        assert kwargs == snapshot
 
-    def test_pop_defaults_when_unset(self):
+    def test_from_click_kwargs_defaults_when_unset(self):
         kwargs = {}
-        zarr_store = cli.ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+        zarr_store = cli.ZarrStoreOptions.from_click_kwargs(kwargs)
         assert zarr_store == cli.ZarrStoreOptions()
         assert zarr_store.storage_options is None
 
-    def test_pop_empty_storage_options_tuple_parses_to_none(self):
+    def test_from_click_kwargs_empty_storage_options_tuple_parses_to_none(self):
         kwargs = {"storage_options": ()}
-        zarr_store = cli.ZarrStoreOptions.pop_from_click_kwargs(kwargs)
+        zarr_store = cli.ZarrStoreOptions.from_click_kwargs(kwargs)
         assert zarr_store.storage_options is None
 
 
 class TestReaderOptions:
     """Unit tests for the ReaderOptions bundle (category 2)."""
 
-    def test_pop_populates_fields(self):
+    def test_from_click_kwargs_populates_fields(self):
         kwargs = {
             "readahead_workers": 8,
             "readahead_bytes": 1024 * 1024,
             "regions": "1:100-200",
         }
-        reader_opts = cli.ReaderOptions.pop_from_click_kwargs(kwargs)
+        snapshot = copy.deepcopy(kwargs)
+        reader_opts = cli.ReaderOptions.from_click_kwargs(kwargs)
         assert reader_opts.readahead_workers == 8
         assert reader_opts.readahead_bytes == 1024 * 1024
-        assert kwargs == {"regions": "1:100-200"}
+        assert kwargs == snapshot
 
-    def test_pop_defaults_when_unset(self):
+    def test_from_click_kwargs_defaults_when_unset(self):
         kwargs = {}
-        reader_opts = cli.ReaderOptions.pop_from_click_kwargs(kwargs)
+        reader_opts = cli.ReaderOptions.from_click_kwargs(kwargs)
         assert reader_opts == cli.ReaderOptions()
 
 
 class TestLogOptions:
     """Unit tests for the LogOptions bundle (category 3)."""
 
-    def test_pop_populates_fields(self):
+    def test_from_click_kwargs_populates_fields(self):
         kwargs = {"log_level": "DEBUG", "log_file": "/tmp/log", "out": "plink"}
-        config = cli.LogOptions.pop_from_click_kwargs(kwargs)
+        snapshot = copy.deepcopy(kwargs)
+        config = cli.LogOptions.from_click_kwargs(kwargs)
         assert config.log_level == "DEBUG"
         assert config.log_file == "/tmp/log"
-        assert kwargs == {"out": "plink"}
+        assert kwargs == snapshot
 
-    def test_pop_defaults(self):
+    def test_from_click_kwargs_defaults(self):
         kwargs = {}
-        config = cli.LogOptions.pop_from_click_kwargs(kwargs)
+        config = cli.LogOptions.from_click_kwargs(kwargs)
         assert config == cli.LogOptions()
 
 
 class TestViewPlinkOptions:
     """Unit tests for the ViewPlinkOptions command-level bundle."""
 
-    def test_pop_populates_every_section(self):
+    def test_from_click_kwargs_populates_every_section(self):
         kwargs = {
             "regions": "1:100-200",
             "force_samples": True,
@@ -1203,7 +1201,7 @@ class TestViewPlinkOptions:
             "no_bim": True,
             "no_fam": True,
         }
-        opts = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+        opts = cli.ViewPlinkOptions.from_click_kwargs(kwargs)
         assert opts.selection.regions == "1:100-200"
         assert opts.selection.force_samples is True
         assert opts.zarr_store.backend_storage == "fsspec"
@@ -1214,18 +1212,34 @@ class TestViewPlinkOptions:
         assert opts.log.log_file == "/tmp/log"
         assert opts.no_bim is True
         assert opts.no_fam is True
-        assert kwargs == {}
 
-    def test_pop_defaults_when_unset(self):
+    def test_from_click_kwargs_defaults_when_unset(self):
         kwargs = {}
-        opts = cli.ViewPlinkOptions.pop_from_click_kwargs(kwargs)
+        opts = cli.ViewPlinkOptions.from_click_kwargs(kwargs)
         assert opts == cli.ViewPlinkOptions()
+
+    def test_from_click_kwargs_does_not_mutate_input(self):
+        kwargs = {
+            "regions": "1:100-200",
+            "force_samples": True,
+            "backend_storage": "fsspec",
+            "storage_options": ("k=1",),
+            "readahead_workers": 4,
+            "readahead_bytes": 2048,
+            "log_level": "DEBUG",
+            "log_file": "/tmp/log",
+            "no_bim": True,
+            "no_fam": True,
+        }
+        snapshot = copy.deepcopy(kwargs)
+        cli.ViewPlinkOptions.from_click_kwargs(kwargs)
+        assert kwargs == snapshot
 
 
 class TestViewBgenOptions:
     """Unit tests for the ViewBgenOptions command-level bundle."""
 
-    def test_pop_populates_every_section(self):
+    def test_from_click_kwargs_populates_every_section(self):
         kwargs = {
             "regions": "1:100-200",
             "max_alleles": 2,
@@ -1240,7 +1254,7 @@ class TestViewBgenOptions:
             "no_header_samples": True,
             "compression_level": 9,
         }
-        opts = cli.ViewBgenOptions.pop_from_click_kwargs(kwargs)
+        opts = cli.ViewBgenOptions.from_click_kwargs(kwargs)
         assert opts.selection.regions == "1:100-200"
         assert opts.selection.max_alleles == 2
         assert opts.zarr_store.backend_storage == "fsspec"
@@ -1253,13 +1267,31 @@ class TestViewBgenOptions:
         assert opts.no_sample_file is True
         assert opts.no_header_samples is True
         assert opts.compression_level == 9
-        assert kwargs == {}
 
-    def test_pop_defaults_when_unset(self):
+    def test_from_click_kwargs_defaults_when_unset(self):
         kwargs = {}
-        opts = cli.ViewBgenOptions.pop_from_click_kwargs(kwargs)
+        opts = cli.ViewBgenOptions.from_click_kwargs(kwargs)
         assert opts == cli.ViewBgenOptions()
         assert opts.compression_level == 1
+
+    def test_from_click_kwargs_does_not_mutate_input(self):
+        kwargs = {
+            "regions": "1:100-200",
+            "max_alleles": 2,
+            "backend_storage": "fsspec",
+            "storage_options": ("k=1",),
+            "readahead_workers": 4,
+            "readahead_bytes": 2048,
+            "log_level": "DEBUG",
+            "log_file": "/tmp/log",
+            "no_bgi": True,
+            "no_sample_file": True,
+            "no_header_samples": True,
+            "compression_level": 9,
+        }
+        snapshot = copy.deepcopy(kwargs)
+        cli.ViewBgenOptions.from_click_kwargs(kwargs)
+        assert kwargs == snapshot
 
 
 class TestMakeReaderFromGroups:

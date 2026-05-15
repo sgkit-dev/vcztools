@@ -11,6 +11,7 @@ class TestPublicAPI:
     EXPECTED = [
         "BedEncoder",
         "BgenEncoder",
+        "GroupedCommand",
         "ViewBgenOptions",
         "ViewPlinkOptions",
         "__version__",

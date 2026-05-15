@@ -56,6 +56,16 @@ Breaking changes:
   produces `sample.bgen.bgen` etc.; pass an unsuffixed stem.
   `view-bgen` no longer requires `-o` (default = stream to stdout);
   `view-plink` still requires it.
+- The six exported option bundles (`ViewBgenOptions`,
+  `ViewPlinkOptions`, `SelectionOptions`, `ZarrStoreOptions`,
+  `ReaderOptions`, `LogOptions`) replace `pop_from_click_kwargs`
+  with non-destructive `from_click_kwargs`. Construction no longer
+  mutates the Click `**kwargs` dict, so downstream consumers (e.g.
+  biofuse) can read the dict multiple times.
+- Export `GroupedCommand` on the public `vcztools` API. Downstream
+  apps mounting `ViewBgenOptions.decorator` / `ViewPlinkOptions.decorator`
+  can pass `cls=GroupedCommand` to `@click.command(...)` and get the
+  same grouped `--help` sections as `vcztools view-bgen` / `view-plink`.
 
 Bug fixes:
 

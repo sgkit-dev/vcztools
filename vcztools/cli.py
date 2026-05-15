@@ -1,5 +1,6 @@
 import contextlib
 import dataclasses
+import enum
 import json
 import logging
 import os
@@ -56,23 +57,31 @@ def handle_exception(func):
     return wrapper
 
 
-# Help-text section ordering for ``GroupedCommand.format_options``. Options
-# without an explicit ``help_group`` render under ``"Options"`` (category 4 —
-# command-specific). The other three categories form the long-term stable
-# CLI groupings exposed to biofuse and other downstream consumers.
-GROUP_ORDER = (
-    "Options",
-    "Selection options",
-    "Zarr store options",
-    "Reader options",
-    "Logging options",
-)
+class OptionGroup(enum.StrEnum):
+    """Help-text section labels for grouped ``--help`` rendering.
+
+    ``DEFAULT`` is the bucket for options without an explicit ``help_group``
+    (category 4 — command-specific). The other four members form the long-term
+    stable CLI groupings exposed to biofuse and other downstream consumers.
+    Declaration order is the rendering order used by
+    :meth:`GroupedCommand.format_options`.
+
+    The members compare equal to their display strings and ``str(member)``
+    returns the display string, so they can be passed straight to
+    ``click.formatter.section(...)``.
+    """
+
+    DEFAULT = "Options"
+    SELECTION = "Selection options"
+    ZARR_STORE = "Zarr store options"
+    READER = "Reader options"
+    LOGGING = "Logging options"
 
 
 class GroupedOption(click.Option):
     """A click Option tagged with the help-text section it belongs to."""
 
-    def __init__(self, *args, help_group="Options", **kwargs):
+    def __init__(self, *args, help_group=OptionGroup.DEFAULT, **kwargs):
         super().__init__(*args, **kwargs)
         self.help_group = help_group
 
@@ -89,14 +98,14 @@ class GroupedCommand(click.Command):
     """
 
     def format_options(self, ctx, formatter):
-        buckets: dict[str, list] = {g: [] for g in GROUP_ORDER}
+        buckets: dict[str, list] = {g: [] for g in OptionGroup}
         for param in self.get_params(ctx):
             record = param.get_help_record(ctx)
             if record is None:
                 continue
-            group = getattr(param, "help_group", "Options")
+            group = getattr(param, "help_group", OptionGroup.DEFAULT)
             buckets.setdefault(group, []).append(record)
-        for group in GROUP_ORDER:
+        for group in OptionGroup:
             rows = buckets[group]
             if len(rows) > 0:
                 with formatter.section(group):
@@ -109,7 +118,7 @@ include = click.option(
     type=str,
     help="Filter expression to include variant sites.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 exclude = click.option(
     "-e",
@@ -117,14 +126,14 @@ exclude = click.option(
     type=str,
     help="Filter expression to exclude variant sites.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 force_samples = click.option(
     "--force-samples",
     is_flag=True,
     help="Only warn about unknown sample subsets.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 output = click.option(
     "-o",
@@ -140,7 +149,7 @@ regions = click.option(
     default=None,
     help="Regions to include.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 regions_file = click.option(
     "-R",
@@ -149,7 +158,7 @@ regions_file = click.option(
     default=None,
     help="File of regions to include.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 samples = click.option(
     "-s",
@@ -158,7 +167,7 @@ samples = click.option(
     default=None,
     help="Samples to include.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 samples_file = click.option(
     "-S",
@@ -167,7 +176,7 @@ samples_file = click.option(
     default=None,
     help="File of sample names to include.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 targets = click.option(
     "-t",
@@ -176,7 +185,7 @@ targets = click.option(
     default=None,
     help="Target regions to include.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 targets_file = click.option(
     "-T",
@@ -185,7 +194,7 @@ targets_file = click.option(
     default=None,
     help="File of target regions to include.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 types_opt = click.option(
     "-v",
@@ -198,7 +207,7 @@ types_opt = click.option(
         "alleles matches one of the listed types."
     ),
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 exclude_types_opt = click.option(
     "-V",
@@ -207,7 +216,7 @@ exclude_types_opt = click.option(
     default=None,
     help="Comma-separated list of variant types to exclude.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 min_alleles_opt = click.option(
     "-m",
@@ -216,7 +225,7 @@ min_alleles_opt = click.option(
     default=None,
     help="Print sites with at least INT alleles listed in REF and ALT.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 max_alleles_opt = click.option(
     "-M",
@@ -225,7 +234,7 @@ max_alleles_opt = click.option(
     default=None,
     help="Print sites with at most INT alleles listed in REF and ALT.",
     cls=GroupedOption,
-    help_group="Selection options",
+    help_group=OptionGroup.SELECTION,
 )
 version = click.version_option(version=f"{provenance.__version__}")
 
@@ -236,7 +245,7 @@ log_level = click.option(
     show_default=True,
     help="Logging verbosity.",
     cls=GroupedOption,
-    help_group="Logging options",
+    help_group=OptionGroup.LOGGING,
 )
 log_file = click.option(
     "--log-file",
@@ -244,7 +253,7 @@ log_file = click.option(
     default=None,
     help="Write log output to FILE instead of stderr.",
     cls=GroupedOption,
-    help_group="Logging options",
+    help_group=OptionGroup.LOGGING,
 )
 
 
@@ -272,7 +281,7 @@ readahead_workers = click.option(
     default=None,
     help=("Worker threads servicing the cross-chunk readahead pool. Default: 32."),
     cls=GroupedOption,
-    help_group="Reader options",
+    help_group=OptionGroup.READER,
 )
 readahead_buffer_size = click.option(
     "--readahead-buffer-size",
@@ -285,7 +294,7 @@ readahead_buffer_size = click.option(
         "Default: 256MiB."
     ),
     cls=GroupedOption,
-    help_group="Reader options",
+    help_group=OptionGroup.READER,
 )
 encode_threads = click.option(
     "--encode-threads",
@@ -339,7 +348,7 @@ _backend_storage_option = click.option(
         "backend."
     ),
     cls=GroupedOption,
-    help_group="Zarr store options",
+    help_group=OptionGroup.ZARR_STORE,
 )
 _zarr_backend_storage_alias_option = click.option(
     "--zarr-backend-storage",
@@ -360,7 +369,7 @@ _storage_option = click.option(
         "as JSON if possible, falling back to a string."
     ),
     cls=GroupedOption,
-    help_group="Zarr store options",
+    help_group=OptionGroup.ZARR_STORE,
 )
 
 

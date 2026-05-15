@@ -68,14 +68,14 @@ def run_tool_capture_binary(cmd: list[str], stdout_path: pathlib.Path) -> ToolRe
 
 def run_view_plink(
     vcz_path: pathlib.Path,
-    out_prefix: pathlib.Path,
+    out_stem: pathlib.Path,
     *,
     extra_args: str = "",
 ) -> pathlib.Path:
-    """Invoke ``vcztools view-plink``; return the output prefix."""
+    """Invoke ``vcztools view-plink``; return the output stem."""
     cmd = (
         f"view-plink {pathlib.Path(vcz_path).as_posix()} "
-        f"--out {out_prefix.as_posix()} {extra_args}"
+        f"--output {out_stem.as_posix()} {extra_args}"
     )
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
@@ -84,20 +84,20 @@ def run_view_plink(
             f"view-plink exited {result.exit_code}\n"
             f"command: vcztools {cmd}\nstderr: {result.stderr}"
         )
-    return out_prefix
+    return out_stem
 
 
 def run_view_bgen(
     vcz_path: pathlib.Path,
-    out_prefix: pathlib.Path,
+    out_stem: pathlib.Path,
     *,
     compression_level: int = -1,
     extra_args: str = "",
 ) -> pathlib.Path:
-    """Invoke ``vcztools view-bgen``; return the output prefix."""
+    """Invoke ``vcztools view-bgen``; return the output stem."""
     cmd = (
         f"view-bgen {pathlib.Path(vcz_path).as_posix()} "
-        f"--out {out_prefix.as_posix()} "
+        f"--output {out_stem.as_posix()} "
         f"--compression-level {compression_level} {extra_args}"
     )
     runner = ct.CliRunner()
@@ -107,7 +107,7 @@ def run_view_bgen(
             f"view-bgen exited {result.exit_code}\n"
             f"command: vcztools {cmd}\nstderr: {result.stderr}"
         )
-    return out_prefix
+    return out_stem
 
 
 def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathlib.Path:

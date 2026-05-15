@@ -449,23 +449,27 @@ class StreamReader:
         self._derived[sc_idx] = records
         return records
 
-    def _submit_more(self) -> None:
+    def _submit_more(self, must_advance_through: int) -> None:
         """Submit unique blocks for upcoming stream chunks under the
-        byte budget. Always submits at least one stream chunk's blocks
-        when nothing is in flight (otherwise we'd never progress)."""
+        byte budget. Always submits at least through
+        ``must_advance_through`` (the next stream-chunk index the
+        consumer will demand), even if that overshoots the budget — the
+        consumer has no later opportunity to receive those blocks, and
+        refusing here would leave the iterator looking up an
+        unsubmitted block_key. The budget is therefore a soft cap: a
+        large variant-only block that stays live across stream chunks
+        can force a single-chunk overshoot when its bytes plus the next
+        chunk's new-block bytes exceed ``readahead_bytes``."""
         while self._submit_cursor < len(self._stream_plan):
             sc_idx = self._submit_cursor
             records = self._get_derived(sc_idx)
             new_records = [r for r in records if r.block_key not in self._live]
             new_bytes = sum(r.size_estimate for r in new_records)
-            # Hold to the budget once at least one block is in flight;
-            # the first submit always goes through so we make progress
-            # even when one block already exceeds the budget.
-            if (
-                len(self._live) > 0
-                and new_bytes > 0
+            over_budget = (
+                new_bytes > 0
                 and self._in_flight_bytes + new_bytes > self._readahead_bytes
-            ):
+            )
+            if sc_idx > must_advance_through and over_budget:
                 return
             for rec in new_records:
                 fut = self._executor.submit(_read_block, rec.arr, rec.block_index)
@@ -483,7 +487,7 @@ class StreamReader:
 
     def __iter__(self):
         try:
-            self._submit_more()
+            self._submit_more(must_advance_through=0)
             for sc_idx in range(len(self._stream_plan)):
                 records = self._get_derived(sc_idx)
                 read_start = time.perf_counter()
@@ -523,7 +527,7 @@ class StreamReader:
                     _, size = self._live.pop(key)
                     self._in_flight_bytes -= size
                     self._billed.discard(key)
-                self._submit_more()
+                self._submit_more(must_advance_through=sc_idx + 1)
         finally:
             cancelled = 0
             for fut, _ in self._live.values():

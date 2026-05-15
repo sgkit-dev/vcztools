@@ -752,8 +752,8 @@ class _DepthTrackingStreamReader(retrieval_mod.StreamReader):
         super().__init__(*args, **kwargs)
         self.depths: list[int] = []
 
-    def _submit_more(self):
-        super()._submit_more()
+    def _submit_more(self, must_advance_through):
+        super()._submit_more(must_advance_through)
         self.depths.append(len(self._live))
 
 
@@ -1214,6 +1214,47 @@ class TestStreamReader:
         list(reader)
         assert reader._live == {}
         assert reader._in_flight_bytes == 0
+
+    def test_shared_block_advances_when_budget_blocks_next_chunk(self):
+        # Mixed-chunk-shape regression: a variant-only field with a
+        # multiplier > 1 keeps one big block live across stream chunks,
+        # while a call_* field fans out to many sample chunks per stream
+        # chunk. After yielding stream chunk 0, eviction removes only
+        # the call_* blocks; the shared variant-only block stays. If the
+        # readahead budget is below
+        # ``shared_block_bytes + next_chunk_call_bytes`` the budget gate
+        # would refuse to submit chunk 1 even though the consumer is
+        # about to demand it. The reader must override the budget in
+        # that case — otherwise the iterator looks up an unsubmitted
+        # block_key and raises KeyError.
+        num_variants = 4
+        num_samples = 8
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(1, num_variants + 1)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=num_samples,
+            sample_id=[f"s{i}" for i in range(num_samples)],
+            variants_chunk_size=2,
+            samples_chunk_size=1,
+            call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
+            field_chunk_overrides={"variant_allele": 4},
+            proportional_chunks=False,
+        )
+        reader = _make_stream_reader(
+            root,
+            read_fields=["variant_allele", "call_genotype"],
+            readahead_bytes=0,
+            stream_chunk_size=2,
+        )
+        chunks = list(reader)
+        assert len(chunks) == 2
+        # Every stream chunk got its call_genotype sample-chunk blocks
+        # plus the shared variant_allele block.
+        for chunk in chunks:
+            assert ("variant_allele",) in chunk._blocks
+            for sci in range(num_samples):
+                assert ("call_genotype", sci) in chunk._blocks
 
 
 class TestVczReaderBackendsEndToEnd:

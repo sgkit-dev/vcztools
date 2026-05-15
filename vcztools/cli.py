@@ -725,21 +725,8 @@ class SelectionOptions:
 
     @classmethod
     def from_click_kwargs(cls, kwargs: dict) -> "SelectionOptions":
-        return cls(
-            regions=kwargs.get("regions"),
-            regions_file=kwargs.get("regions_file"),
-            targets=kwargs.get("targets"),
-            targets_file=kwargs.get("targets_file"),
-            samples=kwargs.get("samples"),
-            samples_file=kwargs.get("samples_file"),
-            force_samples=kwargs.get("force_samples", False),
-            include=kwargs.get("include"),
-            exclude=kwargs.get("exclude"),
-            types=kwargs.get("types"),
-            exclude_types=kwargs.get("exclude_types"),
-            min_alleles=kwargs.get("min_alleles"),
-            max_alleles=kwargs.get("max_alleles"),
-        )
+        field_names = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: kwargs[k] for k in kwargs if k in field_names})
 
 
 @dataclasses.dataclass(frozen=True)

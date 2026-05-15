@@ -66,6 +66,11 @@ Breaking changes:
   apps mounting `ViewBgenOptions.decorator` / `ViewPlinkOptions.decorator`
   can pass `cls=GroupedCommand` to `@click.command(...)` and get the
   same grouped `--help` sections as `vcztools view-bgen` / `view-plink`.
+- `--compression-level` is no longer part of `ViewBgenOptions`. It is
+  now attached directly to the `view-bgen` command (alongside `-o`),
+  matching `-o`'s treatment as a vcztools-CLI-only flag. Downstream
+  consumers re-exposing `ViewBgenOptions.decorator` who want a
+  compression knob must add their own Click option.
 
 Bug fixes:
 

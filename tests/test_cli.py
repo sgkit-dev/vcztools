@@ -1252,7 +1252,6 @@ class TestViewBgenOptions:
             "no_bgi": True,
             "no_sample_file": True,
             "no_header_samples": True,
-            "compression_level": 9,
         }
         opts = cli.ViewBgenOptions.from_click_kwargs(kwargs)
         assert opts.selection.regions == "1:100-200"
@@ -1266,13 +1265,11 @@ class TestViewBgenOptions:
         assert opts.no_bgi is True
         assert opts.no_sample_file is True
         assert opts.no_header_samples is True
-        assert opts.compression_level == 9
 
     def test_from_click_kwargs_defaults_when_unset(self):
         kwargs = {}
         opts = cli.ViewBgenOptions.from_click_kwargs(kwargs)
         assert opts == cli.ViewBgenOptions()
-        assert opts.compression_level == 1
 
     def test_from_click_kwargs_does_not_mutate_input(self):
         kwargs = {
@@ -1287,7 +1284,6 @@ class TestViewBgenOptions:
             "no_bgi": True,
             "no_sample_file": True,
             "no_header_samples": True,
-            "compression_level": 9,
         }
         snapshot = copy.deepcopy(kwargs)
         cli.ViewBgenOptions.from_click_kwargs(kwargs)

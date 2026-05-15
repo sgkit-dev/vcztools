@@ -848,10 +848,10 @@ class ViewBgenOptions:
     Stable public surface:
 
     * The dataclass fields: ``selection`` / ``zarr_store`` / ``reader``
-      / ``log`` sub-bundles plus the BGEN-specific flags ``no_bgi``,
-      ``no_sample_file``, ``no_header_samples``, ``compression_level``.
-      Adding new fields is non-breaking (they ship with defaults);
-      renaming or removing existing fields is breaking.
+      / ``log`` sub-bundles plus the BGEN-specific sidecar flags
+      ``no_bgi``, ``no_sample_file``, ``no_header_samples``. Adding new
+      fields is non-breaking (they ship with defaults); renaming or
+      removing existing fields is breaking.
     * :meth:`decorator` — Click decorator that attaches every bundled
       option to a command function. Help-text order matches
       ``vcztools view-bgen --help``.
@@ -883,27 +883,15 @@ class ViewBgenOptions:
     no_bgi: bool = False
     no_sample_file: bool = False
     no_header_samples: bool = False
-    compression_level: int = 1
 
     @staticmethod
     def decorator(f):
-        """Click decorator: add every view-bgen option except ``-o`` to f."""
+        """Click decorator: add every view-bgen option except ``-o`` and
+        ``--compression-level`` to f."""
         f = LogOptions.decorator(f)
         f = ReaderOptions.decorator(f)
         f = ZarrStoreOptions.decorator(f)
         f = SelectionOptions.decorator(f)
-        f = click.option(
-            "--compression-level",
-            type=click.IntRange(-1, 9),
-            default=1,
-            show_default=True,
-            help=(
-                "zlib compression level for the BGEN genotype probability "
-                "blocks. 1 (default) is fast and within ~10-30% of the size "
-                "of level 6 on hard-call BGEN; -1 = zlib default (~6); 0 = "
-                "stored (no compression); 9 = max."
-            ),
-        )(f)
         f = click.option(
             "--no-header-samples",
             is_flag=True,
@@ -942,7 +930,6 @@ class ViewBgenOptions:
             no_bgi=kwargs.get("no_bgi", False),
             no_sample_file=kwargs.get("no_sample_file", False),
             no_header_samples=kwargs.get("no_header_samples", False),
-            compression_level=kwargs.get("compression_level", 1),
         )
 
     def make_reader(self, path: str) -> retrieval.VczReader:
@@ -1282,9 +1269,21 @@ def view_plink(path, output, **kwargs):
         "foo.bgen.bgi and foo.sample."
     ),
 )
+@click.option(
+    "--compression-level",
+    type=click.IntRange(-1, 9),
+    default=1,
+    show_default=True,
+    help=(
+        "zlib compression level for the BGEN genotype probability "
+        "blocks. 1 (default) is fast and within ~10-30% of the size "
+        "of level 6 on hard-call BGEN; -1 = zlib default (~6); 0 = "
+        "stored (no compression); 9 = max."
+    ),
+)
 @ViewBgenOptions.decorator
 @handle_exception
-def view_bgen(path, output, **kwargs):
+def view_bgen(path, output, compression_level, **kwargs):
     """
     Generate Oxford BGEN output from a VCZ dataset.
 
@@ -1333,7 +1332,7 @@ def view_bgen(path, output, **kwargs):
             sample_path=sample_path,
             bgi_path=bgi_path,
             embed_header_samples=embed_header_samples,
-            compression_level=opts.compression_level,
+            compression_level=compression_level,
         )
 
 

@@ -21,7 +21,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 
-from vcztools import _vcztools, format_encoder, retrieval
+from vcztools import _vcztools, format_encoder, retrieval, utils
 from vcztools.utils import _as_fixed_length_unicode
 
 logger = logging.getLogger(__name__)
@@ -42,9 +42,19 @@ def _check_biallelic(alleles):
         )
 
 
-def generate_fam(reader):
+def write_fam(reader, output):
+    """Write the PLINK ``.fam`` sample sidecar for ``reader`` to ``output``.
+
+    ``output`` is a filesystem path (``str`` / ``pathlib.Path``) or a
+    writable text file-like object. The on-disk format is tab-separated,
+    one row per sample, with FamilyID = ``"0"`` to match the default of
+    ``plink2 --vcf X --make-bed``; IndividualID is the sample ID; the
+    remaining four columns (FatherID, MotherID, Sex, Phenotype) are
+    ``0/0/0/-9``. Whitespace in any sample ID is rejected — the FAM
+    format is whitespace-separated.
+    """
     # sample_ids excludes null samples and reflects any caller-applied
-    # subset, matching the column axis of the BED that _write_genotypes
+    # subset, matching the column axis of the BED that _stream_bed_to_file
     # emits. raw_sample_ids would include null entries and desync FAM
     # rows from BED columns.
     sample_id = _as_fixed_length_unicode(reader.sample_ids)
@@ -54,8 +64,6 @@ def generate_fam(reader):
                 f"Sample ID {s!r} contains whitespace; "
                 "PLINK FAM is whitespace-separated."
             )
-    # FamilyID = "0" matches the default of `plink2 --vcf X --make-bed`,
-    # which writes 0 unless the user passes --double-id or --id-delim.
     zeros = np.zeros(sample_id.shape, dtype=int)
     family_id = np.full(sample_id.shape, "0", dtype="U1")
     df = pd.DataFrame(
@@ -68,7 +76,8 @@ def generate_fam(reader):
             "Phenotype": np.full_like(zeros, -9),
         }
     )
-    return df.to_csv(sep="\t", header=False, index=False, lineterminator="\n")
+    with utils.open_file_like(output, mode="w") as f:
+        df.to_csv(f, sep="\t", header=False, index=False, lineterminator="\n")
 
 
 _CHR_PREFIX = "chr"
@@ -94,7 +103,18 @@ def _plink2_normalise_chrom(chrom):
     return chrom
 
 
-def generate_bim(reader):
+def write_bim(reader, output):
+    """Write the PLINK ``.bim`` variant sidecar for ``reader`` to ``output``.
+
+    ``output`` is a filesystem path (``str`` / ``pathlib.Path``) or a
+    writable text file-like object. Tab-separated, one row per variant:
+    chromosome, variant ID (``.`` when absent), genetic position
+    (always ``0``), base-pair position, A1 (= ALT), A2 (= REF).
+    Chromosome names are normalised to plink 2's ``--make-bed`` output
+    (``chr1`` → ``1``, ``chrM`` → ``MT``, non-standard contigs
+    unchanged); monomorphic rows emit ``.`` in the A1 slot.
+    Multi-allelic variants raise ``ValueError``.
+    """
     contig_id = _as_fixed_length_unicode(reader.contig_ids)
     contig_id = np.array(
         [_plink2_normalise_chrom(str(c)) for c in contig_id], dtype=contig_id.dtype
@@ -139,19 +159,20 @@ def generate_bim(reader):
             )
         )
 
-    if len(rows) == 0:
-        return ""
-    df = pd.concat(rows, ignore_index=True)
-    return df.to_csv(header=False, sep="\t", index=False, lineterminator="\n")
+    with utils.open_file_like(output, mode="w") as f:
+        if len(rows) == 0:
+            return
+        df = pd.concat(rows, ignore_index=True)
+        df.to_csv(f, header=False, sep="\t", index=False, lineterminator="\n")
 
 
-def write_plink(reader, output, *, write_bim: bool = True, write_fam: bool = True):
+def write_plink(reader, output, *, bim: bool = True, fam: bool = True):
     """Write PLINK 1 binary fileset for ``reader`` under stem ``output``.
 
     ``output`` is a filesystem stem (``str`` or ``pathlib.Path``) taken
     verbatim — ``"foo"`` produces ``foo.bed`` plus, by default, ``foo.bim``
-    and ``foo.fam``. The ``.bed`` payload is always written; ``write_bim``
-    and ``write_fam`` toggle the matching sidecars.
+    and ``foo.fam``. The ``.bed`` payload is always written; ``bim`` and
+    ``fam`` toggle the matching sidecars.
 
     If a variant filter is configured on the reader, it is resolved
     in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
@@ -166,12 +187,10 @@ def write_plink(reader, output, *, write_bim: bool = True, write_fam: bool = Tru
     bim_path = pathlib.Path(out_stem + ".bim")
     fam_path = pathlib.Path(out_stem + ".fam")
 
-    if write_fam:
-        with open(fam_path, "w") as f:
-            f.write(generate_fam(reader))
-    if write_bim:
-        with open(bim_path, "w") as f:
-            f.write(generate_bim(reader))
+    if fam:
+        write_fam(reader, fam_path)
+    if bim:
+        write_bim(reader, bim_path)
     _stream_bed_to_file(reader, bed_path)
 
 
@@ -214,7 +233,7 @@ class BedEncoder(format_encoder.FormatEncoder):
     variant chunk.
 
     Scope is the ``.bed`` stream only. For the companion ``.bim`` and
-    ``.fam`` files, use :func:`generate_bim` and :func:`generate_fam`
+    ``.fam`` files, use :func:`write_bim` and :func:`write_fam`
     directly.
 
     Honours :meth:`~vcztools.retrieval.VczReader.set_samples` and

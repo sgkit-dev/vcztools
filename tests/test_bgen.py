@@ -127,10 +127,16 @@ def _build_reader(*, num_variants=2, num_samples=3, **overrides):
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateSample:
+def _sample_string(reader):
+    buf = io.StringIO()
+    bgen.write_sample(reader, buf)
+    return buf.getvalue()
+
+
+class TestWriteSample:
     def test_minimal(self):
         reader = _build_reader(num_samples=3)
-        text = bgen.generate_sample(reader)
+        text = _sample_string(reader)
         lines = text.splitlines()
         assert lines[0] == "ID_1 ID_2 missing"
         assert lines[1] == "0 0 0"
@@ -141,8 +147,7 @@ class TestGenerateSample:
 
     def test_zero_samples(self):
         reader = _build_reader(num_samples=0)
-        text = bgen.generate_sample(reader)
-        assert text == "ID_1 ID_2 missing\n0 0 0\n"
+        assert _sample_string(reader) == "ID_1 ID_2 missing\n0 0 0\n"
 
     def test_whitespace_rejected(self):
         reader = _build_reader(
@@ -150,32 +155,22 @@ class TestGenerateSample:
             sample_id=np.array(["ok", "has space"], dtype="<U16"),
         )
         with pytest.raises(ValueError, match="whitespace"):
-            bgen.generate_sample(reader)
+            bgen.write_sample(reader, io.StringIO())
 
     def test_sample_subset_round_trips(self):
         reader = _build_reader(num_samples=4)
         reader.set_samples([0, 2])
-        text = bgen.generate_sample(reader)
+        text = _sample_string(reader)
         lines = text.splitlines()
         assert lines[2] == "sample_0 sample_0 0"
         assert lines[3] == "sample_2 sample_2 0"
         assert len(lines) == 4
 
-
-class TestWriteBgenSamples:
-    """The top-level on-disk companion of :func:`generate_sample`."""
-
-    def test_path_output_matches_generate_sample(self, tmp_path):
+    def test_path_output_matches_buffer(self, tmp_path):
         reader = _build_reader(num_samples=3)
         out = tmp_path / "x.sample"
-        bgen.write_bgen_samples(reader, out)
-        assert out.read_text() == bgen.generate_sample(reader)
-
-    def test_file_like_output_matches_generate_sample(self):
-        reader = _build_reader(num_samples=3)
-        buf = io.StringIO()
-        bgen.write_bgen_samples(reader, buf)
-        assert buf.getvalue() == bgen.generate_sample(reader)
+        bgen.write_sample(reader, out)
+        assert out.read_text() == _sample_string(reader)
 
 
 class TestBuildSampleIdBlock:
@@ -731,11 +726,11 @@ class TestPhaseDetection:
 # ---------------------------------------------------------------------------
 
 
-class TestWriteBgenIndex:
-    """``write_bgen_index(reader, bgi_path, variant_offsets)`` — the
-    single seam for ``.bgen.bgi`` generation, used by both
-    :func:`write_bgen` (variable-size, cumulative-block offsets) and
-    :class:`BgenEncoder` (fixed-size, formula-derived offsets via
+class TestWriteBgi:
+    """``write_bgi(reader, output, variant_offsets)`` — the single seam
+    for ``.bgen.bgi`` generation, used by both :func:`write_bgen`
+    (variable-size, cumulative-block offsets) and :class:`BgenEncoder`
+    (fixed-size, formula-derived offsets via
     :attr:`BgenEncoder.variant_offsets`)."""
 
     def test_basic_variant_table(self, tmp_path):
@@ -745,7 +740,7 @@ class TestWriteBgenIndex:
         reader = _build_reader(num_variants=2, num_samples=2)
         variant_offsets = np.array([24, 24 + 128, 24 + 128 + 140], dtype=np.int64)
         bgi_path = tmp_path / "out.bgen.bgi"
-        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+        bgen.write_bgi(reader, bgi_path, variant_offsets)
         conn = sqlite3.connect(str(bgi_path))
         try:
             rows = conn.execute(
@@ -772,27 +767,27 @@ class TestWriteBgenIndex:
         reader = _build_reader(num_variants=2, num_samples=2)
         variant_offsets = np.array([0, 100, 200], dtype=np.int64)
         bgi_path = tmp_path / "out.bgen.bgi"
-        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+        bgen.write_bgi(reader, bgi_path, variant_offsets)
         # Second write must not raise (PK conflict would if not unlinked).
-        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+        bgen.write_bgi(reader, bgi_path, variant_offsets)
 
     def test_offsets_wrong_length_raises(self, tmp_path):
         reader = _build_reader(num_variants=2, num_samples=2)
         bad = np.array([0, 100, 200, 300], dtype=np.int64)
         with pytest.raises(ValueError, match="must have shape"):
-            bgen.write_bgen_index(reader, tmp_path / "x.bgi", bad)
+            bgen.write_bgi(reader, tmp_path / "x.bgi", bad)
 
     def test_offsets_non_integer_raises(self, tmp_path):
         reader = _build_reader(num_variants=2, num_samples=2)
         bad = np.array([0.0, 100.0, 200.0])
         with pytest.raises(ValueError, match="integer-typed"):
-            bgen.write_bgen_index(reader, tmp_path / "x.bgi", bad)
+            bgen.write_bgi(reader, tmp_path / "x.bgi", bad)
 
     def test_variant_id_propagates_to_rsid(self, tmp_path):
         reader = _build_reader(num_variants=2, num_samples=2, variant_id=["rsA", "rsB"])
         variant_offsets = np.array([0, 100, 200], dtype=np.int64)
         bgi_path = tmp_path / "out.bgen.bgi"
-        bgen.write_bgen_index(reader, bgi_path, variant_offsets)
+        bgen.write_bgi(reader, bgi_path, variant_offsets)
         conn = sqlite3.connect(str(bgi_path))
         try:
             rsids = [
@@ -809,7 +804,7 @@ class TestWriteBgenIndex:
         reader = _build_reader(num_variants=1, num_samples=1, alleles=[("A", "T", "G")])
         variant_offsets = np.array([0, 100], dtype=np.int64)
         with pytest.raises(ValueError, match="Multi-allelic"):
-            bgen.write_bgen_index(reader, tmp_path / "out.bgi", variant_offsets)
+            bgen.write_bgi(reader, tmp_path / "out.bgi", variant_offsets)
 
     def test_encoder_offsets_round_trip(self, tmp_path):
         # Encoder formula offsets carve up the encoder's byte stream
@@ -817,7 +812,7 @@ class TestWriteBgenIndex:
         with _build_encoder(num_variants=5, num_samples=4) as enc:
             reader = enc._reader
             bgi_path = tmp_path / "x.bgen.bgi"
-            bgen.write_bgen_index(reader, bgi_path, enc.variant_offsets)
+            bgen.write_bgi(reader, bgi_path, enc.variant_offsets)
             conn = sqlite3.connect(str(bgi_path))
             try:
                 rows = conn.execute(
@@ -853,7 +848,7 @@ class TestWriteBgenIndex:
 
         with _build_encoder(**kwargs) as enc:
             enc_bgi = tmp_path / "enc.bgen.bgi"
-            bgen.write_bgen_index(enc._reader, enc_bgi, enc.variant_offsets)
+            bgen.write_bgi(enc._reader, enc_bgi, enc.variant_offsets)
             conn = sqlite3.connect(str(enc_bgi))
             try:
                 enc_rows = conn.execute(
@@ -1165,7 +1160,7 @@ class TestBgenRoundTripViaBgenReader:
 
     def test_empty_variant_id_normalised_to_dot(self, write_to_bgen):
         # An empty-string variant_id (VCF "." → empty in VCZ) is
-        # emitted as "." in BGEN, matching generate_bim's convention.
+        # emitted as "." in BGEN, matching write_bim's convention.
         reader = _build_reader(
             num_variants=2,
             num_samples=1,

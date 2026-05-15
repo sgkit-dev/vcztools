@@ -1,13 +1,14 @@
 """
 Unit tests for vcztools.plink.
 
-These exercise the writer layers (encode_plink C kernel, generate_fam,
-generate_bim, end-to-end write_plink) directly against in-memory VCZ
+These exercise the writer layers (encode_plink C kernel, write_fam,
+write_bim, end-to-end write_plink) directly against in-memory VCZ
 groups built with :func:`tests.vcz_builder.make_vcz`. No PLINK binary,
 no roundtripping.
 """
 
 import concurrent.futures as cf
+import io
 import logging
 import math
 import pathlib
@@ -258,21 +259,31 @@ class TestPlink2NormaliseChrom:
 
 
 # ---------------------------------------------------------------------------
-# generate_fam.
+# write_fam / write_bim.
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateFam:
+def _fam_string(reader):
+    buf = io.StringIO()
+    plink.write_fam(reader, buf)
+    return buf.getvalue()
+
+
+def _bim_string(reader):
+    buf = io.StringIO()
+    plink.write_bim(reader, buf)
+    return buf.getvalue()
+
+
+class TestWriteFam:
     def test_plain_ascii_sample_ids(self):
         reader = _build_reader(num_samples=2, sample_id=["s1", "s2"])
-        fam = plink.generate_fam(reader)
         # FID = "0" matches plink 2 default for `--vcf`.
-        assert fam == "0\ts1\t0\t0\t0\t-9\n0\ts2\t0\t0\t0\t-9\n"
+        assert _fam_string(reader) == "0\ts1\t0\t0\t0\t-9\n0\ts2\t0\t0\t0\t-9\n"
 
     def test_zero_samples(self):
         reader = _build_reader(num_samples=0, call_genotype=None)
-        fam = plink.generate_fam(reader)
-        assert fam == ""
+        assert _fam_string(reader) == ""
 
     def test_null_samples_excluded_from_fam(self):
         # Null sample (sample_id == "") must not appear in the FAM, and the
@@ -281,8 +292,7 @@ class TestGenerateFam:
             num_samples=3,
             sample_id=["s1", "", "s3"],
         )
-        fam = plink.generate_fam(reader)
-        df = _parse_fam(fam)
+        df = _parse_fam(_fam_string(reader))
         assert list(df["IID"]) == ["s1", "s3"]
         # There must be no empty-IID rows.
         assert not (df["IID"] == "").any()
@@ -299,31 +309,30 @@ class TestGenerateFam:
     def test_whitespace_in_sample_id_raises(self, bad_id):
         reader = _build_reader(num_samples=2, sample_id=["ok", bad_id])
         with pytest.raises(ValueError, match="whitespace"):
-            plink.generate_fam(reader)
+            plink.write_fam(reader, io.StringIO())
 
     def test_long_sample_id_round_trips(self):
         long_id = "x" * 50
         reader = _build_reader(num_samples=2, sample_id=[long_id, "s2"])
-        fam = plink.generate_fam(reader)
-        df = _parse_fam(fam)
+        df = _parse_fam(_fam_string(reader))
         assert df["IID"].iloc[0] == long_id
         assert df["FID"].iloc[0] == "0"
 
     def test_sample_subset_reflected_in_fam(self):
         reader = _build_reader(num_samples=4, sample_id=["s0", "s1", "s2", "s3"])
         reader.set_samples([2, 0])
-        fam = plink.generate_fam(reader)
-        df = _parse_fam(fam)
+        df = _parse_fam(_fam_string(reader))
         assert list(df["IID"]) == ["s2", "s0"]
         assert list(df["FID"]) == ["0", "0"]
 
+    def test_path_output_matches_buffer(self, tmp_path):
+        reader = _build_reader(num_samples=3)
+        out = tmp_path / "x.fam"
+        plink.write_fam(reader, out)
+        assert out.read_text() == _fam_string(reader)
 
-# ---------------------------------------------------------------------------
-# generate_bim.
-# ---------------------------------------------------------------------------
 
-
-class TestGenerateBim:
+class TestWriteBim:
     def test_standard_biallelic_no_variant_id(self):
         reader = _build_reader(
             num_variants=2,
@@ -332,8 +341,7 @@ class TestGenerateBim:
             num_samples=1,
             call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
         )
-        bim = plink.generate_bim(reader)
-        df = _parse_bim(bim)
+        df = _parse_bim(_bim_string(reader))
         # Default contig is "chr1"; plink 2 normalises this to "1".
         assert list(df["Chrom"]) == ["1", "1"]
         assert list(df["ID"]) == [".", "."]
@@ -349,8 +357,7 @@ class TestGenerateBim:
             call_genotype=np.zeros((3, 1, 2), dtype=np.int8),
             variant_id=["rs1", ".", "rs3"],
         )
-        bim = plink.generate_bim(reader)
-        df = _parse_bim(bim)
+        df = _parse_bim(_bim_string(reader))
         assert list(df["ID"]) == ["rs1", ".", "rs3"]
 
     def test_single_allele_site_emits_dot_for_a1(self):
@@ -360,8 +367,7 @@ class TestGenerateBim:
             num_samples=1,
             call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
         )
-        bim = plink.generate_bim(reader)
-        df = _parse_bim(bim)
+        df = _parse_bim(_bim_string(reader))
         # Monomorphic A1 is "." (plink 2 missing-allele convention).
         assert list(df["A1"]) == ["T", "."]
         assert list(df["A2"]) == ["A", "G"]
@@ -375,8 +381,7 @@ class TestGenerateBim:
             call_genotype=np.zeros((3, 1, 2), dtype=np.int8),
             contigs=("chrA", "chrB", "chrC"),
         )
-        bim = plink.generate_bim(reader)
-        df = _parse_bim(bim)
+        df = _parse_bim(_bim_string(reader))
         assert list(df["Chrom"]) == ["chrA", "chrB", "chrC"]
 
     def test_multi_chunk_offset_arithmetic(self):
@@ -388,15 +393,14 @@ class TestGenerateBim:
             call_genotype=np.zeros((5, 1, 2), dtype=np.int8),
             variants_chunk_size=2,
         )
-        bim = plink.generate_bim(reader)
-        df = _parse_bim(bim)
+        df = _parse_bim(_bim_string(reader))
         assert list(df["Pos"]) == [10, 20, 30, 40, 50]
         assert list(df["A1"]) == ["T", "G", "G", "A", "C"]
         assert list(df["A2"]) == ["A", "A", "C", "T", "G"]
 
-    def test_no_yielded_chunks_returns_empty_string(self):
+    def test_no_yielded_chunks_writes_empty_file(self):
         # All variants filtered out via -i ⇒ variant_chunks yields nothing
-        # ⇒ generate_bim returns "" (the empty-rows-list branch).
+        # ⇒ write_bim writes an empty file (the empty-rows-list branch).
         reader = _build_reader(
             num_variants=2,
             variant_position=[100, 200],
@@ -409,7 +413,7 @@ class TestGenerateBim:
             field_names=reader.field_names, include="DP>100"
         )
         reader.set_variant_filter(vf)
-        assert plink.generate_bim(reader) == ""
+        assert _bim_string(reader) == ""
 
     def test_multiallelic_raises(self):
         reader = _build_reader(
@@ -419,7 +423,19 @@ class TestGenerateBim:
             call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
         )
         with pytest.raises(ValueError, match="Multi-allelic"):
-            plink.generate_bim(reader)
+            plink.write_bim(reader, io.StringIO())
+
+    def test_path_output_matches_buffer(self, tmp_path):
+        reader = _build_reader(
+            num_variants=2,
+            variant_position=[100, 200],
+            alleles=[("A", "T"), ("G", "C")],
+            num_samples=1,
+            call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
+        )
+        out = tmp_path / "x.bim"
+        plink.write_bim(reader, out)
+        assert out.read_text() == _bim_string(reader)
 
 
 # ---------------------------------------------------------------------------
@@ -694,26 +710,26 @@ class TestWritePlinkEndToEnd:
         assert (tmp_path / f"{out_arg}.bim").exists()
         assert (tmp_path / f"{out_arg}.fam").exists()
 
-    def test_write_bim_toggle(self, tmp_path):
+    def test_bim_toggle(self, tmp_path):
         reader = _build_reader(
             num_variants=1,
             num_samples=1,
             call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
         )
         out = tmp_path / "p"
-        plink.write_plink(reader, out, write_bim=False)
+        plink.write_plink(reader, out, bim=False)
         assert (tmp_path / "p.bed").exists()
         assert not (tmp_path / "p.bim").exists()
         assert (tmp_path / "p.fam").exists()
 
-    def test_write_fam_toggle(self, tmp_path):
+    def test_fam_toggle(self, tmp_path):
         reader = _build_reader(
             num_variants=1,
             num_samples=1,
             call_genotype=np.zeros((1, 1, 2), dtype=np.int8),
         )
         out = tmp_path / "p"
-        plink.write_plink(reader, out, write_fam=False)
+        plink.write_plink(reader, out, fam=False)
         assert (tmp_path / "p.bed").exists()
         assert (tmp_path / "p.bim").exists()
         assert not (tmp_path / "p.fam").exists()

@@ -474,8 +474,8 @@ class BgenEncoder(format_encoder.FormatEncoder):
     bgenix ``.bgi`` SQLite sidecar can be produced by passing
     :attr:`variant_offsets` (computed from the encoder's fixed-size
     layout ``header_size + i * bytes_per_variant``) to the module-level
-    :func:`write_bgen_index`. The ``.sample`` sidecar is produced by
-    :func:`generate_sample`.
+    :func:`write_bgi`. The ``.sample`` sidecar is produced by
+    :func:`write_sample`.
 
     :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
     supported and raises ``NotImplementedError`` at construction;
@@ -691,20 +691,23 @@ class BgenEncoder(format_encoder.FormatEncoder):
         """Byte boundaries of every variant block in the encoded BGEN
         stream, of shape ``(num_variants + 1,)``: variant ``i`` occupies
         ``[variant_offsets[i], variant_offsets[i+1])``. Suitable for
-        :func:`write_bgen_index`."""
+        :func:`write_bgi`."""
         return self.prefix_size + self.bytes_per_variant * np.arange(
             self.num_variants + 1, dtype=np.int64
         )
 
 
-def generate_sample(reader):
-    """Oxford ``.sample`` text. Two header rows, then one row per sample.
+def write_sample(reader, output):
+    """Write the Oxford ``.sample`` text for ``reader`` to ``output``.
 
-    The minimal sample file: ``ID_1`` and ``ID_2`` are both the sample
-    name (matches the ``--double-id`` style); ``missing`` is the
-    per-sample missing-rate column with column-type ``0`` (identifier).
+    ``output`` is a filesystem path (``str`` / ``pathlib.Path``) or a
+    writable text file-like object. The minimal sample file: two header
+    rows (``ID_1 ID_2 missing`` and ``0 0 0``), then one row per sample
+    with ``ID_1`` and ``ID_2`` both set to the sample name (matches the
+    ``--double-id`` style) and the ``missing`` column set to ``0``.
     Whitespace in sample IDs is rejected (the file format is
-    whitespace-separated)."""
+    whitespace-separated).
+    """
     sample_ids = reader.sample_ids
     for sid in sample_ids:
         s = str(sid)
@@ -717,7 +720,8 @@ def generate_sample(reader):
     for sid in sample_ids:
         s = str(sid)
         lines.append(f"{s} {s} 0")
-    return "\n".join(lines) + "\n"
+    with utils.open_file_like(output, mode="w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 _BGI_SCHEMA = """
@@ -743,8 +747,14 @@ _BGI_INSERT_SQL = (
 )
 
 
-def write_bgen_index(reader, bgi_path, variant_offsets):
+def write_bgi(reader, output, variant_offsets):
     """Write the bgenix ``.bgen.bgi`` SQLite sidecar for ``reader``.
+
+    ``output`` is a filesystem path (``str`` / ``pathlib.Path``); the
+    SQLite database is created at that location (file-like objects are
+    not supported — ``sqlite3.connect`` needs a real path). If the file
+    already exists, it is unlinked first so the schema can be recreated
+    without primary-key conflicts.
 
     ``variant_offsets`` is an integer array of length
     ``num_variants + 1`` giving the byte boundaries of each variant
@@ -777,7 +787,7 @@ def write_bgen_index(reader, bgi_path, variant_offsets):
             f"variant_offsets must be integer-typed; got {variant_offsets.dtype}"
         )
 
-    bgi_path = pathlib.Path(bgi_path)
+    bgi_path = pathlib.Path(output)
     if bgi_path.exists():
         bgi_path.unlink()
 
@@ -860,23 +870,11 @@ def write_bgen_index(reader, bgi_path, variant_offsets):
     mib = bgi_path.stat().st_size / (1024 * 1024)
     rate = mib / elapsed if elapsed > 0 else 0.0
     logger.info(
-        f"write_bgen_index: wrote {num_variants} variants ({mib:.2f} MiB) "
+        f"write_bgi: wrote {num_variants} variants ({mib:.2f} MiB) "
         f"to {bgi_path} in {elapsed:.2f}s ({rate:.1f} MiB/s); "
         f"read={read_seconds:.2f}s, assemble={assemble_seconds:.2f}s, "
         f"insert={insert_seconds:.2f}s"
     )
-
-
-def write_bgen_samples(reader, output):
-    """Write the Oxford ``.sample`` text for ``reader`` to ``output``.
-
-    ``output`` is either a filesystem path (``str`` / ``pathlib.Path``)
-    or a writable text file-like object. The body is produced by
-    :func:`generate_sample`; this function is the on-disk companion,
-    mirroring :func:`write_bgen_index` for the SQLite sidecar.
-    """
-    with utils.open_file_like(output, mode="w") as f:
-        f.write(generate_sample(reader))
 
 
 def write_bgen(
@@ -960,7 +958,7 @@ def write_bgen(
         )
 
     if sample_path is not None:
-        write_bgen_samples(reader, sample_path)
+        write_sample(reader, sample_path)
 
     if isinstance(output, (str, pathlib.Path)):
         display_name = str(output)
@@ -1064,4 +1062,4 @@ def write_bgen(
         )
 
     if bgi_path is not None:
-        write_bgen_index(reader, bgi_path, variant_offsets)
+        write_bgi(reader, bgi_path, variant_offsets)

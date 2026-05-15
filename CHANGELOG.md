@@ -40,6 +40,13 @@ Features:
   cost; level 6 only buys ~10-30% smaller files for several times
   the encode time. Pass `--compression-level 9` for archival output
   or `--compression-level 0` for stored / fastest.
+- Pin `write_bim`, `write_fam`, `write_sample`, and `write_bgi` on
+  the public `vcztools` API. All four take `(reader, output, ...)`
+  and write to a path or file-like (`write_bgi` is SQLite-backed and
+  remains path-only). They replace the internal `generate_bim`,
+  `generate_fam`, `generate_sample`, `write_bgen_samples`, and
+  `write_bgen_index` helpers; `write_plink`'s `write_bim`/`write_fam`
+  boolean kwargs are renamed to `bim`/`fam`.
 
 Breaking changes:
 

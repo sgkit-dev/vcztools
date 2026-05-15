@@ -1233,8 +1233,8 @@ def view_plink(path, output, **kwargs):
         plink.write_plink(
             reader,
             output,
-            write_bim=not opts.no_bim,
-            write_fam=not opts.no_fam,
+            bim=not opts.no_bim,
+            fam=not opts.no_fam,
         )
 
 

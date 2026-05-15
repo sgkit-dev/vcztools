@@ -15,6 +15,10 @@ class TestPublicAPI:
         "ViewPlinkOptions",
         "__version__",
         "open_zarr",
+        "write_bgi",
+        "write_bim",
+        "write_fam",
+        "write_sample",
     ]
 
     def test_all_matches_expected(self):

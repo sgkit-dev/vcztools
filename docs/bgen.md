@@ -275,7 +275,7 @@ The output `.bgen` is significantly larger than `view-bgen`'s
 zlib-compressed output — it carries the fixed-size padding for every
 string field and runs no real compression on genotype data — but the
 byte stream is addressable and bytes-per-variant is fully known up
-front. The encoder serves the `.bgen` stream only; `generate_sample()`
+front. The encoder serves the `.bgen` stream only; `write_sample()`
 remains the path for the `.sample` sidecar, and a `.bgi` index (if
 needed) can be built from the deterministic offsets
 (`header_size + i * bytes_per_variant`) without iterating the encoder.

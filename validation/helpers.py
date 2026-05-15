@@ -139,6 +139,6 @@ def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathli
                         break
                     f.write(chunk)
                     off += len(chunk)
-            bgen.write_bgen_index(reader, bgi_path, enc.variant_offsets)
-        sample_path.write_text(bgen.generate_sample(reader))
+            bgen.write_bgi(reader, bgi_path, enc.variant_offsets)
+        bgen.write_sample(reader, sample_path)
     return bgen_path

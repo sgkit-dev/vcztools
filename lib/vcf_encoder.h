@@ -135,3 +135,16 @@ int vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid
     size_t chrom_max, const uint8_t *allele1, const uint8_t *allele2, size_t allele_max,
     const int32_t *position, const uint8_t *geno_blocks, size_t geno_row_stride,
     size_t geno_size, uint8_t *out_buf);
+
+/* Drop-in replacements for the zlib symbols referenced by the BGEN encoder.
+ * Same name (with vcz_ prefix), same parameter order and semantics as zlib,
+ * stdint types instead of zlib typedefs. Specialised to level-0/stored
+ * DEFLATE so we don't have to link libz in production; the C test suite
+ * cross-checks them against libz. */
+#define VCZ_Z_OK           0
+#define VCZ_Z_STREAM_ERROR (-401)
+#define VCZ_Z_BUF_ERROR    (-402)
+uint32_t vcz_adler32(uint32_t adler, const uint8_t *buf, size_t len);
+size_t vcz_compress_bound(size_t source_len);
+int vcz_compress2(uint8_t *dest, size_t *dest_len, const uint8_t *source,
+    size_t source_len, int level);

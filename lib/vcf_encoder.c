@@ -1200,70 +1200,165 @@ out:
 }
 
 /* Adler-32 over `buf` (RFC 1950). NMAX=5552 is the largest run that
- * keeps s1, s2 within 32 bits before the mod 65521 fold. */
-static uint32_t
-adler32_update(uint32_t adler, const uint8_t *buf, size_t len)
-{
-    static const uint32_t MOD = 65521;
-    static const size_t NMAX = 5552;
-    uint32_t s1 = adler & 0xFFFF;
-    uint32_t s2 = (adler >> 16) & 0xFFFF;
-    size_t n;
-    size_t i;
+ * keeps s1, s2 within 32 bits before the mod 65521 fold. Drop-in for
+ * zlib's adler32.
+ *
+ * The inner loop is unrolled in 16-byte blocks: this exposes data-
+ * parallelism the compiler can auto-vectorise (gcc/clang generate
+ * SSE2/NEON for it) and amortises loop overhead. The expensive modulo
+ * is deferred to once per NMAX run rather than once per byte.
+ */
+#define VCZ_ADLER_BASE 65521u
+#define VCZ_ADLER_NMAX 5552u
 
-    while (len > 0) {
-        n = len < NMAX ? len : NMAX;
-        len -= n;
-        for (i = 0; i < n; i++) {
-            s1 += buf[i];
+#define VCZ_ADLER_DO1(buf, i)                                                           \
+    do {                                                                                \
+        s1 += (buf)[i];                                                                 \
+        s2 += s1;                                                                       \
+    } while (0)
+#define VCZ_ADLER_DO2(buf, i)                                                           \
+    VCZ_ADLER_DO1(buf, i);                                                              \
+    VCZ_ADLER_DO1(buf, (i) + 1)
+#define VCZ_ADLER_DO4(buf, i)                                                           \
+    VCZ_ADLER_DO2(buf, i);                                                              \
+    VCZ_ADLER_DO2(buf, (i) + 2)
+#define VCZ_ADLER_DO8(buf, i)                                                           \
+    VCZ_ADLER_DO4(buf, i);                                                              \
+    VCZ_ADLER_DO4(buf, (i) + 4)
+#define VCZ_ADLER_DO16(buf)                                                             \
+    VCZ_ADLER_DO8(buf, 0);                                                              \
+    VCZ_ADLER_DO8(buf, 8)
+
+uint32_t
+vcz_adler32(uint32_t adler, const uint8_t *buf, size_t len)
+{
+    uint32_t s1 = adler & 0xFFFFu;
+    uint32_t s2 = (adler >> 16) & 0xFFFFu;
+    unsigned n;
+
+    /* zlib contract: adler32(adler, NULL, 0) returns the initial seed
+     * (typically 1). Match it so callers can use the same idiom. */
+    if (buf == NULL) {
+        return 1u;
+    }
+
+    /* Fast paths for very short inputs avoid the unroll setup. */
+    if (len == 1) {
+        s1 += buf[0];
+        if (s1 >= VCZ_ADLER_BASE) {
+            s1 -= VCZ_ADLER_BASE;
+        }
+        s2 += s1;
+        if (s2 >= VCZ_ADLER_BASE) {
+            s2 -= VCZ_ADLER_BASE;
+        }
+        return (s2 << 16) | s1;
+    }
+    if (len < 16) {
+        while (len--) {
+            s1 += *buf++;
             s2 += s1;
         }
-        s1 %= MOD;
-        s2 %= MOD;
-        buf += n;
+        if (s1 >= VCZ_ADLER_BASE) {
+            s1 -= VCZ_ADLER_BASE;
+        }
+        s2 %= VCZ_ADLER_BASE;
+        return (s2 << 16) | s1;
     }
+
+    /* Full NMAX runs: 5552 is divisible by 16, so the inner loop runs
+     * exactly NMAX/16 = 347 times with no tail. */
+    while (len >= VCZ_ADLER_NMAX) {
+        len -= VCZ_ADLER_NMAX;
+        n = VCZ_ADLER_NMAX / 16;
+        do {
+            VCZ_ADLER_DO16(buf);
+            buf += 16;
+        } while (--n);
+        s1 %= VCZ_ADLER_BASE;
+        s2 %= VCZ_ADLER_BASE;
+    }
+
+    /* Final < NMAX bytes: 16-byte unroll then a scalar tail. */
+    if (len > 0) {
+        while (len >= 16) {
+            len -= 16;
+            VCZ_ADLER_DO16(buf);
+            buf += 16;
+        }
+        while (len--) {
+            s1 += *buf++;
+            s2 += s1;
+        }
+        s1 %= VCZ_ADLER_BASE;
+        s2 %= VCZ_ADLER_BASE;
+    }
+
     return (s2 << 16) | s1;
 }
 
-/* Wire size of zlib.compress(_, 0) on a payload of D bytes:
+#undef VCZ_ADLER_DO1
+#undef VCZ_ADLER_DO2
+#undef VCZ_ADLER_DO4
+#undef VCZ_ADLER_DO8
+#undef VCZ_ADLER_DO16
+#undef VCZ_ADLER_BASE
+#undef VCZ_ADLER_NMAX
+
+/* Exact wire size of vcz_compress2(_, _, _, source_len, 0) on a payload
+ * of `source_len` bytes:
  *   2-byte zlib header
- * + ceil(D / 65535) stored DEFLATE blocks (1 even when D == 0), each
- *   5 bytes of framing
- * + D bytes of payload
+ * + ceil(source_len / 65535) stored DEFLATE blocks (1 even when source_len == 0),
+ *   each 5 bytes of framing
+ * + source_len bytes of payload
  * + 4-byte big-endian adler32
+ * Matches zlib's compressBound shape (single size_t argument) but returns
+ * an exact value rather than an upper bound, because level-0/stored has
+ * a deterministic output size.
  */
-static size_t
-bgen_zlib_stored_size(size_t D)
+size_t
+vcz_compress_bound(size_t source_len)
 {
     size_t num_blocks;
-    if (D == 0) {
+    if (source_len == 0) {
         num_blocks = 1;
     } else {
-        num_blocks = (D + 65534) / 65535;
+        num_blocks = (source_len + 65534) / 65535;
     }
-    return 2 + 5 * num_blocks + D + 4;
+    return 2 + 5 * num_blocks + source_len + 4;
 }
 
-/* Emit a zlib stream containing `D` bytes from `in` as stored DEFLATE
- * blocks. Returns the number of bytes written to `out` (equal to
- * bgen_zlib_stored_size(D)). */
-static size_t
-bgen_emit_zlib_stored(uint8_t *out, const uint8_t *in, size_t D)
+/* Drop-in replacement for zlib's compress2, specialised to level 0
+ * (stored DEFLATE). `*dest_len` is in/out: in = capacity, out = bytes
+ * written. Returns VCZ_Z_OK on success, VCZ_Z_STREAM_ERROR for an
+ * unsupported level, VCZ_Z_BUF_ERROR if `dest` is too small. */
+int
+vcz_compress2(
+    uint8_t *dest, size_t *dest_len, const uint8_t *source, size_t source_len, int level)
 {
-    uint8_t *p = out;
-    const uint8_t *payload = in;
-    size_t remaining = D;
+    uint8_t *p = dest;
+    const uint8_t *payload = source;
+    size_t remaining = source_len;
+    size_t need;
     uint32_t adler;
     uint16_t block_len;
     uint16_t nlen;
 
+    if (level != 0) {
+        return VCZ_Z_STREAM_ERROR;
+    }
+    need = vcz_compress_bound(source_len);
+    if (*dest_len < need) {
+        return VCZ_Z_BUF_ERROR;
+    }
+
     /* zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 (no dict,
      * FLEVEL=0, FCHECK chosen so (CMF*256+FLG) % 31 == 0). Matches
-     * Python's zlib.compress(_, 0). */
+     * zlib's compress2(_, _, _, _, 0). */
     *p++ = 0x78;
     *p++ = 0x01;
 
-    if (D == 0) {
+    if (source_len == 0) {
         /* Single empty stored block with BFINAL=1. */
         *p++ = 0x01;
         *p++ = 0x00;
@@ -1284,21 +1379,22 @@ bgen_emit_zlib_stored(uint8_t *out, const uint8_t *in, size_t D)
             *p++ = (uint8_t) ((block_len >> 8) & 0xFF);
             *p++ = (uint8_t) (nlen & 0xFF);
             *p++ = (uint8_t) ((nlen >> 8) & 0xFF);
-            memcpy(p, in, block_len);
+            memcpy(p, source, block_len);
             p += block_len;
-            in += block_len;
+            source += block_len;
             remaining -= block_len;
         }
     }
 
     /* Big-endian adler32 over the uncompressed payload. */
-    adler = adler32_update(1, payload, D);
+    adler = vcz_adler32(1, payload, source_len);
     *p++ = (uint8_t) ((adler >> 24) & 0xFF);
     *p++ = (uint8_t) ((adler >> 16) & 0xFF);
     *p++ = (uint8_t) ((adler >> 8) & 0xFF);
     *p++ = (uint8_t) (adler & 0xFF);
 
-    return (size_t) (p - out);
+    *dest_len = (size_t) (p - dest);
+    return VCZ_Z_OK;
 }
 
 /* Fixed-size BGEN variant block encoder: writes
@@ -1322,11 +1418,12 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid,
     size_t v;
     size_t payload_size;
     size_t bpv;
+    size_t actual_len;
     uint8_t *out;
     uint32_t pos;
     uint32_t C;
 
-    payload_size = bgen_zlib_stored_size(geno_size);
+    payload_size = vcz_compress_bound(geno_size);
     bpv = 28 + varid_max + rsid_max + chrom_max + 2 * allele_max + payload_size;
 
     for (v = 0; v < num_variants; v++) {
@@ -1389,7 +1486,9 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid,
         *out++ = (uint8_t) ((geno_size >> 24) & 0xFF);
 
         /* Stored zlib payload. */
-        bgen_emit_zlib_stored(out, geno_blocks + v * geno_row_stride, geno_size);
+        actual_len = payload_size;
+        (void) vcz_compress2(
+            out, &actual_len, geno_blocks + v * geno_row_stride, geno_size, 0);
     }
     return 0;
 }

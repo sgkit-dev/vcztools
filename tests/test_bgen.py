@@ -264,7 +264,8 @@ def _single_variant_geno_block(G_single, *, phased=False):
     }
     if phased:
         chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
-    prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=1)
+    chunk_strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
+    prep = bgen._prepare_chunk(chunk, chunk_strings, start=0, end=1)
     block_len = int(prep.geno_block_lens[0])
     return bytes(prep.geno_blocks[0, :block_len])
 
@@ -634,9 +635,10 @@ class TestPloidyNormalization:
                 "variant_contig": np.array([0]),
                 "variant_position": np.array([100]),
             }
-            return bgen._prepare_chunk(
-                chunk, contig_ids=np.array(["chr1"]), start=0, end=1
+            chunk_strings = bgen._prepare_chunk_strings(
+                chunk, contig_ids=np.array(["chr1"])
             )
+            return bgen._prepare_chunk(chunk, chunk_strings, start=0, end=1)
 
         prep1 = prepare(G_haploid)
         prep2 = prepare(G_padded)
@@ -1551,43 +1553,115 @@ class TestEncodeFieldChunk:
         assert out.shape == (0, 4)
 
 
-class TestPrepareChunk:
-    def _make_chunk(
-        self,
-        *,
-        alleles=None,
-        contigs=None,
-        positions=None,
-        variant_id=None,
-        phased=None,
-        num_samples=2,
-    ):
-        if alleles is None:
-            alleles = np.array([["A", "T"], ["C", "G"]])
-        n = alleles.shape[0]
-        if contigs is None:
-            contigs = np.zeros(n, dtype=np.int32)
-        if positions is None:
-            positions = np.array([100 + i for i in range(n)], dtype=np.int32)
-        G = np.zeros((n, num_samples, 2), dtype=np.int8)
-        chunk = {
-            "call_genotype": G,
-            "variant_allele": alleles,
-            "variant_contig": contigs,
-            "variant_position": positions,
-        }
-        if variant_id is not None:
-            chunk["variant_id"] = np.asarray(variant_id)
-        if phased is not None:
-            chunk["call_genotype_phased"] = np.asarray(phased, dtype=bool)
-        return chunk
+def _make_chunk_for_prep(
+    *,
+    alleles=None,
+    contigs=None,
+    positions=None,
+    variant_id=None,
+    phased=None,
+    num_samples=2,
+):
+    if alleles is None:
+        alleles = np.array([["A", "T"], ["C", "G"]])
+    n = alleles.shape[0]
+    if contigs is None:
+        contigs = np.zeros(n, dtype=np.int32)
+    if positions is None:
+        positions = np.array([100 + i for i in range(n)], dtype=np.int32)
+    G = np.zeros((n, num_samples, 2), dtype=np.int8)
+    chunk = {
+        "call_genotype": G,
+        "variant_allele": alleles,
+        "variant_contig": contigs,
+        "variant_position": positions,
+    }
+    if variant_id is not None:
+        chunk["variant_id"] = np.asarray(variant_id)
+    if phased is not None:
+        chunk["call_genotype_phased"] = np.asarray(phased, dtype=bool)
+    return chunk
+
+
+class TestPrepareChunkStrings:
+    """:func:`_prepare_chunk_strings` does the full-chunk utf-8 +
+    NUL-pad pass for every variant string field. Hoisted out of
+    :func:`_prepare_chunk` so it runs once per chunk on the main
+    thread rather than once per worker slice."""
 
     def test_variable_mode_basic(self):
-        chunk = self._make_chunk()
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=2)
+        chunk = _make_chunk_for_prep()
+        strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in strings.varid] == [b".", b"."]
+        assert [bytes(b) for b in strings.rsid] == [b".", b"."]
+        assert [bytes(b) for b in strings.chrom] == [b"chr1", b"chr1"]
+        assert [bytes(b) for b in strings.allele1] == [b"A", b"C"]
+        assert [bytes(b) for b in strings.allele2] == [b"T", b"G"]
+
+    def test_fixed_mode_pads_to_max_len(self):
+        chunk = _make_chunk_for_prep(variant_id=["rsX", "rsY"])
+        strings = bgen._prepare_chunk_strings(
+            chunk,
+            contig_ids=np.array(["chr1"]),
+            varid_max_len=8,
+            rsid_max_len=8,
+            chrom_max_len=4,
+            allele_max_len=2,
+        )
+        # Fixed mode returns (N, max_len) uint8 rows.
+        assert strings.varid.shape == (2, 8)
+        assert bytes(strings.varid[0]) == b"rsX\x00\x00\x00\x00\x00"
+        assert bytes(strings.chrom[0]) == b"chr1"
+        assert bytes(strings.allele1[0]) == b"A\x00"
+        # rsid is propagated from variant_id; varid mirrors rsid.
+        assert bytes(strings.rsid[0]) == b"rsX\x00\x00\x00\x00\x00"
+
+    def test_missing_rsid_normalised_to_dot(self):
+        chunk = _make_chunk_for_prep(variant_id=["", "rsY"])
+        strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in strings.rsid] == [b".", b"rsY"]
+
+    def test_monomorphic_allele2_normalised_to_dot(self):
+        chunk = _make_chunk_for_prep(alleles=np.array([["A", ""], ["C", "G"]]))
+        strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in strings.allele2] == [b".", b"G"]
+
+    def test_varid_overflow_checked_before_rsid(self):
+        # Both rsid_max_len and varid_max_len would overflow, but the
+        # varid check fires first.
+        chunk = _make_chunk_for_prep(variant_id=["x" * 100, "x" * 100])
+        with pytest.raises(ValueError, match="varid"):
+            bgen._prepare_chunk_strings(
+                chunk,
+                contig_ids=np.array(["chr1"]),
+                varid_max_len=8,
+                rsid_max_len=64,
+            )
+
+    def test_rejects_multiallelic(self):
+        # _check_biallelic now lives in the strings step (it runs on
+        # the full chunk, not a slice).
+        alleles = np.array([["A", "T", "G"]])
+        chunk = _make_chunk_for_prep(alleles=alleles)
+        with pytest.raises(ValueError, match="Multi-allelic"):
+            bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
+
+
+class TestPrepareChunk:
+    """Slice-level :func:`_prepare_chunk` work: genotype encoding,
+    phase reduction, and row-slicing the pre-built
+    :class:`_ChunkStrings`."""
+
+    def _strings(self, chunk, **kwargs):
+        return bgen._prepare_chunk_strings(
+            chunk, contig_ids=np.array(["chr1"]), **kwargs
+        )
+
+    def test_slices_strings_and_positions(self):
+        chunk = _make_chunk_for_prep()
+        strings = self._strings(chunk)
+        prep = bgen._prepare_chunk(chunk, strings, start=0, end=2)
         assert [bytes(b) for b in prep.varid] == [b".", b"."]
-        assert [bytes(b) for b in prep.rsid] == [b".", b"."]
-        assert [bytes(b) for b in prep.chrom] == [b"chr1", b"chr1"]
         assert [bytes(b) for b in prep.allele1] == [b"A", b"C"]
         assert [bytes(b) for b in prep.allele2] == [b"T", b"G"]
         np.testing.assert_array_equal(prep.position, [100, 101])
@@ -1598,35 +1672,18 @@ class TestPrepareChunk:
         assert prep.geno_blocks[1, 8 + s] == 0
         assert prep.mixed_phase_count == 0
 
-    def test_fixed_mode_pads_to_max_len(self):
-        chunk = self._make_chunk(variant_id=["rsX", "rsY"])
-        prep = bgen._prepare_chunk(
-            chunk,
-            contig_ids=np.array(["chr1"]),
-            start=0,
-            end=2,
-            varid_max_len=8,
-            rsid_max_len=8,
-            chrom_max_len=4,
-            allele_max_len=2,
+    def test_partial_slice_indexes_into_full_chunk_strings(self):
+        # Build a 3-variant chunk; ask for the middle row only. The
+        # returned _ChunkBytes must reflect just that row.
+        chunk = _make_chunk_for_prep(
+            alleles=np.array([["A", "T"], ["C", "G"], ["G", "A"]])
         )
-        # Fixed mode returns (N, max_len) uint8 rows.
-        assert prep.varid.shape == (2, 8)
-        assert bytes(prep.varid[0]) == b"rsX\x00\x00\x00\x00\x00"
-        assert bytes(prep.chrom[0]) == b"chr1"
-        assert bytes(prep.allele1[0]) == b"A\x00"
-        # rsid is propagated from variant_id; varid mirrors rsid.
-        assert bytes(prep.rsid[0]) == b"rsX\x00\x00\x00\x00\x00"
-
-    def test_missing_rsid_normalised_to_dot(self):
-        chunk = self._make_chunk(variant_id=["", "rsY"])
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=2)
-        assert [bytes(b) for b in prep.rsid] == [b".", b"rsY"]
-
-    def test_monomorphic_allele2_normalised_to_dot(self):
-        chunk = self._make_chunk(alleles=np.array([["A", ""], ["C", "G"]]))
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=2)
-        assert [bytes(b) for b in prep.allele2] == [b".", b"G"]
+        strings = self._strings(chunk)
+        prep = bgen._prepare_chunk(chunk, strings, start=1, end=2)
+        assert prep.varid.shape[0] == 1
+        assert bytes(prep.allele1[0]) == b"C"
+        assert bytes(prep.allele2[0]) == b"G"
+        np.testing.assert_array_equal(prep.position, [101])
 
     def test_phase_detection_and_mixed_count(self):
         # Variant 0: all samples phased → flag=1
@@ -1640,32 +1697,13 @@ class TestPrepareChunk:
             ]
         )
         alleles = np.array([["A", "T"], ["C", "G"], ["G", "A"]])
-        chunk = self._make_chunk(alleles=alleles, phased=phased, num_samples=2)
-        prep = bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=3)
+        chunk = _make_chunk_for_prep(alleles=alleles, phased=phased, num_samples=2)
+        strings = self._strings(chunk)
+        prep = bgen._prepare_chunk(chunk, strings, start=0, end=3)
         # Phased flag lives at byte 8 + num_samples in each geno-block row.
         flags = prep.geno_blocks[:, 8 + 2]
         np.testing.assert_array_equal(flags, [1, 0, 0])
         assert prep.mixed_phase_count == 1
-
-    def test_varid_overflow_checked_before_rsid(self):
-        # Both rsid_max_len and varid_max_len would overflow, but the
-        # varid check fires first.
-        chunk = self._make_chunk(variant_id=["x" * 100, "x" * 100])
-        with pytest.raises(ValueError, match="varid"):
-            bgen._prepare_chunk(
-                chunk,
-                contig_ids=np.array(["chr1"]),
-                start=0,
-                end=2,
-                varid_max_len=8,
-                rsid_max_len=64,
-            )
-
-    def test_rejects_multiallelic(self):
-        alleles = np.array([["A", "T", "G"]])
-        chunk = self._make_chunk(alleles=alleles)
-        with pytest.raises(ValueError, match="Multi-allelic"):
-            bgen._prepare_chunk(chunk, contig_ids=np.array(["chr1"]), start=0, end=1)
 
 
 class TestBgenEncoderMetadata:
@@ -2244,16 +2282,15 @@ class TestBgenChunkSliceLevel0Kernel:
         }
         if variant_id is not None:
             chunk["variant_id"] = np.asarray(variant_id)
-        prep = bgen._prepare_chunk(
+        chunk_strings = bgen._prepare_chunk_strings(
             chunk,
             contig_ids=np.array([contig_name]),
-            start=0,
-            end=num_variants,
             varid_max_len=varid_max,
             rsid_max_len=rsid_max,
             chrom_max_len=chrom_max,
             allele_max_len=allele_max,
         )
+        prep = bgen._prepare_chunk(chunk, chunk_strings, start=0, end=num_variants)
         uniform_len = 10 + (uniform_ploidy + 1) * num_samples
         py_out = _python_encode_variant_range(prep, uniform_len)
         assert c_out == py_out

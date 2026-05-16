@@ -219,54 +219,56 @@ class _ChunkBytes:
     mixed_phase_count: int
 
 
-def _prepare_chunk(
+@dataclasses.dataclass
+class _ChunkStrings:
+    """Full-chunk byte-prepared variant string fields.
+
+    Built once per chunk on the main thread (see
+    :func:`_prepare_chunk_strings`); worker slices read rows out of
+    these instead of running their own UTF-8 encode + NUL pad. The
+    string-prep step holds the GIL, so hoisting it out of the worker
+    pool is what lets parallel slice encodes actually overlap.
+
+    Each array follows :func:`_encode_field_chunk`'s dtype convention:
+    an ``S``-dtype 1D array in variable mode (``max_len=None``) or a
+    ``(num_variants, max_len) uint8`` view in fixed mode.
+    """
+
+    varid: np.ndarray
+    rsid: np.ndarray
+    chrom: np.ndarray
+    allele1: np.ndarray
+    allele2: np.ndarray
+
+
+def _prepare_chunk_strings(
     chunk,
     contig_ids,
     *,
-    start,
-    end,
     varid_max_len=None,
     rsid_max_len=None,
     chrom_max_len=None,
     allele_max_len=None,
 ):
-    """Validate and prepare per-variant byte inputs for variants
-    ``[start:end]`` of ``chunk``. ``contig_ids`` resolves
-    ``variant_contig`` integer indices to chromosome name strings.
-    Each ``*_max_len`` controls whether the corresponding string field
-    is NUL-padded to a fixed width (``int``) or written at its actual
-    UTF-8 byte length (``None``).
+    """Vectorised UTF-8 + NUL-pad of every variant string field in
+    ``chunk``. Runs once per chunk on the main thread; the resulting
+    :class:`_ChunkStrings` is sliced row-by-row inside parallel
+    workers via :func:`_prepare_chunk`.
 
-    Mirrors the conventions shared by :class:`BgenEncoder` and
-    :func:`write_bgen`: ``rsid=""`` and ``allele2=""`` normalise to
-    ``"."``; variant id mirrors rsid; the variant is treated as phased
-    only when *every* sample is phased on that variant
-    (``mixed_phase_count`` records partial-phase variants).
+    Mirrors the normalisation shared by :class:`BgenEncoder` and
+    :func:`write_bgen`: ``rsid=""`` and ``allele2=""`` become ``"."``,
+    and variant id mirrors rsid. ``contig_ids`` resolves
+    ``variant_contig`` integer indices to chromosome name strings.
 
     ``varid`` is validated before ``rsid`` so a too-narrow
     ``varid_max_len`` surfaces as a ``"varid"`` error even when both
     fields would overflow with the default ``rsid_max_len=64``.
-
-    Chunk-axis reads are sliced at the top of the body so workers can
-    invoke this function on disjoint variant ranges concurrently —
-    ``BgenEncoder._encode_chunk`` dispatches one call per worker per
-    slice via :meth:`_parallel_encode`.
     """
-    G = chunk["call_genotype"][start:end]
-    alleles = chunk["variant_allele"][start:end]
-    positions = chunk["variant_position"][start:end]
-    contigs = chunk["variant_contig"][start:end]
-    varids = chunk.get("variant_id")
-    if varids is not None:
-        varids = varids[start:end]
-    phased_arr = chunk.get("call_genotype_phased")
-    if phased_arr is not None:
-        phased_arr = phased_arr[start:end]
-
+    alleles = chunk["variant_allele"]
     _check_biallelic(alleles)
-    _check_ploidy_dim(G)
-    G = _normalize_genotype_ploidy(G)
-    n = G.shape[0]
+    n = alleles.shape[0]
+    contigs = chunk["variant_contig"]
+    varids = chunk.get("variant_id")
 
     chrom_arr = np.asarray(contig_ids)[contigs]
     a1_arr = alleles[:, 0]
@@ -284,6 +286,35 @@ def _prepare_chunk(
     chrom_b = _encode_field_chunk(chrom_arr, max_len=chrom_max_len, field_name="chrom")
     a1_b = _encode_field_chunk(a1_arr, max_len=allele_max_len, field_name="allele1")
     a2_b = _encode_field_chunk(a2_arr, max_len=allele_max_len, field_name="allele2")
+    return _ChunkStrings(
+        varid=varid_b,
+        rsid=rsid_b,
+        chrom=chrom_b,
+        allele1=a1_b,
+        allele2=a2_b,
+    )
+
+
+def _prepare_chunk(chunk, chunk_strings, *, start, end):
+    """Slice-level prep for variants ``[start:end]`` of ``chunk``.
+    Takes the pre-built full-chunk :class:`_ChunkStrings` from
+    :func:`_prepare_chunk_strings` and returns a :class:`_ChunkBytes`
+    ready for :func:`_encode_variant_block` or the C kernel.
+
+    Workers call this on disjoint variant ranges concurrently. The
+    only Python work left here is genotype-axis slicing and the
+    phased-flag reduction; the C kernel (``encode_bgen_geno_blocks``)
+    releases the GIL, so this scales with thread count.
+    """
+    G = chunk["call_genotype"][start:end]
+    positions = chunk["variant_position"][start:end]
+    phased_arr = chunk.get("call_genotype_phased")
+    if phased_arr is not None:
+        phased_arr = phased_arr[start:end]
+
+    _check_ploidy_dim(G)
+    G = _normalize_genotype_ploidy(G)
+    n = G.shape[0]
 
     if phased_arr is not None:
         all_phased = phased_arr.all(axis=1)
@@ -300,11 +331,11 @@ def _prepare_chunk(
     geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
 
     return _ChunkBytes(
-        varid=varid_b,
-        rsid=rsid_b,
-        chrom=chrom_b,
-        allele1=a1_b,
-        allele2=a2_b,
+        varid=chunk_strings.varid[start:end],
+        rsid=chunk_strings.rsid[start:end],
+        chrom=chunk_strings.chrom[start:end],
+        allele1=chunk_strings.allele1[start:end],
+        allele2=chunk_strings.allele2[start:end],
         position=positions,
         geno_blocks=geno_blocks,
         geno_block_lens=geno_block_lens,
@@ -380,17 +411,17 @@ def _encode_variant_block(
     return bytes(out)
 
 
-def _encode_chunk_slice(chunk, contig_ids, start, end, *, compression_level):
+def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
     """Encode variants ``[start:end]`` of ``chunk`` into one concatenated
     byte buffer. Returns ``(slice_bytes, per_variant_lengths,
     mixed_phase_count)``.
 
     Self-contained for worker-thread use by the parallel
-    :func:`_stream_bgen` path: holds no encoder/reader state,
-    only reads from the chunk arrays. ``_prepare_chunk`` runs inside
-    so each worker handles its slice's vectorised numpy prep too.
+    :func:`write_bgen` path. ``chunk_strings`` is built once per chunk
+    on the main thread (see :func:`_prepare_chunk_strings`) and passed
+    in so worker slices only do genotype-axis work, not utf-8 encoding.
     """
-    prep = _prepare_chunk(chunk, contig_ids, start=start, end=end)
+    prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
     n = end - start
     out = bytearray()
     lens = []
@@ -630,16 +661,28 @@ class BgenEncoder(format_encoder.FormatEncoder):
         return self.total_size
 
     def _encode_chunk(self, chunk: dict) -> bytes:
-        # _prepare_chunk runs inside _encode_variant_range, so each
-        # worker handles its slice's vectorised numpy prep in parallel
-        # with the others. Per-slice mixed_phase_count partials are
+        # String prep is hoisted out of the worker pool: utf-8 encode +
+        # NUL-pad of varid/rsid/chrom/allele1/allele2 holds the GIL, so
+        # running it once per chunk on the main thread (rather than
+        # once per worker slice) is what lets parallel slice encodes
+        # actually overlap. Per-slice mixed_phase_count partials are
         # appended to a closure-captured list (list.append is GIL-safe
         # under CPython) and summed once _parallel_encode returns.
+        chunk_strings = _prepare_chunk_strings(
+            chunk,
+            self._contig_ids,
+            varid_max_len=self._varid_max,
+            rsid_max_len=self._rsid_max,
+            chrom_max_len=self._chrom_max,
+            allele_max_len=self._allele_max,
+        )
         num_variants = int(chunk["call_genotype"].shape[0])
         phase_counts: list[int] = []
 
         def encode_range(start: int, end: int) -> bytes:
-            return self._encode_variant_range(chunk, start, end, phase_counts)
+            return self._encode_variant_range(
+                chunk, chunk_strings, start, end, phase_counts
+            )
 
         output = self._parallel_encode(
             num_variants=num_variants, encode_range=encode_range
@@ -648,18 +691,14 @@ class BgenEncoder(format_encoder.FormatEncoder):
         return output
 
     def _encode_variant_range(
-        self, chunk: dict, start: int, end: int, phase_counts: list[int]
+        self,
+        chunk: dict,
+        chunk_strings: _ChunkStrings,
+        start: int,
+        end: int,
+        phase_counts: list[int],
     ) -> bytes:
-        prep = _prepare_chunk(
-            chunk,
-            self._contig_ids,
-            start=start,
-            end=end,
-            varid_max_len=self._varid_max,
-            rsid_max_len=self._rsid_max,
-            chrom_max_len=self._chrom_max,
-            allele_max_len=self._allele_max,
-        )
+        prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
         phase_counts.append(prep.mixed_phase_count)
         bpv = self._bytes_per_variant
         n = end - start
@@ -1029,6 +1068,10 @@ def write_bgen(
             # Dispatch slice encodes in submit order; collect in submit
             # order so the file byte layout (and variant_offsets) stay
             # deterministic regardless of which worker finishes first.
+            # String prep is hoisted out of the worker pool — it holds
+            # the GIL, so running it once per chunk lets the workers
+            # actually overlap.
+            chunk_strings = _prepare_chunk_strings(chunk, contig_id)
             slice_variants = max(1, (n + encode_threads - 1) // encode_threads)
             slice_ranges = [
                 (s, min(s + slice_variants, n)) for s in range(0, n, slice_variants)
@@ -1038,7 +1081,7 @@ def write_bgen(
                 executor.submit(
                     _encode_chunk_slice,
                     chunk,
-                    contig_id,
+                    chunk_strings,
                     s,
                     e,
                     compression_level=compression_level,

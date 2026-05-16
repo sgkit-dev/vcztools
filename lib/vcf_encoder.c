@@ -1100,103 +1100,109 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
  * buf must be at least num_variants * row_stride bytes; row_stride is
  * typically vcz_bgen_geno_block_row_max_size(num_samples). out_lens[v]
  * receives the actual byte count written for variant v. */
+/* Build ONE BGEN genotype block from `gt` (num_samples × 2 int8) into `row`,
+ * writing `*out_len` actual bytes. always_inline so the inner per-sample
+ * loop is hoisted into the caller; without it gcc keeps this as a separate
+ * function (too large for its default auto-inline budget), and going
+ * through the public vcz_encode_bgen_geno_blocks symbol would force a PLT
+ * round-trip under -fPIC on top of that. */
+static inline __attribute__((always_inline)) int
+bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased,
+    uint8_t *row, uint32_t *out_len)
+{
+    uint8_t *ploidy_out = row + 8;
+    uint8_t *prob_out = row + 8 + num_samples + 2;
+    uint8_t ploidy_byte, pmin = 2, pmax = 1;
+    size_t s, prob_offset = 0;
+    int8_t a, b;
+
+    for (s = 0; s < num_samples; s++) {
+        a = gt[2 * s];
+        b = gt[2 * s + 1];
+
+        /* The BGEN encoder is biallelic: only {-2, -1, 0, 1} are
+         * accepted; any other value is a data-quality error. */
+        if (a < -2 || a > 1 || b < -2 || b > 1) {
+            return VCZ_ERR_BGEN_INVALID_ALLELE;
+        }
+        if (a == VCZ_INT_FILL) {
+            return VCZ_ERR_BGEN_INVALID_PLOIDY;
+        }
+        if (b == VCZ_INT_FILL) {
+            /* Haploid call: ploidy=1. */
+            if (a == VCZ_INT_MISSING) {
+                ploidy_byte = VCZ_BGEN_PLOIDY_MISSING_HAPLOID;
+                prob_out[prob_offset] = 0x00;
+            } else {
+                ploidy_byte = VCZ_BGEN_PLOIDY_HAPLOID;
+                prob_out[prob_offset] = (a == 0) ? 0xFF : 0x00;
+            }
+            prob_offset += 1;
+            if (pmin > 1) {
+                pmin = 1;
+            }
+        } else if (a < 0 || b < 0) {
+            ploidy_byte = VCZ_BGEN_PLOIDY_MISSING_DIPLOID;
+            prob_out[prob_offset] = 0x00;
+            prob_out[prob_offset + 1] = 0x00;
+            prob_offset += 2;
+            pmax = 2;
+        } else {
+            ploidy_byte = VCZ_BGEN_PLOIDY_DIPLOID;
+            if (variant_phased) {
+                prob_out[prob_offset] = (a == 0) ? 0xFF : 0x00;
+                prob_out[prob_offset + 1] = (b == 0) ? 0xFF : 0x00;
+            } else {
+                prob_out[prob_offset] = (a == 0 && b == 0) ? 0xFF : 0x00;
+                prob_out[prob_offset + 1]
+                    = ((a == 0 && b == 1) || (a == 1 && b == 0)) ? 0xFF : 0x00;
+            }
+            prob_offset += 2;
+            pmax = 2;
+        }
+        ploidy_out[s] = ploidy_byte;
+    }
+
+    if (num_samples == 0) {
+        /* Pmin/Pmax are undefined without samples; spec says report 2/2
+         * (the diploid default). Matches the previous diploid-only
+         * behaviour for empty stores. */
+        pmin = 2;
+        pmax = 2;
+    }
+
+    /* 8-byte header: N (uint32 LE), K (uint16 LE), Pmin, Pmax. */
+    row[0] = (uint8_t) (num_samples & 0xFF);
+    row[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
+    row[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
+    row[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
+    row[4] = 2; /* K (n_alleles) low byte */
+    row[5] = 0; /* K high byte */
+    row[6] = pmin;
+    row[7] = pmax;
+    row[8 + num_samples] = variant_phased;
+    row[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
+
+    *out_len = (uint32_t) (8 + num_samples + 2 + prob_offset);
+    return 0;
+}
+
 int
 vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens)
 {
-    int ret = 0;
-    uint8_t *row;
-    uint8_t *ploidy_out;
-    uint8_t *prob_out;
-    const int8_t *gt;
-    int8_t a, b;
-    uint8_t variant_phased, ploidy_byte, pmin, pmax;
-    size_t v, s, prob_offset;
+    int ret;
+    size_t v;
 
     for (v = 0; v < num_variants; v++) {
-        row = buf + v * row_stride;
-        gt = genotypes + v * num_samples * 2;
-        ploidy_out = row + 8;
-        prob_out = row + 8 + num_samples + 2;
-        variant_phased = phased[v] ? 1 : 0;
-        pmin = 2;
-        pmax = 1;
-        prob_offset = 0;
-
-        for (s = 0; s < num_samples; s++) {
-            a = gt[2 * s];
-            b = gt[2 * s + 1];
-
-            /* The BGEN encoder is biallelic: only {-2, -1, 0, 1} are
-             * accepted; any other value is a data-quality error. */
-            if (a < -2 || a > 1 || b < -2 || b > 1) {
-                ret = VCZ_ERR_BGEN_INVALID_ALLELE;
-                goto out;
-            }
-            if (a == VCZ_INT_FILL) {
-                ret = VCZ_ERR_BGEN_INVALID_PLOIDY;
-                goto out;
-            }
-            if (b == VCZ_INT_FILL) {
-                /* Haploid call: ploidy=1. */
-                if (a == VCZ_INT_MISSING) {
-                    ploidy_byte = VCZ_BGEN_PLOIDY_MISSING_HAPLOID;
-                    prob_out[prob_offset] = 0x00;
-                } else {
-                    ploidy_byte = VCZ_BGEN_PLOIDY_HAPLOID;
-                    prob_out[prob_offset] = (a == 0) ? 0xFF : 0x00;
-                }
-                prob_offset += 1;
-                if (pmin > 1) {
-                    pmin = 1;
-                }
-            } else if (a < 0 || b < 0) {
-                ploidy_byte = VCZ_BGEN_PLOIDY_MISSING_DIPLOID;
-                prob_out[prob_offset] = 0x00;
-                prob_out[prob_offset + 1] = 0x00;
-                prob_offset += 2;
-                pmax = 2;
-            } else {
-                ploidy_byte = VCZ_BGEN_PLOIDY_DIPLOID;
-                if (variant_phased) {
-                    prob_out[prob_offset] = (a == 0) ? 0xFF : 0x00;
-                    prob_out[prob_offset + 1] = (b == 0) ? 0xFF : 0x00;
-                } else {
-                    prob_out[prob_offset] = (a == 0 && b == 0) ? 0xFF : 0x00;
-                    prob_out[prob_offset + 1]
-                        = ((a == 0 && b == 1) || (a == 1 && b == 0)) ? 0xFF : 0x00;
-                }
-                prob_offset += 2;
-                pmax = 2;
-            }
-            ploidy_out[s] = ploidy_byte;
+        ret = bgen_geno_block_one(num_samples, genotypes + v * num_samples * 2,
+            phased[v] ? 1 : 0, buf + v * row_stride, &out_lens[v]);
+        if (ret != 0) {
+            return ret;
         }
-
-        if (num_samples == 0) {
-            /* Pmin/Pmax are undefined without samples; spec says report 2/2
-             * (the diploid default). Matches the previous diploid-only
-             * behaviour for empty stores. */
-            pmin = 2;
-            pmax = 2;
-        }
-
-        /* 8-byte header: N (uint32 LE), K (uint16 LE), Pmin, Pmax. */
-        row[0] = (uint8_t) (num_samples & 0xFF);
-        row[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
-        row[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
-        row[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
-        row[4] = 2; /* K (n_alleles) low byte */
-        row[5] = 0; /* K high byte */
-        row[6] = pmin;
-        row[7] = pmax;
-        row[8 + num_samples] = variant_phased;
-        row[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
-
-        out_lens[v] = (uint32_t) (8 + num_samples + 2 + prob_offset);
     }
-out:
-    return ret;
+    return 0;
 }
 
 /* Adler-32 over `buf` (RFC 1950). NMAX=5552 is the largest run that
@@ -1229,8 +1235,13 @@ out:
     VCZ_ADLER_DO8(buf, 0);                                                              \
     VCZ_ADLER_DO8(buf, 8)
 
-uint32_t
-vcz_adler32(uint32_t adler, const uint8_t *buf, size_t len)
+/* Static implementation; always_inline so the vectorised inner loop
+ * is hoisted into the caller. The exported vcz_adler32 below is a
+ * thin wrapper — without always_inline gcc declines to inline the
+ * body (size heuristic) and we eat both a function-call boundary
+ * and a PLT round-trip when called from the public symbol. */
+static inline __attribute__((always_inline)) uint32_t
+vcz_adler32_static(uint32_t adler, const uint8_t *buf, size_t len)
 {
     uint32_t s1 = adler & 0xFFFFu;
     uint32_t s2 = (adler >> 16) & 0xFFFFu;
@@ -1297,6 +1308,12 @@ vcz_adler32(uint32_t adler, const uint8_t *buf, size_t len)
     return (s2 << 16) | s1;
 }
 
+uint32_t
+vcz_adler32(uint32_t adler, const uint8_t *buf, size_t len)
+{
+    return vcz_adler32_static(adler, buf, len);
+}
+
 #undef VCZ_ADLER_DO1
 #undef VCZ_ADLER_DO2
 #undef VCZ_ADLER_DO4
@@ -1328,12 +1345,12 @@ vcz_compress_bound(size_t source_len)
     return 2 + 5 * num_blocks + source_len + 4;
 }
 
-/* Drop-in replacement for zlib's compress2, specialised to level 0
- * (stored DEFLATE). `*dest_len` is in/out: in = capacity, out = bytes
- * written. Returns VCZ_Z_OK on success, VCZ_Z_STREAM_ERROR for an
- * unsupported level, VCZ_Z_BUF_ERROR if `dest` is too small. */
-int
-vcz_compress2(
+/* Static implementation; always_inline so the chunk-slice kernel
+ * absorbs the stored-block emit loop and the adler32 call. The
+ * public vcz_compress2 below is a thin wrapper for test code and
+ * possible external callers. */
+static inline __attribute__((always_inline)) int
+vcz_compress2_static(
     uint8_t *dest, size_t *dest_len, const uint8_t *source, size_t source_len, int level)
 {
     uint8_t *p = dest;
@@ -1387,7 +1404,7 @@ vcz_compress2(
     }
 
     /* Big-endian adler32 over the uncompressed payload. */
-    adler = vcz_adler32(1, payload, source_len);
+    adler = vcz_adler32_static(1, payload, source_len);
     *p++ = (uint8_t) ((adler >> 24) & 0xFF);
     *p++ = (uint8_t) ((adler >> 16) & 0xFF);
     *p++ = (uint8_t) ((adler >> 8) & 0xFF);
@@ -1395,6 +1412,13 @@ vcz_compress2(
 
     *dest_len = (size_t) (p - dest);
     return VCZ_Z_OK;
+}
+
+int
+vcz_compress2(
+    uint8_t *dest, size_t *dest_len, const uint8_t *source, size_t source_len, int level)
+{
+    return vcz_compress2_static(dest, dest_len, source, source_len, level);
 }
 
 /* Fixed-size BGEN variant block encoder: writes
@@ -1446,14 +1470,12 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
 
     for (v = 0; v < num_variants; v++) {
         /* Build the geno block for variant v into the scratch buffer.
-         * vcz_encode_bgen_geno_blocks (called with num_variants=1)
-         * reports the actual byte length; if it doesn't match the
-         * configured uniform geno_size, the chunk has mixed ploidy
-         * (e.g. some diploid + some haploid samples) and the fixed-
-         * size encoder can't represent it. */
-        err = vcz_encode_bgen_geno_blocks(1, num_samples,
-            genotypes + v * num_samples * 2, phased + v, scratch, geno_size,
-            &scratch_len);
+         * bgen_geno_block_one is static so the inner per-sample loop
+         * inlines straight into the chunk-slice kernel — going through
+         * the public vcz_encode_bgen_geno_blocks symbol would force a
+         * PLT call under -fPIC and cost the inlining. */
+        err = bgen_geno_block_one(num_samples, genotypes + v * num_samples * 2,
+            phased[v] ? 1 : 0, scratch, &scratch_len);
         if (err != 0) {
             goto out;
         }
@@ -1520,9 +1542,10 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         *out++ = (uint8_t) ((geno_size >> 16) & 0xFF);
         *out++ = (uint8_t) ((geno_size >> 24) & 0xFF);
 
-        /* Stored zlib payload over scratch. */
+        /* Stored zlib payload over scratch. Calling the static helper
+         * lets the compiler inline the stored-block emit + adler32. */
         actual_len = payload_size;
-        (void) vcz_compress2(out, &actual_len, scratch, geno_size, 0);
+        (void) vcz_compress2_static(out, &actual_len, scratch, geno_size, 0);
     }
 out:
     free(scratch);

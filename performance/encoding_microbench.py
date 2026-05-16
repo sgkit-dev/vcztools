@@ -15,6 +15,10 @@ Formats:
   null stream so repeated calls don't accumulate bytes.
 * ``bgen`` — :class:`vcztools.bgen.BgenEncoder` (fixed-size, zlib
   level 0). Timed call: ``encoder._encode_chunk(chunk_dict) -> bytes``.
+* ``bgen_python`` — :class:`vcztools.bgen.BgenEncoder` with its per-
+  variant inner loop swapped back to the pre-C-kernel Python
+  implementation. Same chunk-write hook, same prepare path; lets the
+  C kernel be timed against the Python loop it replaced.
 
 Run from the repo root::
 
@@ -54,7 +58,52 @@ _GENOTYPE_VALUES = np.array([0, 1, 0, 1, 0, 0, 1, 1, -1, 0], dtype=np.int8)
 _SWEEP_THREADS = (1, 2, 4, 8)
 _SWEEP_BLOCK_BYTES = (1 << 20, 4 << 20, 10 << 20, 40 << 20)
 
-_FORMATS = ("plink", "vcf", "bgen")
+_FORMATS = ("plink", "vcf", "bgen", "bgen_python")
+
+
+def _encode_variant_range_python(
+    self, chunk: dict, start: int, end: int, phase_counts: list[int]
+) -> bytes:
+    """Pre-C-kernel implementation of BgenEncoder._encode_variant_range.
+
+    Identical control flow to the production version except the per-
+    variant loop is back in Python: one ``_encode_variant_block`` call
+    per variant, packing the BGEN framing struct-by-struct with
+    ``zlib.compress(_, 0)`` per variant. Used by the ``bgen_python``
+    benchmark format to expose the speed-up from the C kernel."""
+    prep = bgen._prepare_chunk(
+        chunk,
+        self._contig_ids,
+        start=start,
+        end=end,
+        varid_max_len=self._varid_max,
+        rsid_max_len=self._rsid_max,
+        chrom_max_len=self._chrom_max,
+        allele_max_len=self._allele_max,
+    )
+    phase_counts.append(prep.mixed_phase_count)
+    bpv = self._bytes_per_variant
+    n = end - start
+    uniform_len = self._uniform_geno_size
+    if not (prep.geno_block_lens == uniform_len).all():
+        raise NotImplementedError(
+            "BgenEncoder requires uniform ploidy across all samples "
+            "and variants; this chunk contains mixed ploidy."
+        )
+    out = bytearray(n * bpv)
+    for j in range(n):
+        block = bgen._encode_variant_block(
+            varid_bytes=prep.varid[j],
+            rsid_bytes=prep.rsid[j],
+            chrom_bytes=prep.chrom[j],
+            position=int(prep.position[j]),
+            allele1_bytes=prep.allele1[j],
+            allele2_bytes=prep.allele2[j],
+            geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
+            compression_level=0,
+        )
+        out[j * bpv : (j + 1) * bpv] = block
+    return bytes(out)
 
 
 def _make_genotypes(num_variants: int, num_samples: int, seed: int) -> np.ndarray:
@@ -174,6 +223,22 @@ def _open_encoder(fmt: str, reader: _FakeReader, threads: int, block_bytes: int)
     if fmt == "bgen":
         encoder = bgen.BgenEncoder(
             reader, encode_threads=threads, encode_block_bytes=block_bytes
+        )
+
+        def encode_call(enc, chunk):
+            return len(enc._encode_chunk(chunk))
+
+        return encoder, encode_call
+    if fmt == "bgen_python":
+        encoder = bgen.BgenEncoder(
+            reader, encode_threads=threads, encode_block_bytes=block_bytes
+        )
+        # Swap the per-variant loop back to the pre-C-kernel Python
+        # implementation. _encode_chunk dispatches via this method (one
+        # call per parallel sub-block), so this is the smallest patch
+        # that exercises exactly the old code path.
+        encoder._encode_variant_range = _encode_variant_range_python.__get__(
+            encoder, type(encoder)
         )
 
         def encode_call(enc, chunk):

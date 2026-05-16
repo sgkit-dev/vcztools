@@ -35,6 +35,12 @@ handle_library_error(int err)
                 "BGEN encoder: genotype value out of range; biallelic input "
                 "expects values in {-2, -1, 0, 1}");
             break;
+        case VCZ_ERR_BGEN_MIXED_PLOIDY:
+            PyErr_Format(PyExc_NotImplementedError,
+                "BgenEncoder requires uniform ploidy across all samples and "
+                "variants; this chunk contains mixed ploidy. Use write_bgen() "
+                "instead.");
+            break;
         // TODO handle the other error types.
         default:
             PyErr_Format(PyExc_ValueError, "Error occured: %d: ", err);
@@ -720,20 +726,22 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
     PyArrayObject *allele1 = NULL;
     PyArrayObject *allele2 = NULL;
     PyArrayObject *position = NULL;
-    PyArrayObject *geno_blocks = NULL;
+    PyArrayObject *genotypes = NULL;
+    PyArrayObject *phased = NULL;
     PyArrayObject *out_buf = NULL;
-    Py_ssize_t geno_size;
+    Py_ssize_t uniform_ploidy;
     npy_intp num_variants;
+    npy_intp num_samples;
     npy_intp varid_max, rsid_max, chrom_max, allele_max;
-    npy_intp geno_row_stride;
+    npy_intp geno_size;
     npy_intp expected_bytes;
     size_t payload_size;
     int err;
 
-    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!n", &PyArray_Type, &varid,
+    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!n", &PyArray_Type, &varid,
             &PyArray_Type, &rsid, &PyArray_Type, &chrom, &PyArray_Type, &allele1,
-            &PyArray_Type, &allele2, &PyArray_Type, &position, &PyArray_Type,
-            &geno_blocks, &PyArray_Type, &out_buf, &geno_size)) {
+            &PyArray_Type, &allele2, &PyArray_Type, &position, &PyArray_Type, &genotypes,
+            &PyArray_Type, &phased, &PyArray_Type, &out_buf, &uniform_ploidy)) {
         goto out;
     }
 
@@ -773,10 +781,22 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
     if (check_dtype("position", position, NPY_INT32) != 0) {
         goto out;
     }
-    if (check_array("geno_blocks", geno_blocks, 2) != 0) {
+    if (check_array("genotypes", genotypes, 3) != 0) {
         goto out;
     }
-    if (check_dtype("geno_blocks", geno_blocks, NPY_UINT8) != 0) {
+    if (check_dtype("genotypes", genotypes, NPY_INT8) != 0) {
+        goto out;
+    }
+    if (PyArray_DIMS(genotypes)[2] != 2) {
+        PyErr_Format(PyExc_ValueError,
+            "BGEN encoder expects (V, S, 2) genotypes "
+            "(haploid inputs are normalised to ploidy=2 with -2 padding)");
+        goto out;
+    }
+    if (check_array("phased", phased, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("phased", phased, NPY_BOOL) != 0) {
         goto out;
     }
     if (check_array("out_buf", out_buf, 1) != 0) {
@@ -787,17 +807,18 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
     }
 
     num_variants = PyArray_DIMS(varid)[0];
+    num_samples = PyArray_DIMS(genotypes)[1];
     varid_max = PyArray_DIMS(varid)[1];
     rsid_max = PyArray_DIMS(rsid)[1];
     chrom_max = PyArray_DIMS(chrom)[1];
     allele_max = PyArray_DIMS(allele1)[1];
-    geno_row_stride = PyArray_DIMS(geno_blocks)[1];
 
     if (PyArray_DIMS(rsid)[0] != num_variants || PyArray_DIMS(chrom)[0] != num_variants
         || PyArray_DIMS(allele1)[0] != num_variants
         || PyArray_DIMS(allele2)[0] != num_variants
         || PyArray_DIMS(position)[0] != num_variants
-        || PyArray_DIMS(geno_blocks)[0] != num_variants) {
+        || PyArray_DIMS(genotypes)[0] != num_variants
+        || PyArray_DIMS(phased)[0] != num_variants) {
         PyErr_Format(PyExc_ValueError,
             "All per-variant inputs must share num_variants axis (got %zd)",
             (Py_ssize_t) num_variants);
@@ -808,14 +829,14 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
             PyExc_ValueError, "allele1 and allele2 must share the same max width");
         goto out;
     }
-    if (geno_size < 0 || (size_t) geno_size > (size_t) geno_row_stride) {
-        PyErr_Format(PyExc_ValueError,
-            "geno_size (%zd) must be in [0, geno_row_stride=%zd]",
-            (Py_ssize_t) geno_size, (Py_ssize_t) geno_row_stride);
+    if (uniform_ploidy != 1 && uniform_ploidy != 2) {
+        PyErr_Format(PyExc_ValueError, "uniform_ploidy must be 1 or 2 (got %zd)",
+            (Py_ssize_t) uniform_ploidy);
         goto out;
     }
 
     /* The kernel writes num_variants * bytes_per_variant bytes. */
+    geno_size = 10 + ((npy_intp) uniform_ploidy + 1) * num_samples;
     payload_size = 2 + 4 + (size_t) geno_size;
     if (geno_size == 0) {
         payload_size += 5;
@@ -832,11 +853,12 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
     }
 
     Py_BEGIN_ALLOW_THREADS
-    err = vcz_encode_bgen_chunk_slice_level0((size_t) num_variants, PyArray_DATA(varid),
-        (size_t) varid_max, PyArray_DATA(rsid), (size_t) rsid_max, PyArray_DATA(chrom),
-        (size_t) chrom_max, PyArray_DATA(allele1), PyArray_DATA(allele2),
-        (size_t) allele_max, PyArray_DATA(position), PyArray_DATA(geno_blocks),
-        (size_t) geno_row_stride, (size_t) geno_size, PyArray_DATA(out_buf));
+    err = vcz_encode_bgen_chunk_slice_level0((size_t) num_variants, (size_t) num_samples,
+        (size_t) uniform_ploidy, PyArray_DATA(varid), (size_t) varid_max,
+        PyArray_DATA(rsid), (size_t) rsid_max, PyArray_DATA(chrom), (size_t) chrom_max,
+        PyArray_DATA(allele1), PyArray_DATA(allele2), (size_t) allele_max,
+        PyArray_DATA(position), PyArray_DATA(genotypes), PyArray_DATA(phased),
+        PyArray_DATA(out_buf));
     Py_END_ALLOW_THREADS
 
     if (err != 0) {

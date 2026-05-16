@@ -1400,33 +1400,68 @@ vcz_compress2(
 /* Fixed-size BGEN variant block encoder: writes
  *   num_variants * bytes_per_variant
  * bytes into `out_buf`, where bytes_per_variant = 28 + varid_max +
- * rsid_max + chrom_max + 2*allele_max + bgen_zlib_stored_size(geno_size).
+ * rsid_max + chrom_max + 2*allele_max + vcz_compress_bound(geno_size)
+ * and geno_size = 10 + (uniform_ploidy + 1) * num_samples.
+ *
+ * The genotype block bytes are built directly from `genotypes`
+ * (V, S, 2 int8) and `phased` (V, bool) using the same per-variant
+ * logic as :c:func:`vcz_encode_bgen_geno_blocks`; a single scratch
+ * buffer of `geno_size` bytes is reused across variants. Mixed
+ * ploidy is rejected with VCZ_ERR_BGEN_MIXED_PLOIDY — the fixed-
+ * size encoder requires every sample to honour `uniform_ploidy`
+ * (1 = haploid, 2 = diploid). Invalid alleles or `-2` in slot 0
+ * surface via the usual VCZ_ERR_BGEN_* codes.
  *
  * Every string field arrives pre-padded to its `*_max` width as a
  * `(num_variants, *_max) uint8` row-major block. `position` is one
- * int32 per variant. `geno_blocks` rows are `geno_row_stride` bytes
- * wide; only the first `geno_size` bytes are read (the trailing tail
- * is the worst-case diploid stride). Mirrors the byte-at-a-time
- * little-endian writes elsewhere in this module. */
+ * int32 per variant. Multi-byte writes are byte-at-a-time, little-
+ * endian (see vcz_compress2 for the stored DEFLATE framing). */
 int
-vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid,
-    size_t varid_max, const uint8_t *rsid, size_t rsid_max, const uint8_t *chrom,
-    size_t chrom_max, const uint8_t *allele1, const uint8_t *allele2, size_t allele_max,
-    const int32_t *position, const uint8_t *geno_blocks, size_t geno_row_stride,
-    size_t geno_size, uint8_t *out_buf)
+vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
+    size_t uniform_ploidy, const uint8_t *varid, size_t varid_max, const uint8_t *rsid,
+    size_t rsid_max, const uint8_t *chrom, size_t chrom_max, const uint8_t *allele1,
+    const uint8_t *allele2, size_t allele_max, const int32_t *position,
+    const int8_t *genotypes, const uint8_t *phased, uint8_t *out_buf)
 {
     size_t v;
+    size_t geno_size;
     size_t payload_size;
     size_t bpv;
     size_t actual_len;
+    uint8_t *scratch = NULL;
     uint8_t *out;
     uint32_t pos;
     uint32_t C;
+    uint32_t scratch_len;
+    int err = 0;
 
+    geno_size = 10 + (uniform_ploidy + 1) * num_samples;
     payload_size = vcz_compress_bound(geno_size);
     bpv = 28 + varid_max + rsid_max + chrom_max + 2 * allele_max + payload_size;
 
+    scratch = malloc(geno_size);
+    if (scratch == NULL) {
+        return VCZ_ERR_NO_MEMORY;
+    }
+
     for (v = 0; v < num_variants; v++) {
+        /* Build the geno block for variant v into the scratch buffer.
+         * vcz_encode_bgen_geno_blocks (called with num_variants=1)
+         * reports the actual byte length; if it doesn't match the
+         * configured uniform geno_size, the chunk has mixed ploidy
+         * (e.g. some diploid + some haploid samples) and the fixed-
+         * size encoder can't represent it. */
+        err = vcz_encode_bgen_geno_blocks(1, num_samples,
+            genotypes + v * num_samples * 2, phased + v, scratch, geno_size,
+            &scratch_len);
+        if (err != 0) {
+            goto out;
+        }
+        if ((size_t) scratch_len != geno_size) {
+            err = VCZ_ERR_BGEN_MIXED_PLOIDY;
+            goto out;
+        }
+
         out = out_buf + v * bpv;
 
         /* varid: uint16 LE length + bytes */
@@ -1485,10 +1520,11 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid,
         *out++ = (uint8_t) ((geno_size >> 16) & 0xFF);
         *out++ = (uint8_t) ((geno_size >> 24) & 0xFF);
 
-        /* Stored zlib payload. */
+        /* Stored zlib payload over scratch. */
         actual_len = payload_size;
-        (void) vcz_compress2(
-            out, &actual_len, geno_blocks + v * geno_row_stride, geno_size, 0);
+        (void) vcz_compress2(out, &actual_len, scratch, geno_size, 0);
     }
-    return 0;
+out:
+    free(scratch);
+    return err;
 }

@@ -62,7 +62,12 @@ _FORMATS = ("plink", "vcf", "bgen", "bgen_python")
 
 
 def _encode_variant_range_python(
-    self, chunk: dict, start: int, end: int, phase_counts: list[int]
+    self,
+    chunk: dict,
+    chunk_strings,
+    start: int,
+    end: int,
+    phase_counts: list[int],
 ) -> bytes:
     """Pre-C-kernel implementation of BgenEncoder._encode_variant_range.
 
@@ -71,16 +76,7 @@ def _encode_variant_range_python(
     per variant, packing the BGEN framing struct-by-struct with
     ``zlib.compress(_, 0)`` per variant. Used by the ``bgen_python``
     benchmark format to expose the speed-up from the C kernel."""
-    prep = bgen._prepare_chunk(
-        chunk,
-        self._contig_ids,
-        start=start,
-        end=end,
-        varid_max_len=self._varid_max,
-        rsid_max_len=self._rsid_max,
-        chrom_max_len=self._chrom_max,
-        allele_max_len=self._allele_max,
-    )
+    prep = bgen._prepare_chunk(chunk, chunk_strings, start=start, end=end)
     phase_counts.append(prep.mixed_phase_count)
     bpv = self._bytes_per_variant
     n = end - start

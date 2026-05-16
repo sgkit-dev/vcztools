@@ -1137,11 +1137,11 @@ encode_u16_le(uint8_t *buf, uint16_t value)
  *   a == -2 (any b)               -> VCZ_ERR_BGEN_INVALID_PLOIDY.
  *   a or b outside {-2, -1, 0, 1} -> VCZ_ERR_BGEN_INVALID_ALLELE.
  *
- * always_inline so the per-sample loop body lands directly in the
- * caller. The public vcz_encode_bgen_geno_blocks below and the fused
- * vcz_encode_bgen_chunk_slice_level0 both call this once per variant
- * and rely on the inner loop being inlined. */
-static inline __attribute__((always_inline)) int
+ * Static so the public vcz_encode_bgen_geno_blocks below and the
+ * fused vcz_encode_bgen_chunk_slice_level0 can both inline it; with
+ * an extern symbol the call from chunk_slice would otherwise go
+ * through a PLT under -fPIC and block inlining of the inner loop. */
+static inline int
 bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased,
     uint8_t *row, uint32_t *out_len)
 {
@@ -1273,7 +1273,7 @@ out:
     VCZ_ADLER_DO8(buf, 0);                                                              \
     VCZ_ADLER_DO8(buf, 8)
 
-static inline __attribute__((always_inline)) uint32_t
+static inline uint32_t
 vcz_adler32_static(uint32_t adler, const uint8_t *buf, size_t len)
 {
     uint32_t s1 = adler & 0xFFFFu;
@@ -1386,7 +1386,7 @@ vcz_compress_bound(size_t source_len)
  * Implementation lives in vcz_compress2_static so the chunk-slice
  * kernel inlines the stored-block emit loop and the adler32 call
  * directly; the public vcz_compress2 below is a thin wrapper. */
-static inline __attribute__((always_inline)) int
+static inline int
 vcz_compress2_static(
     uint8_t *dest, size_t *dest_len, const uint8_t *source, size_t source_len, int level)
 {

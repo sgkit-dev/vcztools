@@ -2155,3 +2155,255 @@ class TestBgenEncoderUniformPloidy:
         reader = _build_reader(num_variants=1, num_samples=1, call_genotype=G, ploidy=3)
         with pytest.raises(ValueError, match=r"shape\[2\] in"):
             bgen.BgenEncoder(reader)
+
+
+# ---------------------------------------------------------------------------
+# C kernel: encode_bgen_chunk_slice_level0.
+# Drives BgenEncoder._encode_variant_range; tests target it via the encoder
+# in addition to direct unit tests on _vcztools.encode_bgen_chunk_slice_level0.
+# ---------------------------------------------------------------------------
+
+
+def _python_encode_variant_range(prep, uniform_len):
+    """Reference Python implementation matching the old loop body."""
+    n = prep.varid.shape[0]
+    out = bytearray()
+    for j in range(n):
+        block = bgen._encode_variant_block(
+            varid_bytes=bytes(prep.varid[j]),
+            rsid_bytes=bytes(prep.rsid[j]),
+            chrom_bytes=bytes(prep.chrom[j]),
+            position=int(prep.position[j]),
+            allele1_bytes=bytes(prep.allele1[j]),
+            allele2_bytes=bytes(prep.allele2[j]),
+            geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
+            compression_level=0,
+        )
+        out.extend(block)
+    return bytes(out)
+
+
+class TestBgenChunkSliceLevel0Kernel:
+    """Direct unit tests for ``_vcztools.encode_bgen_chunk_slice_level0``."""
+
+    @pytest.mark.parametrize(
+        ("num_samples", "uniform_ploidy"),
+        [(1, 2), (1024, 1), (1024, 2)],
+    )
+    @pytest.mark.parametrize(
+        ("varid_max", "rsid_max", "chrom_max", "allele_max"),
+        [(1, 1, 4, 1), (32, 32, 8, 4)],
+    )
+    def test_byte_for_byte_parity_with_python(
+        self, num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max
+    ):
+        # rsid_max=1 is paired with no variant_id field (encoder emits "."
+        # for every rsid in that case); the >1 case carries real ids.
+        num_variants = 6
+        rng = np.random.default_rng(0)
+        G = rng.integers(
+            low=-1, high=2, size=(num_variants, num_samples, uniform_ploidy)
+        ).astype(np.int8)
+        if uniform_ploidy == 2:
+            missing = (G[:, :, 0] == -1) | (G[:, :, 1] == -1)
+            G[missing, 0] = -1
+            G[missing, 1] = -1
+        if rsid_max == 1:
+            variant_id = None
+        else:
+            variant_id = [f"rs{i}" for i in range(num_variants)]
+        contig_name = "chr" + "X" * (chrom_max - 3)
+        reader_kwargs = dict(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("A" * allele_max, "T" * allele_max)] * num_variants,
+            contigs=(contig_name,),
+            variant_contig=[0] * num_variants,
+            call_genotype=G,
+            ploidy=uniform_ploidy,
+        )
+        if variant_id is not None:
+            reader_kwargs["variant_id"] = variant_id
+        reader = _build_reader(**reader_kwargs)
+        with bgen.BgenEncoder(
+            reader,
+            varid_max=varid_max,
+            rsid_max=rsid_max,
+            allele_max=allele_max,
+        ) as enc:
+            c_out = _drain(enc)[enc.header_size :]
+        # Build the reference by replaying _prepare_chunk + Python loop.
+        chunk = {
+            "call_genotype": G,
+            "variant_allele": np.array(
+                [("A" * allele_max, "T" * allele_max) for _ in range(num_variants)]
+            ),
+            "variant_contig": np.zeros(num_variants, dtype=np.int32),
+            "variant_position": np.arange(100, 100 + num_variants, dtype=np.int32),
+        }
+        if variant_id is not None:
+            chunk["variant_id"] = np.asarray(variant_id)
+        prep = bgen._prepare_chunk(
+            chunk,
+            contig_ids=np.array([contig_name]),
+            start=0,
+            end=num_variants,
+            varid_max_len=varid_max,
+            rsid_max_len=rsid_max,
+            chrom_max_len=chrom_max,
+            allele_max_len=allele_max,
+        )
+        uniform_len = 10 + (uniform_ploidy + 1) * num_samples
+        py_out = _python_encode_variant_range(prep, uniform_len)
+        assert c_out == py_out
+
+    def test_d_greater_than_65535_two_stored_blocks(self):
+        # num_samples=22000 diploid -> geno_size = 10 + 3*22000 = 66010,
+        # which spans two stored DEFLATE blocks (65535 + 475). Drive the
+        # C kernel directly to avoid the overhead of materialising a
+        # 22000-sample VCZ store.
+        num_samples = 22000
+        num_variants = 2
+        varid_max = rsid_max = chrom_max = 4
+        allele_max = 1
+        geno_size = 10 + 3 * num_samples
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        phased = np.zeros(num_variants, dtype=bool)
+        geno_blocks, geno_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
+        assert (geno_lens == geno_size).all()
+        varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
+        rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
+        chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
+        allele1 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        position = np.array([100, 200], dtype=np.int32)
+        bpv = (
+            28
+            + varid_max
+            + rsid_max
+            + chrom_max
+            + 2 * allele_max
+            + len(zlib.compress(b"\x00" * geno_size, 0))
+        )
+        out = np.empty(num_variants * bpv, dtype=np.uint8)
+        _vcztools.encode_bgen_chunk_slice_level0(
+            varid,
+            rsid,
+            chrom,
+            allele1,
+            allele2,
+            position,
+            geno_blocks,
+            out,
+            geno_size,
+        )
+
+        header_overhead = (
+            2
+            + varid_max
+            + 2
+            + rsid_max
+            + 2
+            + chrom_max
+            + 4
+            + 2
+            + 4
+            + allele_max
+            + 4
+            + allele_max
+        )
+        v0 = bytes(out[:bpv])
+        (C,) = struct.unpack_from("<I", v0, header_overhead)
+        (D,) = struct.unpack_from("<I", v0, header_overhead + 4)
+        assert D == geno_size
+        payload = v0[header_overhead + 8 : header_overhead + 4 + C]
+        # zlib stream decodes back to the uncompressed geno block.
+        assert zlib.decompress(payload) == bytes(geno_blocks[0, :geno_size])
+        # First block has BFINAL=0; second has BFINAL=1.
+        first_block_header = payload[2]
+        second_block_offset = 2 + 5 + 65535
+        second_block_header = payload[second_block_offset]
+        assert first_block_header & 0x01 == 0
+        assert second_block_header & 0x01 == 1
+
+    def test_adler32_matches_python(self):
+        num_samples = 3
+        num_variants = 4
+        gt = _varied_genotypes(num_variants=num_variants, num_samples=num_samples)
+        with _build_encoder(
+            num_variants=num_variants, num_samples=num_samples, call_genotype=gt
+        ) as enc:
+            buf = _drain(enc)[enc.header_size :]
+            bpv = enc.bytes_per_variant
+            uniform_len = enc._uniform_geno_size
+        header_overhead = (
+            2
+            + enc._varid_max
+            + 2
+            + enc._rsid_max
+            + 2
+            + enc._chrom_max
+            + 4
+            + 2
+            + 4
+            + enc._allele_max
+            + 4
+            + enc._allele_max
+        )
+        # Cross-check adler32 against the actual uncompressed block built
+        # by the geno-block C kernel — same input the kernel saw.
+        G2 = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        # Match _build_reader default (zeros) — but use the same gt the
+        # encoder ran on to keep results consistent.
+        G2[:] = gt
+        phased = np.zeros(num_variants, dtype=bool)
+        geno_blocks, geno_lens = _vcztools.encode_bgen_geno_blocks(G2, phased)
+        assert (geno_lens == uniform_len).all()
+        for v in range(num_variants):
+            v_block = buf[v * bpv : (v + 1) * bpv]
+            (C,) = struct.unpack_from("<I", v_block, header_overhead)
+            payload = v_block[header_overhead + 8 : header_overhead + 4 + C]
+            uncompressed = bytes(geno_blocks[v, :uniform_len])
+            assert int.from_bytes(payload[-4:], "big") == zlib.adler32(uncompressed)
+
+    def test_buffer_too_small_raises(self):
+        # Build a valid inputs set with bytes_per_variant > short buffer.
+        num_variants = 2
+        num_samples = 2
+        varid_max = rsid_max = chrom_max = 4
+        allele_max = 1
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        phased = np.zeros(num_variants, dtype=bool)
+        geno_blocks, _ = _vcztools.encode_bgen_geno_blocks(G, phased)
+        varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
+        rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
+        chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
+        allele1 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        position = np.zeros(num_variants, dtype=np.int32)
+        out_buf = np.zeros(8, dtype=np.uint8)  # deliberately too small
+        with pytest.raises(_vcztools.VczBufferTooSmall):
+            _vcztools.encode_bgen_chunk_slice_level0(
+                varid,
+                rsid,
+                chrom,
+                allele1,
+                allele2,
+                position,
+                geno_blocks,
+                out_buf,
+                10 + 3 * num_samples,
+            )
+
+    def test_round_trip_via_bgen_reader(self, tmp_path):
+        # Encoder path uses the C kernel by default; this drains the
+        # full byte stream and parses it with bgen-reader.
+        gt = _varied_genotypes(num_variants=5, num_samples=3)
+        with _build_encoder(num_variants=5, num_samples=3, call_genotype=gt) as enc:
+            buf = _drain(enc)
+        path = tmp_path / "k.bgen"
+        path.write_bytes(buf)
+        with br.open_bgen(path, verbose=False) as bg:
+            assert bg.nvariants == 5
+            assert bg.nsamples == 3

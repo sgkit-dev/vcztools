@@ -707,6 +707,144 @@ out:
     return ret;
 }
 
+static PyObject *
+vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
+{
+    PyObject *ret = NULL;
+    PyArrayObject *varid = NULL;
+    PyArrayObject *rsid = NULL;
+    PyArrayObject *chrom = NULL;
+    PyArrayObject *allele1 = NULL;
+    PyArrayObject *allele2 = NULL;
+    PyArrayObject *position = NULL;
+    PyArrayObject *geno_blocks = NULL;
+    PyArrayObject *out_buf = NULL;
+    Py_ssize_t geno_size;
+    npy_intp num_variants;
+    npy_intp varid_max, rsid_max, chrom_max, allele_max;
+    npy_intp geno_row_stride;
+    npy_intp expected_bytes;
+    size_t payload_size;
+    int err;
+
+    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!n", &PyArray_Type, &varid,
+            &PyArray_Type, &rsid, &PyArray_Type, &chrom, &PyArray_Type, &allele1,
+            &PyArray_Type, &allele2, &PyArray_Type, &position, &PyArray_Type,
+            &geno_blocks, &PyArray_Type, &out_buf, &geno_size)) {
+        goto out;
+    }
+
+    if (check_array("varid", varid, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("varid", varid, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array("rsid", rsid, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("rsid", rsid, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array("chrom", chrom, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("chrom", chrom, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array("allele1", allele1, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("allele1", allele1, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array("allele2", allele2, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("allele2", allele2, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array("position", position, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("position", position, NPY_INT32) != 0) {
+        goto out;
+    }
+    if (check_array("geno_blocks", geno_blocks, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("geno_blocks", geno_blocks, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array("out_buf", out_buf, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("out_buf", out_buf, NPY_UINT8) != 0) {
+        goto out;
+    }
+
+    num_variants = PyArray_DIMS(varid)[0];
+    varid_max = PyArray_DIMS(varid)[1];
+    rsid_max = PyArray_DIMS(rsid)[1];
+    chrom_max = PyArray_DIMS(chrom)[1];
+    allele_max = PyArray_DIMS(allele1)[1];
+    geno_row_stride = PyArray_DIMS(geno_blocks)[1];
+
+    if (PyArray_DIMS(rsid)[0] != num_variants || PyArray_DIMS(chrom)[0] != num_variants
+        || PyArray_DIMS(allele1)[0] != num_variants
+        || PyArray_DIMS(allele2)[0] != num_variants
+        || PyArray_DIMS(position)[0] != num_variants
+        || PyArray_DIMS(geno_blocks)[0] != num_variants) {
+        PyErr_Format(PyExc_ValueError,
+            "All per-variant inputs must share num_variants axis (got %zd)",
+            (Py_ssize_t) num_variants);
+        goto out;
+    }
+    if (PyArray_DIMS(allele2)[1] != allele_max) {
+        PyErr_Format(
+            PyExc_ValueError, "allele1 and allele2 must share the same max width");
+        goto out;
+    }
+    if (geno_size < 0 || (size_t) geno_size > (size_t) geno_row_stride) {
+        PyErr_Format(PyExc_ValueError,
+            "geno_size (%zd) must be in [0, geno_row_stride=%zd]",
+            (Py_ssize_t) geno_size, (Py_ssize_t) geno_row_stride);
+        goto out;
+    }
+
+    /* The kernel writes num_variants * bytes_per_variant bytes. */
+    payload_size = 2 + 4 + (size_t) geno_size;
+    if (geno_size == 0) {
+        payload_size += 5;
+    } else {
+        payload_size += 5 * (((size_t) geno_size + 65534) / 65535);
+    }
+    expected_bytes = num_variants
+                     * (28 + varid_max + rsid_max + chrom_max + 2 * allele_max
+                         + (npy_intp) payload_size);
+    if (PyArray_DIMS(out_buf)[0] < expected_bytes) {
+        PyErr_Format(VczBufferTooSmall, "out_buf is too small: got %zd bytes, need %zd",
+            (Py_ssize_t) PyArray_DIMS(out_buf)[0], (Py_ssize_t) expected_bytes);
+        goto out;
+    }
+
+    Py_BEGIN_ALLOW_THREADS
+    err = vcz_encode_bgen_chunk_slice_level0((size_t) num_variants, PyArray_DATA(varid),
+        (size_t) varid_max, PyArray_DATA(rsid), (size_t) rsid_max, PyArray_DATA(chrom),
+        (size_t) chrom_max, PyArray_DATA(allele1), PyArray_DATA(allele2),
+        (size_t) allele_max, PyArray_DATA(position), PyArray_DATA(geno_blocks),
+        (size_t) geno_row_stride, (size_t) geno_size, PyArray_DATA(out_buf));
+    Py_END_ALLOW_THREADS
+
+    if (err != 0) {
+        handle_library_error(err);
+        goto out;
+    }
+    ret = Py_BuildValue("");
+out:
+    return ret;
+}
+
 static PyMethodDef vcztools_methods[] = {
     { .ml_name = "encode_plink",
         .ml_meth = (PyCFunction) vcztools_encode_plink,
@@ -717,6 +855,12 @@ static PyMethodDef vcztools_methods[] = {
         .ml_flags = METH_VARARGS,
         .ml_doc = "Encode BGEN Layout-2 genotype blocks (mixed-ploidy "
                   "supported). Returns (buffer, lengths)." },
+    { .ml_name = "encode_bgen_chunk_slice_level0",
+        .ml_meth = (PyCFunction) vcztools_encode_bgen_chunk_slice_level0,
+        .ml_flags = METH_VARARGS,
+        .ml_doc = "Encode a full BGEN variant-block slice for the fixed-size "
+                  "BgenEncoder path (zlib level 0, uniform ploidy). Writes "
+                  "num_variants * bytes_per_variant bytes into out_buf." },
     { NULL } /* Sentinel */
 };
 

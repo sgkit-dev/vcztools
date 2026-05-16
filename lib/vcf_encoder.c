@@ -1198,3 +1198,198 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
 out:
     return ret;
 }
+
+/* Adler-32 over `buf` (RFC 1950). NMAX=5552 is the largest run that
+ * keeps s1, s2 within 32 bits before the mod 65521 fold. */
+static uint32_t
+adler32_update(uint32_t adler, const uint8_t *buf, size_t len)
+{
+    static const uint32_t MOD = 65521;
+    static const size_t NMAX = 5552;
+    uint32_t s1 = adler & 0xFFFF;
+    uint32_t s2 = (adler >> 16) & 0xFFFF;
+    size_t n;
+    size_t i;
+
+    while (len > 0) {
+        n = len < NMAX ? len : NMAX;
+        len -= n;
+        for (i = 0; i < n; i++) {
+            s1 += buf[i];
+            s2 += s1;
+        }
+        s1 %= MOD;
+        s2 %= MOD;
+        buf += n;
+    }
+    return (s2 << 16) | s1;
+}
+
+/* Wire size of zlib.compress(_, 0) on a payload of D bytes:
+ *   2-byte zlib header
+ * + ceil(D / 65535) stored DEFLATE blocks (1 even when D == 0), each
+ *   5 bytes of framing
+ * + D bytes of payload
+ * + 4-byte big-endian adler32
+ */
+static size_t
+bgen_zlib_stored_size(size_t D)
+{
+    size_t num_blocks;
+    if (D == 0) {
+        num_blocks = 1;
+    } else {
+        num_blocks = (D + 65534) / 65535;
+    }
+    return 2 + 5 * num_blocks + D + 4;
+}
+
+/* Emit a zlib stream containing `D` bytes from `in` as stored DEFLATE
+ * blocks. Returns the number of bytes written to `out` (equal to
+ * bgen_zlib_stored_size(D)). */
+static size_t
+bgen_emit_zlib_stored(uint8_t *out, const uint8_t *in, size_t D)
+{
+    uint8_t *p = out;
+    const uint8_t *payload = in;
+    size_t remaining = D;
+    uint32_t adler;
+    uint16_t block_len;
+    uint16_t nlen;
+
+    /* zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 (no dict,
+     * FLEVEL=0, FCHECK chosen so (CMF*256+FLG) % 31 == 0). Matches
+     * Python's zlib.compress(_, 0). */
+    *p++ = 0x78;
+    *p++ = 0x01;
+
+    if (D == 0) {
+        /* Single empty stored block with BFINAL=1. */
+        *p++ = 0x01;
+        *p++ = 0x00;
+        *p++ = 0x00;
+        *p++ = 0xFF;
+        *p++ = 0xFF;
+    } else {
+        while (remaining > 0) {
+            if (remaining > 65535) {
+                block_len = 65535;
+                *p++ = 0x00; /* BFINAL=0, BTYPE=00 (stored) */
+            } else {
+                block_len = (uint16_t) remaining;
+                *p++ = 0x01; /* BFINAL=1, BTYPE=00 */
+            }
+            nlen = (uint16_t) ~block_len;
+            *p++ = (uint8_t) (block_len & 0xFF);
+            *p++ = (uint8_t) ((block_len >> 8) & 0xFF);
+            *p++ = (uint8_t) (nlen & 0xFF);
+            *p++ = (uint8_t) ((nlen >> 8) & 0xFF);
+            memcpy(p, in, block_len);
+            p += block_len;
+            in += block_len;
+            remaining -= block_len;
+        }
+    }
+
+    /* Big-endian adler32 over the uncompressed payload. */
+    adler = adler32_update(1, payload, D);
+    *p++ = (uint8_t) ((adler >> 24) & 0xFF);
+    *p++ = (uint8_t) ((adler >> 16) & 0xFF);
+    *p++ = (uint8_t) ((adler >> 8) & 0xFF);
+    *p++ = (uint8_t) (adler & 0xFF);
+
+    return (size_t) (p - out);
+}
+
+/* Fixed-size BGEN variant block encoder: writes
+ *   num_variants * bytes_per_variant
+ * bytes into `out_buf`, where bytes_per_variant = 28 + varid_max +
+ * rsid_max + chrom_max + 2*allele_max + bgen_zlib_stored_size(geno_size).
+ *
+ * Every string field arrives pre-padded to its `*_max` width as a
+ * `(num_variants, *_max) uint8` row-major block. `position` is one
+ * int32 per variant. `geno_blocks` rows are `geno_row_stride` bytes
+ * wide; only the first `geno_size` bytes are read (the trailing tail
+ * is the worst-case diploid stride). Mirrors the byte-at-a-time
+ * little-endian writes elsewhere in this module. */
+int
+vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid,
+    size_t varid_max, const uint8_t *rsid, size_t rsid_max, const uint8_t *chrom,
+    size_t chrom_max, const uint8_t *allele1, const uint8_t *allele2, size_t allele_max,
+    const int32_t *position, const uint8_t *geno_blocks, size_t geno_row_stride,
+    size_t geno_size, uint8_t *out_buf)
+{
+    size_t v;
+    size_t payload_size;
+    size_t bpv;
+    uint8_t *out;
+    uint32_t pos;
+    uint32_t C;
+
+    payload_size = bgen_zlib_stored_size(geno_size);
+    bpv = 28 + varid_max + rsid_max + chrom_max + 2 * allele_max + payload_size;
+
+    for (v = 0; v < num_variants; v++) {
+        out = out_buf + v * bpv;
+
+        /* varid: uint16 LE length + bytes */
+        *out++ = (uint8_t) (varid_max & 0xFF);
+        *out++ = (uint8_t) ((varid_max >> 8) & 0xFF);
+        memcpy(out, varid + v * varid_max, varid_max);
+        out += varid_max;
+
+        /* rsid */
+        *out++ = (uint8_t) (rsid_max & 0xFF);
+        *out++ = (uint8_t) ((rsid_max >> 8) & 0xFF);
+        memcpy(out, rsid + v * rsid_max, rsid_max);
+        out += rsid_max;
+
+        /* chrom */
+        *out++ = (uint8_t) (chrom_max & 0xFF);
+        *out++ = (uint8_t) ((chrom_max >> 8) & 0xFF);
+        memcpy(out, chrom + v * chrom_max, chrom_max);
+        out += chrom_max;
+
+        /* position: uint32 LE */
+        pos = (uint32_t) position[v];
+        *out++ = (uint8_t) (pos & 0xFF);
+        *out++ = (uint8_t) ((pos >> 8) & 0xFF);
+        *out++ = (uint8_t) ((pos >> 16) & 0xFF);
+        *out++ = (uint8_t) ((pos >> 24) & 0xFF);
+
+        /* K = 2 alleles */
+        *out++ = 0x02;
+        *out++ = 0x00;
+
+        /* allele1: uint32 LE length + bytes */
+        *out++ = (uint8_t) (allele_max & 0xFF);
+        *out++ = (uint8_t) ((allele_max >> 8) & 0xFF);
+        *out++ = (uint8_t) ((allele_max >> 16) & 0xFF);
+        *out++ = (uint8_t) ((allele_max >> 24) & 0xFF);
+        memcpy(out, allele1 + v * allele_max, allele_max);
+        out += allele_max;
+
+        /* allele2 */
+        *out++ = (uint8_t) (allele_max & 0xFF);
+        *out++ = (uint8_t) ((allele_max >> 8) & 0xFF);
+        *out++ = (uint8_t) ((allele_max >> 16) & 0xFF);
+        *out++ = (uint8_t) ((allele_max >> 24) & 0xFF);
+        memcpy(out, allele2 + v * allele_max, allele_max);
+        out += allele_max;
+
+        /* C = 4 + compressed payload size, then D = uncompressed size. */
+        C = (uint32_t) (4 + payload_size);
+        *out++ = (uint8_t) (C & 0xFF);
+        *out++ = (uint8_t) ((C >> 8) & 0xFF);
+        *out++ = (uint8_t) ((C >> 16) & 0xFF);
+        *out++ = (uint8_t) ((C >> 24) & 0xFF);
+        *out++ = (uint8_t) (geno_size & 0xFF);
+        *out++ = (uint8_t) ((geno_size >> 8) & 0xFF);
+        *out++ = (uint8_t) ((geno_size >> 16) & 0xFF);
+        *out++ = (uint8_t) ((geno_size >> 24) & 0xFF);
+
+        /* Stored zlib payload. */
+        bgen_emit_zlib_stored(out, geno_blocks + v * geno_row_stride, geno_size);
+    }
+    return 0;
+}

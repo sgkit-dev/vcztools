@@ -76,10 +76,12 @@ class _FakeEncoder(format_encoder.FormatEncoder):
         bpv = self._bytes_per_variant
         if self._fake_use_parallel:
 
-            def encode_range(start, end):
+            def encode_range(start, end, out_view):
                 if self._encode_raise_in_worker:
                     raise RuntimeError("worker boom")
-                return _emit_range(G, start, end, bpv)
+                out_view[:] = np.frombuffer(
+                    _emit_range(G, start, end, bpv), dtype=np.uint8
+                )
 
             return self._parallel_encode(
                 num_variants=num_variants,

@@ -532,6 +532,15 @@ class TestEncodePlink:
         with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
             _vcztools.encode_plink(np.zeros((1, 4, 2), dtype=np.int8), full[::2])
 
+    def test_read_only_out_buf(self):
+        # NPY_ARRAY_IN_ARRAY = C_CONTIGUOUS | ALIGNED; it does NOT include
+        # WRITEABLE. A read-only buffer would otherwise pass check_array
+        # and have the kernel write to read-only pages.
+        out = self._out_buf(1, 4)
+        out.setflags(write=False)
+        with pytest.raises(ValueError, match="out_buf must be writeable"):
+            _vcztools.encode_plink(np.zeros((1, 4, 2), dtype=np.int8), out)
+
     def test_non_contiguous_genotypes(self):
         full = np.zeros((2, 4, 2), dtype=np.int8)
         view = full[:, ::2, :]
@@ -915,6 +924,15 @@ class TestEncodeBgenChunkSliceLevel0:
         full = np.zeros(8192, dtype=np.uint8)
         with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
             _call_chunk_slice(out_buf=full[::2])
+
+    def test_read_only_out_buf(self):
+        # NPY_ARRAY_IN_ARRAY doesn't include WRITEABLE; a read-only
+        # buffer must be rejected so the kernel never writes to
+        # read-only pages.
+        out = np.zeros(8192, dtype=np.uint8)
+        out.setflags(write=False)
+        with pytest.raises(ValueError, match="out_buf must be writeable"):
+            _call_chunk_slice(out_buf=out)
 
     # --- check_dtype: wrong dtype for each array ---
 

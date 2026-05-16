@@ -1368,30 +1368,33 @@ vcz_compress2_static(
     /* zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 (no dict,
      * FLEVEL=0, FCHECK chosen so (CMF*256+FLG) % 31 == 0). Matches
      * zlib's compress2(_, _, _, _, 0). */
-    *p++ = 0x78;
-    *p++ = 0x01;
+    p[0] = 0x78;
+    p[1] = 0x01;
+    p += 2;
 
     if (source_len == 0) {
         /* Single empty stored block with BFINAL=1. */
-        *p++ = 0x01;
-        *p++ = 0x00;
-        *p++ = 0x00;
-        *p++ = 0xFF;
-        *p++ = 0xFF;
+        p[0] = 0x01;
+        p[1] = 0x00;
+        p[2] = 0x00;
+        p[3] = 0xFF;
+        p[4] = 0xFF;
+        p += 5;
     } else {
         while (remaining > 0) {
             if (remaining > 65535) {
                 block_len = 65535;
-                *p++ = 0x00; /* BFINAL=0, BTYPE=00 (stored) */
+                p[0] = 0x00; /* BFINAL=0, BTYPE=00 (stored) */
             } else {
                 block_len = (uint16_t) remaining;
-                *p++ = 0x01; /* BFINAL=1, BTYPE=00 */
+                p[0] = 0x01; /* BFINAL=1, BTYPE=00 */
             }
             nlen = (uint16_t) ~block_len;
-            *p++ = (uint8_t) (block_len & 0xFF);
-            *p++ = (uint8_t) ((block_len >> 8) & 0xFF);
-            *p++ = (uint8_t) (nlen & 0xFF);
-            *p++ = (uint8_t) ((nlen >> 8) & 0xFF);
+            p[1] = (uint8_t) (block_len & 0xFF);
+            p[2] = (uint8_t) ((block_len >> 8) & 0xFF);
+            p[3] = (uint8_t) (nlen & 0xFF);
+            p[4] = (uint8_t) ((nlen >> 8) & 0xFF);
+            p += 5;
             memcpy(p, source, block_len);
             p += block_len;
             source += block_len;
@@ -1401,10 +1404,11 @@ vcz_compress2_static(
 
     /* Big-endian adler32 over the uncompressed payload. */
     adler = vcz_adler32_static(1, payload, source_len);
-    *p++ = (uint8_t) ((adler >> 24) & 0xFF);
-    *p++ = (uint8_t) ((adler >> 16) & 0xFF);
-    *p++ = (uint8_t) ((adler >> 8) & 0xFF);
-    *p++ = (uint8_t) (adler & 0xFF);
+    p[0] = (uint8_t) ((adler >> 24) & 0xFF);
+    p[1] = (uint8_t) ((adler >> 16) & 0xFF);
+    p[2] = (uint8_t) ((adler >> 8) & 0xFF);
+    p[3] = (uint8_t) (adler & 0xFF);
+    p += 4;
 
     *dest_len = (size_t) (p - dest);
     return VCZ_Z_OK;
@@ -1483,60 +1487,68 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         out = out_buf + v * bpv;
 
         /* varid: uint16 LE length + bytes */
-        *out++ = (uint8_t) (varid_max & 0xFF);
-        *out++ = (uint8_t) ((varid_max >> 8) & 0xFF);
+        out[0] = (uint8_t) (varid_max & 0xFF);
+        out[1] = (uint8_t) ((varid_max >> 8) & 0xFF);
+        out += 2;
         memcpy(out, varid + v * varid_max, varid_max);
         out += varid_max;
 
         /* rsid */
-        *out++ = (uint8_t) (rsid_max & 0xFF);
-        *out++ = (uint8_t) ((rsid_max >> 8) & 0xFF);
+        out[0] = (uint8_t) (rsid_max & 0xFF);
+        out[1] = (uint8_t) ((rsid_max >> 8) & 0xFF);
+        out += 2;
         memcpy(out, rsid + v * rsid_max, rsid_max);
         out += rsid_max;
 
         /* chrom */
-        *out++ = (uint8_t) (chrom_max & 0xFF);
-        *out++ = (uint8_t) ((chrom_max >> 8) & 0xFF);
+        out[0] = (uint8_t) (chrom_max & 0xFF);
+        out[1] = (uint8_t) ((chrom_max >> 8) & 0xFF);
+        out += 2;
         memcpy(out, chrom + v * chrom_max, chrom_max);
         out += chrom_max;
 
         /* position: uint32 LE */
         pos = (uint32_t) position[v];
-        *out++ = (uint8_t) (pos & 0xFF);
-        *out++ = (uint8_t) ((pos >> 8) & 0xFF);
-        *out++ = (uint8_t) ((pos >> 16) & 0xFF);
-        *out++ = (uint8_t) ((pos >> 24) & 0xFF);
+        out[0] = (uint8_t) (pos & 0xFF);
+        out[1] = (uint8_t) ((pos >> 8) & 0xFF);
+        out[2] = (uint8_t) ((pos >> 16) & 0xFF);
+        out[3] = (uint8_t) ((pos >> 24) & 0xFF);
+        out += 4;
 
         /* K = 2 alleles */
-        *out++ = 0x02;
-        *out++ = 0x00;
+        out[0] = 0x02;
+        out[1] = 0x00;
+        out += 2;
 
         /* allele1: uint32 LE length + bytes */
-        *out++ = (uint8_t) (allele_max & 0xFF);
-        *out++ = (uint8_t) ((allele_max >> 8) & 0xFF);
-        *out++ = (uint8_t) ((allele_max >> 16) & 0xFF);
-        *out++ = (uint8_t) ((allele_max >> 24) & 0xFF);
+        out[0] = (uint8_t) (allele_max & 0xFF);
+        out[1] = (uint8_t) ((allele_max >> 8) & 0xFF);
+        out[2] = (uint8_t) ((allele_max >> 16) & 0xFF);
+        out[3] = (uint8_t) ((allele_max >> 24) & 0xFF);
+        out += 4;
         memcpy(out, allele1 + v * allele_max, allele_max);
         out += allele_max;
 
         /* allele2 */
-        *out++ = (uint8_t) (allele_max & 0xFF);
-        *out++ = (uint8_t) ((allele_max >> 8) & 0xFF);
-        *out++ = (uint8_t) ((allele_max >> 16) & 0xFF);
-        *out++ = (uint8_t) ((allele_max >> 24) & 0xFF);
+        out[0] = (uint8_t) (allele_max & 0xFF);
+        out[1] = (uint8_t) ((allele_max >> 8) & 0xFF);
+        out[2] = (uint8_t) ((allele_max >> 16) & 0xFF);
+        out[3] = (uint8_t) ((allele_max >> 24) & 0xFF);
+        out += 4;
         memcpy(out, allele2 + v * allele_max, allele_max);
         out += allele_max;
 
         /* C = 4 + compressed payload size, then D = uncompressed size. */
         C = (uint32_t) (4 + payload_size);
-        *out++ = (uint8_t) (C & 0xFF);
-        *out++ = (uint8_t) ((C >> 8) & 0xFF);
-        *out++ = (uint8_t) ((C >> 16) & 0xFF);
-        *out++ = (uint8_t) ((C >> 24) & 0xFF);
-        *out++ = (uint8_t) (geno_size & 0xFF);
-        *out++ = (uint8_t) ((geno_size >> 8) & 0xFF);
-        *out++ = (uint8_t) ((geno_size >> 16) & 0xFF);
-        *out++ = (uint8_t) ((geno_size >> 24) & 0xFF);
+        out[0] = (uint8_t) (C & 0xFF);
+        out[1] = (uint8_t) ((C >> 8) & 0xFF);
+        out[2] = (uint8_t) ((C >> 16) & 0xFF);
+        out[3] = (uint8_t) ((C >> 24) & 0xFF);
+        out[4] = (uint8_t) (geno_size & 0xFF);
+        out[5] = (uint8_t) ((geno_size >> 8) & 0xFF);
+        out[6] = (uint8_t) ((geno_size >> 16) & 0xFF);
+        out[7] = (uint8_t) ((geno_size >> 24) & 0xFF);
+        out += 8;
 
         /* Stored zlib payload over scratch. */
         actual_len = payload_size;

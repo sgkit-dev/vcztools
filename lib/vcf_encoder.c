@@ -1080,6 +1080,19 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
     return 10 + 3 * num_samples;
 }
 
+/* Little-endian uint32 store: writes `value` into the four bytes at
+ * `buf[0..4]`. The BGEN chunk-slice kernel writes a lot of uint32 LE
+ * fields per variant (position, allele lengths, C, D); using a named
+ * helper keeps each call site to two lines. */
+static inline void
+encode_u32_le(uint8_t *buf, uint32_t value)
+{
+    buf[0] = (uint8_t) (value & 0xFF);
+    buf[1] = (uint8_t) ((value >> 8) & 0xFF);
+    buf[2] = (uint8_t) ((value >> 16) & 0xFF);
+    buf[3] = (uint8_t) ((value >> 24) & 0xFF);
+}
+
 /* Build ONE BGEN Layout 2 / 8-bit / biallelic genotype block into `row`,
  * with per-sample ploidy. See vcztools/bgen.py and the BGEN spec for the
  * byte layout: header (8B) + ploidy bytes (one per sample) + phased flag
@@ -1104,6 +1117,7 @@ static inline __attribute__((always_inline)) int
 bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased,
     uint8_t *row, uint32_t *out_len)
 {
+    int ret = 0;
     uint8_t *ploidy_out = row + 8;
     uint8_t *prob_out = row + 8 + num_samples + 2;
     uint8_t ploidy_byte, pmin = 2, pmax = 1;
@@ -1117,10 +1131,12 @@ bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased
         /* The BGEN encoder is biallelic: only {-2, -1, 0, 1} are
          * accepted; any other value is a data-quality error. */
         if (a < -2 || a > 1 || b < -2 || b > 1) {
-            return VCZ_ERR_BGEN_INVALID_ALLELE;
+            ret = VCZ_ERR_BGEN_INVALID_ALLELE;
+            goto out;
         }
         if (a == VCZ_INT_FILL) {
-            return VCZ_ERR_BGEN_INVALID_PLOIDY;
+            ret = VCZ_ERR_BGEN_INVALID_PLOIDY;
+            goto out;
         }
         if (b == VCZ_INT_FILL) {
             /* Haploid call: ploidy=1. */
@@ -1159,17 +1175,13 @@ bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased
 
     if (num_samples == 0) {
         /* Pmin/Pmax are undefined without samples; spec says report 2/2
-         * (the diploid default). Matches the previous diploid-only
-         * behaviour for empty stores. */
+         * (the diploid default). */
         pmin = 2;
         pmax = 2;
     }
 
     /* 8-byte header: N (uint32 LE), K (uint16 LE), Pmin, Pmax. */
-    row[0] = (uint8_t) (num_samples & 0xFF);
-    row[1] = (uint8_t) ((num_samples >> 8) & 0xFF);
-    row[2] = (uint8_t) ((num_samples >> 16) & 0xFF);
-    row[3] = (uint8_t) ((num_samples >> 24) & 0xFF);
+    encode_u32_le(row, (uint32_t) num_samples);
     row[4] = 2; /* K (n_alleles) low byte */
     row[5] = 0; /* K high byte */
     row[6] = pmin;
@@ -1178,7 +1190,8 @@ bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased
     row[8 + num_samples + 1] = VCZ_BGEN_BITS_PER_PROB;
 
     *out_len = (uint32_t) (8 + num_samples + 2 + prob_offset);
-    return 0;
+out:
+    return ret;
 }
 
 /* Multi-variant wrapper around bgen_geno_block_one. `buf` must be at
@@ -1190,17 +1203,18 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens)
 {
-    int ret;
+    int ret = 0;
     size_t v;
 
     for (v = 0; v < num_variants; v++) {
         ret = bgen_geno_block_one(num_samples, genotypes + v * num_samples * 2,
             phased[v] ? 1 : 0, buf + v * row_stride, &out_lens[v]);
         if (ret != 0) {
-            return ret;
+            goto out;
         }
     }
-    return 0;
+out:
+    return ret;
 }
 
 /* Adler-32 over `buf` (RFC 1950). NMAX=5552 is the largest run that
@@ -1349,6 +1363,7 @@ static inline __attribute__((always_inline)) int
 vcz_compress2_static(
     uint8_t *dest, size_t *dest_len, const uint8_t *source, size_t source_len, int level)
 {
+    int ret = VCZ_Z_OK;
     uint8_t *p = dest;
     const uint8_t *payload = source;
     size_t remaining = source_len;
@@ -1358,11 +1373,13 @@ vcz_compress2_static(
     uint16_t nlen;
 
     if (level != 0) {
-        return VCZ_Z_STREAM_ERROR;
+        ret = VCZ_Z_STREAM_ERROR;
+        goto out;
     }
     need = vcz_compress_bound(source_len);
     if (*dest_len < need) {
-        return VCZ_Z_BUF_ERROR;
+        ret = VCZ_Z_BUF_ERROR;
+        goto out;
     }
 
     /* zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 (no dict,
@@ -1411,7 +1428,8 @@ vcz_compress2_static(
     p += 4;
 
     *dest_len = (size_t) (p - dest);
-    return VCZ_Z_OK;
+out:
+    return ret;
 }
 
 int
@@ -1454,8 +1472,6 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
     size_t actual_len;
     uint8_t *scratch = NULL;
     uint8_t *out;
-    uint32_t pos;
-    uint32_t C;
     uint32_t scratch_len;
     int err = 0;
 
@@ -1465,7 +1481,8 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
 
     scratch = malloc(geno_size);
     if (scratch == NULL) {
-        return VCZ_ERR_NO_MEMORY;
+        err = VCZ_ERR_NO_MEMORY;
+        goto out;
     }
 
     for (v = 0; v < num_variants; v++) {
@@ -1508,11 +1525,7 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         out += chrom_max;
 
         /* position: uint32 LE */
-        pos = (uint32_t) position[v];
-        out[0] = (uint8_t) (pos & 0xFF);
-        out[1] = (uint8_t) ((pos >> 8) & 0xFF);
-        out[2] = (uint8_t) ((pos >> 16) & 0xFF);
-        out[3] = (uint8_t) ((pos >> 24) & 0xFF);
+        encode_u32_le(out, (uint32_t) position[v]);
         out += 4;
 
         /* K = 2 alleles */
@@ -1521,33 +1534,20 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         out += 2;
 
         /* allele1: uint32 LE length + bytes */
-        out[0] = (uint8_t) (allele_max & 0xFF);
-        out[1] = (uint8_t) ((allele_max >> 8) & 0xFF);
-        out[2] = (uint8_t) ((allele_max >> 16) & 0xFF);
-        out[3] = (uint8_t) ((allele_max >> 24) & 0xFF);
+        encode_u32_le(out, (uint32_t) allele_max);
         out += 4;
         memcpy(out, allele1 + v * allele_max, allele_max);
         out += allele_max;
 
         /* allele2 */
-        out[0] = (uint8_t) (allele_max & 0xFF);
-        out[1] = (uint8_t) ((allele_max >> 8) & 0xFF);
-        out[2] = (uint8_t) ((allele_max >> 16) & 0xFF);
-        out[3] = (uint8_t) ((allele_max >> 24) & 0xFF);
+        encode_u32_le(out, (uint32_t) allele_max);
         out += 4;
         memcpy(out, allele2 + v * allele_max, allele_max);
         out += allele_max;
 
         /* C = 4 + compressed payload size, then D = uncompressed size. */
-        C = (uint32_t) (4 + payload_size);
-        out[0] = (uint8_t) (C & 0xFF);
-        out[1] = (uint8_t) ((C >> 8) & 0xFF);
-        out[2] = (uint8_t) ((C >> 16) & 0xFF);
-        out[3] = (uint8_t) ((C >> 24) & 0xFF);
-        out[4] = (uint8_t) (geno_size & 0xFF);
-        out[5] = (uint8_t) ((geno_size >> 8) & 0xFF);
-        out[6] = (uint8_t) ((geno_size >> 16) & 0xFF);
-        out[7] = (uint8_t) ((geno_size >> 24) & 0xFF);
+        encode_u32_le(out, (uint32_t) (4 + payload_size));
+        encode_u32_le(out + 4, (uint32_t) geno_size);
         out += 8;
 
         /* Stored zlib payload over scratch. */

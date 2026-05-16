@@ -1671,6 +1671,297 @@ test_bgen_geno_blocks_large(void)
     free(expected);
 }
 
+/* Decode a little-endian uint16/uint32 from a byte buffer. Match the
+ * encode_u32_le / uint16-LE byte order the kernel writes. */
+static uint16_t
+decode_u16_le(const uint8_t *buf)
+{
+    return (uint16_t) (buf[0] | ((uint16_t) buf[1] << 8));
+}
+
+static uint32_t
+decode_u32_le(const uint8_t *buf)
+{
+    return (uint32_t) buf[0] | ((uint32_t) buf[1] << 8) | ((uint32_t) buf[2] << 16)
+           | ((uint32_t) buf[3] << 24);
+}
+
+/* Inputs for vcz_encode_bgen_chunk_slice_level0 tests. Caller stages the
+ * arrays; helper kicks the kernel and returns its rc. Use scope-block
+ * decls only at function tops to satisfy the house style. */
+typedef struct {
+    size_t num_variants;
+    size_t num_samples;
+    size_t uniform_ploidy;
+    size_t varid_max;
+    size_t rsid_max;
+    size_t chrom_max;
+    size_t allele_max;
+    const uint8_t *varid;
+    const uint8_t *rsid;
+    const uint8_t *chrom;
+    const uint8_t *allele1;
+    const uint8_t *allele2;
+    const int32_t *position;
+    const int8_t *genotypes;
+    const uint8_t *phased;
+} chunk_slice_args_t;
+
+static int
+call_chunk_slice(const chunk_slice_args_t *a, uint8_t *out_buf)
+{
+    return vcz_encode_bgen_chunk_slice_level0(a->num_variants, a->num_samples,
+        a->uniform_ploidy, a->varid, a->varid_max, a->rsid, a->rsid_max, a->chrom,
+        a->chrom_max, a->allele1, a->allele2, a->allele_max, a->position, a->genotypes,
+        a->phased, out_buf);
+}
+
+static void
+test_bgen_chunk_slice_zero_variants(void)
+{
+    /* num_variants=0: kernel must not touch out_buf. */
+    uint8_t out_buf[64];
+    chunk_slice_args_t args
+        = { 0, 5, 2, 1, 1, 1, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    size_t j;
+    int rc;
+
+    memset(out_buf, 0xCC, sizeof(out_buf));
+    rc = call_chunk_slice(&args, out_buf);
+    CU_ASSERT_EQUAL_FATAL(rc, 0);
+    for (j = 0; j < sizeof(out_buf); j++) {
+        CU_ASSERT_EQUAL_FATAL(out_buf[j], 0xCC);
+    }
+}
+
+static void
+test_bgen_chunk_slice_single_variant_diploid(void)
+{
+    /* 1 variant x 1 sample, hom-ref diploid, unphased. Drives the
+     * variant-header layout, the K=2 marker, the C/D framing and the
+     * vcz_compress2 stored-zlib envelope. */
+    uint8_t varid[2] = { 'r', 's' };
+    uint8_t rsid[2] = { 'r', 's' };
+    uint8_t chrom[4] = { 'c', 'h', 'r', '1' };
+    uint8_t allele1[1] = { 'A' };
+    uint8_t allele2[1] = { 'T' };
+    int32_t position[1] = { 100 };
+    int8_t genotypes[2] = { 0, 0 };
+    uint8_t phased[1] = { 0 };
+    chunk_slice_args_t args = { 1, 1, 2, 2, 2, 4, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t geno_size = 10 + 3 * 1;
+    size_t payload_size = vcz_compress_bound(geno_size);
+    size_t bpv = 28 + 2 + 2 + 4 + 2 + payload_size;
+    uint8_t *out = malloc(bpv);
+    const uint8_t *p;
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, 0);
+
+    p = out;
+    /* varid: u16 LE length + bytes */
+    CU_ASSERT_EQUAL_FATAL(decode_u16_le(p), 2);
+    CU_ASSERT_EQUAL_FATAL(memcmp(p + 2, varid, 2), 0);
+    p += 2 + 2;
+    /* rsid */
+    CU_ASSERT_EQUAL_FATAL(decode_u16_le(p), 2);
+    CU_ASSERT_EQUAL_FATAL(memcmp(p + 2, rsid, 2), 0);
+    p += 2 + 2;
+    /* chrom */
+    CU_ASSERT_EQUAL_FATAL(decode_u16_le(p), 4);
+    CU_ASSERT_EQUAL_FATAL(memcmp(p + 2, chrom, 4), 0);
+    p += 2 + 4;
+    /* position */
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p), 100);
+    p += 4;
+    /* K = 2 */
+    CU_ASSERT_EQUAL_FATAL(decode_u16_le(p), 2);
+    p += 2;
+    /* allele1 */
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p), 1);
+    CU_ASSERT_EQUAL_FATAL(p[4], 'A');
+    p += 4 + 1;
+    /* allele2 */
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p), 1);
+    CU_ASSERT_EQUAL_FATAL(p[4], 'T');
+    p += 4 + 1;
+    /* C, D */
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p), (uint32_t) (4 + payload_size));
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p + 4), (uint32_t) geno_size);
+    p += 8;
+    /* Stored zlib envelope. Spec compress2(level=0) header: 0x78 0x01;
+     * one stored block (BFINAL=1, BTYPE=00) for geno_size < 65535. */
+    CU_ASSERT_EQUAL_FATAL(p[0], 0x78);
+    CU_ASSERT_EQUAL_FATAL(p[1], 0x01);
+    CU_ASSERT_EQUAL_FATAL(p[2], 0x01); /* BFINAL=1, BTYPE=00 */
+    CU_ASSERT_EQUAL_FATAL(decode_u16_le(p + 3), (uint16_t) geno_size);
+    CU_ASSERT_EQUAL_FATAL(decode_u16_le(p + 5), (uint16_t) ~geno_size);
+    /* Geno block at p + 2 + 5: N=1, K=2, Pmin=2, Pmax=2. */
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p + 7), 1);
+    CU_ASSERT_EQUAL_FATAL(p[7 + 4], 2); /* K low */
+    CU_ASSERT_EQUAL_FATAL(p[7 + 5], 0); /* K high */
+    CU_ASSERT_EQUAL_FATAL(p[7 + 6], 2); /* Pmin */
+    CU_ASSERT_EQUAL_FATAL(p[7 + 7], 2); /* Pmax */
+    CU_ASSERT_EQUAL_FATAL(p[7 + 8], VCZ_BGEN_PLOIDY_DIPLOID);
+    CU_ASSERT_EQUAL_FATAL(p[7 + 9], 0); /* phased flag */
+    CU_ASSERT_EQUAL_FATAL(p[7 + 10], VCZ_BGEN_BITS_PER_PROB);
+    CU_ASSERT_EQUAL_FATAL(p[7 + 11], 0xFF); /* hom-ref unphased */
+    CU_ASSERT_EQUAL_FATAL(p[7 + 12], 0x00);
+
+    free(out);
+}
+
+static void
+test_bgen_chunk_slice_multi_variant_offsets(void)
+{
+    /* Three variants land at deterministic byte offsets bpv apart;
+     * confirm position[v] surfaces at the right offset in each. */
+    uint8_t varid[3] = { 'a', 'b', 'c' };
+    uint8_t rsid[3] = { 'a', 'b', 'c' };
+    uint8_t chrom[3] = { '1', '1', '1' };
+    uint8_t allele1[3] = { 'A', 'C', 'G' };
+    uint8_t allele2[3] = { 'T', 'G', 'C' };
+    int32_t position[3] = { 100, 200, 300 };
+    int8_t genotypes[3 * 2 * 2]
+        = { 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0 }; /* 3 variants x 2 samples */
+    uint8_t phased[3] = { 0, 0, 0 };
+    chunk_slice_args_t args = { 3, 2, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t geno_size = 10 + 3 * 2;
+    size_t payload_size = vcz_compress_bound(geno_size);
+    size_t bpv = 28 + 1 + 1 + 1 + 2 + payload_size;
+    size_t v;
+    uint8_t *out = malloc(3 * bpv);
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, 0);
+
+    for (v = 0; v < 3; v++) {
+        const uint8_t *vp = out + v * bpv;
+        /* position lives at offset 2+1 + 2+1 + 2+1 = 9 */
+        CU_ASSERT_EQUAL_FATAL(decode_u32_le(vp + 9), (uint32_t) position[v]);
+        /* allele1 single-byte payload after position(4)+K(2)+u32 length(4) = 10 */
+        CU_ASSERT_EQUAL_FATAL(vp[9 + 4 + 2 + 4], allele1[v]);
+    }
+    free(out);
+}
+
+static void
+test_bgen_chunk_slice_uniform_haploid(void)
+{
+    /* uniform_ploidy=1 with -2 in slot 1 for every sample: kernel
+     * accepts and produces a haploid geno block. */
+    uint8_t varid[1] = { '.' };
+    uint8_t rsid[1] = { '.' };
+    uint8_t chrom[1] = { '1' };
+    uint8_t allele1[1] = { 'A' };
+    uint8_t allele2[1] = { 'T' };
+    int32_t position[1] = { 42 };
+    int8_t genotypes[2 * 2] = { 0, -2, 1, -2 }; /* 1 variant x 2 haploid samples */
+    uint8_t phased[1] = { 0 };
+    chunk_slice_args_t args = { 1, 2, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t geno_size = 10 + 2 * 2; /* haploid: 1 prob byte per sample */
+    size_t payload_size = vcz_compress_bound(geno_size);
+    size_t bpv = 28 + 1 + 1 + 1 + 2 + payload_size;
+    uint8_t *out = malloc(bpv);
+    const uint8_t *p;
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, 0);
+
+    /* D in the C/D framing must equal the haploid geno_size, not the
+     * worst-case diploid stride. */
+    p = out + (28 - 8) + 1 + 1 + 1 + 2; /* skip variant header */
+    CU_ASSERT_EQUAL_FATAL(decode_u32_le(p + 4), (uint32_t) geno_size);
+    free(out);
+}
+
+static void
+test_bgen_chunk_slice_invalid_ploidy(void)
+{
+    /* -2 in slot 0 is "zero-ploidy" — not representable in BGEN.
+     * Surfaces via VCZ_ERR_BGEN_INVALID_PLOIDY. */
+    uint8_t varid[1] = { '.' };
+    uint8_t rsid[1] = { '.' };
+    uint8_t chrom[1] = { '1' };
+    uint8_t allele1[1] = { 'A' };
+    uint8_t allele2[1] = { 'T' };
+    int32_t position[1] = { 1 };
+    int8_t genotypes[2] = { -2, 0 };
+    uint8_t phased[1] = { 0 };
+    chunk_slice_args_t args = { 1, 1, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t bpv = 28 + 1 + 1 + 1 + 2 + vcz_compress_bound(10 + 3 * 1);
+    uint8_t *out = malloc(bpv);
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, VCZ_ERR_BGEN_INVALID_PLOIDY);
+    free(out);
+}
+
+static void
+test_bgen_chunk_slice_invalid_allele(void)
+{
+    /* Multi-allelic index 2 in genotypes (beyond {-2,-1,0,1}) is
+     * rejected with VCZ_ERR_BGEN_INVALID_ALLELE. */
+    uint8_t varid[1] = { '.' };
+    uint8_t rsid[1] = { '.' };
+    uint8_t chrom[1] = { '1' };
+    uint8_t allele1[1] = { 'A' };
+    uint8_t allele2[1] = { 'T' };
+    int32_t position[1] = { 1 };
+    int8_t genotypes[2] = { 0, 2 };
+    uint8_t phased[1] = { 0 };
+    chunk_slice_args_t args = { 1, 1, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t bpv = 28 + 1 + 1 + 1 + 2 + vcz_compress_bound(10 + 3 * 1);
+    uint8_t *out = malloc(bpv);
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, VCZ_ERR_BGEN_INVALID_ALLELE);
+    free(out);
+}
+
+static void
+test_bgen_chunk_slice_mixed_ploidy(void)
+{
+    /* Encoder configured uniform_ploidy=2 but one sample is haploid
+     * (b == -2): mixed-ploidy detection kicks in via the geno_size
+     * mismatch and the kernel returns VCZ_ERR_BGEN_MIXED_PLOIDY. */
+    uint8_t varid[1] = { '.' };
+    uint8_t rsid[1] = { '.' };
+    uint8_t chrom[1] = { '1' };
+    uint8_t allele1[1] = { 'A' };
+    uint8_t allele2[1] = { 'T' };
+    int32_t position[1] = { 1 };
+    /* 1 variant x 2 samples: first sample is diploid (0/0), second is
+     * haploid (0/-2). */
+    int8_t genotypes[2 * 2] = { 0, 0, 0, -2 };
+    uint8_t phased[1] = { 0 };
+    chunk_slice_args_t args = { 1, 2, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t bpv = 28 + 1 + 1 + 1 + 2 + vcz_compress_bound(10 + 3 * 2);
+    uint8_t *out = malloc(bpv);
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, VCZ_ERR_BGEN_MIXED_PLOIDY);
+    free(out);
+}
+
 /*=================================================
   Test suite management
   =================================================
@@ -1814,6 +2105,16 @@ main(int argc, char **argv)
             test_bgen_geno_blocks_invalid_ploidy_error },
         { "test_bgen_geno_blocks_mixed_phase", test_bgen_geno_blocks_mixed_phase },
         { "test_bgen_geno_blocks_large", test_bgen_geno_blocks_large },
+        { "test_bgen_chunk_slice_zero_variants", test_bgen_chunk_slice_zero_variants },
+        { "test_bgen_chunk_slice_single_variant_diploid",
+            test_bgen_chunk_slice_single_variant_diploid },
+        { "test_bgen_chunk_slice_multi_variant_offsets",
+            test_bgen_chunk_slice_multi_variant_offsets },
+        { "test_bgen_chunk_slice_uniform_haploid",
+            test_bgen_chunk_slice_uniform_haploid },
+        { "test_bgen_chunk_slice_invalid_ploidy", test_bgen_chunk_slice_invalid_ploidy },
+        { "test_bgen_chunk_slice_invalid_allele", test_bgen_chunk_slice_invalid_allele },
+        { "test_bgen_chunk_slice_mixed_ploidy", test_bgen_chunk_slice_mixed_ploidy },
         { NULL, NULL },
     };
     return test_main(tests, argc, argv);

@@ -266,7 +266,7 @@ def _single_variant_geno_block(G_single, *, phased=False):
         chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
     chunk_strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
     prep = bgen._prepare_chunk(chunk, chunk_strings, start=0, end=1)
-    geno_blocks, geno_block_lens = bgen._vcztools.encode_bgen_geno_blocks(
+    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(
         prep.genotypes, prep.phased
     )
     block_len = int(geno_block_lens[0])
@@ -647,12 +647,8 @@ class TestPloidyNormalization:
         prep2 = prepare(G_padded)
         # _prepare_chunk no longer materialises geno blocks; build them
         # here from the normalised genotypes + phased and compare.
-        gb1, gbl1 = bgen._vcztools.encode_bgen_geno_blocks(
-            prep1.genotypes, prep1.phased
-        )
-        gb2, gbl2 = bgen._vcztools.encode_bgen_geno_blocks(
-            prep2.genotypes, prep2.phased
-        )
+        gb1, gbl1 = _vcztools.encode_bgen_geno_blocks(prep1.genotypes, prep1.phased)
+        gb2, gbl2 = _vcztools.encode_bgen_geno_blocks(prep2.genotypes, prep2.phased)
         nt.assert_array_equal(gbl1, gbl2)
         block_len = int(gbl1[0])
         nt.assert_array_equal(gb1[0, :block_len], gb2[0, :block_len])
@@ -2214,7 +2210,7 @@ class TestBgenEncoderUniformPloidy:
 def _python_encode_variant_range(prep, uniform_len):
     """Reference Python implementation matching the old loop body."""
     n = prep.varid.shape[0]
-    geno_blocks, _ = bgen._vcztools.encode_bgen_geno_blocks(prep.genotypes, prep.phased)
+    geno_blocks, _ = _vcztools.encode_bgen_geno_blocks(prep.genotypes, prep.phased)
     out = bytearray()
     for j in range(n):
         block = bgen._encode_variant_block(

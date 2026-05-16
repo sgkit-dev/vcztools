@@ -1080,6 +1080,29 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
     return 10 + 3 * num_samples;
 }
 
+/* Uniform-ploidy variant of the row-size formula: 8-byte header +
+ * num_samples ploidy bytes + 2 flag bytes + uniform_ploidy probability
+ * bytes per sample. uniform_ploidy must be 1 (haploid) or 2 (diploid). */
+size_t
+vcz_bgen_geno_block_size(size_t num_samples, size_t uniform_ploidy)
+{
+    return 10 + (uniform_ploidy + 1) * num_samples;
+}
+
+/* Per-variant byte count produced by vcz_encode_bgen_chunk_slice_level0:
+ * variant-header framing (28 bytes: three uint16 length prefixes + uint32
+ * position + uint16 K + 2 * uint32 allele-length prefixes + uint32 C +
+ * uint32 D) + padded varid/rsid/chrom/allele bytes + the stored zlib
+ * envelope around the uniform-ploidy genotype block. */
+size_t
+vcz_bgen_variant_block_size(size_t num_samples, size_t uniform_ploidy, size_t varid_max,
+    size_t rsid_max, size_t chrom_max, size_t allele_max)
+{
+    size_t geno_size = vcz_bgen_geno_block_size(num_samples, uniform_ploidy);
+    return 28 + varid_max + rsid_max + chrom_max + 2 * allele_max
+           + vcz_compress_bound(geno_size);
+}
+
 /* Little-endian uint32 store: writes `value` into the four bytes at
  * `buf[0..4]`. */
 static inline void
@@ -1477,9 +1500,10 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
     uint32_t scratch_len;
     int err = 0;
 
-    geno_size = 10 + (uniform_ploidy + 1) * num_samples;
+    geno_size = vcz_bgen_geno_block_size(num_samples, uniform_ploidy);
     payload_size = vcz_compress_bound(geno_size);
-    bpv = 28 + varid_max + rsid_max + chrom_max + 2 * allele_max + payload_size;
+    bpv = vcz_bgen_variant_block_size(
+        num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max);
 
     scratch = malloc(geno_size);
     if (scratch == NULL) {

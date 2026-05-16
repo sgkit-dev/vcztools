@@ -754,9 +754,7 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
     npy_intp num_variants;
     npy_intp num_samples;
     npy_intp varid_max, rsid_max, chrom_max, allele_max;
-    npy_intp geno_size;
     npy_intp expected_bytes;
-    size_t payload_size;
     int err;
 
     if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!n", &PyArray_Type, &varid,
@@ -859,17 +857,12 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
         goto out;
     }
 
-    /* The kernel writes num_variants * bytes_per_variant bytes. */
-    geno_size = 10 + ((npy_intp) uniform_ploidy + 1) * num_samples;
-    payload_size = 2 + 4 + (size_t) geno_size;
-    if (geno_size == 0) {
-        payload_size += 5;
-    } else {
-        payload_size += 5 * (((size_t) geno_size + 65534) / 65535);
-    }
+    /* Mirrors vcz_bgen_variant_block_size's contribution per variant;
+     * shared with the kernel so the wrapper can't drift on the layout. */
     expected_bytes = num_variants
-                     * (28 + varid_max + rsid_max + chrom_max + 2 * allele_max
-                         + (npy_intp) payload_size);
+                     * (npy_intp) vcz_bgen_variant_block_size((size_t) num_samples,
+                         (size_t) uniform_ploidy, (size_t) varid_max, (size_t) rsid_max,
+                         (size_t) chrom_max, (size_t) allele_max);
     if (PyArray_DIMS(out_buf)[0] < expected_bytes) {
         PyErr_Format(VczBufferTooSmall, "out_buf is too small: got %zd bytes, need %zd",
             (Py_ssize_t) PyArray_DIMS(out_buf)[0], (Py_ssize_t) expected_bytes);

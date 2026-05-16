@@ -509,6 +509,40 @@ class TestEncodePlink:
         with pytest.raises(_vcztools.VczBufferTooSmall):
             _vcztools.encode_plink(G, np.zeros(0, dtype=np.uint8))
 
+    @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
+    def test_out_buf_bad_type(self, bad_type):
+        with pytest.raises(TypeError):
+            _vcztools.encode_plink(np.zeros((1, 1, 2), dtype=np.int8), bad_type)
+
+    def test_out_buf_wrong_dim(self):
+        with pytest.raises(ValueError, match="out_buf has wrong dimension"):
+            _vcztools.encode_plink(
+                np.zeros((1, 1, 2), dtype=np.int8), np.zeros((1, 1), dtype=np.uint8)
+            )
+
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.int32, np.float32])
+    def test_out_buf_wrong_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for out_buf"):
+            _vcztools.encode_plink(
+                np.zeros((1, 4, 2), dtype=np.int8), np.zeros(1, dtype=bad_dtype)
+            )
+
+    def test_non_contiguous_out_buf(self):
+        full = np.zeros(16, dtype=np.uint8)
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _vcztools.encode_plink(np.zeros((1, 4, 2), dtype=np.int8), full[::2])
+
+    def test_non_contiguous_genotypes(self):
+        full = np.zeros((2, 4, 2), dtype=np.int8)
+        view = full[:, ::2, :]
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _vcztools.encode_plink(view, self._out_buf(2, 2))
+
+    def test_returns_none(self):
+        # Wrapper now returns None (the caller owns out_buf).
+        G = np.zeros((1, 4, 2), dtype=np.int8)
+        assert _vcztools.encode_plink(G, self._out_buf(1, 4)) is None
+
     def test_example(self):
         G = np.array(
             [
@@ -701,3 +735,319 @@ class TestEncodeBgenGenoBlocks:
         buf, lens = _vcztools.encode_bgen_geno_blocks(G, self._phased(0))
         assert buf.shape == (0, 25)
         assert lens.shape == (0,)
+
+
+# ---------------------------------------------------------------------------
+# encode_bgen_chunk_slice_level0
+# ---------------------------------------------------------------------------
+
+
+class _ChunkSliceArgs:
+    """Builder for valid encode_bgen_chunk_slice_level0 args.
+
+    Each attribute can be overridden via the constructor; the
+    ``as_tuple()`` method returns the positional argument tuple the C
+    wrapper expects. Tests that exercise a single error path build a
+    valid baseline and mutate exactly one field.
+    """
+
+    def __init__(
+        self,
+        num_variants=1,
+        num_samples=1,
+        uniform_ploidy=2,
+        varid_max=2,
+        rsid_max=2,
+        chrom_max=4,
+        allele_max=1,
+        varid=None,
+        rsid=None,
+        chrom=None,
+        allele1=None,
+        allele2=None,
+        position=None,
+        genotypes=None,
+        phased=None,
+        out_buf=None,
+    ):
+        self.num_variants = num_variants
+        self.num_samples = num_samples
+        self.uniform_ploidy = uniform_ploidy
+        self.varid_max = varid_max
+        self.rsid_max = rsid_max
+        self.chrom_max = chrom_max
+        self.allele_max = allele_max
+        nv, ns = num_variants, num_samples
+        self.varid = (
+            np.zeros((nv, varid_max), dtype=np.uint8) if varid is None else varid
+        )
+        self.rsid = np.zeros((nv, rsid_max), dtype=np.uint8) if rsid is None else rsid
+        self.chrom = (
+            np.zeros((nv, chrom_max), dtype=np.uint8) if chrom is None else chrom
+        )
+        self.allele1 = (
+            np.zeros((nv, allele_max), dtype=np.uint8) if allele1 is None else allele1
+        )
+        self.allele2 = (
+            np.zeros((nv, allele_max), dtype=np.uint8) if allele2 is None else allele2
+        )
+        self.position = np.zeros(nv, dtype=np.int32) if position is None else position
+        self.genotypes = (
+            np.zeros((nv, ns, 2), dtype=np.int8) if genotypes is None else genotypes
+        )
+        self.phased = np.zeros(nv, dtype=bool) if phased is None else phased
+        if out_buf is None:
+            geno_size = 10 + (uniform_ploidy + 1) * ns
+            # exact stored-DEFLATE size, matches vcz_compress_bound
+            payload = 2 + 5 * max(1, (geno_size + 65534) // 65535) + geno_size + 4
+            bpv = 28 + varid_max + rsid_max + chrom_max + 2 * allele_max + payload
+            out_buf = np.zeros(nv * bpv, dtype=np.uint8)
+        self.out_buf = out_buf
+
+    def as_tuple(self):
+        return (
+            self.varid,
+            self.rsid,
+            self.chrom,
+            self.allele1,
+            self.allele2,
+            self.position,
+            self.genotypes,
+            self.phased,
+            self.out_buf,
+            self.uniform_ploidy,
+        )
+
+
+def _call_chunk_slice(**kwargs):
+    return _vcztools.encode_bgen_chunk_slice_level0(
+        *_ChunkSliceArgs(**kwargs).as_tuple()
+    )
+
+
+class TestEncodeBgenChunkSliceLevel0:
+    """Argument-parsing and error-path coverage for the
+    ``encode_bgen_chunk_slice_level0`` C wrapper. Functional/byte-level
+    behaviour is tested in ``lib/tests.c`` (C suite) and in
+    ``tests/test_bgen.py::TestBgenChunkSliceLevel0Kernel`` (end-to-end
+    via BgenEncoder)."""
+
+    # --- arg-count / arg-type from PyArg_ParseTuple ---
+
+    def test_bad_num_arguments(self):
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_chunk_slice_level0()
+        # 11 args (one too many)
+        a = _ChunkSliceArgs()
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_chunk_slice_level0(*a.as_tuple(), 0)
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "varid",
+            "rsid",
+            "chrom",
+            "allele1",
+            "allele2",
+            "position",
+            "genotypes",
+            "phased",
+            "out_buf",
+        ],
+    )
+    @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
+    def test_array_arg_bad_type(self, field, bad_type):
+        # None is excluded: the args builder treats it as "use default",
+        # so it can't be smuggled past the builder into the wrapper.
+        with pytest.raises(TypeError):
+            _call_chunk_slice(**{field: bad_type})
+
+    @pytest.mark.parametrize("bad_ploidy_type", [None, "string", [], {}, 1.5])
+    def test_uniform_ploidy_bad_type(self, bad_ploidy_type):
+        a = _ChunkSliceArgs()
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_chunk_slice_level0(
+                a.varid,
+                a.rsid,
+                a.chrom,
+                a.allele1,
+                a.allele2,
+                a.position,
+                a.genotypes,
+                a.phased,
+                a.out_buf,
+                bad_ploidy_type,
+            )
+
+    # --- check_array: wrong dimension for each array ---
+
+    @pytest.mark.parametrize("field", ["varid", "rsid", "chrom", "allele1", "allele2"])
+    def test_string_field_wrong_dim(self, field):
+        with pytest.raises(ValueError, match=f"{field} has wrong dimension"):
+            _call_chunk_slice(**{field: np.zeros(3, dtype=np.uint8)})
+
+    def test_position_wrong_dim(self):
+        with pytest.raises(ValueError, match="position has wrong dimension"):
+            _call_chunk_slice(position=np.zeros((1, 1), dtype=np.int32))
+
+    def test_genotypes_wrong_dim(self):
+        with pytest.raises(ValueError, match="genotypes has wrong dimension"):
+            _call_chunk_slice(genotypes=np.zeros((1, 2), dtype=np.int8))
+
+    def test_phased_wrong_dim(self):
+        with pytest.raises(ValueError, match="phased has wrong dimension"):
+            _call_chunk_slice(phased=np.zeros((1, 1), dtype=bool))
+
+    def test_out_buf_wrong_dim(self):
+        with pytest.raises(ValueError, match="out_buf has wrong dimension"):
+            _call_chunk_slice(out_buf=np.zeros((4, 4), dtype=np.uint8))
+
+    # --- NPY_ARRAY_IN_ARRAY (non-contiguous views) ---
+
+    def test_non_contiguous_genotypes(self):
+        full = np.zeros((2, 4, 2), dtype=np.int8)
+        view = full[:, ::2, :]
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _call_chunk_slice(num_variants=2, num_samples=2, genotypes=view)
+
+    def test_non_contiguous_out_buf(self):
+        full = np.zeros(8192, dtype=np.uint8)
+        with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
+            _call_chunk_slice(out_buf=full[::2])
+
+    # --- check_dtype: wrong dtype for each array ---
+
+    @pytest.mark.parametrize("field", ["varid", "rsid", "chrom", "allele1", "allele2"])
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.int32, np.float32, "S1"])
+    def test_string_field_wrong_dtype(self, field, bad_dtype):
+        a = _ChunkSliceArgs()
+        arr_shape = getattr(a, field).shape
+        with pytest.raises(ValueError, match=f"Wrong dtype for {field}"):
+            _call_chunk_slice(**{field: np.zeros(arr_shape, dtype=bad_dtype)})
+
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.int64, np.uint32, np.float32])
+    def test_position_wrong_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for position"):
+            _call_chunk_slice(position=np.zeros(1, dtype=bad_dtype))
+
+    @pytest.mark.parametrize("bad_dtype", [np.uint8, np.int16, np.float32])
+    def test_genotypes_wrong_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for genotypes"):
+            _call_chunk_slice(genotypes=np.zeros((1, 1, 2), dtype=bad_dtype))
+
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.uint8, np.float32])
+    def test_phased_wrong_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for phased"):
+            _call_chunk_slice(phased=np.zeros(1, dtype=bad_dtype))
+
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.int32, np.float32])
+    def test_out_buf_wrong_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for out_buf"):
+            _call_chunk_slice(out_buf=np.zeros(8192, dtype=bad_dtype))
+
+    # --- shape consistency between arrays ---
+
+    @pytest.mark.parametrize("bad_ploidy_dim", [1, 3])
+    def test_genotypes_ploidy_dim_not_two(self, bad_ploidy_dim):
+        with pytest.raises(ValueError, match=r"\(V, S, 2\)"):
+            _call_chunk_slice(genotypes=np.zeros((1, 1, bad_ploidy_dim), dtype=np.int8))
+
+    @pytest.mark.parametrize(
+        "field",
+        ["rsid", "chrom", "allele1", "allele2", "position", "genotypes", "phased"],
+    )
+    def test_per_variant_axis_mismatch(self, field):
+        # varid sets num_variants=2; bumping one other array to 3 must
+        # surface the cross-axis check.
+        a = _ChunkSliceArgs(num_variants=2)
+        arr = getattr(a, field)
+        if arr.ndim == 1:
+            mutated = np.zeros(arr.shape[0] + 1, dtype=arr.dtype)
+        else:
+            mutated = np.zeros((arr.shape[0] + 1,) + arr.shape[1:], dtype=arr.dtype)
+        with pytest.raises(
+            ValueError, match=r"per-variant inputs must share num_variants axis"
+        ):
+            _vcztools.encode_bgen_chunk_slice_level0(
+                a.varid,
+                a.rsid if field != "rsid" else mutated,
+                a.chrom if field != "chrom" else mutated,
+                a.allele1 if field != "allele1" else mutated,
+                a.allele2 if field != "allele2" else mutated,
+                a.position if field != "position" else mutated,
+                a.genotypes if field != "genotypes" else mutated,
+                a.phased if field != "phased" else mutated,
+                a.out_buf,
+                a.uniform_ploidy,
+            )
+
+    def test_allele1_allele2_width_mismatch(self):
+        # allele_max comes from allele1; allele2 must match.
+        with pytest.raises(ValueError, match="share the same max width"):
+            _call_chunk_slice(
+                allele2=np.zeros((1, 2), dtype=np.uint8),  # baseline allele_max=1
+            )
+
+    # --- uniform_ploidy range ---
+
+    @pytest.mark.parametrize("bad_ploidy", [0, 3, -1, 100])
+    def test_uniform_ploidy_out_of_range(self, bad_ploidy):
+        with pytest.raises(ValueError, match="uniform_ploidy must be 1 or 2"):
+            _call_chunk_slice(uniform_ploidy=bad_ploidy)
+
+    # --- buffer-too-small ---
+
+    def test_out_buf_too_small(self):
+        with pytest.raises(_vcztools.VczBufferTooSmall, match="out_buf is too small"):
+            _call_chunk_slice(out_buf=np.zeros(8, dtype=np.uint8))
+
+    # --- kernel error returns (handle_library_error → Python) ---
+
+    def test_invalid_ploidy_error(self):
+        # -2 in slot 0 → VCZ_ERR_BGEN_INVALID_PLOIDY → ValueError("zero-ploidy").
+        G = np.array([[[-2, 0]]], dtype=np.int8)
+        with pytest.raises(ValueError, match="zero-ploidy"):
+            _call_chunk_slice(genotypes=G)
+
+    def test_invalid_allele_error(self):
+        # Allele 2 → VCZ_ERR_BGEN_INVALID_ALLELE → ValueError("out of range").
+        G = np.array([[[0, 2]]], dtype=np.int8)
+        with pytest.raises(ValueError, match="out of range"):
+            _call_chunk_slice(genotypes=G)
+
+    def test_mixed_ploidy_error(self):
+        # uniform_ploidy=2 with one haploid sample (b == -2) →
+        # VCZ_ERR_BGEN_MIXED_PLOIDY → NotImplementedError pointing at
+        # write_bgen.
+        G = np.array([[[0, 0], [0, -2]]], dtype=np.int8)
+        with pytest.raises(NotImplementedError, match="write_bgen"):
+            _call_chunk_slice(
+                num_variants=1, num_samples=2, uniform_ploidy=2, genotypes=G
+            )
+
+    # --- success path ---
+
+    def test_success_returns_none_and_writes_buffer(self):
+        # Sentinel-fill the out_buf; after the call it must differ.
+        a = _ChunkSliceArgs(num_variants=1, num_samples=2, uniform_ploidy=2)
+        a.out_buf[:] = 0xAB
+        result = _vcztools.encode_bgen_chunk_slice_level0(*a.as_tuple())
+        assert result is None
+        assert (a.out_buf != 0xAB).any()
+
+    def test_zero_variants_no_write(self):
+        # num_variants=0: kernel must not touch out_buf.
+        a = _ChunkSliceArgs(num_variants=0, num_samples=2, uniform_ploidy=2)
+        a.out_buf = np.full(64, 0xCC, dtype=np.uint8)
+        result = _vcztools.encode_bgen_chunk_slice_level0(*a.as_tuple())
+        assert result is None
+        assert (a.out_buf == 0xCC).all()
+
+    def test_uniform_haploid_succeeds(self):
+        # uniform_ploidy=1, every sample has -2 in slot 1.
+        G = np.array([[[0, -2], [1, -2]]], dtype=np.int8)
+        a = _ChunkSliceArgs(
+            num_variants=1, num_samples=2, uniform_ploidy=1, genotypes=G
+        )
+        assert _vcztools.encode_bgen_chunk_slice_level0(*a.as_tuple()) is None

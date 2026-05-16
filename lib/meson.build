@@ -20,6 +20,17 @@ cunit_dep = dependency('cunit')
 tests = executable('tests',
     sources: ['tests.c', 'vcf_encoder.c'],
     dependencies: [cunit_dep, m_dep],
-    c_args: extra_c_args, 
+    c_args: extra_c_args,
 )
 test('tests', tests)
+
+# Cross-check the in-tree zlib replacements against libz. Production
+# builds (setup.py) don't link libz; the test runner is the one place
+# we're allowed to depend on it.
+z_dep = cc.find_library('z', required: true)
+test_zlib = executable('test_zlib',
+    sources: ['test_zlib.c', 'vcf_encoder.c'],
+    dependencies: [cunit_dep, m_dep, z_dep],
+    c_args: extra_c_args,
+)
+test('test_zlib', test_zlib)

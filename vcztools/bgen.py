@@ -679,9 +679,9 @@ class BgenEncoder(format_encoder.FormatEncoder):
         num_variants = int(chunk["call_genotype"].shape[0])
         phase_counts: list[int] = []
 
-        def encode_range(start: int, end: int) -> bytes:
-            return self._encode_variant_range(
-                chunk, chunk_strings, start, end, phase_counts
+        def encode_range(start: int, end: int, out_view: np.ndarray) -> None:
+            self._encode_variant_range(
+                chunk, chunk_strings, start, end, phase_counts, out_view
             )
 
         output = self._parallel_encode(
@@ -697,11 +697,10 @@ class BgenEncoder(format_encoder.FormatEncoder):
         start: int,
         end: int,
         phase_counts: list[int],
-    ) -> bytes:
+        out_view: np.ndarray,
+    ) -> None:
         prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
         phase_counts.append(prep.mixed_phase_count)
-        bpv = self._bytes_per_variant
-        n = end - start
         uniform_len = self._uniform_geno_size
         if not (prep.geno_block_lens == uniform_len).all():
             raise NotImplementedError(
@@ -709,7 +708,6 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 "and variants; this chunk contains mixed ploidy. Use "
                 "write_bgen() instead."
             )
-        out = np.empty(n * bpv, dtype=np.uint8)
         position = np.ascontiguousarray(prep.position, dtype=np.int32)
         _vcztools.encode_bgen_chunk_slice_level0(
             prep.varid,
@@ -719,10 +717,9 @@ class BgenEncoder(format_encoder.FormatEncoder):
             prep.allele2,
             position,
             prep.geno_blocks,
-            out,
+            out_view,
             uniform_len,
         )
-        return bytes(out)
 
     def _close_hook(self) -> None:
         if self._mixed_phase_count > 0:

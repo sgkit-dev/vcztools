@@ -472,33 +472,42 @@ class TestUninitialised:
 
 
 class TestEncodePlink:
+    def _out_buf(self, num_variants, num_samples):
+        return np.zeros(((num_samples + 3) // 4) * num_variants, dtype=np.uint8)
+
     def test_bad_num_arguments(self):
         with pytest.raises(TypeError):
             _vcztools.encode_plink()
         with pytest.raises(TypeError):
-            _vcztools.encode_plink(
-                np.zeros((1, 1, 2), dtype=np.int8),
-                np.zeros((1, 2), dtype=np.int8),
-            )
+            _vcztools.encode_plink(np.zeros((1, 1, 2), dtype=np.int8))
 
     @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
     def test_bad_types(self, bad_type):
         with pytest.raises(TypeError):
-            _vcztools.encode_plink(bad_type)
+            _vcztools.encode_plink(bad_type, self._out_buf(1, 1))
 
     def test_wrong_genotype_dims(self):
         with pytest.raises(ValueError, match="genotypes has wrong dimension"):
-            _vcztools.encode_plink(np.zeros((1, 1), dtype=np.int8))
+            _vcztools.encode_plink(np.zeros((1, 1), dtype=np.int8), self._out_buf(1, 1))
 
     @pytest.mark.parametrize("bad_dtype", [np.int16, np.int64, np.float64, "S1"])
     def test_bad_genotype_dtype(self, bad_dtype):
         with pytest.raises(ValueError, match="Wrong dtype for genotypes"):
-            _vcztools.encode_plink(np.zeros((1, 1, 2), dtype=bad_dtype))
+            _vcztools.encode_plink(
+                np.zeros((1, 1, 2), dtype=bad_dtype), self._out_buf(1, 1)
+            )
 
     @pytest.mark.parametrize("bad_ploidy", [1, 3])
     def test_bad_ploidy(self, bad_ploidy):
         with pytest.raises(ValueError, match="Only diploid genotypes"):
-            _vcztools.encode_plink(np.zeros((1, 1, bad_ploidy), dtype=np.int8))
+            _vcztools.encode_plink(
+                np.zeros((1, 1, bad_ploidy), dtype=np.int8), self._out_buf(1, 1)
+            )
+
+    def test_buffer_too_small(self):
+        G = np.zeros((1, 4, 2), dtype=np.int8)
+        with pytest.raises(_vcztools.VczBufferTooSmall):
+            _vcztools.encode_plink(G, np.zeros(0, dtype=np.uint8))
 
     def test_example(self):
         G = np.array(
@@ -509,8 +518,8 @@ class TestEncodePlink:
             ],
             dtype=np.int8,
         )
-        enc = _vcztools.encode_plink(G)
-        assert enc.dtype == np.uint8
+        enc = self._out_buf(3, 3)
+        _vcztools.encode_plink(G, enc)
         assert list(enc) == [59, 50, 24]
 
 

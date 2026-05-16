@@ -594,13 +594,13 @@ static PyTypeObject VcfEncoderType = {
 static PyObject *
 vcztools_encode_plink(PyObject *self, PyObject *args)
 {
-
     PyObject *ret = NULL;
     PyArrayObject *genotypes = NULL;
-    PyArrayObject *encoded = NULL;
-    npy_intp num_variants, num_samples, bufsize;
+    PyArrayObject *out_buf = NULL;
+    npy_intp num_variants, num_samples, expected;
 
-    if (!PyArg_ParseTuple(args, "O!", &PyArray_Type, &genotypes)) {
+    if (!PyArg_ParseTuple(
+            args, "O!O!", &PyArray_Type, &genotypes, &PyArray_Type, &out_buf)) {
         goto out;
     }
     if (check_array("genotypes", genotypes, 3) != 0) {
@@ -613,25 +613,28 @@ vcztools_encode_plink(PyObject *self, PyObject *args)
         PyErr_Format(PyExc_ValueError, "Only diploid genotypes supported");
         goto out;
     }
+    if (check_array("out_buf", out_buf, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("out_buf", out_buf, NPY_UINT8) != 0) {
+        goto out;
+    }
     num_variants = PyArray_DIMS(genotypes)[0];
     num_samples = PyArray_DIMS(genotypes)[1];
-    bufsize = ((num_samples + 3) / 4) * num_variants;
-    /* NOTE: it would probably make more sense to allocate a bytes buffer here
-     * directly, but it's not obvious to me how you do that. This is simpler. */
-    encoded = (PyArrayObject *) PyArray_SimpleNew(1, &bufsize, NPY_UINT8);
-    if (encoded == NULL) {
-        goto out; // GCOVR_EXCL_LINE
+    expected = ((num_samples + 3) / 4) * num_variants;
+    if (PyArray_DIMS(out_buf)[0] < expected) {
+        PyErr_Format(VczBufferTooSmall, "out_buf is too small: got %zd bytes, need %zd",
+            (Py_ssize_t) PyArray_DIMS(out_buf)[0], (Py_ssize_t) expected);
+        goto out;
     }
 
     Py_BEGIN_ALLOW_THREADS
     vcz_encode_plink((size_t) num_variants, (size_t) num_samples,
-        PyArray_DATA(genotypes), PyArray_DATA(encoded));
+        PyArray_DATA(genotypes), PyArray_DATA(out_buf));
     Py_END_ALLOW_THREADS
 
-    ret = (PyObject *) encoded;
-    encoded = NULL;
+    ret = Py_BuildValue("");
 out:
-    Py_XDECREF(encoded);
     return ret;
 }
 

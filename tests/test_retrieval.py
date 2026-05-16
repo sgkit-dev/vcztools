@@ -3330,6 +3330,19 @@ def _wait_for_thread_count(target, timeout=1.0):
         time.sleep(0.01)
 
 
+def _wait_for_thread_count_at_least(target, timeout=1.0):
+    """Block briefly while a worker spins up. ThreadPoolExecutor.submit
+    does not wait for the OS thread to be running — macOS in
+    particular can return before the prefetch thread appears in
+    threading.enumerate(), so tests that assert "the worker is alive"
+    have to poll."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if len(_prefetch_threads()) >= target:
+            return
+        time.sleep(0.01)
+
+
 class TestPrefetchIteratorDirect:
     """Direct unit tests for ``_PrefetchIterator`` decoupled from
     :class:`VczReader`.
@@ -3460,7 +3473,10 @@ class TestPrefetchIteratorDirect:
 
         before = len(_prefetch_threads())
         it = retrieval_mod._PrefetchIterator(gen())
-        # Worker is now blocked inside _fetch waiting on gate.
+        # Worker is now blocked inside _fetch waiting on gate. The
+        # executor spawns the thread asynchronously, so poll until it
+        # actually appears.
+        _wait_for_thread_count_at_least(before + 1)
         assert len(_prefetch_threads()) >= before + 1
         gate.set()
         it.close()

@@ -130,3 +130,8 @@ int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens);
 size_t vcz_bgen_geno_block_row_max_size(size_t num_samples);
+int vcz_encode_bgen_chunk_slice_level0(size_t num_variants, const uint8_t *varid,
+    size_t varid_max, const uint8_t *rsid, size_t rsid_max, const uint8_t *chrom,
+    size_t chrom_max, const uint8_t *allele1, const uint8_t *allele2, size_t allele_max,
+    const int32_t *position, const uint8_t *geno_blocks, size_t geno_row_stride,
+    size_t geno_size, uint8_t *out_buf);

@@ -670,19 +670,19 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 "and variants; this chunk contains mixed ploidy. Use "
                 "write_bgen() instead."
             )
-        out = bytearray(n * bpv)
-        for j in range(n):
-            block = _encode_variant_block(
-                varid_bytes=prep.varid[j],
-                rsid_bytes=prep.rsid[j],
-                chrom_bytes=prep.chrom[j],
-                position=int(prep.position[j]),
-                allele1_bytes=prep.allele1[j],
-                allele2_bytes=prep.allele2[j],
-                geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
-                compression_level=0,
-            )
-            out[j * bpv : (j + 1) * bpv] = block
+        out = np.empty(n * bpv, dtype=np.uint8)
+        position = np.ascontiguousarray(prep.position, dtype=np.int32)
+        _vcztools.encode_bgen_chunk_slice_level0(
+            prep.varid,
+            prep.rsid,
+            prep.chrom,
+            prep.allele1,
+            prep.allele2,
+            position,
+            prep.geno_blocks,
+            out,
+            uniform_len,
+        )
         return bytes(out)
 
     def _close_hook(self) -> None:

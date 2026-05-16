@@ -1081,9 +1081,7 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
 }
 
 /* Little-endian uint32 store: writes `value` into the four bytes at
- * `buf[0..4]`. The BGEN chunk-slice kernel writes a lot of uint32 LE
- * fields per variant (position, allele lengths, C, D); using a named
- * helper keeps each call site to two lines. */
+ * `buf[0..4]`. */
 static inline void
 encode_u32_le(uint8_t *buf, uint32_t value)
 {
@@ -1091,6 +1089,13 @@ encode_u32_le(uint8_t *buf, uint32_t value)
     buf[1] = (uint8_t) ((value >> 8) & 0xFF);
     buf[2] = (uint8_t) ((value >> 16) & 0xFF);
     buf[3] = (uint8_t) ((value >> 24) & 0xFF);
+}
+
+static inline void
+encode_u16_le(uint8_t *buf, uint16_t value)
+{
+    buf[0] = (uint8_t) (value & 0xFF);
+    buf[1] = (uint8_t) ((value >> 8) & 0xFF);
 }
 
 /* Build ONE BGEN Layout 2 / 8-bit / biallelic genotype block into `row`,
@@ -1182,8 +1187,7 @@ bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased
 
     /* 8-byte header: N (uint32 LE), K (uint16 LE), Pmin, Pmax. */
     encode_u32_le(row, (uint32_t) num_samples);
-    row[4] = 2; /* K (n_alleles) low byte */
-    row[5] = 0; /* K high byte */
+    encode_u16_le(row + 4, 2);
     row[6] = pmin;
     row[7] = pmax;
     row[8 + num_samples] = variant_phased;
@@ -1407,10 +1411,8 @@ vcz_compress2_static(
                 p[0] = 0x01; /* BFINAL=1, BTYPE=00 */
             }
             nlen = (uint16_t) ~block_len;
-            p[1] = (uint8_t) (block_len & 0xFF);
-            p[2] = (uint8_t) ((block_len >> 8) & 0xFF);
-            p[3] = (uint8_t) (nlen & 0xFF);
-            p[4] = (uint8_t) ((nlen >> 8) & 0xFF);
+            encode_u16_le(p + 1, block_len);
+            encode_u16_le(p + 3, nlen);
             p += 5;
             memcpy(p, source, block_len);
             p += block_len;
@@ -1504,22 +1506,19 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         out = out_buf + v * bpv;
 
         /* varid: uint16 LE length + bytes */
-        out[0] = (uint8_t) (varid_max & 0xFF);
-        out[1] = (uint8_t) ((varid_max >> 8) & 0xFF);
+        encode_u16_le(out, (uint16_t) varid_max);
         out += 2;
         memcpy(out, varid + v * varid_max, varid_max);
         out += varid_max;
 
         /* rsid */
-        out[0] = (uint8_t) (rsid_max & 0xFF);
-        out[1] = (uint8_t) ((rsid_max >> 8) & 0xFF);
+        encode_u16_le(out, (uint16_t) rsid_max);
         out += 2;
         memcpy(out, rsid + v * rsid_max, rsid_max);
         out += rsid_max;
 
         /* chrom */
-        out[0] = (uint8_t) (chrom_max & 0xFF);
-        out[1] = (uint8_t) ((chrom_max >> 8) & 0xFF);
+        encode_u16_le(out, (uint16_t) chrom_max);
         out += 2;
         memcpy(out, chrom + v * chrom_max, chrom_max);
         out += chrom_max;
@@ -1529,8 +1528,7 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         out += 4;
 
         /* K = 2 alleles */
-        out[0] = 0x02;
-        out[1] = 0x00;
+        encode_u16_le(out, 2);
         out += 2;
 
         /* allele1: uint32 LE length + bytes */

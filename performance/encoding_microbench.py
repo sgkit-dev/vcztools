@@ -68,7 +68,8 @@ def _encode_variant_range_python(
     start: int,
     end: int,
     phase_counts: list[int],
-) -> bytes:
+    out_view: np.ndarray,
+) -> None:
     """Pre-C-kernel implementation of BgenEncoder._encode_variant_range.
 
     Identical control flow to the production version except the per-
@@ -86,7 +87,7 @@ def _encode_variant_range_python(
             "BgenEncoder requires uniform ploidy across all samples "
             "and variants; this chunk contains mixed ploidy."
         )
-    out = bytearray(n * bpv)
+    buf = bytearray(n * bpv)
     for j in range(n):
         block = bgen._encode_variant_block(
             varid_bytes=prep.varid[j],
@@ -98,8 +99,8 @@ def _encode_variant_range_python(
             geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
             compression_level=0,
         )
-        out[j * bpv : (j + 1) * bpv] = block
-    return bytes(out)
+        buf[j * bpv : (j + 1) * bpv] = block
+    out_view[:] = np.frombuffer(bytes(buf), dtype=np.uint8)
 
 
 def _make_genotypes(num_variants: int, num_samples: int, seed: int) -> np.ndarray:

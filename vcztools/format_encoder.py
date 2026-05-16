@@ -326,16 +326,17 @@ class FormatEncoder(abc.ABC):
         self,
         *,
         num_variants: int,
-        encode_range: Callable[[int, int], bytes],
+        encode_range: Callable[[int, int, np.ndarray], None],
     ) -> bytes:
         """Encode ``num_variants`` worth of variant-axis output, optionally
         splitting across the thread pool.
 
-        ``encode_range(start, end)`` must produce exactly
-        ``(end - start) * bytes_per_variant`` bytes for variants
-        ``[start, end)``. Sub-blocks are assembled into the chunk's
-        final byte buffer at deterministic offsets, so workers may
-        complete in any order.
+        ``encode_range(start, end, out_view)`` must write exactly
+        ``(end - start) * bytes_per_variant`` bytes into ``out_view``
+        (a 1D ``uint8`` numpy view sized for that slice). The base
+        class allocates one chunk-wide output buffer once and hands
+        out disjoint views; workers complete in any order without any
+        per-slice copy.
 
         Fan-out fires when the chunk's output size
         (``num_variants * bytes_per_variant``) exceeds
@@ -343,17 +344,17 @@ class FormatEncoder(abc.ABC):
         roughly ``encode_block_bytes`` of output.
         """
         bpv = self._bytes_per_variant
+        out = np.empty(num_variants * bpv, dtype=np.uint8)
         if self._encode_threads <= 1 or num_variants * bpv <= self._encode_block_bytes:
-            return encode_range(0, num_variants)
+            encode_range(0, num_variants, out)
+            return bytes(out)
 
         block_variants = max(1, self._encode_block_bytes // bpv)
-        output = bytearray(num_variants * bpv)
-        future_to_range = {}
+        futures = []
         for start in range(0, num_variants, block_variants):
             end = min(start + block_variants, num_variants)
-            future = self._executor.submit(encode_range, start, end)
-            future_to_range[future] = (start, end)
-        for future in cf.as_completed(future_to_range):
-            start, end = future_to_range[future]
-            output[start * bpv : end * bpv] = future.result()
-        return bytes(output)
+            out_view = out[start * bpv : end * bpv]
+            futures.append(self._executor.submit(encode_range, start, end, out_view))
+        for future in cf.as_completed(futures):
+            future.result()  # propagate exceptions; bytes already in out
+        return bytes(out)

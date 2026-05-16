@@ -123,7 +123,10 @@ def _parse_bim(text):
 def _encode(g):
     """Coerce ``g`` to C-contiguous int8 and run the PLINK C kernel."""
     G = np.ascontiguousarray(g, dtype=np.int8)
-    return bytes(_vcztools.encode_plink(G).data)
+    num_variants, num_samples, _ = G.shape
+    out = np.zeros(((num_samples + 3) // 4) * num_variants, dtype=np.uint8)
+    _vcztools.encode_plink(G, out)
+    return bytes(out)
 
 
 class TestEncodeGenotypesPython:

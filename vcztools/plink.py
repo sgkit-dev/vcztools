@@ -296,11 +296,12 @@ class BedEncoder(format_encoder.FormatEncoder):
         # is fancy-indexed and non-contiguous, so the copy must happen
         # before slicing. Once G is C-contiguous, axis-0 sub-blocks
         # are zero-copy views; the C kernel writes one row of
-        # bytes_per_variant per variant.
+        # bytes_per_variant per variant directly into the caller-
+        # provided output buffer.
         G = np.ascontiguousarray(chunk["call_genotype"], dtype=np.int8)
 
-        def encode_range(start: int, end: int) -> bytes:
-            return bytes(_vcztools.encode_plink(G[start:end]).data)
+        def encode_range(start: int, end: int, out_view: np.ndarray) -> None:
+            _vcztools.encode_plink(G[start:end], out_view)
 
         return self._parallel_encode(
             num_variants=G.shape[0],

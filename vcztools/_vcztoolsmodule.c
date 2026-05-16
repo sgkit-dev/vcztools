@@ -150,6 +150,24 @@ out:
     return ret;
 }
 
+/* Output-buffer-only check. NPY_ARRAY_IN_ARRAY (used by check_array) is
+ * C_CONTIGUOUS | ALIGNED — it does not include WRITEABLE. A read-only
+ * out_buf would silently make the kernel write into read-only pages, so
+ * wrappers that hand the kernel a caller-allocated output array must
+ * call this on top of check_array. */
+static int
+check_array_writeable(const char *name, PyArrayObject *array)
+{
+    int ret = -1;
+    if (!PyArray_CHKFLAGS(array, NPY_ARRAY_WRITEABLE)) {
+        PyErr_Format(PyExc_ValueError, "Array %s must be writeable.", name);
+        goto out;
+    }
+    ret = 0;
+out:
+    return ret;
+}
+
 static int
 VcfEncoder_add_field_array(VcfEncoder *self, const char *name, PyArrayObject *array,
     npy_intp dimension, const char *prefix, bool is_format_field)
@@ -625,6 +643,9 @@ vcztools_encode_plink(PyObject *self, PyObject *args)
     if (check_dtype("out_buf", out_buf, NPY_UINT8) != 0) {
         goto out;
     }
+    if (check_array_writeable("out_buf", out_buf) != 0) {
+        goto out;
+    }
     num_variants = PyArray_DIMS(genotypes)[0];
     num_samples = PyArray_DIMS(genotypes)[1];
     expected = ((num_samples + 3) / 4) * num_variants;
@@ -803,6 +824,9 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
         goto out;
     }
     if (check_dtype("out_buf", out_buf, NPY_UINT8) != 0) {
+        goto out;
+    }
+    if (check_array_writeable("out_buf", out_buf) != 0) {
         goto out;
     }
 

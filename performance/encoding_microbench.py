@@ -79,10 +79,13 @@ def _encode_variant_range_python(
     benchmark format to expose the speed-up from the C kernel."""
     prep = bgen._prepare_chunk(chunk, chunk_strings, start=start, end=end)
     phase_counts.append(prep.mixed_phase_count)
+    geno_blocks, geno_block_lens = bgen._vcztools.encode_bgen_geno_blocks(
+        prep.genotypes, prep.phased
+    )
     bpv = self._bytes_per_variant
     n = end - start
     uniform_len = self._uniform_geno_size
-    if not (prep.geno_block_lens == uniform_len).all():
+    if not (geno_block_lens == uniform_len).all():
         raise NotImplementedError(
             "BgenEncoder requires uniform ploidy across all samples "
             "and variants; this chunk contains mixed ploidy."
@@ -96,7 +99,7 @@ def _encode_variant_range_python(
             position=int(prep.position[j]),
             allele1_bytes=prep.allele1[j],
             allele2_bytes=prep.allele2[j],
-            geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
+            geno_block_bytes=bytes(geno_blocks[j, :uniform_len]),
             compression_level=0,
         )
         buf[j * bpv : (j + 1) * bpv] = block

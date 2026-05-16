@@ -189,7 +189,7 @@ def _encode_field_chunk(values, *, max_len=None, field_name=None):
 
 @dataclasses.dataclass
 class _ChunkBytes:
-    """Per-chunk byte-prepared inputs to the BGEN variant-block encoder.
+    """Per-slice byte-prepared inputs to the BGEN variant-block encoder.
 
     The five string ``*`` arrays follow :func:`_encode_field_chunk`'s
     dtype convention: an ``S``-dtype array in variable mode (length of
@@ -198,14 +198,14 @@ class _ChunkBytes:
     is ``max_len``). Either way ``len(arr[i])`` equals the BGEN
     length-prefix value that :func:`_encode_variant_block` writes.
 
-    ``geno_blocks`` holds the uncompressed BGEN genotype-block bytes
-    for every variant in the chunk: shape ``(V, 10 + 3 * num_samples)``
-    uint8 (worst-case diploid stride). ``geno_block_lens[v]`` is the
-    actual byte count of variant ``v`` — for uniform diploid every
-    entry equals the stride; for haploid or mixed-ploidy variants the
-    actual length is smaller. ``_encode_variant_block`` zlib-compresses
-    ``geno_blocks[v, :geno_block_lens[v]]`` and packs the surrounding
-    variant-block framing.
+    ``genotypes`` is the slice's ``(V, S, 2)`` int8 array (normalised
+    haploid → ``-2``-padded form); ``phased`` is the per-variant bool
+    flag. The C kernel
+    (:c:func:`vcz_encode_bgen_chunk_slice_level0`) builds each
+    variant's BGEN genotype block from these on the fly. The
+    :func:`write_bgen` path materialises the geno blocks via
+    :func:`_vcztools.encode_bgen_geno_blocks` before its per-variant
+    Python loop runs.
     """
 
     varid: np.ndarray
@@ -214,8 +214,8 @@ class _ChunkBytes:
     allele1: np.ndarray
     allele2: np.ndarray
     position: np.ndarray
-    geno_blocks: np.ndarray
-    geno_block_lens: np.ndarray
+    genotypes: np.ndarray
+    phased: np.ndarray
     mixed_phase_count: int
 
 
@@ -299,12 +299,15 @@ def _prepare_chunk(chunk, chunk_strings, *, start, end):
     """Slice-level prep for variants ``[start:end]`` of ``chunk``.
     Takes the pre-built full-chunk :class:`_ChunkStrings` from
     :func:`_prepare_chunk_strings` and returns a :class:`_ChunkBytes`
-    ready for :func:`_encode_variant_block` or the C kernel.
+    ready for the BGEN C kernel.
 
-    Workers call this on disjoint variant ranges concurrently. The
-    only Python work left here is genotype-axis slicing and the
-    phased-flag reduction; the C kernel (``encode_bgen_geno_blocks``)
-    releases the GIL, so this scales with thread count.
+    The genotype block is no longer materialised here: the C kernel
+    builds it on the fly from ``genotypes`` and ``phased``, avoiding
+    the (V, ~3*num_samples) intermediate buffer that the geno-block
+    builder used to allocate. :func:`write_bgen` runs the per-variant
+    Python loop, so it calls :func:`_vcztools.encode_bgen_geno_blocks`
+    on the slice's ``genotypes`` separately when it needs the
+    materialised form.
     """
     G = chunk["call_genotype"][start:end]
     positions = chunk["variant_position"][start:end]
@@ -328,7 +331,6 @@ def _prepare_chunk(chunk, chunk_strings, *, start, end):
     # Sample-subset paths can deliver call_genotype as a non-contiguous
     # fancy-indexed view; the C kernel requires NPY_ARRAY_IN_ARRAY.
     G = np.ascontiguousarray(G, dtype=np.int8)
-    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
 
     return _ChunkBytes(
         varid=chunk_strings.varid[start:end],
@@ -337,8 +339,8 @@ def _prepare_chunk(chunk, chunk_strings, *, start, end):
         allele1=chunk_strings.allele1[start:end],
         allele2=chunk_strings.allele2[start:end],
         position=positions,
-        geno_blocks=geno_blocks,
-        geno_block_lens=geno_block_lens,
+        genotypes=G,
+        phased=phased,
         mixed_phase_count=mixed_phase_count,
     )
 
@@ -420,13 +422,19 @@ def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
     :func:`write_bgen` path. ``chunk_strings`` is built once per chunk
     on the main thread (see :func:`_prepare_chunk_strings`) and passed
     in so worker slices only do genotype-axis work, not utf-8 encoding.
+    The per-variant Python loop still needs materialised geno blocks
+    (BgenEncoder fuses that step into its C kernel; write_bgen doesn't),
+    so the geno-block builder runs here on the slice's genotypes.
     """
     prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
+    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(
+        prep.genotypes, prep.phased
+    )
     n = end - start
     out = bytearray()
     lens = []
     for j in range(n):
-        block_len = int(prep.geno_block_lens[j])
+        block_len = int(geno_block_lens[j])
         block = _encode_variant_block(
             varid_bytes=prep.varid[j],
             rsid_bytes=prep.rsid[j],
@@ -434,7 +442,7 @@ def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
             position=int(prep.position[j]),
             allele1_bytes=prep.allele1[j],
             allele2_bytes=prep.allele2[j],
-            geno_block_bytes=bytes(prep.geno_blocks[j, :block_len]),
+            geno_block_bytes=bytes(geno_blocks[j, :block_len]),
             compression_level=compression_level,
         )
         out.extend(block)
@@ -701,14 +709,11 @@ class BgenEncoder(format_encoder.FormatEncoder):
     ) -> None:
         prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
         phase_counts.append(prep.mixed_phase_count)
-        uniform_len = self._uniform_geno_size
-        if not (prep.geno_block_lens == uniform_len).all():
-            raise NotImplementedError(
-                "BgenEncoder requires uniform ploidy across all samples "
-                "and variants; this chunk contains mixed ploidy. Use "
-                "write_bgen() instead."
-            )
         position = np.ascontiguousarray(prep.position, dtype=np.int32)
+        # The kernel builds each variant's BGEN genotype block on the
+        # fly from prep.genotypes + prep.phased; mixed-ploidy variants
+        # surface via VCZ_ERR_BGEN_MIXED_PLOIDY (handle_library_error
+        # converts to NotImplementedError pointing at write_bgen).
         _vcztools.encode_bgen_chunk_slice_level0(
             prep.varid,
             prep.rsid,
@@ -716,9 +721,10 @@ class BgenEncoder(format_encoder.FormatEncoder):
             prep.allele1,
             prep.allele2,
             position,
-            prep.geno_blocks,
+            prep.genotypes,
+            prep.phased,
             out_view,
-            uniform_len,
+            self._uniform_ploidy,
         )
 
     def _close_hook(self) -> None:

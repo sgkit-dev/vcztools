@@ -266,15 +266,18 @@ def _single_variant_geno_block(G_single, *, phased=False):
         chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
     chunk_strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
     prep = bgen._prepare_chunk(chunk, chunk_strings, start=0, end=1)
-    block_len = int(prep.geno_block_lens[0])
-    return bytes(prep.geno_blocks[0, :block_len])
+    geno_blocks, geno_block_lens = bgen._vcztools.encode_bgen_geno_blocks(
+        prep.genotypes, prep.phased
+    )
+    block_len = int(geno_block_lens[0])
+    return bytes(geno_blocks[0, :block_len])
 
 
 class TestPrepareChunkGenoBlocks:
     """Spec-level byte assertions on the uncompressed genotype-block
-    bytes produced by :func:`_prepare_chunk` (`prep.geno_blocks[i]`,
-    trimmed by ``prep.geno_block_lens[i]``). Layout 2 / 8-bit /
-    biallelic with per-sample ploidy."""
+    bytes produced by ``_vcztools.encode_bgen_geno_blocks`` (the same
+    geno-block builder that BgenEncoder's C kernel runs internally).
+    Layout 2 / 8-bit / biallelic with per-sample ploidy."""
 
     def test_unphased_basic(self):
         # Three samples: hom-ref, het, hom-alt.
@@ -642,11 +645,17 @@ class TestPloidyNormalization:
 
         prep1 = prepare(G_haploid)
         prep2 = prepare(G_padded)
-        nt.assert_array_equal(prep1.geno_block_lens, prep2.geno_block_lens)
-        block_len = int(prep1.geno_block_lens[0])
-        nt.assert_array_equal(
-            prep1.geno_blocks[0, :block_len], prep2.geno_blocks[0, :block_len]
+        # _prepare_chunk no longer materialises geno blocks; build them
+        # here from the normalised genotypes + phased and compare.
+        gb1, gbl1 = bgen._vcztools.encode_bgen_geno_blocks(
+            prep1.genotypes, prep1.phased
         )
+        gb2, gbl2 = bgen._vcztools.encode_bgen_geno_blocks(
+            prep2.genotypes, prep2.phased
+        )
+        nt.assert_array_equal(gbl1, gbl2)
+        block_len = int(gbl1[0])
+        nt.assert_array_equal(gb1[0, :block_len], gb2[0, :block_len])
 
 
 class TestEncodeVariantBlock:
@@ -1665,12 +1674,11 @@ class TestPrepareChunk:
         assert [bytes(b) for b in prep.allele1] == [b"A", b"C"]
         assert [bytes(b) for b in prep.allele2] == [b"T", b"G"]
         np.testing.assert_array_equal(prep.position, [100, 101])
-        # 2 samples → geno-block layout has phased flag at byte 8 + 2 = 10.
         # Without a call_genotype_phased field every variant is unphased.
-        s = 2
-        assert prep.geno_blocks[0, 8 + s] == 0
-        assert prep.geno_blocks[1, 8 + s] == 0
+        nt.assert_array_equal(prep.phased, [False, False])
         assert prep.mixed_phase_count == 0
+        # Slice-level shape: (2 variants, 2 samples, 2 ploidy slots).
+        assert prep.genotypes.shape == (2, 2, 2)
 
     def test_partial_slice_indexes_into_full_chunk_strings(self):
         # Build a 3-variant chunk; ask for the middle row only. The
@@ -1684,6 +1692,7 @@ class TestPrepareChunk:
         assert bytes(prep.allele1[0]) == b"C"
         assert bytes(prep.allele2[0]) == b"G"
         np.testing.assert_array_equal(prep.position, [101])
+        assert prep.genotypes.shape[0] == 1
 
     def test_phase_detection_and_mixed_count(self):
         # Variant 0: all samples phased → flag=1
@@ -1700,9 +1709,9 @@ class TestPrepareChunk:
         chunk = _make_chunk_for_prep(alleles=alleles, phased=phased, num_samples=2)
         strings = self._strings(chunk)
         prep = bgen._prepare_chunk(chunk, strings, start=0, end=3)
-        # Phased flag lives at byte 8 + num_samples in each geno-block row.
-        flags = prep.geno_blocks[:, 8 + 2]
-        np.testing.assert_array_equal(flags, [1, 0, 0])
+        # The per-variant phased flag now lives directly on prep.phased
+        # rather than inside materialised geno blocks.
+        nt.assert_array_equal(prep.phased, [True, False, False])
         assert prep.mixed_phase_count == 1
 
 
@@ -2205,6 +2214,7 @@ class TestBgenEncoderUniformPloidy:
 def _python_encode_variant_range(prep, uniform_len):
     """Reference Python implementation matching the old loop body."""
     n = prep.varid.shape[0]
+    geno_blocks, _ = bgen._vcztools.encode_bgen_geno_blocks(prep.genotypes, prep.phased)
     out = bytearray()
     for j in range(n):
         block = bgen._encode_variant_block(
@@ -2214,7 +2224,7 @@ def _python_encode_variant_range(prep, uniform_len):
             position=int(prep.position[j]),
             allele1_bytes=bytes(prep.allele1[j]),
             allele2_bytes=bytes(prep.allele2[j]),
-            geno_block_bytes=bytes(prep.geno_blocks[j, :uniform_len]),
+            geno_block_bytes=bytes(geno_blocks[j, :uniform_len]),
             compression_level=0,
         )
         out.extend(block)
@@ -2304,11 +2314,10 @@ class TestBgenChunkSliceLevel0Kernel:
         num_variants = 2
         varid_max = rsid_max = chrom_max = 4
         allele_max = 1
+        uniform_ploidy = 2
         geno_size = 10 + 3 * num_samples
         G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
         phased = np.zeros(num_variants, dtype=bool)
-        geno_blocks, geno_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
-        assert (geno_lens == geno_size).all()
         varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
         rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
         chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
@@ -2331,9 +2340,10 @@ class TestBgenChunkSliceLevel0Kernel:
             allele1,
             allele2,
             position,
-            geno_blocks,
+            G,
+            phased,
             out,
-            geno_size,
+            uniform_ploidy,
         )
 
         header_overhead = (
@@ -2355,8 +2365,10 @@ class TestBgenChunkSliceLevel0Kernel:
         (D,) = struct.unpack_from("<I", v0, header_overhead + 4)
         assert D == geno_size
         payload = v0[header_overhead + 8 : header_overhead + 4 + C]
-        # zlib stream decodes back to the uncompressed geno block.
-        assert zlib.decompress(payload) == bytes(geno_blocks[0, :geno_size])
+        # zlib stream decodes back to the uncompressed geno block built
+        # from the same G/phased the kernel saw.
+        expected_geno, _ = _vcztools.encode_bgen_geno_blocks(G, phased)
+        assert zlib.decompress(payload) == bytes(expected_geno[0, :geno_size])
         # First block has BFINAL=0; second has BFINAL=1.
         first_block_header = payload[2]
         second_block_offset = 2 + 5 + 65535
@@ -2412,7 +2424,6 @@ class TestBgenChunkSliceLevel0Kernel:
         allele_max = 1
         G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
         phased = np.zeros(num_variants, dtype=bool)
-        geno_blocks, _ = _vcztools.encode_bgen_geno_blocks(G, phased)
         varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
         rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
         chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
@@ -2428,9 +2439,10 @@ class TestBgenChunkSliceLevel0Kernel:
                 allele1,
                 allele2,
                 position,
-                geno_blocks,
+                G,
+                phased,
                 out_buf,
-                10 + 3 * num_samples,
+                2,  # uniform_ploidy
             )
 
     def test_round_trip_via_bgen_reader(self, tmp_path):

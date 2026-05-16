@@ -1080,12 +1080,12 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
     return 10 + 3 * num_samples;
 }
 
-/* BGEN Layout 2 / 8-bit / biallelic genotype block builder with
- * per-sample ploidy. See vcztools/bgen.py and the BGEN spec for the
- * byte layout. Each row is variable-length: header (8B) + ploidy bytes
- * (one per sample) + phased flag (1B) + bits-per-prob (1B) + per-sample
- * probability bytes (K_s bytes for ploidy K_s; K_s in {1, 2}). Per-
- * variant header reports the variant's actual Pmin/Pmax.
+/* Build ONE BGEN Layout 2 / 8-bit / biallelic genotype block into `row`,
+ * with per-sample ploidy. See vcztools/bgen.py and the BGEN spec for the
+ * byte layout: header (8B) + ploidy bytes (one per sample) + phased flag
+ * (1B) + bits-per-prob (1B) + per-sample probability bytes (K_s bytes for
+ * ploidy K_s in {1, 2}). The header reports the variant's actual
+ * Pmin/Pmax. `*out_len` receives the actual byte count.
  *
  * Per-sample interpretation of (a, b) = (gt[2s], gt[2s+1]):
  *   a in {0, 1}, b in {0, 1}      -> diploid call. 0x02. 2 prob bytes.
@@ -1093,19 +1093,13 @@ vcz_bgen_geno_block_row_max_size(size_t num_samples)
  *   a == -1, b == -1              -> missing diploid. 0x82. 2 zero bytes.
  *   a == -1, b == -2              -> missing haploid. 0x81. 1 zero byte.
  *   half-missing diploid           -> 0x82. 2 zero bytes.
- *   a == -2 (any b)               -> zero-ploidy. Returns
- *                                    VCZ_ERR_BGEN_INVALID_PLOIDY.
- *   a or b outside {-2, -1, 0, 1} -> Returns VCZ_ERR_BGEN_INVALID_ALLELE.
+ *   a == -2 (any b)               -> VCZ_ERR_BGEN_INVALID_PLOIDY.
+ *   a or b outside {-2, -1, 0, 1} -> VCZ_ERR_BGEN_INVALID_ALLELE.
  *
- * buf must be at least num_variants * row_stride bytes; row_stride is
- * typically vcz_bgen_geno_block_row_max_size(num_samples). out_lens[v]
- * receives the actual byte count written for variant v. */
-/* Build ONE BGEN genotype block from `gt` (num_samples × 2 int8) into `row`,
- * writing `*out_len` actual bytes. always_inline so the inner per-sample
- * loop is hoisted into the caller; without it gcc keeps this as a separate
- * function (too large for its default auto-inline budget), and going
- * through the public vcz_encode_bgen_geno_blocks symbol would force a PLT
- * round-trip under -fPIC on top of that. */
+ * always_inline so the per-sample loop body lands directly in the
+ * caller. The public vcz_encode_bgen_geno_blocks below and the fused
+ * vcz_encode_bgen_chunk_slice_level0 both call this once per variant
+ * and rely on the inner loop being inlined. */
 static inline __attribute__((always_inline)) int
 bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased,
     uint8_t *row, uint32_t *out_len)
@@ -1187,6 +1181,10 @@ bgen_geno_block_one(size_t num_samples, const int8_t *gt, uint8_t variant_phased
     return 0;
 }
 
+/* Multi-variant wrapper around bgen_geno_block_one. `buf` must be at
+ * least num_variants * row_stride bytes (row_stride is typically
+ * vcz_bgen_geno_block_row_max_size(num_samples)); out_lens[v] receives
+ * the actual byte count for variant v. */
 int
 vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
@@ -1209,11 +1207,10 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
  * keeps s1, s2 within 32 bits before the mod 65521 fold. Drop-in for
  * zlib's adler32.
  *
- * The inner loop is unrolled in 16-byte blocks: this exposes data-
- * parallelism the compiler can auto-vectorise (gcc/clang generate
- * SSE2/NEON for it) and amortises loop overhead. The expensive modulo
- * is deferred to once per NMAX run rather than once per byte.
- */
+ * The inner loop is unrolled in 16-byte blocks so gcc/clang generate
+ * SSE2/NEON for it and the modulo is deferred to once per NMAX run.
+ * Implementation lives in vcz_adler32_static so call sites in this TU
+ * can inline it; the public vcz_adler32 below is a thin wrapper. */
 #define VCZ_ADLER_BASE 65521u
 #define VCZ_ADLER_NMAX 5552u
 
@@ -1235,11 +1232,6 @@ vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     VCZ_ADLER_DO8(buf, 0);                                                              \
     VCZ_ADLER_DO8(buf, 8)
 
-/* Static implementation; always_inline so the vectorised inner loop
- * is hoisted into the caller. The exported vcz_adler32 below is a
- * thin wrapper — without always_inline gcc declines to inline the
- * body (size heuristic) and we eat both a function-call boundary
- * and a PLT round-trip when called from the public symbol. */
 static inline __attribute__((always_inline)) uint32_t
 vcz_adler32_static(uint32_t adler, const uint8_t *buf, size_t len)
 {
@@ -1345,10 +1337,14 @@ vcz_compress_bound(size_t source_len)
     return 2 + 5 * num_blocks + source_len + 4;
 }
 
-/* Static implementation; always_inline so the chunk-slice kernel
- * absorbs the stored-block emit loop and the adler32 call. The
- * public vcz_compress2 below is a thin wrapper for test code and
- * possible external callers. */
+/* Drop-in replacement for zlib's compress2, specialised to level 0
+ * (stored DEFLATE). `*dest_len` is in/out: in = capacity, out = bytes
+ * written. Returns VCZ_Z_OK on success, VCZ_Z_STREAM_ERROR for an
+ * unsupported level, VCZ_Z_BUF_ERROR if `dest` is too small.
+ *
+ * Implementation lives in vcz_compress2_static so the chunk-slice
+ * kernel inlines the stored-block emit loop and the adler32 call
+ * directly; the public vcz_compress2 below is a thin wrapper. */
 static inline __attribute__((always_inline)) int
 vcz_compress2_static(
     uint8_t *dest, size_t *dest_len, const uint8_t *source, size_t source_len, int level)
@@ -1428,13 +1424,13 @@ vcz_compress2(
  * and geno_size = 10 + (uniform_ploidy + 1) * num_samples.
  *
  * The genotype block bytes are built directly from `genotypes`
- * (V, S, 2 int8) and `phased` (V, bool) using the same per-variant
- * logic as :c:func:`vcz_encode_bgen_geno_blocks`; a single scratch
- * buffer of `geno_size` bytes is reused across variants. Mixed
- * ploidy is rejected with VCZ_ERR_BGEN_MIXED_PLOIDY — the fixed-
- * size encoder requires every sample to honour `uniform_ploidy`
- * (1 = haploid, 2 = diploid). Invalid alleles or `-2` in slot 0
- * surface via the usual VCZ_ERR_BGEN_* codes.
+ * (V, S, 2 int8) and `phased` (V, bool) by inlining
+ * :c:func:`bgen_geno_block_one` per variant; a single scratch buffer
+ * of `geno_size` bytes is reused across variants. Mixed ploidy is
+ * rejected with VCZ_ERR_BGEN_MIXED_PLOIDY — the fixed-size encoder
+ * requires every sample to honour `uniform_ploidy` (1 = haploid,
+ * 2 = diploid). Invalid alleles or `-2` in slot 0 surface via the
+ * usual VCZ_ERR_BGEN_* codes.
  *
  * Every string field arrives pre-padded to its `*_max` width as a
  * `(num_variants, *_max) uint8` row-major block. `position` is one
@@ -1470,10 +1466,10 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
 
     for (v = 0; v < num_variants; v++) {
         /* Build the geno block for variant v into the scratch buffer.
-         * bgen_geno_block_one is static so the inner per-sample loop
-         * inlines straight into the chunk-slice kernel — going through
-         * the public vcz_encode_bgen_geno_blocks symbol would force a
-         * PLT call under -fPIC and cost the inlining. */
+         * bgen_geno_block_one's actual byte count reports mixed ploidy:
+         * if it differs from the uniform geno_size we declared above,
+         * the chunk has e.g. some diploid + some haploid samples and
+         * the fixed-size encoder can't represent it. */
         err = bgen_geno_block_one(num_samples, genotypes + v * num_samples * 2,
             phased[v] ? 1 : 0, scratch, &scratch_len);
         if (err != 0) {
@@ -1542,8 +1538,7 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         *out++ = (uint8_t) ((geno_size >> 16) & 0xFF);
         *out++ = (uint8_t) ((geno_size >> 24) & 0xFF);
 
-        /* Stored zlib payload over scratch. Calling the static helper
-         * lets the compiler inline the stored-block emit + adler32. */
+        /* Stored zlib payload over scratch. */
         actual_len = payload_size;
         (void) vcz_compress2_static(out, &actual_len, scratch, geno_size, 0);
     }

@@ -30,8 +30,9 @@ fill_lcg(uint8_t *buf, size_t len, uint32_t seed)
 static void
 check_adler_pair(const uint8_t *buf, size_t len)
 {
-    uint32_t got, ref;
-    uLong z;
+    uint32_t got, ref, got2;
+    uLong z, z2;
+    size_t mid;
 
     got = vcz_adler32(1, buf, len);
     z = adler32(1uL, buf, (uInt) len);
@@ -39,10 +40,10 @@ check_adler_pair(const uint8_t *buf, size_t len)
     CU_ASSERT_EQUAL_FATAL(got, ref);
 
     if (len >= 2) {
-        size_t mid = len / 2;
-        uint32_t got2 = vcz_adler32(1, buf, mid);
+        mid = len / 2;
+        got2 = vcz_adler32(1, buf, mid);
         got2 = vcz_adler32(got2, buf + mid, len - mid);
-        uLong z2 = adler32(1uL, buf, (uInt) mid);
+        z2 = adler32(1uL, buf, (uInt) mid);
         z2 = adler32(z2, buf + mid, (uInt) (len - mid));
         CU_ASSERT_EQUAL_FATAL(got2, (uint32_t) z2);
         CU_ASSERT_EQUAL_FATAL(got2, ref);
@@ -79,8 +80,8 @@ test_adler32_small(void)
 static void
 test_adler32_lengths(void)
 {
-    /* Cover lengths that bracket the NMAX=5552 fold and the 16-byte unroll
-     * boundary the vectorised version will introduce. */
+    /* Cover lengths that bracket the NMAX=5552 fold and the vectorised
+     * 16-byte unroll boundary. */
     static const size_t lengths[]
         = { 0, 1, 2, 15, 16, 17, 31, 32, 33, 100, 1000, 5551, 5552, 5553, 11104, 65536 };
     size_t i, n;
@@ -133,9 +134,12 @@ test_adler32_seed_propagation(void)
 {
     /* Non-default seed: result must still match. */
     uint8_t buf[64];
+    uint32_t got;
+    uLong z;
+
     fill_lcg(buf, sizeof(buf), 42);
-    uint32_t got = vcz_adler32(0xDEAD0001u, buf, sizeof(buf));
-    uLong z = adler32(0xDEAD0001uL, buf, (uInt) sizeof(buf));
+    got = vcz_adler32(0xDEAD0001u, buf, sizeof(buf));
+    z = adler32(0xDEAD0001uL, buf, (uInt) sizeof(buf));
     CU_ASSERT_EQUAL_FATAL(got, (uint32_t) z);
 }
 
@@ -179,6 +183,7 @@ test_compress_bound_matches_compress2(void)
         = { 0, 1, 7, 65, 1024, 65534, 65535, 65536, 100000, 200000 };
     size_t i, n;
     uint8_t *buf;
+    uint8_t *out;
     uLongf actual;
     int rc;
 
@@ -190,7 +195,7 @@ test_compress_bound_matches_compress2(void)
             fill_lcg(buf, n, (uint32_t) (n + 1));
         }
         actual = (uLongf) (vcz_compress_bound(n) + 8);
-        uint8_t *out = malloc((size_t) actual);
+        out = malloc((size_t) actual);
         CU_ASSERT_FATAL(out != NULL);
         rc = compress2(out, &actual, buf, (uLong) n, 0);
         CU_ASSERT_EQUAL_FATAL(rc, Z_OK);

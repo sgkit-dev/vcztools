@@ -1069,3 +1069,127 @@ class TestEncodeBgenChunkSliceLevel0:
             num_variants=1, num_samples=2, uniform_ploidy=1, genotypes=G
         )
         assert _vcztools.encode_bgen_chunk_slice_level0(*a.as_tuple()) is None
+
+
+_BVBS_PARAM_NAMES = (
+    "num_samples",
+    "uniform_ploidy",
+    "varid_max",
+    "rsid_max",
+    "chrom_max",
+    "allele_max",
+)
+_BVBS_VALID_KWARGS = dict(
+    num_samples=4,
+    uniform_ploidy=2,
+    varid_max=1,
+    rsid_max=1,
+    chrom_max=4,
+    allele_max=1,
+)
+_BVBS_VALID_POSITIONAL = tuple(_BVBS_VALID_KWARGS[name] for name in _BVBS_PARAM_NAMES)
+
+
+class TestBgenVariantBlockSize:
+    """Argument-parsing and error-path coverage for the
+    ``bgen_variant_block_size`` C wrapper. Functional/byte-level behaviour
+    is exercised via ``BgenEncoder`` end-to-end in ``tests/test_bgen.py``."""
+
+    # --- happy path / positional-vs-keyword equivalence ---
+
+    def test_positional_call_returns_size(self):
+        result = _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL)
+        assert isinstance(result, int)
+        assert result > 0
+
+    def test_keyword_call_returns_size(self):
+        # Pass in a deliberately shuffled order to verify kwlist mapping.
+        shuffled = dict(
+            allele_max=1,
+            chrom_max=4,
+            rsid_max=1,
+            varid_max=1,
+            uniform_ploidy=2,
+            num_samples=4,
+        )
+        result = _vcztools.bgen_variant_block_size(**shuffled)
+        expected = _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL)
+        assert result == expected
+
+    def test_mixed_positional_keyword(self):
+        result = _vcztools.bgen_variant_block_size(
+            4,
+            2,
+            varid_max=1,
+            rsid_max=1,
+            chrom_max=4,
+            allele_max=1,
+        )
+        expected = _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL)
+        assert result == expected
+
+    # --- arg-count errors (PyArg_ParseTupleAndKeywords) ---
+
+    def test_no_args_raises_type_error(self):
+        with pytest.raises(TypeError):
+            _vcztools.bgen_variant_block_size()
+
+    def test_too_few_positional_raises_type_error(self):
+        with pytest.raises(TypeError):
+            _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL[:5])
+
+    def test_too_many_positional_raises_type_error(self):
+        with pytest.raises(TypeError):
+            _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL, 1)
+
+    @pytest.mark.parametrize("missing", _BVBS_PARAM_NAMES)
+    def test_missing_required_kwarg(self, missing):
+        kwargs = {k: v for k, v in _BVBS_VALID_KWARGS.items() if k != missing}
+        with pytest.raises(TypeError):
+            _vcztools.bgen_variant_block_size(**kwargs)
+
+    # --- unknown keyword ---
+
+    def test_extra_kwarg_raises_type_error(self):
+        with pytest.raises(TypeError, match="takes at most 6 keyword arguments"):
+            _vcztools.bgen_variant_block_size(**_BVBS_VALID_KWARGS, extra=1)
+
+    # --- bad arg type (PyArg `n` format expects integer-like) ---
+
+    @pytest.mark.parametrize("name", _BVBS_PARAM_NAMES)
+    @pytest.mark.parametrize("bad_value", [None, "string", [], {}, 1.5])
+    def test_bad_arg_type(self, name, bad_value):
+        kwargs = dict(_BVBS_VALID_KWARGS)
+        kwargs[name] = bad_value
+        with pytest.raises(TypeError):
+            _vcztools.bgen_variant_block_size(**kwargs)
+
+    # --- validation errors raised inside the C wrapper ---
+
+    @pytest.mark.parametrize("bad_ploidy", [0, 3, -1, 100])
+    def test_invalid_uniform_ploidy(self, bad_ploidy):
+        kwargs = dict(_BVBS_VALID_KWARGS, uniform_ploidy=bad_ploidy)
+        with pytest.raises(ValueError, match="uniform_ploidy must be 1 or 2"):
+            _vcztools.bgen_variant_block_size(**kwargs)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["num_samples", "varid_max", "rsid_max", "chrom_max", "allele_max"],
+    )
+    def test_negative_size_arg(self, name):
+        kwargs = dict(_BVBS_VALID_KWARGS)
+        kwargs[name] = -1
+        with pytest.raises(ValueError, match="size arguments must be non-negative"):
+            _vcztools.bgen_variant_block_size(**kwargs)
+
+    def test_zero_sizes_allowed(self):
+        result = _vcztools.bgen_variant_block_size(
+            num_samples=0,
+            uniform_ploidy=2,
+            varid_max=0,
+            rsid_max=0,
+            chrom_max=0,
+            allele_max=0,
+        )
+        assert isinstance(result, int)
+        assert result > 0

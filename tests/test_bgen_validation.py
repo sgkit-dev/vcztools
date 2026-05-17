@@ -583,3 +583,90 @@ class TestPlink2ReadsBgen:
         sub_positions = _read_pvar_positions(tmp_path / "sub.pvar")
         assert len(sub_positions) == expected
         assert max(sub_positions) <= midpoint
+
+
+def _encoder_to_bgen(
+    reader, bgen_path: Path, sample_path: Path, *, read_step: int = 1 << 18
+) -> None:
+    """Drain :class:`vcztools.bgen.BgenEncoder` into ``bgen_path`` and
+    write the matching ``.sample`` sidecar. The encoder is uniform-
+    ploidy only; multi-allelic inputs raise on read."""
+    with bgen_mod.BgenEncoder(reader) as enc:
+        with open(bgen_path, "wb") as f:
+            off = 0
+            while off < enc.bgen_size:
+                chunk = enc.read(off, read_step)
+                if not chunk:
+                    break
+                f.write(chunk)
+                off += len(chunk)
+    bgen_mod.write_sample(reader, sample_path)
+
+
+@pytest.mark.skipif(PLINK2 is None, reason="plink2 not on PATH")
+class TestPlink2ReadsBgenEncoder:
+    """plink2 consumes a vcztools ``BgenEncoder`` output and reports the
+    expected variant count. Sibling of :class:`TestPlink2ReadsBgen` for
+    the fixed-size random-access encoder.
+
+    The geno_size=10+(ploidy+1)*S formula combined with the boundary
+    behaviour of zlib stored DEFLATE blocks means ``num_samples`` in
+    ``[21841, 21844]`` (diploid) gives a per-variant payload size that
+    Python's ``zlib.compress(_, 0)`` and the C kernel's
+    ``vcz_compress_bound`` previously disagreed on by 5 bytes. The
+    first test below uses that shape to lock in the chunk-boundary
+    layout — without the fix, plink2 fails with ``Length-0 rsID in
+    .bgen file`` at the start of the second encoded chunk.
+    """
+
+    def test_no_variant_id_field_large_samples(self, tmp_path):
+        # Reproduces the wide_bench.vcz failure mode: source has no
+        # variant_id field, num_samples large enough to trigger the
+        # zlib boundary case, num_variants > variants_chunk_size to
+        # force multi-chunk encoding. plink2 used to abort with
+        # ``Length-0 rsID`` at the boundary; the fix makes Python's
+        # bytes_per_variant match the kernel's tight writes.
+        num_samples = 21841  # geno_size = 65533 (boundary-case)
+        num_variants = 8
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(1000, 1000 + num_variants)),
+            alleles=[("A", "T")] * num_variants,
+            num_samples=num_samples,
+            call_genotype=G,
+            variants_chunk_size=4,
+        )
+        reader = retrieval.VczReader(root)
+        bgen_path = tmp_path / "enc.bgen"
+        sample_path = tmp_path / "enc.sample"
+        _encoder_to_bgen(reader, bgen_path, sample_path)
+        run_plink2_read_bgen("--make-just-pvar", bgen_path, sample_path, tmp_path / "p")
+        positions = _read_pvar_positions(tmp_path / "p.pvar")
+        assert len(positions) == num_variants
+        assert positions == list(range(1000, 1000 + num_variants))
+
+    def test_small_samples_single_chunk(self, tmp_path):
+        # Companion sanity test: the small-sample path was always
+        # plink2-readable (Python's and C's compressed_geno_size
+        # predictions agreed). Locks in that the BgenEncoder
+        # round-trips end-to-end through plink2 for the typical CI
+        # fixture shape too.
+        num_samples = 4
+        num_variants = 6
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=list(range(100, 100 + num_variants)),
+            alleles=[("C", "G")] * num_variants,
+            num_samples=num_samples,
+            call_genotype=G,
+            variants_chunk_size=2,
+        )
+        reader = retrieval.VczReader(root)
+        bgen_path = tmp_path / "enc.bgen"
+        sample_path = tmp_path / "enc.sample"
+        _encoder_to_bgen(reader, bgen_path, sample_path)
+        run_plink2_read_bgen("--make-just-pvar", bgen_path, sample_path, tmp_path / "p")
+        positions = _read_pvar_positions(tmp_path / "p.pvar")
+        assert len(positions) == num_variants

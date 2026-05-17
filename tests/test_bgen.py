@@ -1644,15 +1644,11 @@ def _build_encoder(*, num_variants=2, num_samples=3, encoder_kwargs=None, **over
     return bgen.BgenEncoder(reader, **(encoder_kwargs or {}))
 
 
-def _drain(encoder, step=1 << 17):
-    out = bytearray()
-    off = 0
-    while off < encoder.bgen_size:
-        chunk = encoder.read(off, step)
-        assert len(chunk) > 0
-        out += chunk
-        off += len(chunk)
-    return bytes(out)
+def _drain(encoder):
+    """Drain ``encoder`` to bytes via :meth:`FormatEncoder.write_to`."""
+    buf = io.BytesIO()
+    encoder.write_to(buf)
+    return buf.getvalue()
 
 
 class TestEncodeFieldChunk:

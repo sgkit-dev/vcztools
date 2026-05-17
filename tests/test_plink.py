@@ -994,13 +994,9 @@ class TestBedEncoderSharedReader:
         encoders = [plink.BedEncoder(reader) for _ in range(4)]
 
         def drain(enc):
-            out = bytearray()
-            off = 0
-            while off < enc.bed_size:
-                chunk = enc.read(off, 11)
-                out += chunk
-                off += len(chunk)
-            return bytes(out)
+            buf = io.BytesIO()
+            enc.write_to(buf)
+            return buf.getvalue()
 
         try:
             with cf.ThreadPoolExecutor(max_workers=4) as pool:

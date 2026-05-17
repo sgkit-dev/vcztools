@@ -10,6 +10,7 @@ only to the base-class machinery and not to any format's encoding.
 Goal: 100% line + branch coverage of ``vcztools/format_encoder.py``.
 """
 
+import io
 import logging
 
 import numpy as np
@@ -710,6 +711,134 @@ class TestTryCachedRead:
         # try_cached_read against the previously-cached range now
         # returns None.
         assert enc.try_cached_read(prefix, bpv) is None
+        enc.close()
+
+
+class TestWriteTo:
+    """write_to(out, off, size) streams the encoded bytes through out's
+    write(bytes) method. Defaults to the full stream; off/size limit
+    to a sub-range with the same validation and EOF clamping as
+    read."""
+
+    NUM_VARIANTS = 20
+    CHUNK_SIZE = 4
+    BPV = 4
+
+    def _enc_and_oracle(self):
+        enc = _FakeEncoder(
+            _build_reader(
+                num_variants=self.NUM_VARIANTS,
+                variants_chunk_size=self.CHUNK_SIZE,
+            ),
+            bpv=self.BPV,
+        )
+        oracle = _oracle(self.NUM_VARIANTS, self.BPV)
+        return enc, oracle
+
+    def test_default_writes_full_stream(self):
+        enc, oracle = self._enc_and_oracle()
+        buf = io.BytesIO()
+        written = enc.write_to(buf)
+        assert written == enc.total_size
+        assert buf.getvalue() == oracle
+        enc.close()
+
+    def test_off_only_writes_from_offset_to_end(self):
+        enc, oracle = self._enc_and_oracle()
+        off = enc.prefix_size + 3 * self.BPV
+        buf = io.BytesIO()
+        written = enc.write_to(buf, off=off)
+        assert written == enc.total_size - off
+        assert buf.getvalue() == oracle[off:]
+        enc.close()
+
+    def test_size_only_writes_from_start(self):
+        enc, oracle = self._enc_and_oracle()
+        size = enc.prefix_size + 2 * self.BPV
+        buf = io.BytesIO()
+        written = enc.write_to(buf, size=size)
+        assert written == size
+        assert buf.getvalue() == oracle[:size]
+        enc.close()
+
+    def test_off_and_size_writes_sub_range(self):
+        enc, oracle = self._enc_and_oracle()
+        off = enc.prefix_size + 2 * self.BPV
+        size = 5 * self.BPV
+        buf = io.BytesIO()
+        written = enc.write_to(buf, off=off, size=size)
+        assert written == size
+        assert buf.getvalue() == oracle[off : off + size]
+        enc.close()
+
+    def test_size_clamped_to_total(self):
+        enc, oracle = self._enc_and_oracle()
+        off = enc.total_size - 4
+        buf = io.BytesIO()
+        written = enc.write_to(buf, off=off, size=10_000)
+        assert written == 4
+        assert buf.getvalue() == oracle[off:]
+        enc.close()
+
+    def test_off_past_eof_writes_nothing(self):
+        enc, _ = self._enc_and_oracle()
+        buf = io.BytesIO()
+        written = enc.write_to(buf, off=enc.total_size + 100)
+        assert written == 0
+        assert buf.getvalue() == b""
+        enc.close()
+
+    def test_size_zero_writes_nothing(self):
+        enc, _ = self._enc_and_oracle()
+        buf = io.BytesIO()
+        written = enc.write_to(buf, size=0)
+        assert written == 0
+        assert buf.getvalue() == b""
+        enc.close()
+
+    def test_validates_negative_off(self):
+        enc, _ = self._enc_and_oracle()
+        with pytest.raises(ValueError, match="off must be >= 0"):
+            enc.write_to(io.BytesIO(), off=-1)
+        enc.close()
+
+    def test_validates_negative_size(self):
+        enc, _ = self._enc_and_oracle()
+        with pytest.raises(ValueError, match="size must be >= 0"):
+            enc.write_to(io.BytesIO(), size=-1)
+        enc.close()
+
+    def test_after_close_raises(self):
+        enc, _ = self._enc_and_oracle()
+        enc.close()
+        with pytest.raises(RuntimeError, match="encoder closed"):
+            enc.write_to(io.BytesIO())
+
+    def test_writes_to_real_file(self, tmp_path):
+        enc, oracle = self._enc_and_oracle()
+        path = tmp_path / "out.bin"
+        with open(path, "wb") as f:
+            written = enc.write_to(f)
+        assert written == enc.total_size
+        assert path.read_bytes() == oracle
+        enc.close()
+
+    def test_block_size_uses_encode_block_bytes(self):
+        # Force a tiny encode_block_bytes so write_to issues many
+        # reads; assert the byte stream is still correct.
+        enc = _FakeEncoder(
+            _build_reader(
+                num_variants=self.NUM_VARIANTS,
+                variants_chunk_size=self.CHUNK_SIZE,
+            ),
+            bpv=self.BPV,
+            encode_block_bytes=3,
+        )
+        oracle = _oracle(self.NUM_VARIANTS, self.BPV)
+        buf = io.BytesIO()
+        written = enc.write_to(buf)
+        assert written == enc.total_size
+        assert buf.getvalue() == oracle
         enc.close()
 
 

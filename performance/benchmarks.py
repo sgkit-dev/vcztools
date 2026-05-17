@@ -1192,9 +1192,6 @@ def _build_output_bed_stream(root, ctx):
     return reader
 
 
-_BED_STREAM_READ_SIZE = 1 << 20
-
-
 def _run_output_bed_stream(reader, ctx):
     return _drain_encoder(reader, plink.BedEncoder)
 
@@ -1226,20 +1223,30 @@ def _set_first_chunks_with_max_alleles_2(reader, num_chunks):
     reader.set_variant_filter(vf)
 
 
+class _DiscardSink:
+    """File-like that counts bytes written. Used to drain an encoder
+    via :meth:`FormatEncoder.write_to` for throughput benchmarks
+    that don't materialise the output."""
+
+    def __init__(self):
+        self.bytes_written = 0
+
+    def write(self, data) -> int:
+        n = len(data)
+        self.bytes_written += n
+        return n
+
+
 def _drain_encoder(reader, encoder_cls):
     """Construct ``encoder_cls(reader)`` and stream every byte through
-    :meth:`read`, returning a ``RunStats`` populated with the encoder's
-    variant count and the total bytes drained."""
-    bytes_written = 0
+    :meth:`FormatEncoder.write_to` into a discard sink, returning a
+    ``RunStats`` populated with the encoder's variant count and the
+    total bytes drained."""
+    sink = _DiscardSink()
     with encoder_cls(reader) as enc:
-        total = enc.total_size
         num_variants = enc.num_variants
-        off = 0
-        while off < total:
-            chunk = enc.read(off, _BED_STREAM_READ_SIZE)
-            bytes_written += len(chunk)
-            off += len(chunk)
-    return RunStats(records=num_variants, bytes_written=bytes_written)
+        enc.write_to(sink)
+    return RunStats(records=num_variants, bytes_written=sink.bytes_written)
 
 
 def _build_output_bed_stream_filter_m2(root, ctx):

@@ -571,15 +571,8 @@ def _produce_bgen(
         return
     if encode_path == "bgen_encoder":
         kwargs = bgen_encoder_kwargs or {}
-        with bgen_mod.BgenEncoder(reader, **kwargs) as enc:
-            with open(bgen_path, "wb") as f:
-                off = 0
-                while off < enc.bgen_size:
-                    chunk = enc.read(off, 1 << 18)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    off += len(chunk)
+        with bgen_mod.BgenEncoder(reader, **kwargs) as enc, open(bgen_path, "wb") as f:
+            enc.write_to(f)
         bgen_mod.write_sample(reader, sample_path)
         return
     raise ValueError(f"unknown encode_path: {encode_path!r}")

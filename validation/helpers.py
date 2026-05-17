@@ -131,14 +131,7 @@ def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathli
         reader.materialise_variant_filter()
         with bgen.BgenEncoder(reader) as enc:
             with open(bgen_path, "wb") as f:
-                off = 0
-                step = 1 << 17
-                while True:
-                    chunk = enc.read(off, step)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    off += len(chunk)
+                enc.write_to(f)
             bgen.write_bgi(reader, bgi_path, enc.variant_offsets)
         bgen.write_sample(reader, sample_path)
     return bgen_path

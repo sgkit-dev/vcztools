@@ -231,6 +231,44 @@ class FormatEncoder(abc.ABC):
             out.extend(self._read_data(off, end - off))
         return bytes(out)
 
+    def write_to(self, out, off: int | None = None, size: int | None = None) -> int:
+        """Stream ``self`` to ``out`` (a writable file-like with a
+        ``write(bytes)`` method) and return the number of bytes written.
+
+        Defaults to writing the entire encoded stream. Pass ``off``
+        and/or ``size`` to limit to a sub-range:
+
+        - ``off=None`` → starts at byte 0.
+        - ``size=None`` → writes through :attr:`total_size`.
+
+        Validation and EOF semantics match :meth:`read`: ``off`` and
+        ``size`` must be non-negative; ``size`` is clamped to the end
+        of the stream; reads past EOF write nothing. Reads are
+        issued in blocks of :attr:`_encode_block_bytes` (the same
+        granularity the parallel encode fan-out uses to split work).
+        """
+        self._check_open()
+        if off is None:
+            off = 0
+        if off < 0:
+            raise ValueError(f"off must be >= 0 (got {off})")
+        if size is not None and size < 0:
+            raise ValueError(f"size must be >= 0 (got {size})")
+        if size is None:
+            end = self._total_size
+        else:
+            end = min(off + size, self._total_size)
+        block = self._encode_block_bytes
+        written = 0
+        while off < end:
+            buf = self.read(off, min(block, end - off))
+            if not buf:
+                break
+            out.write(buf)
+            written += len(buf)
+            off += len(buf)
+        return written
+
     def try_cached_read(self, off: int, size: int) -> bytes | None:
         """Return ``self[off : off + size]`` iff it can be served from
         in-memory state (prefix bytes and/or the currently-loaded

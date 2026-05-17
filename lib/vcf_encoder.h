@@ -130,7 +130,6 @@ int vcz_encode_plink(
 int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens);
-size_t vcz_bgen_geno_block_row_max_size(size_t num_samples);
 size_t vcz_bgen_geno_block_size(size_t num_samples, size_t uniform_ploidy);
 size_t vcz_bgen_variant_block_size(size_t num_samples, size_t uniform_ploidy,
     size_t varid_max, size_t rsid_max, size_t chrom_max, size_t allele_max);

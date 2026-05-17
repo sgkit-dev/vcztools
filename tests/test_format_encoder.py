@@ -508,6 +508,211 @@ class TestChunkResidentReads:
         enc.close()
 
 
+def _wrap_advance(enc):
+    counter = {"n": 0}
+    original = enc._advance
+
+    def counting():
+        counter["n"] += 1
+        original()
+
+    enc._advance = counting
+    return counter
+
+
+class TestTryCachedRead:
+    """try_cached_read returns bytes iff the requested range can be
+    served from prefix bytes and/or the currently-loaded chunk
+    without advancing the variant iterator. Otherwise None. Same
+    arg validation and EOF semantics as read."""
+
+    NUM_VARIANTS = 20
+    CHUNK_SIZE = 4
+    BPV = 4
+
+    def _enc_and_oracle(self):
+        enc = _FakeEncoder(
+            _build_reader(
+                num_variants=self.NUM_VARIANTS,
+                variants_chunk_size=self.CHUNK_SIZE,
+            ),
+            bpv=self.BPV,
+        )
+        oracle = _oracle(self.NUM_VARIANTS, self.BPV)
+        return enc, oracle
+
+    def test_returns_none_before_any_read(self):
+        enc, _ = self._enc_and_oracle()
+        # No chunk loaded yet; the request lies outside the prefix.
+        assert enc.try_cached_read(enc.prefix_size, self.BPV) is None
+        enc.close()
+
+    def test_returns_prefix_bytes_with_no_chunk_loaded(self):
+        enc, oracle = self._enc_and_oracle()
+        # Reads contained entirely in the prefix don't need a chunk.
+        result = enc.try_cached_read(0, enc.prefix_size)
+        assert result == oracle[: enc.prefix_size]
+        enc.close()
+
+    def test_returns_eof_immediately(self):
+        enc, _ = self._enc_and_oracle()
+        assert enc.try_cached_read(enc.total_size, 100) == b""
+        assert enc.try_cached_read(enc.total_size + 1000, 1) == b""
+        assert enc.try_cached_read(0, 0) == b""
+        enc.close()
+
+    def test_returns_bytes_inside_loaded_chunk(self):
+        enc, oracle = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        enc.read(prefix, 1)  # warm chunk 0
+        result = enc.try_cached_read(prefix + bpv, bpv)
+        assert result == oracle[prefix + bpv : prefix + 2 * bpv]
+        enc.close()
+
+    def test_returns_full_loaded_chunk_range(self):
+        enc, oracle = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        enc.read(prefix, 1)
+        result = enc.try_cached_read(prefix, chunk_bytes_total)
+        assert result == oracle[prefix : prefix + chunk_bytes_total]
+        enc.close()
+
+    def test_returns_none_for_range_beyond_loaded_chunk(self):
+        enc, _ = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        enc.read(prefix, 1)  # warm chunk 0
+        # First byte of chunk 1 is out of range.
+        assert enc.try_cached_read(prefix + chunk_bytes_total, 1) is None
+        enc.close()
+
+    def test_returns_none_for_range_before_loaded_chunk(self):
+        enc, _ = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        # Warm chunk 2.
+        enc.read(prefix + 2 * chunk_bytes_total, 1)
+        # Chunk 0's first variant is before the loaded chunk; even
+        # though it would be reachable via restart, try_cached_read
+        # refuses to advance.
+        assert enc.try_cached_read(prefix, bpv) is None
+        enc.close()
+
+    def test_returns_bytes_spanning_prefix_and_loaded_chunk(self):
+        enc, oracle = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        enc.read(prefix, 1)  # warm chunk 0
+        # Read straddles prefix → chunk 0.
+        result = enc.try_cached_read(prefix - 2, 2 + bpv)
+        assert result == oracle[prefix - 2 : prefix + bpv]
+        enc.close()
+
+    def test_returns_none_when_range_straddles_chunk_boundary(self):
+        enc, _ = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        enc.read(prefix, 1)  # warm chunk 0
+        # Read spans last byte of chunk 0 + first byte of chunk 1.
+        result = enc.try_cached_read(prefix + chunk_bytes_total - 1, 2)
+        assert result is None
+        enc.close()
+
+    def test_size_clamped_to_stream_end_within_loaded_chunk(self):
+        # When the loaded chunk includes the trailing edge of the
+        # stream, an over-large size is clamped — try_cached_read
+        # returns the bytes through total_size.
+        enc, oracle = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        last_chunk_first_byte = prefix + (self.NUM_VARIANTS - self.CHUNK_SIZE) * bpv
+        enc.read(last_chunk_first_byte, 1)
+        result = enc.try_cached_read(last_chunk_first_byte, chunk_bytes_total + 1000)
+        assert result == oracle[last_chunk_first_byte:]
+        enc.close()
+
+    def test_no_iterator_advance_on_hit_or_miss(self):
+        enc, _ = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        enc.read(prefix, 1)  # one advance to load chunk 0
+        advance_ctr = _wrap_advance(enc)
+        restart_ctr = _wrap_restart(enc)
+        # Hits: prefix, in-chunk, EOF, size=0.
+        enc.try_cached_read(0, enc.prefix_size)
+        enc.try_cached_read(prefix + bpv, bpv)
+        enc.try_cached_read(enc.total_size, 100)
+        enc.try_cached_read(0, 0)
+        # Misses: beyond chunk, across boundary, fresh-encoder-style
+        # (no chunk loaded — simulate via teardown of state would
+        # require touching internals; this still exercises a miss).
+        assert enc.try_cached_read(prefix + chunk_bytes_total, 1) is None
+        assert enc.try_cached_read(prefix + chunk_bytes_total - 1, 2) is None
+        assert advance_ctr["n"] == 0
+        assert restart_ctr["n"] == 0
+        enc.close()
+
+    def test_validates_negative_off(self):
+        enc, _ = self._enc_and_oracle()
+        with pytest.raises(ValueError, match="off must be >= 0"):
+            enc.try_cached_read(-1, 4)
+        enc.close()
+
+    def test_validates_negative_size(self):
+        enc, _ = self._enc_and_oracle()
+        with pytest.raises(ValueError, match="size must be >= 0"):
+            enc.try_cached_read(0, -1)
+        enc.close()
+
+    def test_after_close_raises(self):
+        enc, _ = self._enc_and_oracle()
+        enc.close()
+        with pytest.raises(RuntimeError, match="encoder closed"):
+            enc.try_cached_read(0, 1)
+
+    def test_advance_publishes_new_chunk(self):
+        # After read() advances to chunk 2, try_cached_read snapshots
+        # the new chunk — confirms the publish hook in _advance is
+        # invoked on every step, not just the first.
+        enc, oracle = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        chunk_bytes_total = self.CHUNK_SIZE * bpv
+        enc.read(prefix, 1)  # chunk 0
+        enc.read(prefix + chunk_bytes_total, 1)  # advance to chunk 1
+        enc.read(prefix + 2 * chunk_bytes_total, 1)  # advance to chunk 2
+        # Chunk 2 covers variants 8..11.
+        result = enc.try_cached_read(prefix + 9 * bpv, bpv)
+        assert result == oracle[prefix + 9 * bpv : prefix + 10 * bpv]
+        # And chunk 0 is no longer cached.
+        assert enc.try_cached_read(prefix, bpv) is None
+        enc.close()
+
+    def test_restart_clears_publication(self):
+        # _teardown_iterator (called from _restart) must clear
+        # _published_chunk; otherwise stale bytes could be served
+        # after a restart but before the new chunk's encode finishes.
+        enc, _ = self._enc_and_oracle()
+        prefix = enc.prefix_size
+        bpv = enc.bytes_per_variant
+        enc.read(prefix, 1)  # chunk 0 loaded
+        # _teardown_iterator clears the publication; verify directly.
+        enc._teardown_iterator()
+        assert enc._published_chunk is None
+        # try_cached_read against the previously-cached range now
+        # returns None.
+        assert enc.try_cached_read(prefix, bpv) is None
+        enc.close()
+
+
 # ---------------------------------------------------------------------------
 # Restart behaviour
 # ---------------------------------------------------------------------------

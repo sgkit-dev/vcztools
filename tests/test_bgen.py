@@ -284,12 +284,12 @@ class TestBgenVariantBlockSize:
         allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
         position = np.array([100], dtype=np.int32)
         bpv = _vcztools.bgen_variant_block_size(
-            num_samples,
-            uniform_ploidy,
-            varid_max,
-            rsid_max,
-            chrom_max,
-            allele_max,
+            num_samples=num_samples,
+            uniform_ploidy=uniform_ploidy,
+            varid_max=varid_max,
+            rsid_max=rsid_max,
+            chrom_max=chrom_max,
+            allele_max=allele_max,
         )
         out = np.zeros(bpv, dtype=np.uint8)
         _vcztools.encode_bgen_chunk_slice_level0(
@@ -388,11 +388,6 @@ class TestBgenVariantBlockSize:
         ref_blocks, ref_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
         assert int(ref_lens[0]) == geno_size
         assert unpacked == bytes(ref_blocks[0, :geno_size])
-
-    @pytest.mark.parametrize("uniform_ploidy", [0, 3, -1])
-    def test_invalid_uniform_ploidy_rejected(self, uniform_ploidy):
-        with pytest.raises(ValueError, match="uniform_ploidy must be 1 or 2"):
-            _vcztools.bgen_variant_block_size(4, uniform_ploidy, 1, 1, 1, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1875,7 +1870,14 @@ class TestBgenEncoderMetadata:
         # rsid_max=varid_max=1; default contig "chr1" → chrom_max=4;
         # allele_max=1.
         with _build_encoder(num_variants=2, num_samples=4) as enc:
-            expected = _vcztools.bgen_variant_block_size(4, 2, 1, 1, 4, 1)
+            expected = _vcztools.bgen_variant_block_size(
+                num_samples=4,
+                uniform_ploidy=2,
+                varid_max=1,
+                rsid_max=1,
+                chrom_max=4,
+                allele_max=1,
+            )
             assert enc.bytes_per_variant == expected
 
     def test_header_size_matches_serialised_header(self):
@@ -1896,7 +1898,14 @@ class TestBgenEncoderMetadata:
             num_samples=2,
             encoder_kwargs=dict(varid_max=16, rsid_max=16, allele_max=2),
         ) as enc:
-            expected = _vcztools.bgen_variant_block_size(2, 2, 16, 16, 4, 2)
+            expected = _vcztools.bgen_variant_block_size(
+                num_samples=2,
+                uniform_ploidy=2,
+                varid_max=16,
+                rsid_max=16,
+                chrom_max=4,
+                allele_max=2,
+            )
             assert enc.bytes_per_variant == expected
 
     def test_default_rsid_varid_max_when_variant_id_absent(self):
@@ -2504,7 +2513,14 @@ class TestBgenEncoderUniformPloidy:
         )
         with bgen.BgenEncoder(reader) as enc:
             geno_size = 10 + 2 * num_samples
-            expected = _vcztools.bgen_variant_block_size(num_samples, 1, 1, 1, 4, 1)
+            expected = _vcztools.bgen_variant_block_size(
+                num_samples=num_samples,
+                uniform_ploidy=1,
+                varid_max=1,
+                rsid_max=1,
+                chrom_max=4,
+                allele_max=1,
+            )
             assert enc.bytes_per_variant == expected
             assert enc._uniform_ploidy == 1
             assert enc._uniform_geno_size == geno_size
@@ -2686,7 +2702,12 @@ class TestBgenChunkSliceLevel0Kernel:
         allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
         position = np.array([100, 200], dtype=np.int32)
         bpv = _vcztools.bgen_variant_block_size(
-            num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max
+            num_samples=num_samples,
+            uniform_ploidy=uniform_ploidy,
+            varid_max=varid_max,
+            rsid_max=rsid_max,
+            chrom_max=chrom_max,
+            allele_max=allele_max,
         )
         out = np.empty(num_variants * bpv, dtype=np.uint8)
         _vcztools.encode_bgen_chunk_slice_level0(

@@ -888,13 +888,15 @@ out:
 }
 
 static PyObject *
-vcztools_bgen_variant_block_size(PyObject *self, PyObject *args)
+vcztools_bgen_variant_block_size(PyObject *self, PyObject *args, PyObject *kwds)
 {
+    static char *kwlist[] = { "num_samples", "uniform_ploidy", "varid_max", "rsid_max",
+        "chrom_max", "allele_max", NULL };
     Py_ssize_t num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max;
     size_t bpv;
 
-    if (!PyArg_ParseTuple(args, "nnnnnn", &num_samples, &uniform_ploidy, &varid_max,
-            &rsid_max, &chrom_max, &allele_max)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "nnnnnn", kwlist, &num_samples,
+            &uniform_ploidy, &varid_max, &rsid_max, &chrom_max, &allele_max)) {
         return NULL;
     }
     if (uniform_ploidy != 1 && uniform_ploidy != 2) {
@@ -930,7 +932,7 @@ static PyMethodDef vcztools_methods[] = {
                   "num_variants * bytes_per_variant bytes into out_buf." },
     { .ml_name = "bgen_variant_block_size",
         .ml_meth = (PyCFunction) vcztools_bgen_variant_block_size,
-        .ml_flags = METH_VARARGS,
+        .ml_flags = METH_VARARGS | METH_KEYWORDS,
         .ml_doc = "Per-variant byte count for the fixed-size BgenEncoder layout "
                   "(zlib level 0, uniform ploidy). Mirrors what "
                   "encode_bgen_chunk_slice_level0 writes per variant." },

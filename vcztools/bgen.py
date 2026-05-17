@@ -609,12 +609,12 @@ class BgenEncoder(format_encoder.FormatEncoder):
         self._uniform_ploidy = uniform_ploidy
         self._uniform_geno_size = 10 + (uniform_ploidy + 1) * num_samples
         bytes_per_variant = _vcztools.bgen_variant_block_size(
-            num_samples,
-            uniform_ploidy,
-            varid_max,
-            rsid_max,
-            chrom_max,
-            allele_max,
+            num_samples=num_samples,
+            uniform_ploidy=uniform_ploidy,
+            varid_max=varid_max,
+            rsid_max=rsid_max,
+            chrom_max=chrom_max,
+            allele_max=allele_max,
         )
 
         if embed_header_samples:

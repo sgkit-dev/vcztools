@@ -1073,16 +1073,11 @@ vcz_encode_plink(
     return 0;
 }
 
-size_t
-vcz_bgen_geno_block_row_max_size(size_t num_samples)
-{
-    /* Worst-case (all diploid): 8 header + S ploidy + 2 flags + 2*S probs. */
-    return 10 + 3 * num_samples;
-}
-
-/* Uniform-ploidy variant of the row-size formula: 8-byte header +
- * num_samples ploidy bytes + 2 flag bytes + uniform_ploidy probability
- * bytes per sample. uniform_ploidy must be 1 (haploid) or 2 (diploid). */
+/* Uniform-ploidy genotype block size: 8-byte header + num_samples
+ * ploidy bytes + 2 flag bytes + uniform_ploidy probability bytes per
+ * sample. uniform_ploidy must be 1 (haploid) or 2 (diploid); the
+ * diploid value is also the worst-case row width that the variable-
+ * ploidy geno-block encoder ever writes per variant. */
 size_t
 vcz_bgen_geno_block_size(size_t num_samples, size_t uniform_ploidy)
 {
@@ -1223,8 +1218,8 @@ out:
 
 /* Multi-variant wrapper around bgen_geno_block_one. `buf` must be at
  * least num_variants * row_stride bytes (row_stride is typically
- * vcz_bgen_geno_block_row_max_size(num_samples)); out_lens[v] receives
- * the actual byte count for variant v. */
+ * vcz_bgen_geno_block_size(num_samples, 2), the worst-case row width);
+ * out_lens[v] receives the actual byte count for variant v. */
 int
 vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,

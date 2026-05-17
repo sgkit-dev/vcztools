@@ -707,7 +707,7 @@ vcztools_encode_bgen_geno_blocks(PyObject *self, PyObject *args)
         PyErr_Format(PyExc_ValueError, "phased.shape[0] must equal genotypes.shape[0]");
         goto out;
     }
-    row_stride = vcz_bgen_geno_block_row_max_size((size_t) num_samples);
+    row_stride = vcz_bgen_geno_block_size((size_t) num_samples, 2);
     out_dims[0] = num_variants;
     out_dims[1] = (npy_intp) row_stride;
     encoded = (PyArrayObject *) PyArray_SimpleNew(2, out_dims, NPY_UINT8);
@@ -887,6 +887,31 @@ out:
     return ret;
 }
 
+static PyObject *
+vcztools_bgen_variant_block_size(PyObject *self, PyObject *args)
+{
+    Py_ssize_t num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max;
+    size_t bpv;
+
+    if (!PyArg_ParseTuple(args, "nnnnnn", &num_samples, &uniform_ploidy, &varid_max,
+            &rsid_max, &chrom_max, &allele_max)) {
+        return NULL;
+    }
+    if (uniform_ploidy != 1 && uniform_ploidy != 2) {
+        PyErr_Format(PyExc_ValueError, "uniform_ploidy must be 1 or 2 (got %zd)",
+            (Py_ssize_t) uniform_ploidy);
+        return NULL;
+    }
+    if (num_samples < 0 || varid_max < 0 || rsid_max < 0 || chrom_max < 0
+        || allele_max < 0) {
+        PyErr_Format(PyExc_ValueError, "size arguments must be non-negative");
+        return NULL;
+    }
+    bpv = vcz_bgen_variant_block_size((size_t) num_samples, (size_t) uniform_ploidy,
+        (size_t) varid_max, (size_t) rsid_max, (size_t) chrom_max, (size_t) allele_max);
+    return PyLong_FromSize_t(bpv);
+}
+
 static PyMethodDef vcztools_methods[] = {
     { .ml_name = "encode_plink",
         .ml_meth = (PyCFunction) vcztools_encode_plink,
@@ -903,6 +928,12 @@ static PyMethodDef vcztools_methods[] = {
         .ml_doc = "Encode a full BGEN variant-block slice for the fixed-size "
                   "BgenEncoder path (zlib level 0, uniform ploidy). Writes "
                   "num_variants * bytes_per_variant bytes into out_buf." },
+    { .ml_name = "bgen_variant_block_size",
+        .ml_meth = (PyCFunction) vcztools_bgen_variant_block_size,
+        .ml_flags = METH_VARARGS,
+        .ml_doc = "Per-variant byte count for the fixed-size BgenEncoder layout "
+                  "(zlib level 0, uniform ploidy). Mirrors what "
+                  "encode_bgen_chunk_slice_level0 writes per variant." },
     { NULL } /* Sentinel */
 };
 

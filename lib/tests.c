@@ -1214,7 +1214,7 @@ check_header_for_size(size_t num_samples)
     size_t row_max;
     int ret;
 
-    row_max = vcz_bgen_geno_block_row_max_size(num_samples);
+    row_max = vcz_bgen_geno_block_size(num_samples, 2);
     gt = calloc(num_samples > 0 ? num_samples : 1, 2 * sizeof(int8_t));
     buf = malloc(row_max);
     CU_ASSERT_FATAL(gt != NULL);

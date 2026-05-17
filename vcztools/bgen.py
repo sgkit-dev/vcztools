@@ -1129,10 +1129,12 @@ def write_bgen(
                 t_enc = time.perf_counter()
 
                 mixed_phase_count += slice_mpc
-                # FIXME this should be done with numpy
-                for length in lens:
-                    variant_offsets[idx + 1] = variant_offsets[idx] + length
-                    idx += 1
+                slice_lens = np.asarray(lens, dtype=np.int64)
+                n_slice = slice_lens.size
+                variant_offsets[idx + 1 : idx + 1 + n_slice] = variant_offsets[
+                    idx
+                ] + np.cumsum(slice_lens)
+                idx += n_slice
                 bytes_written += len(slice_bytes)
 
     elapsed = time.perf_counter() - start

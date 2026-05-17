@@ -60,6 +60,32 @@ BITS_PER_PROB = 8
 VCZ_INT_FILL = -2
 
 
+def _zlib_stored_size(uncompressed_size):
+    """Wire size of the zlib stream that
+    :c:func:`vcz_compress2_static` (and the BGEN chunk-slice C kernel)
+    emit for ``uncompressed_size`` bytes of input.
+
+    Mirrors :c:func:`vcz_compress_bound` in ``lib/vcf_encoder.c``: a
+    2-byte zlib header, one 5-byte stored DEFLATE framing block per
+    chunk of up to 65535 input bytes, the input bytes themselves, and
+    a 4-byte adler32. The C kernel emits exactly this layout per
+    variant, so the BgenEncoder uses this to predict the size of every
+    variant block.
+
+    Python's ``zlib.compress(_, 0)`` produces a slightly different
+    stored-block layout (an extra empty block when ``uncompressed_size``
+    falls in ``[65532, 65535]`` mod 65535), so it cannot be used here:
+    the over-prediction would leave per-variant slack between the C
+    kernel's tightly-packed writes and the start of the next chunk,
+    which downstream tools (plink2, bgen-reader) see as garbage.
+    """
+    if uncompressed_size == 0:
+        num_blocks = 1
+    else:
+        num_blocks = (uncompressed_size + 65534) // 65535
+    return 2 + 5 * num_blocks + uncompressed_size + 4
+
+
 def _check_biallelic(alleles):
     # BGEN layout 2 supports multi-allelic, but every major downstream
     # consumer (REGENIE, SAIGE, BOLT-LMM) assumes biallelic. Mirroring
@@ -607,13 +633,16 @@ class BgenEncoder(format_encoder.FormatEncoder):
                 f"got {gt_info.shape!r}."
             )
         self._uniform_ploidy = uniform_ploidy
-        # Pre-compute the zlib-stored size of one genotype block.
-        # zlib.compress(level=0) emits stored DEFLATE blocks whose output
-        # size is a deterministic function of the input length, so every
-        # variant block is the same width.
+        # Pre-compute the wire size of one zlib-stored genotype block.
+        # _zlib_stored_size mirrors the C kernel's vcz_compress_bound /
+        # vcz_compress2_static layout exactly so bytes_per_variant
+        # matches what the kernel actually writes — len(zlib.compress(_,
+        # 0)) would over-predict by 5 bytes for some boundary sizes
+        # (see _zlib_stored_size for details) and leave per-variant
+        # slack at every chunk boundary.
         geno_size = 10 + (uniform_ploidy + 1) * num_samples
         self._uniform_geno_size = geno_size
-        compressed_geno_size = len(zlib.compress(b"\x00" * geno_size, 0))
+        compressed_geno_size = _zlib_stored_size(geno_size)
         self._compressed_geno_size = compressed_geno_size
         bytes_per_variant = (
             28
@@ -1100,6 +1129,7 @@ def write_bgen(
                 t_enc = time.perf_counter()
 
                 mixed_phase_count += slice_mpc
+                # FIXME this should be done with numpy
                 for length in lens:
                     variant_offsets[idx + 1] = variant_offsets[idx] + length
                     idx += 1

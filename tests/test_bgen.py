@@ -244,6 +244,202 @@ class TestBuildHeader:
         assert (flags & bgen.SAMPLE_IDS_PRESENT) == 0
 
 
+class TestZlibStoredSize:
+    """:func:`vcztools.bgen._zlib_stored_size` predicts the wire size
+    of the zlib stream that the C kernel
+    (``vcz_compress2_static`` / ``vcz_compress_bound``) actually emits
+    for a given uncompressed input length.
+
+    Three layers of coverage:
+
+    1. ``test_*_inputs`` — hand-tabulated expected values across the
+       boundary band (where Python's ``zlib.compress(_, 0)`` deviates
+       from the C kernel's layout), so an algorithmic drift in the
+       Python helper surfaces as a value mismatch.
+    2. :func:`test_matches_c_kernel_emit` — drives the chunk-slice C
+       kernel and reads back the per-variant ``C`` (length-of-payload)
+       field, asserting it equals
+       ``4 + _zlib_stored_size(geno_size)``. Pins the helper to what
+       the kernel actually writes.
+    3. :func:`test_round_trips_through_python_zlib_decompress` —
+       extracts the C kernel's stored-zlib payload from the wire and
+       round-trips it through ``zlib.decompress``, confirming that the
+       kernel's stream is a valid (Python-readable) zlib stream of
+       the predicted length.
+    """
+
+    def test_zero_input(self):
+        # Empty input still gets a single 5-byte BFINAL=1 stored block.
+        assert bgen._zlib_stored_size(0) == 2 + 5 + 0 + 4
+
+    @pytest.mark.parametrize(
+        "n",
+        [1, 50, 100, 1000, 32768, 65525, 65531],
+        ids=str,
+    )
+    def test_single_block_inputs(self, n):
+        # 1-byte to one-block-minus-overhead: exactly one stored
+        # DEFLATE block, so 2 + 5 + n + 4 bytes total.
+        assert bgen._zlib_stored_size(n) == 2 + 5 + n + 4
+
+    @pytest.mark.parametrize(
+        "n",
+        [65532, 65533, 65534, 65535],
+        ids=str,
+    )
+    def test_boundary_band_inputs(self, n):
+        # The C kernel's stored layout fits these in one 65535-cap
+        # block (the existing emit loop only opens a second block when
+        # remaining > 65535). Python's zlib.compress(_, 0) opens a
+        # second block here and over-predicts the size by 5 bytes —
+        # the bug this helper exists to dodge.
+        assert bgen._zlib_stored_size(n) == 2 + 5 + n + 4
+        assert bgen._zlib_stored_size(n) < len(zlib.compress(b"\x00" * n, 0))
+
+    @pytest.mark.parametrize(
+        ("n", "blocks"),
+        [
+            (65536, 2),
+            (65537, 2),
+            (131068, 2),
+            (131070, 2),
+            (131071, 3),
+            (131072, 3),
+            (196604, 3),
+            (196610, 4),
+            (300010, 5),
+        ],
+        ids=lambda v: str(v),
+    )
+    def test_multi_block_inputs(self, n, blocks):
+        # Each stored block carries at most 65535 bytes; the kernel
+        # opens ceil(n/65535) blocks (and exactly 1 when n==0).
+        assert bgen._zlib_stored_size(n) == 2 + 5 * blocks + n + 4
+
+    def _emit_chunk_slice(self, num_samples, uniform_ploidy):
+        """Drive the chunk-slice C kernel for one variant at
+        ``num_samples`` × ``uniform_ploidy``; return the raw output
+        bytes plus the per-variant offsets needed to walk the wire."""
+        num_variants = 1
+        varid_max = rsid_max = chrom_max = 1
+        allele_max = 1
+        geno_size = 10 + (uniform_ploidy + 1) * num_samples
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        if uniform_ploidy == 1:
+            # Mark every sample haploid via the -2 sentinel in slot 1.
+            G[:, :, 1] = -2
+        phased = np.zeros(num_variants, dtype=bool)
+        varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
+        rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
+        chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
+        allele1 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        position = np.array([100], dtype=np.int32)
+        bpv = (
+            28
+            + varid_max
+            + rsid_max
+            + chrom_max
+            + 2 * allele_max
+            + bgen._zlib_stored_size(geno_size)
+        )
+        out = np.zeros(bpv, dtype=np.uint8)
+        _vcztools.encode_bgen_chunk_slice_level0(
+            varid,
+            rsid,
+            chrom,
+            allele1,
+            allele2,
+            position,
+            G,
+            phased,
+            out,
+            uniform_ploidy,
+        )
+        header_overhead = (
+            2
+            + varid_max
+            + 2
+            + rsid_max
+            + 2
+            + chrom_max
+            + 4
+            + 2
+            + 4
+            + allele_max
+            + 4
+            + allele_max
+        )
+        return bytes(out), header_overhead, geno_size
+
+    @pytest.mark.parametrize(
+        ("num_samples", "uniform_ploidy"),
+        [
+            (1, 2),  # geno_size = 13
+            (4, 2),  # geno_size = 22 (small single-block)
+            (21841, 2),  # geno_size = 65533 (boundary band, diploid)
+            (21844, 2),  # geno_size = 65542 (just past boundary)
+            (32761, 1),  # geno_size = 65532 (boundary band, haploid)
+            (32762, 1),  # geno_size = 65534 (boundary band, haploid)
+            (22000, 2),  # geno_size = 66010 (just past boundary, 2 blocks)
+            (43690, 2),  # geno_size = 131080 (multi-block)
+        ],
+        ids=lambda v: str(v),
+    )
+    def test_matches_c_kernel_emit(self, num_samples, uniform_ploidy):
+        # Pull the per-variant C field straight off the wire and
+        # assert it equals 4 + _zlib_stored_size(geno_size). The C
+        # field is the kernel's own declaration of payload length —
+        # so this checks the helper against the kernel's actual emit,
+        # not against a hand-rolled formula.
+        wire, header_overhead, geno_size = self._emit_chunk_slice(
+            num_samples, uniform_ploidy
+        )
+        (C,) = struct.unpack_from("<I", wire, header_overhead)
+        assert C - 4 == bgen._zlib_stored_size(geno_size)
+
+    @pytest.mark.parametrize(
+        ("num_samples", "uniform_ploidy"),
+        [
+            (21841, 2),
+            (32761, 1),
+            (32762, 1),
+            (43690, 2),
+            (1, 2),
+        ],
+        ids=lambda v: str(v),
+    )
+    def test_round_trips_through_python_zlib_decompress(
+        self, num_samples, uniform_ploidy
+    ):
+        # The C kernel writes its own zlib stored-DEFLATE stream
+        # (different block layout from Python's zlib.compress, same
+        # algorithm). Python's zlib.decompress must accept that
+        # stream, recover exactly D bytes of uncompressed geno block,
+        # and the recovered bytes must equal what the geno-block
+        # builder produced for the same input. Locks the kernel's
+        # stream to "valid zlib" status at the boundary sizes.
+        wire, header_overhead, geno_size = self._emit_chunk_slice(
+            num_samples, uniform_ploidy
+        )
+        (C,) = struct.unpack_from("<I", wire, header_overhead)
+        (D,) = struct.unpack_from("<I", wire, header_overhead + 4)
+        assert D == geno_size
+        payload = wire[header_overhead + 8 : header_overhead + 4 + C]
+        assert len(payload) == bgen._zlib_stored_size(geno_size)
+        unpacked = zlib.decompress(payload)
+        assert len(unpacked) == geno_size
+        # Cross-check the recovered bytes against the geno-block
+        # builder's reference output for the same all-zero inputs.
+        G = np.zeros((1, num_samples, 2), dtype=np.int8)
+        if uniform_ploidy == 1:
+            G[:, :, 1] = -2
+        phased = np.zeros(1, dtype=bool)
+        ref_blocks, ref_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
+        assert int(ref_lens[0]) == geno_size
+        assert unpacked == bytes(ref_blocks[0, :geno_size])
+
+
 # ---------------------------------------------------------------------------
 # Genotype block / variant block byte-level encoding
 # ---------------------------------------------------------------------------
@@ -1723,7 +1919,7 @@ class TestBgenEncoderMetadata:
         # default contig "chr1" → chrom_max=4; allele_max=1.
         with _build_encoder(num_variants=2, num_samples=4) as enc:
             geno_size = 10 + 3 * 4
-            expected = 28 + 1 + 1 + 4 + 2 + len(zlib.compress(b"\x00" * geno_size, 0))
+            expected = 28 + 1 + 1 + 4 + 2 + bgen._zlib_stored_size(geno_size)
             assert enc.bytes_per_variant == expected
 
     def test_header_size_matches_serialised_header(self):
@@ -1745,7 +1941,7 @@ class TestBgenEncoderMetadata:
             encoder_kwargs=dict(varid_max=16, rsid_max=16, allele_max=2),
         ) as enc:
             geno_size = 10 + 3 * 2
-            expected = 28 + 16 + 16 + 4 + 4 + len(zlib.compress(b"\x00" * geno_size, 0))
+            expected = 28 + 16 + 16 + 4 + 4 + bgen._zlib_stored_size(geno_size)
             assert enc.bytes_per_variant == expected
 
     def test_default_rsid_varid_max_when_variant_id_absent(self):
@@ -1939,6 +2135,224 @@ class TestBgenEncoderEdges:
         with _build_encoder(num_variants=2, num_samples=3) as enc:
             with pytest.raises(ValueError, match="size must be >= 0"):
                 enc.read(0, -1)
+
+
+class TestBgenEncoderWireFormat:
+    """Walk the raw .bgen bytes from a BgenEncoder run and confirm every
+    variant block parses without garbage between blocks. Catches
+    bytes_per_variant / chunk-stride mismatches that downstream tools
+    (plink2, bgen-reader) see as ``Length-0 rsID`` at the first chunk
+    boundary."""
+
+    def _parse_variant_blocks(self, payload, num_variants):
+        """Parse ``num_variants`` consecutive layout-2 variant blocks
+        from ``payload`` (no header). Returns the list of parsed
+        records and the byte offset after the last variant."""
+        records = []
+        p = 0
+        for v in range(num_variants):
+            start = p
+            (L_id,) = struct.unpack_from("<H", payload, p)
+            p += 2 + L_id
+            (L_rsid,) = struct.unpack_from("<H", payload, p)
+            p += 2
+            rsid_b = bytes(payload[p : p + L_rsid])
+            p += L_rsid
+            (L_chr,) = struct.unpack_from("<H", payload, p)
+            p += 2
+            chr_b = bytes(payload[p : p + L_chr])
+            p += L_chr
+            (pos,) = struct.unpack_from("<I", payload, p)
+            p += 4
+            (K,) = struct.unpack_from("<H", payload, p)
+            p += 2
+            assert K == 2, f"variant {v}: K={K} expected 2"
+            (LA,) = struct.unpack_from("<I", payload, p)
+            p += 4
+            allele1_b = bytes(payload[p : p + LA])
+            p += LA
+            (LB,) = struct.unpack_from("<I", payload, p)
+            p += 4
+            allele2_b = bytes(payload[p : p + LB])
+            p += LB
+            (C,) = struct.unpack_from("<I", payload, p)
+            (D,) = struct.unpack_from("<I", payload, p + 4)
+            geno_payload = bytes(payload[p + 8 : p + 4 + C])
+            p += 4 + C
+            records.append(
+                dict(
+                    L_id=L_id,
+                    rsid=rsid_b,
+                    L_rsid=L_rsid,
+                    chrom=chr_b,
+                    pos=pos,
+                    allele1=allele1_b,
+                    allele2=allele2_b,
+                    C=C,
+                    D=D,
+                    payload=geno_payload,
+                    size=p - start,
+                )
+            )
+        return records, p
+
+    def test_multi_chunk_diploid_22k_samples_parses_contiguously(self):
+        # geno_size = 10 + 3*21841 = 65533: Python's zlib.compress emits
+        # one extra stored block for source lengths in [65532, 65535]
+        # vs vcz_compress_bound's prediction, so a Python-side bpv
+        # computed from len(zlib.compress(...)) over-allocates by 5
+        # bytes per variant. With variants_chunk_size=4 < num_variants
+        # the encoder iterates more than one chunk; the over-allocation
+        # leaves zero-byte slack at the end of every encoded chunk
+        # and the next chunk's first variant is no longer where the
+        # spec-walker expects it.
+        num_samples = 21841
+        num_variants = 8
+        reader = _build_reader(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            variants_chunk_size=4,
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            data = _drain(enc)[enc.header_size :]
+        records, end = self._parse_variant_blocks(data, num_variants)
+        assert end == len(data), (
+            f"after parsing {num_variants} variants, walked {end} bytes "
+            f"but payload is {len(data)} bytes (trailing slack)"
+        )
+        for v, rec in enumerate(records):
+            assert rec["L_rsid"] >= 1, (
+                f"variant {v}: L_rsid={rec['L_rsid']} (BGEN spec allows 0 "
+                f"but plink2 rejects it as a missing-ID marker)"
+            )
+            # Every variant block must have the same size for the
+            # fixed-size encoder; slack between blocks would make this
+            # diverge.
+            assert rec["size"] == records[0]["size"], (
+                f"variant {v}: size={rec['size']} != variant 0 size "
+                f"{records[0]['size']}; chunk-boundary misalignment"
+            )
+
+    def test_single_chunk_small_samples_parses_contiguously(self):
+        # Sanity guard for the path where Python and C agree on
+        # compressed_geno_size (small num_samples => geno_size < 65532).
+        # Lock down the wire-format walker so a future regression in
+        # the small-sample path also surfaces.
+        num_samples = 4
+        num_variants = 3
+        reader = _build_reader(
+            num_variants=num_variants,
+            num_samples=num_samples,
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            data = _drain(enc)[enc.header_size :]
+        records, end = self._parse_variant_blocks(data, num_variants)
+        assert end == len(data)
+        for rec in records:
+            assert rec["L_rsid"] >= 1
+
+
+class TestBgenEncoderBoundarySizeDecompression:
+    """End-to-end decompression of BgenEncoder output at the
+    ``geno_size`` values where Python's ``zlib.compress`` previously
+    drifted from the C kernel's ``vcz_compress_bound`` (and where the
+    user-reported ``Length-0 rsID`` failure originated). For every
+    variant in the encoded stream, decompress the C-declared payload
+    and assert it matches the reference geno-block builder's output
+    for the same inputs — proves the wire format is internally
+    consistent at the boundary sizes, not just structurally walkable.
+    """
+
+    def _parse_variant_blocks(self, payload, num_variants):
+        # Local copy of the parser in TestBgenEncoderWireFormat so
+        # these tests stay self-contained.
+        wf = TestBgenEncoderWireFormat()
+        return wf._parse_variant_blocks(payload, num_variants)
+
+    def _check_decompression(self, *, num_samples, num_variants, ploidy, chunk_size):
+        """Build a varied-genotype reader, encode through BgenEncoder,
+        decompress each variant's payload, and assert it round-trips
+        to the geno-block builder's output."""
+        G = _varied_genotypes(num_variants=num_variants, num_samples=num_samples)
+        if ploidy == 1:
+            G = G[:, :, :1]
+        reader = _build_reader(
+            num_variants=num_variants,
+            num_samples=num_samples,
+            call_genotype=G,
+            ploidy=ploidy,
+            variants_chunk_size=chunk_size,
+        )
+        with bgen.BgenEncoder(reader) as enc:
+            data = _drain(enc)[enc.header_size :]
+            uniform_geno_size = enc._uniform_geno_size
+
+        records, end = self._parse_variant_blocks(data, num_variants)
+        assert end == len(data)
+
+        # Reference geno-blocks: same input the kernel saw, run
+        # through the same kernel-side builder so missingness /
+        # phasing / ploidy normalisation lines up exactly.
+        phased = np.zeros(num_variants, dtype=bool)
+        G_padded = np.full((num_variants, num_samples, 2), -2, dtype=np.int8)
+        G_padded[:, :, : G.shape[2]] = G
+        ref_blocks, ref_lens = _vcztools.encode_bgen_geno_blocks(G_padded, phased)
+        assert (ref_lens == uniform_geno_size).all()
+
+        for v, rec in enumerate(records):
+            assert rec["D"] == uniform_geno_size, (
+                f"variant {v}: D={rec['D']} != geno_size {uniform_geno_size}"
+            )
+            assert rec["C"] - 4 == bgen._zlib_stored_size(uniform_geno_size), (
+                f"variant {v}: C-4={rec['C'] - 4} != "
+                f"_zlib_stored_size({uniform_geno_size})"
+            )
+            decompressed = zlib.decompress(rec["payload"])
+            assert len(decompressed) == uniform_geno_size
+            assert decompressed == bytes(ref_blocks[v, :uniform_geno_size]), (
+                f"variant {v}: decompressed geno-block does not match reference"
+            )
+            # The adler32 trailer must verify too — zlib.decompress
+            # would have raised on a mismatch, but assert explicitly
+            # so a regression that strips the trailer is caught here.
+            adler = int.from_bytes(rec["payload"][-4:], "big")
+            assert adler == zlib.adler32(decompressed)
+
+    def test_diploid_boundary_single_chunk(self):
+        # ns=21841 → geno_size=65533 (boundary band, diploid). Single
+        # chunk: confirms the boundary-size payload itself decompresses.
+        self._check_decompression(
+            num_samples=21841, num_variants=3, ploidy=2, chunk_size=3
+        )
+
+    def test_diploid_boundary_multi_chunk(self):
+        # Same geno_size, multiple chunks: confirms each chunk's
+        # payloads decompress and inter-chunk alignment holds.
+        self._check_decompression(
+            num_samples=21841, num_variants=6, ploidy=2, chunk_size=2
+        )
+
+    def test_haploid_boundary_65532(self):
+        # ns=32761, ploidy=1 → geno_size=65532 (boundary band, haploid).
+        self._check_decompression(
+            num_samples=32761, num_variants=4, ploidy=1, chunk_size=2
+        )
+
+    def test_haploid_boundary_65534(self):
+        # ns=32762, ploidy=1 → geno_size=65534 (boundary band, haploid).
+        self._check_decompression(
+            num_samples=32762, num_variants=4, ploidy=1, chunk_size=2
+        )
+
+    def test_diploid_just_past_boundary(self):
+        # ns=21844 → geno_size=65542 (one byte past the boundary; one
+        # full 65535-byte stored block + a small trailing block).
+        # Python and C agree on the size here, but exercising the
+        # two-stored-block path keeps this side of the boundary
+        # covered alongside the band itself.
+        self._check_decompression(
+            num_samples=21844, num_variants=4, ploidy=2, chunk_size=2
+        )
 
 
 class TestBgenEncoderEmptyStore:
@@ -2139,7 +2553,7 @@ class TestBgenEncoderUniformPloidy:
         )
         with bgen.BgenEncoder(reader) as enc:
             geno_size = 10 + 2 * num_samples
-            expected = 28 + 1 + 1 + 4 + 2 + len(zlib.compress(b"\x00" * geno_size, 0))
+            expected = 28 + 1 + 1 + 4 + 2 + bgen._zlib_stored_size(geno_size)
             assert enc.bytes_per_variant == expected
             assert enc._uniform_ploidy == 1
             assert enc._uniform_geno_size == geno_size
@@ -2326,7 +2740,7 @@ class TestBgenChunkSliceLevel0Kernel:
             + rsid_max
             + chrom_max
             + 2 * allele_max
-            + len(zlib.compress(b"\x00" * geno_size, 0))
+            + bgen._zlib_stored_size(geno_size)
         )
         out = np.empty(num_variants * bpv, dtype=np.uint8)
         _vcztools.encode_bgen_chunk_slice_level0(

@@ -122,6 +122,12 @@ class FormatEncoder(abc.ABC):
         self._chunk_bytes: bytes | None = None
         self._chunk_start = 0
         self._chunk_plan_pos = -1
+        # Atomic single-attribute snapshot of (chunk_start, chunk_bytes)
+        # for :meth:`try_cached_read`. A single STORE_ATTR / LOAD_ATTR
+        # under CPython's GIL is atomic, so concurrent readers see either
+        # the previous tuple or the new one — never a torn snapshot
+        # mixing one chunk's bytes with another chunk's start offset.
+        self._published_chunk: tuple[int, bytes] | None = None
         # Counts only true restarts (offset jumps). The first read() after
         # construction is mechanically a restart-from-None but is logged
         # as an "init" event and does not increment this counter.
@@ -225,6 +231,54 @@ class FormatEncoder(abc.ABC):
             out.extend(self._read_data(off, end - off))
         return bytes(out)
 
+    def try_cached_read(self, off: int, size: int) -> bytes | None:
+        """Return ``self[off : off + size]`` iff it can be served from
+        in-memory state (prefix bytes and/or the currently-loaded
+        chunk) without advancing the variant iterator. Return ``None``
+        otherwise.
+
+        Safe to call without external synchronisation: the return is
+        either the correct bytes or ``None``. The method takes one
+        atomic snapshot of the published chunk state, so a concurrent
+        :meth:`read` advancing the iterator on another thread either
+        completes before the snapshot (reader sees the new chunk) or
+        after (reader sees the old chunk); the reader never sees a
+        half-updated state mixing one chunk's bytes with another
+        chunk's start offset.
+
+        POSIX-read semantics matching :meth:`read` for arg validation
+        and EOF: returns ``b""`` if ``off >= total_size`` or
+        ``size == 0``; ``size`` is clamped to the end of the stream;
+        negative ``off`` or ``size`` raises ``ValueError``; closed
+        encoder raises ``RuntimeError``.
+        """
+        self._check_open()
+        if off < 0:
+            raise ValueError(f"off must be >= 0 (got {off})")
+        if size < 0:
+            raise ValueError(f"size must be >= 0 (got {size})")
+        if off >= self._total_size or size == 0:
+            return b""
+        end = min(off + size, self._total_size)
+
+        out = bytearray()
+        if off < self._prefix_size:
+            out.extend(self._prefix_bytes[off : min(end, self._prefix_size)])
+            off = min(end, self._prefix_size)
+        if off >= end:
+            return bytes(out)
+
+        # Single LOAD_ATTR is atomic under CPython's GIL.
+        snap = self._published_chunk
+        if snap is None:
+            return None
+        chunk_start, chunk_bytes = snap
+        if off < chunk_start or end > chunk_start + len(chunk_bytes):
+            return None
+        local = off - chunk_start
+        out.extend(chunk_bytes[local : local + (end - off)])
+        return bytes(out)
+
     def _read_data(self, off: int, size: int) -> bytes:
         # Caller guarantees off >= prefix_size, size > 0,
         # off + size <= total_size. Off is reachable without restart iff
@@ -263,6 +317,8 @@ class FormatEncoder(abc.ABC):
         self._chunk_plan_pos += 1
         self._chunk_start = int(self._chunk_byte_offsets[self._chunk_plan_pos])
         self._chunk_bytes = bytes(encoded)
+        # Publish last: try_cached_read snapshots this single attribute.
+        self._published_chunk = (self._chunk_start, self._chunk_bytes)
 
     def _restart(self, off: int) -> None:
         prev_plan_pos = self._chunk_plan_pos
@@ -294,6 +350,7 @@ class FormatEncoder(abc.ABC):
             self._iterator = None
         self._chunk_bytes = None
         self._chunk_plan_pos = -1
+        self._published_chunk = None
 
     # --- Lifecycle ---
 

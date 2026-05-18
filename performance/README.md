@@ -28,15 +28,17 @@ uv run python performance/benchmarks.py generate
 ```
 
 Defaults: 100 000 diploid samples, sequence length 1e7 (~80–160k
-sites), seed 42, written to `performance/data/wide_bench.vcz`. Expect
+sites), seed 42, written to `../datasets/perf-bench/wide_bench.vcz`
+(outside the repo so recursive search tools don't trip on the multi-GB
+Zarr stores). Expect
 ~10 minutes wall time on a modern laptop, dominated by
 `bio2zarr.tskit.convert` and the Zarr v3 mirror. Each stage
 (`simulate`, `convert`, `augment`, `mirror_zv3`, `zip`,
 `mirror_icechunk`) is timed in the log so you can bisect if it
 overshoots.
 
-The command writes four artefacts under `performance/data/`, all
-holding the same logical data:
+The command writes four artefacts under `../datasets/perf-bench/`,
+all holding the same logical data:
 
 - `wide_bench.vcz/` — Zarr v2 directory store (bio2zarr's default
   on-disk format).
@@ -82,11 +84,11 @@ sweeping backends adds no signal).
 
 Optional flags:
 
-- `--dataset PATH` — default `performance/data/wide_bench.vcz`. The
-  matrix derives sibling paths (`<dataset>3/`, `<dataset>.zip`,
+- `--dataset PATH` — default `../datasets/perf-bench/wide_bench.vcz`.
+  The matrix derives sibling paths (`<dataset>3/`, `<dataset>.zip`,
   `<dataset>.icechunk/`) from this base. Pass
-  `performance/data/long_bench.vcz` (and `--shape long`) for the long
-  dataset.
+  `../datasets/perf-bench/long_bench.vcz` (and `--shape long`) for the
+  long dataset.
 - `--shape {wide,long}` — filter tasks to those that make sense on the
   given dataset shape. Default `wide`.
 - `--task NAME` (repeatable) — restrict to specific tasks.
@@ -178,6 +180,10 @@ output rows have `bytes_retrieved = 0` / `data_rate_mib_s = 0`.
 - `benchmarks.py` — everything above.
 - `compare.py` — legacy bcftools-vs-vcztools ad-hoc script, kept for
   reference.
-- `data/` — home for generated datasets. Gitignored except for the
-  existing Makefile and requirements.txt.
 - `results/` — JSONL outputs (gitignored).
+
+Generated datasets live outside the repo. Default location is
+`../datasets/perf-bench/` (relative to the vcztools repo root) so
+recursive search tools don't OOM on the multi-GB Zarr stores. The
+Makefile and `requirements.txt` that used to live alongside the data
+live in `../datasets/perf-bench/` too.

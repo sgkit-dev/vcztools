@@ -1,3 +1,0 @@
-stdpopsim
-tskit
-bio2zarr

@@ -2,7 +2,7 @@
 #
 # Targets:
 #   make tools       - install every external tool into tools/<name>/
-#   make data        - generate synthetic VCZ fixtures into data/
+#   make data        - generate synthetic VCZ fixtures into $(DATA_DIR)
 #   make test        - run the pytest suite (skips tools that aren't installed)
 #   make all         - tools + data + test
 #   make clean-tools - remove all installed tools
@@ -13,6 +13,11 @@
 
 SHELL := /usr/bin/env bash
 HERE  := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+# Fixtures live outside the repo. Default location is
+# ../datasets/validation/ (relative to the vcztools repo root) so
+# recursive searches over the working tree don't trip on them.
+# Matches DATA_DIR in generate_data.py / conftest.py.
+DATA_DIR := $(abspath $(HERE)../../datasets/validation)
 
 TOOLS := qctool regenie plink19 bgenix bolt_lmm
 
@@ -28,20 +33,20 @@ tools: $(TOOLS)
 $(TOOLS):
 	bash $(HERE)install/install_$@.sh
 
-data: data/small.vcz.ready data/large.vcz.ready data/haploid.vcz.ready data/mixed_ploidy.vcz.ready
+data: $(DATA_DIR)/small.vcz.ready $(DATA_DIR)/large.vcz.ready $(DATA_DIR)/haploid.vcz.ready $(DATA_DIR)/mixed_ploidy.vcz.ready
 
 # Marker file sits next to the store (not inside it) so zarr doesn't
 # warn about unrecognised hierarchy components on every open.
-data/small.vcz.ready: generate_data.py
+$(DATA_DIR)/small.vcz.ready: generate_data.py
 	uv run --group validation python generate_data.py --size small
 
-data/large.vcz.ready: generate_data.py
+$(DATA_DIR)/large.vcz.ready: generate_data.py
 	uv run --group validation python generate_data.py --size large
 
-data/haploid.vcz.ready: generate_data.py
+$(DATA_DIR)/haploid.vcz.ready: generate_data.py
 	uv run --group validation python generate_data.py --kind haploid
 
-data/mixed_ploidy.vcz.ready: generate_data.py
+$(DATA_DIR)/mixed_ploidy.vcz.ready: generate_data.py
 	uv run --group validation python generate_data.py --kind mixed_ploidy
 
 # The repo's pyproject.toml sets `addopts = "-n auto"` for xdist
@@ -57,6 +62,6 @@ clean-tools:
 	rm -rf $(HERE)tools
 
 clean-data:
-	rm -rf $(HERE)data
+	rm -rf $(DATA_DIR)
 
 clean: clean-tools clean-data

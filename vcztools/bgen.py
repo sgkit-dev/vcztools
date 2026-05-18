@@ -215,12 +215,30 @@ def _to_fixed_bytes(arr, lengths):
     return arr.astype(f"S{max_len}")
 
 
-def _padding_slack(chrom_len, a1_len, a2_len, variant_id_len, total_string_length):
+def _padding_slack(
+    chrom_len,
+    a1_len,
+    a2_len,
+    variant_id_len,
+    total_string_length,
+    *,
+    chrom_arr,
+    position_arr,
+):
     """Per-variant slack budget for the BGEN combined-byte-length
     layout, given the four pre-computed actual-length arrays and the
     total budget. Validates that every entry is at least ``1`` — the
     padding slot's leading ``"."`` always has to fit — and raises
-    :class:`ValueError` naming the offending variant on failure.
+    :class:`ValueError` identifying the offending variant by its
+    ``contig:position`` on failure.
+
+    ``chrom_arr`` and ``position_arr`` carry the per-variant contig
+    name and position, in the same axis order as the length arrays;
+    they are used only for the error message.
+    :func:`_prepare_chunk_strings` sees one chunk at a time so the
+    reported position is the source VCZ position rather than a
+    chunk-relative index; :func:`_bgi_rsid_column` passes the full
+    concatenated arrays, so the report is global.
 
     Callers that already need the length arrays for downstream sizing
     (``_prepare_chunk_strings``) compute them once and pass them in;
@@ -234,10 +252,12 @@ def _padding_slack(chrom_len, a1_len, a2_len, variant_id_len, total_string_lengt
         min_slack = int(slack.min())
         if min_slack < 1:
             bad = int(np.argmin(slack))
+            chrom = str(chrom_arr[bad])
+            position = int(position_arr[bad])
             raise ValueError(
-                f"variant {bad}: chrom/allele1/allele2/variant_id "
-                f"byte sum is {int(used[bad])}, leaving no room "
-                f"for the padding field's leading '.' under "
+                f"variant at {chrom}:{position}: chrom/allele1/allele2/"
+                f"variant_id byte sum is {int(used[bad])}, leaving no "
+                f"room for the padding field's leading '.' under "
                 f"total_string_length={total_string_length}"
             )
     return slack
@@ -328,7 +348,13 @@ def _prepare_chunk_strings(
         padding_bytes = np.full(n, b".", dtype="S1")
     else:
         slack = _padding_slack(
-            chrom_len, a1_len, a2_len, variant_id_len, total_string_length
+            chrom_len,
+            a1_len,
+            a2_len,
+            variant_id_len,
+            total_string_length,
+            chrom_arr=chrom_arr,
+            position_arr=chunk["variant_position"],
         )
         padding_bytes = _build_padding_bytes(n, slack, pad_byte)
 
@@ -875,6 +901,7 @@ def _bgi_rsid_column(
     a1_arr: np.ndarray,
     a2_arr: np.ndarray,
     variant_id_arr: np.ndarray,
+    position_arr: np.ndarray,
     *,
     variant_id_field: str,
     total_string_length: int | None,
@@ -891,6 +918,9 @@ def _bgi_rsid_column(
     would record when reindexing the same BGEN file, then decode each
     row's actual bytes (NUL-stripped on element access) to a Python
     ``str`` for SQLite.
+
+    ``position_arr`` is forwarded to :func:`_padding_slack` for the
+    ``contig:position`` callout in the over-budget error message.
     """
     if variant_id_field == "rsid":
         return variant_id_arr
@@ -904,6 +934,8 @@ def _bgi_rsid_column(
         np.strings.str_len(a2_arr),
         np.strings.str_len(variant_id_arr),
         total_string_length,
+        chrom_arr=chrom_arr,
+        position_arr=position_arr,
     )
     padding_bytes = _build_padding_bytes(n, slack, pad_byte)
     return np.array([row.decode("ascii") for row in padding_bytes], dtype=object)
@@ -1029,6 +1061,7 @@ def write_bgi(
             a1_arr,
             a2_arr,
             variant_id_arr,
+            pos_arr,
             variant_id_field=variant_id_field,
             total_string_length=total_string_length,
             pad_byte=pad_byte,

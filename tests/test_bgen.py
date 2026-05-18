@@ -1080,15 +1080,46 @@ class TestWriteBgi:
             num_variants=1, num_samples=1, variant_id=["rs_very_long_id"]
         )
         variant_offsets = np.array([0, 100], dtype=np.int64)
-        # chrom (1) + a1 (1) + a2 (1) + variant_id (15) = 18 > 18 → slack=0,
-        # which is below the "leading '.' must fit" minimum of 1.
-        with pytest.raises(ValueError, match="leaving no room"):
+        # chrom "chr1" (4) + a1 (1) + a2 (1) + variant_id (15) = 21 > 21
+        # → slack=0, which is below the "leading '.' must fit" minimum.
+        with pytest.raises(ValueError, match=r"variant at chr1:100.*leaving no room"):
             bgen.write_bgi(
                 reader,
                 tmp_path / "x.bgi",
                 variant_offsets,
                 variant_id_field="varid",
-                total_string_length=18,
+                total_string_length=21,
+            )
+
+    def test_varid_padding_overflow_reports_correct_variant_in_multi_chunk(
+        self, tmp_path
+    ):
+        # The .bgi-build path concatenates over all chunks before
+        # checking slack, so the reported (contig, position) is global
+        # — not a chunk-relative index. Variant 3 (0-indexed) sits in
+        # the second chunk; its position (103) and contig should land
+        # in the error message.
+        long_id = "x" * 60
+        variant_ids = ["rsA", "rsB", "rsC", long_id, "rsE"]
+        reader = _build_reader(
+            num_variants=5,
+            num_samples=1,
+            variant_id=variant_ids,
+            variants_chunk_size=2,
+        )
+        n = reader.variant_counts_per_chunk().sum()
+        # 5 chunks of size 2 (last one half-full); verify chunking.
+        assert n == 5
+        variant_offsets = np.linspace(0, 500, 6, dtype=np.int64)
+        with pytest.raises(
+            ValueError, match=r"variant at chr1:103.*total_string_length=64"
+        ):
+            bgen.write_bgi(
+                reader,
+                tmp_path / "x.bgi",
+                variant_offsets,
+                variant_id_field="varid",
+                total_string_length=64,
             )
 
 
@@ -1856,11 +1887,30 @@ class TestPrepareChunkStrings:
         # Padding field: "." + pad_byte * (slack - 1).
         assert bytes(strings.varid[0]) == b".xxxxxx"
 
+    def test_bgenencoder_overflow_reports_second_variant_in_chunk(self):
+        # _prepare_chunk_strings is called once per chunk so its
+        # ``position_arr`` is the per-chunk slice. Confirm we report
+        # the chunk's variant position, not a per-chunk index — here
+        # variant 1's position is 101.
+        chunk = _make_chunk_for_prep(variant_id=["rsX", "x" * 60])
+        with pytest.raises(
+            ValueError, match="variant at chr1:101.*total_string_length=64"
+        ):
+            bgen._prepare_chunk_strings(
+                chunk,
+                contig_ids=np.array(["chr1"]),
+                total_string_length=64,
+            )
+
     def test_bgenencoder_overflow_raises(self):
         # variant_id of 60 bytes leaves no room for chrom + alleles +
-        # padding under total_string_length=64.
+        # padding under total_string_length=64. The error names the
+        # offending variant by its contig:position rather than a
+        # chunk-relative index.
         chunk = _make_chunk_for_prep(variant_id=["x" * 60, "rsY"])
-        with pytest.raises(ValueError, match="variant 0.*total_string_length=64"):
+        with pytest.raises(
+            ValueError, match="variant at chr1:100.*total_string_length=64"
+        ):
             bgen._prepare_chunk_strings(
                 chunk,
                 contig_ids=np.array(["chr1"]),
@@ -2006,6 +2056,26 @@ class TestBgenEncoderMetadata:
             encoder_kwargs=dict(variant_id_field="varid"),
         ) as enc:
             assert enc._variant_id_field == "varid"
+
+    def test_overflow_in_later_chunk_reports_absolute_position(self, tmp_path):
+        # variants_chunk_size=2 produces 3 chunks for 5 variants. The
+        # offending row is variant 3 (position 103), which lands in the
+        # second chunk. The error must report 103 — the global position
+        # of the variant — not a chunk-relative index like "variant 1".
+        long_id = "y" * 60
+        variant_ids = ["rsA", "rsB", "rsC", long_id, "rsE"]
+        reader = _build_reader(
+            num_variants=5,
+            num_samples=1,
+            variant_id=variant_ids,
+            variants_chunk_size=2,
+        )
+        with bgen.BgenEncoder(reader, total_string_length=64) as enc:
+            with pytest.raises(
+                ValueError,
+                match=r"variant at chr1:103.*total_string_length=64",
+            ):
+                enc.write_to(io.BytesIO())
 
     def test_embed_header_samples_false(self, tmp_path):
         # With embed_header_samples=False the SAMPLE_IDS_PRESENT flag is

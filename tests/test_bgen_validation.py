@@ -642,6 +642,69 @@ class TestPlink2ReadsBgen:
         plink_rsids = _read_pvar_column(tmp_path / "p.pvar", col=2)
         assert plink_rsids == rsids
 
+    def test_variable_string_fields_round_trip(self, tmp_path, encode_path):
+        # Stress-test the per-variant length-prefixed string encoding
+        # against plink2 with a fixture that varies all four
+        # round-trippable string slots simultaneously: chromosome name
+        # (1 byte vs 2 bytes), REF/ALT (SNPs, indels, MNVs at lengths
+        # from 1 to 9 bytes), and rsID (3-byte rs1 through a
+        # 39-byte synthetic ID, plus a literal "."). Both encoder
+        # paths must emit BGEN that plink2 reads back byte-for-byte.
+        # variants_chunk_size=3 forces write_bgen across multiple
+        # chunks; BgenEncoder runs total_string_length=64 (the default,
+        # which comfortably covers the per-variant max sum of ~48).
+        contigs = ("1", "2", "MT")
+        variant_contig = [0, 0, 1, 1, 2, 2]
+        positions = [100, 200, 100, 200, 16569, 1000]
+        alleles = [
+            ("A", "T"),
+            ("ATCG", "A"),
+            ("G", "GACGT"),
+            ("CTGCTGCTG", "C"),
+            ("A", "C"),
+            ("CCC", "TTT"),
+        ]
+        variant_id = [
+            "rs1",
+            "rs_var_00000001",
+            ".",
+            "rs_variant_chr2_pos_200",
+            "MT16569_short",
+            "rs_super_long_variant_identifier_for_mt",
+        ]
+        num_variants = len(positions)
+        num_samples = 4
+        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+        root = vcz_builder.make_vcz(
+            variant_contig=variant_contig,
+            variant_position=positions,
+            alleles=alleles,
+            num_samples=num_samples,
+            call_genotype=G,
+            contigs=contigs,
+            variant_id=variant_id,
+            variants_chunk_size=3,
+        )
+        reader = retrieval.VczReader(root)
+        bgen_path = tmp_path / "v.bgen"
+        sample_path = tmp_path / "v.sample"
+        _produce_bgen(encode_path, reader, bgen_path, sample_path)
+        run_plink2_read_bgen("--make-just-pvar", bgen_path, sample_path, tmp_path / "p")
+        pvar = tmp_path / "p.pvar"
+        plink_chroms = _read_pvar_column(pvar, col=0)
+        plink_positions = _read_pvar_positions(pvar)
+        plink_rsids = _read_pvar_column(pvar, col=2)
+        plink_ref = _read_pvar_column(pvar, col=3)
+        plink_alt = _read_pvar_column(pvar, col=4)
+        expected_chroms = [contigs[c] for c in variant_contig]
+        expected_ref = [a[0] for a in alleles]
+        expected_alt = [a[1] for a in alleles]
+        assert plink_chroms == expected_chroms
+        assert plink_positions == positions
+        assert plink_rsids == variant_id
+        assert plink_ref == expected_ref
+        assert plink_alt == expected_alt
+
     def test_region_query(self, tmp_path, encode_path):
         # plink2's --from-bp/--to-bp filters in memory; the assertion
         # is that the surviving variants agree with what the source
@@ -674,35 +737,3 @@ class TestPlink2ReadsBgen:
         )
         sub_positions = _read_pvar_positions(tmp_path / "sub.pvar")
         assert sub_positions == expected
-
-
-@pytest.mark.skipif(PLINK2 is None, reason="plink2 not on PATH")
-class TestPlink2BgenEncoderVariableLengthRsids:
-    """``BgenEncoder`` produces fixed-size variant blocks with variable-
-    length string fields: the variant_id-carrying slot holds the actual
-    bytes, and the other slot ("padding field") absorbs the per-variant
-    slack as ``"." + pad_byte * (slack - 1)``. No embedded NULs end up
-    on the wire, so plink2's tokeniser parses each line cleanly."""
-
-    def test_variable_length_rsids_round_trip(self, tmp_path):
-        rsids = ["rs1", "rs1234567890", "snp_with_very_long_id_xyz", "rsZ", "rs42"]
-        num_variants = len(rsids)
-        num_samples = 4
-        G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
-        positions = list(range(1000, 1000 + num_variants))
-        root = vcz_builder.make_vcz(
-            variant_contig=[0] * num_variants,
-            variant_position=positions,
-            alleles=[("A", "T")] * num_variants,
-            num_samples=num_samples,
-            call_genotype=G,
-            variant_id=rsids,
-            variants_chunk_size=2,
-        )
-        reader = retrieval.VczReader(root)
-        bgen_path = tmp_path / "v.bgen"
-        sample_path = tmp_path / "v.sample"
-        _produce_bgen("bgen_encoder", reader, bgen_path, sample_path)
-        run_plink2_read_bgen("--make-just-pvar", bgen_path, sample_path, tmp_path / "p")
-        plink_rsids = _read_pvar_column(tmp_path / "p.pvar", col=2)
-        assert plink_rsids == rsids

@@ -467,19 +467,19 @@ class TestBgenixStringVariety:
             stripped, np.array([""] * len(ids_sorted), dtype=object)
         )
 
-    # variant_id_field is intentionally fixed to "rsid" here: when
-    # variant_id_field="varid", vcztools.bgen.write_bgi still writes
-    # variant_id into the .bgi's rsid column (the .bgi schema column
-    # name) while bgenix's own .bgi reads it from the BGEN's rsid slot,
-    # which holds the padding field. The two .bgi files therefore
-    # diverge by design in that mode, and asserting equality would pin
-    # a non-bug. The rsid case is enough to surface chrom/allele
-    # padding regressions.
+    @pytest.mark.parametrize("variant_id_field", cfg.VARIANT_ID_FIELDS)
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
-    def test_variant_table_matches_bgenix_default_field(
-        self, tmp_path, bgenix_bin, varied_strings_fixture, level
+    def test_variant_table_matches_bgenix(
+        self, tmp_path, bgenix_bin, varied_strings_fixture, level, variant_id_field
     ):
-        bgen_src, _ = cfg.bgen_for_field(varied_strings_fixture, level, "rsid")
+        # The vcztools-produced .bgi must match bgenix's own reindex
+        # byte-for-byte in both id-routing modes. When
+        # variant_id_field="varid", the BGEN rsid slot holds the
+        # padding field; write_bgi reconstructs that pattern so the
+        # .bgi's rsid column matches what bgenix records.
+        bgen_src, _ = cfg.bgen_for_field(
+            varied_strings_fixture, level, variant_id_field
+        )
         vcztools_bgi = pathlib.Path(str(bgen_src) + ".bgi")
         assert vcztools_bgi.exists(), (
             f"expected vcztools-produced .bgi alongside {bgen_src}"

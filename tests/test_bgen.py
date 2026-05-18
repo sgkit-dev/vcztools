@@ -1015,6 +1015,82 @@ class TestWriteBgi:
                 conn.close()
         assert wb_rows == enc_rows
 
+    def test_varid_routing_puts_padding_in_rsid_column(self, tmp_path):
+        # When variant_id_field="varid", the BGEN rsid slot holds the
+        # padding field; the .bgi rsid column must carry the same
+        # bytes (single "." per variant on the write_bgen path).
+        reader = _build_reader(num_variants=2, num_samples=2, variant_id=["rsA", "rsB"])
+        variant_offsets = np.array([0, 100, 200], dtype=np.int64)
+        bgi_path = tmp_path / "out.bgen.bgi"
+        bgen.write_bgi(reader, bgi_path, variant_offsets, variant_id_field="varid")
+        conn = sqlite3.connect(str(bgi_path))
+        try:
+            rsids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT rsid FROM Variant ORDER BY file_start_position"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rsids == [".", "."]
+
+    def test_varid_routing_reconstructs_encoder_padding(self, tmp_path):
+        # BgenEncoder writes "." + pad_byte * (slack - 1) into the
+        # padding slot; write_bgi must reconstruct the same per-
+        # variant string for the .bgi rsid column. Default contig
+        # name is "chr1" (4 bytes); a1="A" (1), a2="T" (1), variant_id
+        # "rsA"/"rsB" (3); slack = 16 - (4+1+1+3) = 7.
+        reader = _build_reader(num_variants=2, num_samples=2, variant_id=["rsA", "rsB"])
+        variant_offsets = np.array([0, 100, 200], dtype=np.int64)
+        bgi_path = tmp_path / "out.bgen.bgi"
+        bgen.write_bgi(
+            reader,
+            bgi_path,
+            variant_offsets,
+            variant_id_field="varid",
+            total_string_length=16,
+            pad_byte=b"x",
+        )
+        conn = sqlite3.connect(str(bgi_path))
+        try:
+            rsids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT rsid FROM Variant ORDER BY file_start_position"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        assert rsids == ["." + "x" * 6, "." + "x" * 6]
+
+    def test_rejects_invalid_variant_id_field(self, tmp_path):
+        reader = _build_reader(num_variants=1, num_samples=1)
+        variant_offsets = np.array([0, 100], dtype=np.int64)
+        with pytest.raises(ValueError, match="variant_id_field must be"):
+            bgen.write_bgi(
+                reader,
+                tmp_path / "x.bgi",
+                variant_offsets,
+                variant_id_field="other",
+            )
+
+    def test_varid_padding_rejects_insufficient_total_length(self, tmp_path):
+        reader = _build_reader(
+            num_variants=1, num_samples=1, variant_id=["rs_very_long_id"]
+        )
+        variant_offsets = np.array([0, 100], dtype=np.int64)
+        # chrom (1) + a1 (1) + a2 (1) + variant_id (15) = 18 > 18 → slack=0,
+        # which is below the "leading '.' must fit" minimum of 1.
+        with pytest.raises(ValueError, match="leaving no room"):
+            bgen.write_bgi(
+                reader,
+                tmp_path / "x.bgi",
+                variant_offsets,
+                variant_id_field="varid",
+                total_string_length=18,
+            )
+
 
 # ---------------------------------------------------------------------------
 # End-to-end write_bgen

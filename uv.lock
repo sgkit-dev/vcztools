@@ -3904,6 +3904,7 @@ benchmark = [
     { name = "pandas" },
     { name = "psutil" },
     { name = "requests" },
+    { name = "tstrait" },
 ]
 dev = [
     { name = "azure-storage-blob" },
@@ -3927,6 +3928,7 @@ dev = [
     { name = "ruff" },
     { name = "setuptools" },
     { name = "tskit" },
+    { name = "tstrait" },
     { name = "twine" },
     { name = "validate-pyproject", extra = ["all"] },
     { name = "xarray" },
@@ -4001,6 +4003,7 @@ benchmark = [
     { name = "pandas" },
     { name = "psutil" },
     { name = "requests" },
+    { name = "tstrait" },
 ]
 dev = [
     { name = "azure-storage-blob" },
@@ -4023,6 +4026,7 @@ dev = [
     { name = "ruff", specifier = "==0.15.1" },
     { name = "setuptools" },
     { name = "tskit", specifier = ">=1" },
+    { name = "tstrait" },
     { name = "twine" },
     { name = "validate-pyproject", extras = ["all"] },
     { name = "xarray" },

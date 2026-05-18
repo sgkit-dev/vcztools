@@ -97,6 +97,7 @@ benchmark = [
   "fsspec[http]",
   "icechunk",
   "msprime",
+  "tstrait",
   "obstore",
   "pandas",
   "psutil",

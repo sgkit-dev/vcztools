@@ -53,6 +53,7 @@ import pandas as pd
 import psutil
 import requests
 import tqdm
+import tstrait
 import zarr
 from zarr.codecs import BloscCodec, BloscShuffle
 
@@ -123,10 +124,17 @@ def _build_vcz(
     samples_chunk_size=None,
     worker_processes: int = 0,
 ):
+    # Override bio2zarr.tskit's default "tsk_N" sample naming so the
+    # benchmark stores don't carry underscores in sample_id. PLINK
+    # joins FID and IID with `_` in several output columns; embedded
+    # underscores make those columns ambiguous to parse downstream.
+    individual_names = [f"s{i}" for i in range(ts.num_individuals)]
+    model_mapping = ts.map_to_vcf_model(individual_names=individual_names)
     return bio2zarr.tskit.convert(
         ts,
         str(vcz_path),
         mode="r+",
+        model_mapping=model_mapping,
         variants_chunk_size=variants_chunk_size,
         samples_chunk_size=samples_chunk_size,
         worker_processes=worker_processes,
@@ -514,6 +522,39 @@ def _icechunk_path(vcz_path: pathlib.Path) -> pathlib.Path:
     return vcz_path.parent / (vcz_path.name + ".icechunk")
 
 
+def _pheno_path(vcz_path: pathlib.Path) -> pathlib.Path:
+    # Sibling of the .vcz directory: wide_bench.vcz -> wide_bench.pheno.tsv.
+    return vcz_path.with_suffix(".pheno.tsv")
+
+
+def _simulate_phenotype(ts, *, seed: int, output: pathlib.Path) -> None:
+    # 100 causal sites, heritability 0.5 — mirrors the validation
+    # suite (vcztools/validation/generate_data.py::simulate_phenotype)
+    # so the two pipelines emit phenotype files in the same shape.
+    n_causal = min(100, ts.num_sites)
+    model = tstrait.trait_model(distribution="normal", mean=0, var=1)
+    sim_result = tstrait.sim_phenotype(
+        ts=ts,
+        num_causal=n_causal,
+        model=model,
+        h2=0.5,
+        random_seed=seed,
+    )
+    pheno = sim_result.phenotype
+    # sample_id in the VCZ is "s0", "s1", ... (see _build_vcz); use
+    # the same scheme for FID/IID so they join correctly downstream.
+    iids = [f"s{int(i)}" for i in pheno["individual_id"]]
+    df = pd.DataFrame(
+        {
+            "FID": iids,
+            "IID": iids,
+            "Y1": pheno["phenotype"].astype(np.float64),
+        }
+    )
+    df.to_csv(output, sep="\t", index=False)
+    logger.info("Wrote phenotype file %s (%d rows)", output, len(df))
+
+
 @contextlib.contextmanager
 def _stage(name: str):
     t0 = time.perf_counter()
@@ -554,9 +595,12 @@ def _generate(
             samples_chunk_size=samples_chunk_size,
             worker_processes=worker_processes,
         )
-    # The tree sequence is only needed by the convert stage; drop it
-    # before augment so its tables (sites + mutations dominate at
-    # high variant counts) don't sit alongside the augment buffers.
+    with _stage("phenotype"):
+        _simulate_phenotype(ts, seed=spec.seed, output=_pheno_path(output))
+    # The tree sequence is only needed by the convert and phenotype
+    # stages; drop it before augment so its tables (sites + mutations
+    # dominate at high variant counts) don't sit alongside the augment
+    # buffers.
     del ts
 
     with _stage("augment"):
@@ -625,9 +669,12 @@ def _generate_long(
             samples_chunk_size=samples_chunk_size,
             worker_processes=worker_processes,
         )
-    # The tree sequence is only needed by the convert stage; drop it
-    # before augment so its tables (sites + mutations dominate at
-    # high variant counts) don't sit alongside the augment buffers.
+    with _stage("phenotype"):
+        _simulate_phenotype(ts, seed=spec.seed, output=_pheno_path(output))
+    # The tree sequence is only needed by the convert and phenotype
+    # stages; drop it before augment so its tables (sites + mutations
+    # dominate at high variant counts) don't sit alongside the augment
+    # buffers.
     del ts
 
     with _stage("augment"):

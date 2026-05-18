@@ -215,13 +215,43 @@ def _to_fixed_bytes(arr, lengths):
     return arr.astype(f"S{max_len}")
 
 
+def _padding_slack(chrom_len, a1_len, a2_len, variant_id_len, total_string_length):
+    """Per-variant slack budget for the BGEN combined-byte-length
+    layout, given the four pre-computed actual-length arrays and the
+    total budget. Validates that every entry is at least ``1`` — the
+    padding slot's leading ``"."`` always has to fit — and raises
+    :class:`ValueError` naming the offending variant on failure.
+
+    Callers that already need the length arrays for downstream sizing
+    (``_prepare_chunk_strings``) compute them once and pass them in;
+    callers that only need slack (``_bgi_rsid_column``) recompute
+    locally before calling.
+    """
+    used = chrom_len + a1_len + a2_len + variant_id_len
+    slack = total_string_length - used
+    n = used.shape[0]
+    if n > 0:
+        min_slack = int(slack.min())
+        if min_slack < 1:
+            bad = int(np.argmin(slack))
+            raise ValueError(
+                f"variant {bad}: chrom/allele1/allele2/variant_id "
+                f"byte sum is {int(used[bad])}, leaving no room "
+                f"for the padding field's leading '.' under "
+                f"total_string_length={total_string_length}"
+            )
+    return slack
+
+
 def _build_padding_bytes(n, slack, pad_byte):
-    """Per-variant padding-field row builder for :class:`BgenEncoder`.
+    """Per-variant padding-field row builder for the BGEN encoders.
 
     Returns an ``S{max_slack}`` byte array of length ``n``; each row
     is ``b"." + pad_byte * (slack[v] - 1)``, NUL-padded out to
-    ``max_slack``. Caller must guarantee ``slack[v] >= 1`` for every
-    row (the leading ``"."`` always has to fit).
+    ``max_slack``. Numpy strips trailing NULs on element access so
+    ``bytes(arr[i])`` recovers exactly the per-variant padding string.
+    Caller must guarantee ``slack[v] >= 1`` for every row (the leading
+    ``"."`` always has to fit) — :func:`_padding_slack` enforces this.
     """
     if n == 0:
         return np.zeros(0, dtype="S1")
@@ -297,18 +327,9 @@ def _prepare_chunk_strings(
         # write_bgen path: padding is a literal b"." per variant.
         padding_bytes = np.full(n, b".", dtype="S1")
     else:
-        used = chrom_len + a1_len + a2_len + variant_id_len
-        slack = total_string_length - used
-        if n > 0:
-            min_slack = int(slack.min())
-            if min_slack < 1:
-                bad = int(np.argmin(slack))
-                raise ValueError(
-                    f"variant {bad}: chrom/allele1/allele2/variant_id "
-                    f"byte sum is {int(used[bad])}, leaving no room "
-                    f"for the padding field's leading '.' under "
-                    f"total_string_length={total_string_length}"
-                )
+        slack = _padding_slack(
+            chrom_len, a1_len, a2_len, variant_id_len, total_string_length
+        )
         padding_bytes = _build_padding_bytes(n, slack, pad_byte)
 
     variant_id_bytes = _to_fixed_bytes(variant_id_arr, variant_id_len)
@@ -864,37 +885,28 @@ def _bgi_rsid_column(
 
     When ``variant_id_field == "rsid"``, the slot carries
     ``variant_id`` directly. When ``variant_id_field == "varid"``, the
-    slot is the padding field — the same per-variant string
-    :func:`_prepare_chunk_strings` builds, so the .bgi column matches
-    what bgenix would record when reindexing the same BGEN file.
+    slot is the padding field; we reuse :func:`_padding_slack` and
+    :func:`_build_padding_bytes` (the same path that prepares the
+    encoder's on-disk bytes) so the .bgi column matches what bgenix
+    would record when reindexing the same BGEN file, then decode each
+    row's actual bytes (NUL-stripped on element access) to a Python
+    ``str`` for SQLite.
     """
     if variant_id_field == "rsid":
         return variant_id_arr
-    chrom_len = np.strings.str_len(chrom_arr)
-    a1_len = np.strings.str_len(a1_arr)
-    a2_len = np.strings.str_len(a2_arr)
-    variant_id_len = np.strings.str_len(variant_id_arr)
     n = chrom_arr.shape[0]
     if total_string_length is None:
         # write_bgen path: padding is a literal "." per variant.
         return np.full(n, ".")
-    used = chrom_len + a1_len + a2_len + variant_id_len
-    slack = total_string_length - used
-    if n > 0:
-        min_slack = int(slack.min())
-        if min_slack < 1:
-            bad = int(np.argmin(slack))
-            raise ValueError(
-                f"variant {bad}: chrom/allele1/allele2/variant_id "
-                f"byte sum is {int(used[bad])}, leaving no room "
-                f"for the padding field's leading '.' under "
-                f"total_string_length={total_string_length}"
-            )
-    pad_char = pad_byte.decode("ascii")
-    return np.array(
-        ["." + pad_char * (int(s) - 1) for s in slack],
-        dtype=object,
+    slack = _padding_slack(
+        np.strings.str_len(chrom_arr),
+        np.strings.str_len(a1_arr),
+        np.strings.str_len(a2_arr),
+        np.strings.str_len(variant_id_arr),
+        total_string_length,
     )
+    padding_bytes = _build_padding_bytes(n, slack, pad_byte)
+    return np.array([row.decode("ascii") for row in padding_bytes], dtype=object)
 
 
 def write_bgi(

@@ -69,6 +69,20 @@ jobs:
       - name: Install cibuildwheel
         run: uv sync --locked --only-group wheels
 
+      - name: Set CIBW_ARCHS_MACOS based on native arch
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "x86_64" ]; then
+            echo "CIBW_ARCHS_MACOS=x86_64" >> "$GITHUB_ENV"
+          elif [ "$ARCH" = "arm64" ]; then
+            echo "CIBW_ARCHS_MACOS=arm64" >> "$GITHUB_ENV"
+          else
+            echo "Unknown macOS architecture: $ARCH"
+            exit 1
+          fi
+
       - name: Build wheels
         run: uv run --only-group wheels cibuildwheel sdist.tar.gz
 

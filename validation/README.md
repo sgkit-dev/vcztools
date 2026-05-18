@@ -53,7 +53,14 @@ For each downstream tool, we check four things:
 3. **Variant ID round-trip** — the per-tool variant-ID output column
    matches the IDs injected into the VCZ. IDs are deterministic and
    span three length buckets (~3, 15, 46 bytes) so truncation and
-   width-allocation bugs surface as mismatches.
+   width-allocation bugs surface as mismatches. vcztools writes
+   `variant_id` into one of BGEN's two id slots (`rsid` or `varid`,
+   selected by `--variant-id-field` on `view-bgen` or the same kwarg on
+   `BgenEncoder`; default `rsid`); the other slot is the padding field
+   (`.` for `write_bgen`, `. + pad_byte * (slack - 1)` for
+   `BgenEncoder`). The downstream-tool tests check both the carrier
+   column and the padding-collapses-to-empty invariant on the
+   unselected slot.
 4. **Phased-BGEN behaviour** — vcztools writes phased BGEN when the
    source VCZ has `call_genotype_phased=True`. Each tool gets a
    `TestXxxPhasedBgen` class that pins what it does on phased input:
@@ -70,9 +77,9 @@ defeat the suite to ask a tool to validate against its own input.
 
 | Test file | Tool | Coverage |
 |---|---|---|
-| `test_qctool.py` | qctool v2.2.5 | `-snp-stats` ALT and minor allele frequency match VCZ; AA+AB+BB+NULL = N; `alternate_ids` round-trip |
-| `test_plink19.py` | PLINK 1.9 v20231211 | `--freq` MAF matches VCZ exactly from PLINK input; `.bim` SNP column round-trip; pins "BGEN v1.2 input requires PLINK 2.0" |
-| `test_bgenix.py` | bgenix (waf build) | `-list` positions/alleles/rsid/alternate_ids match VCZ; `-index` rebuild; `-incl-range` subset count |
+| `test_qctool.py` | qctool v2.2.5 | `-snp-stats` ALT and minor allele frequency match VCZ; AA+AB+BB+NULL = N; variant_id round-trips through the selected BGEN id slot (`rsid` / `alternate_ids`) with the other slot collapsing to empty after padding strip; chrom + alleles + variant_id round-trip on the `varied_strings` fixture exercises every BGEN string slot at non-trivial byte length |
+| `test_plink19.py` | PLINK 1.9 v20231211 | `--freq counts` MAF matches VCZ exactly from PLINK input; chrom / SNP / allele columns of `.bim` round-trip; SNP column round-trips through PLINK 1.9 via `--freq counts`; pins "BGEN v1.2 input requires PLINK 2.0" |
+| `test_bgenix.py` | bgenix (waf build) | `-list` positions / alleles / chrom / rsid / alternate_ids match VCZ; `-index` rebuild; `-incl-range` subset count; chrom + alleles + variant_id round-trip on the `varied_strings` fixture; vcztools-built `.bgi` byte-equal to bgenix-built one (rsid mode) |
 | `test_regenie.py` | REGENIE v4.1 | step-1 + step-2 end-to-end on PLINK and BGEN input; per-variant `A1FREQ` and `ID` round-trip |
 | `test_bolt_lmm.py` | BOLT-LMM v2.5 | BOLT parses both PLINK and BGEN input with the right N/M counts and runs LINREG. Uses `--exclude` to skip all but the first 20 SNPs so each run is ~1.5 s instead of minutes; the summary lines we assert on report the pre-exclude count. |
 
@@ -127,6 +134,16 @@ inspect the artefacts.
 |---|---|---|---|
 | `small_unphased.vcz` + `small_phased.vcz` | 200 | ~1000 | qctool, PLINK 1.9, bgenix, REGENIE |
 | `large_unphased.vcz` + `large_phased.vcz` | 5000 | ~19500 | BOLT-LMM |
+| `haploid.vcz` | 200 | ~1000 | qctool, bgenix (uniform haploid) |
+| `mixed_ploidy.vcz` | 200 | ~1000 | qctool, bgenix (per-variant mixed ploidy) |
+| `varied_strings.vcz` | 200 | ~1000 | qctool, bgenix (chrom / allele / variant_id byte lengths vary) |
+
+The `varied_strings` fixture exercises non-trivial byte lengths in
+every BGEN string slot: 4 contigs of byte lengths {1, 6, 1, 21}, 6
+(REF, ALT) recipes cycling through SNP and indel pairs (1–10 bytes),
+and the three variant_id length buckets above. BGEN outputs are built
+for both `variant_id_field` settings, so the bgenix and qctool tests
+each parametrise over six `(level, variant_id_field)` combinations.
 
 The unphased and phased stores share genotypes; only
 `call_genotype_phased` differs. The default tests run against the

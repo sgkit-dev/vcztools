@@ -112,24 +112,55 @@ class TestPlink19FromPlinkInput:
 
 
 class TestPlink19VariantIds:
-    def test_bim_snp_column_matches_reference(
-        self, plink19_bin, small_unphased_fixture
-    ):
-        # PLINK doesn't echo the .bim SNP column in --freq output, so
-        # read it directly from the .bim file written by view-plink.
-        bim = pd.read_csv(
-            small_unphased_fixture.plink_prefix.with_suffix(".bim"),
+    """Variant IDs and the other .bim string columns round-trip
+    through PLINK 1.9. Two angles:
+
+    - The .bim file written by ``view-plink`` carries the chromosome,
+      SNP, and allele columns we expect.
+    - PLINK 1.9 reads that fileset and echoes the SNP column back into
+      its ``--freq counts`` output, so the round-trip survives the
+      ``view-plink → .bim → PLINK 1.9 → .frq.counts`` chain rather
+      than only being validated against the file vcztools just wrote.
+    """
+
+    def _read_bim(self, prefix: pathlib.Path) -> pd.DataFrame:
+        return pd.read_csv(
+            prefix.with_suffix(".bim"),
             sep=r"\s+",
             engine="python",
             header=None,
             names=["chrom", "snp", "cm", "pos", "a1", "a2"],
-            dtype={"snp": str},
+            dtype={"chrom": str, "snp": str, "a1": str, "a2": str},
         )
+
+    def test_bim_columns_match_reference(self, plink19_bin, small_unphased_fixture):
+        bim = self._read_bim(small_unphased_fixture.plink_prefix)
         ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
         assert len(bim) == len(ids)
         np.testing.assert_array_equal(bim["snp"].to_numpy(), ids)
+        np.testing.assert_array_equal(bim["chrom"].to_numpy(), ref.chrom[biallelic])
+        np.testing.assert_array_equal(bim["pos"].to_numpy(), ref.pos[biallelic])
+        # .bim writes the ALT-allele first (A1), per view-plink's
+        # convention. ``--freq counts`` keys C1/C2 to that order.
+        np.testing.assert_array_equal(bim["a1"].to_numpy(), ref.alt[biallelic])
+        np.testing.assert_array_equal(bim["a2"].to_numpy(), ref.ref[biallelic])
+
+    def test_freq_snp_column_round_trips_through_plink(
+        self, tmp_path, plink19_bin, small_unphased_fixture
+    ):
+        # ``plink --freq counts`` re-emits the .bim SNP column into
+        # ``.frq.counts``. Comparing against the reference variant_id
+        # exercises the read-side of PLINK 1.9, so the test catches
+        # truncation / encoding bugs that a .bim-only check would miss.
+        out = tmp_path / "freq"
+        df = _plink_freq_counts(plink19_bin, small_unphased_fixture.plink_prefix, out)
+        ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
+        assert len(df) == len(ids)
+        np.testing.assert_array_equal(df["SNP"].astype(str).to_numpy(), ids)
 
 
 class TestPlink19RejectsBgenV12:

@@ -33,7 +33,7 @@ tools: $(TOOLS)
 $(TOOLS):
 	bash $(HERE)install/install_$@.sh
 
-data: $(DATA_DIR)/small.vcz.ready $(DATA_DIR)/large.vcz.ready $(DATA_DIR)/haploid.vcz.ready $(DATA_DIR)/mixed_ploidy.vcz.ready
+data: $(DATA_DIR)/small.vcz.ready $(DATA_DIR)/large.vcz.ready $(DATA_DIR)/haploid.vcz.ready $(DATA_DIR)/mixed_ploidy.vcz.ready $(DATA_DIR)/varied_strings.vcz.ready
 
 # Marker file sits next to the store (not inside it) so zarr doesn't
 # warn about unrecognised hierarchy components on every open.
@@ -48,6 +48,9 @@ $(DATA_DIR)/haploid.vcz.ready: generate_data.py
 
 $(DATA_DIR)/mixed_ploidy.vcz.ready: generate_data.py
 	uv run --group validation python generate_data.py --kind mixed_ploidy
+
+$(DATA_DIR)/varied_strings.vcz.ready: generate_data.py
+	uv run --group validation python generate_data.py --kind varied_strings
 
 # The repo's pyproject.toml sets `addopts = "-n auto"` for xdist
 # parallelism. The validation suite runs heavy external binaries

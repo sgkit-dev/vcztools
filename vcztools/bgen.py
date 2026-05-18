@@ -208,15 +208,29 @@ def _to_fixed_bytes(arr, lengths):
     """Cast ``arr`` to an ``S{max_len}`` byte array, where ``max_len``
     is the maximum of the pre-computed per-element ``lengths`` array
     (clamped to at least 1 since numpy rejects ``S0``).
-
-    Equivalent to :func:`utils._as_fixed_length_string` but lets the
-    caller hand in the byte lengths it has already computed, avoiding
-    a second ``np.strings.str_len`` pass over ``arr``.
     """
     if lengths.size == 0:
         return arr.astype("S1")
     max_len = max(int(lengths.max()), 1)
     return arr.astype(f"S{max_len}")
+
+
+def _build_padding_bytes(n, slack, pad_byte):
+    """Per-variant padding-field row builder for :class:`BgenEncoder`.
+
+    Returns an ``S{max_slack}`` byte array of length ``n``; each row
+    is ``b"." + pad_byte * (slack[v] - 1)``, NUL-padded out to
+    ``max_slack``. Caller must guarantee ``slack[v] >= 1`` for every
+    row (the leading ``"."`` always has to fit).
+    """
+    if n == 0:
+        return np.zeros(0, dtype="S1")
+    max_slack = max(int(slack.max()), 1)
+    out = np.full((n, max_slack), pad_byte[0], dtype=np.uint8)
+    col = np.arange(max_slack)
+    out[col[None, :] >= slack[:, None]] = 0
+    out[:, 0] = ord(".")
+    return out.view(f"S{max_slack}").reshape(n)
 
 
 def _prepare_chunk_strings(
@@ -280,8 +294,8 @@ def _prepare_chunk_strings(
     variant_id_len = np.strings.str_len(variant_id_arr)
 
     if total_string_length is None:
-        padding_arr = np.full(n, ".")
-        padding_len = np.ones(n, dtype=np.int64)
+        # write_bgen path: padding is a literal b"." per variant.
+        padding_bytes = np.full(n, b".", dtype="S1")
     else:
         used = chrom_len + a1_len + a2_len + variant_id_len
         slack = total_string_length - used
@@ -295,20 +309,17 @@ def _prepare_chunk_strings(
                     f"for the padding field's leading '.' under "
                     f"total_string_length={total_string_length}"
                 )
-        padding_list = [b"." + pad_byte * (int(s) - 1) for s in slack]
-        padding_arr = np.array(padding_list, dtype=object)
-        padding_len = slack
+        padding_bytes = _build_padding_bytes(n, slack, pad_byte)
 
+    variant_id_bytes = _to_fixed_bytes(variant_id_arr, variant_id_len)
     if variant_id_field == "rsid":
-        rsid_arr, rsid_len = variant_id_arr, variant_id_len
-        varid_arr, varid_len = padding_arr, padding_len
+        rsid_bytes, varid_bytes = variant_id_bytes, padding_bytes
     else:
-        varid_arr, varid_len = variant_id_arr, variant_id_len
-        rsid_arr, rsid_len = padding_arr, padding_len
+        rsid_bytes, varid_bytes = padding_bytes, variant_id_bytes
 
     return _ChunkStrings(
-        varid=_to_fixed_bytes(varid_arr, varid_len),
-        rsid=_to_fixed_bytes(rsid_arr, rsid_len),
+        varid=varid_bytes,
+        rsid=rsid_bytes,
         chrom=_to_fixed_bytes(chrom_arr, chrom_len),
         allele1=_to_fixed_bytes(a1_arr, a1_len),
         allele2=_to_fixed_bytes(a2_arr, a2_len),

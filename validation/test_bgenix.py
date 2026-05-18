@@ -141,22 +141,52 @@ class TestBgenixIncludeRange:
         assert len(df) == expected
 
 
+def _strip_padding(values: np.ndarray) -> np.ndarray:
+    """Strip the encoder's padding fill from a column read back by
+    bgenix / qctool.
+
+    ``BgenEncoder`` writes the padding slot as ``b"." + pad_byte *
+    (slack - 1)``, where ``slack`` varies per variant because the four
+    actual-length fields do. Stripping leading ``"."`` characters
+    collapses any such run to the empty string so a padding-slot
+    column can be compared against the canonical empty value. The
+    ``write_bgen`` path emits a single ``b"."`` which strips to the
+    same canonical empty value.
+    """
+    return np.array([s.lstrip(".") for s in values], dtype=object)
+
+
 class TestBgenixVariantIds:
+    """Variant IDs round-trip through one of bgenix's ``rsid`` /
+    ``alternate_ids`` columns, depending on which slot was selected at
+    encode time. The other slot is the padding field — ``"."`` for the
+    ``write_bgen`` path, or ``"." + pad_byte * (slack - 1)`` for
+    ``BgenEncoder``. Stripping leading ``"."`` characters collapses
+    both encodings to the empty string so the same assertion applies.
+    """
+
+    def _column_for_id(self, variant_id_field: str) -> str:
+        # BGEN spec: a variant has two id slots, ``varid`` (BGEN's
+        # primary id) and ``rsid``. bgenix surfaces them as
+        # ``alternate_ids`` and ``rsid`` respectively.
+        return "alternate_ids" if variant_id_field == "varid" else "rsid"
+
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
-    def test_rsid_and_alternate_ids_match_reference(
+    def test_default_field_routes_variant_id_to_rsid(
         self, tmp_path, bgenix_bin, small_unphased_fixture, level
     ):
+        # The session fixture builds BGEN with the default
+        # variant_id_field=rsid, so rsid carries variant_id and
+        # alternate_ids is the padding slot.
         src, _ = cfg.bgen_for_level(small_unphased_fixture, level)
         bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
         df = _bgenix_list(bgenix_bin, bgen)
         ref = reference.compute_variant_stats(small_unphased_fixture.vcz_path)
         biallelic = ref.n_alleles == 2
         ids = reference.variant_ids(small_unphased_fixture.vcz_path)[biallelic]
-        # vcztools (both write_bgen and BgenEncoder) sets BGEN's varid
-        # and rsid fields to the same value from variant_id; bgenix
-        # exposes them as alternate_ids and rsid respectively.
         np.testing.assert_array_equal(df["rsid"].astype(str).to_numpy(), ids)
-        np.testing.assert_array_equal(df["alternate_ids"].astype(str).to_numpy(), ids)
+        stripped = _strip_padding(df["alternate_ids"].astype(str).to_numpy())
+        np.testing.assert_array_equal(stripped, np.array([""] * len(ids), dtype=object))
 
 
 class TestBgenixPhasedBgen:
@@ -339,6 +369,123 @@ class TestBgenixIndexEquality:
         bgenix_bgen = _stage_with_index(bgenix_bin, bgen_src, tmp_path / "ref.bgen")
         bgenix_bgi = pathlib.Path(str(bgenix_bgen) + ".bgi")
 
+        ours = _read_variant_table(vcztools_bgi)
+        theirs = _read_variant_table(bgenix_bgi)
+        assert ours == theirs
+
+
+def _sort_by_chrom_pos(
+    chrom: np.ndarray, pos: np.ndarray, *extras: np.ndarray
+) -> tuple[np.ndarray, ...]:
+    """Return ``(chrom, pos, *extras)`` reordered into bgenix's output
+    order: ASCII-lexicographic by ``chrom``, then ascending ``pos``
+    within each chrom.
+
+    bgenix's ``-list`` walks the .bgi in ``(chromosome, position)`` sort
+    order regardless of the BGEN file's variant ordering, so any
+    multi-contig fixture's reference needs reordering before a row-wise
+    comparison against the listed output.
+    """
+    order = np.lexsort((pos, chrom))
+    return (chrom[order], pos[order], *(arr[order] for arr in extras))
+
+
+class TestBgenixStringVariety:
+    """Round-trip every BGEN string field through bgenix on the
+    ``varied_strings`` fixture, where:
+
+    - chrom byte length varies across 4 contigs (1, 6, 1, 21 bytes).
+    - allele1 / allele2 byte length varies through 6 indel / SNP
+      recipes (1–10 bytes).
+    - variant_id byte length varies through three template buckets
+      (~3, 15, 46 bytes).
+
+    Parametrising over ``(level, variant_id_field)`` exercises both
+    BGEN generation paths (``write_bgen`` at lvl=-1 / lvl=0,
+    ``BgenEncoder``) and both id-routing modes, so each of the five
+    BGEN string slots is the carrier of either ``variant_id`` or the
+    padding field in at least one parametrisation.
+
+    ``bgenix -list`` emits variants in ``(chromosome, position)``
+    ASCII-sorted order, not BGEN file order, so the reference is
+    reordered the same way before per-row comparisons.
+    """
+
+    def _carrier_column(self, variant_id_field: str) -> str:
+        return "alternate_ids" if variant_id_field == "varid" else "rsid"
+
+    def _padding_column(self, variant_id_field: str) -> str:
+        return "rsid" if variant_id_field == "varid" else "alternate_ids"
+
+    @pytest.mark.parametrize("variant_id_field", cfg.VARIANT_ID_FIELDS)
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_chrom_and_alleles_round_trip(
+        self, tmp_path, bgenix_bin, varied_strings_fixture, level, variant_id_field
+    ):
+        src, _ = cfg.bgen_for_field(varied_strings_fixture, level, variant_id_field)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(varied_strings_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        assert len(df) == int(biallelic.sum())
+
+        chrom_ref, pos_ref, ref_a1, ref_a2 = _sort_by_chrom_pos(
+            ref.chrom[biallelic],
+            ref.pos[biallelic],
+            ref.ref[biallelic],
+            ref.alt[biallelic],
+        )
+        np.testing.assert_array_equal(
+            df["chromosome"].astype(str).to_numpy(), chrom_ref
+        )
+        np.testing.assert_array_equal(df["position"].to_numpy(), pos_ref)
+        np.testing.assert_array_equal(df["first_allele"].astype(str).to_numpy(), ref_a1)
+        np.testing.assert_array_equal(
+            df["alternative_alleles"].astype(str).to_numpy(), ref_a2
+        )
+
+    @pytest.mark.parametrize("variant_id_field", cfg.VARIANT_ID_FIELDS)
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_variant_id_round_trip(
+        self, tmp_path, bgenix_bin, varied_strings_fixture, level, variant_id_field
+    ):
+        src, _ = cfg.bgen_for_field(varied_strings_fixture, level, variant_id_field)
+        bgen = _stage_with_index(bgenix_bin, src, tmp_path / "x.bgen")
+        df = _bgenix_list(bgenix_bin, bgen)
+        ref = reference.compute_variant_stats(varied_strings_fixture.vcz_path)
+        biallelic = ref.n_alleles == 2
+        ids = reference.variant_ids(varied_strings_fixture.vcz_path)[biallelic]
+        _, _, ids_sorted = _sort_by_chrom_pos(
+            ref.chrom[biallelic], ref.pos[biallelic], ids
+        )
+
+        carrier = self._carrier_column(variant_id_field)
+        padding = self._padding_column(variant_id_field)
+        np.testing.assert_array_equal(df[carrier].astype(str).to_numpy(), ids_sorted)
+        stripped = _strip_padding(df[padding].astype(str).to_numpy())
+        np.testing.assert_array_equal(
+            stripped, np.array([""] * len(ids_sorted), dtype=object)
+        )
+
+    # variant_id_field is intentionally fixed to "rsid" here: when
+    # variant_id_field="varid", vcztools.bgen.write_bgi still writes
+    # variant_id into the .bgi's rsid column (the .bgi schema column
+    # name) while bgenix's own .bgi reads it from the BGEN's rsid slot,
+    # which holds the padding field. The two .bgi files therefore
+    # diverge by design in that mode, and asserting equality would pin
+    # a non-bug. The rsid case is enough to surface chrom/allele
+    # padding regressions.
+    @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
+    def test_variant_table_matches_bgenix_default_field(
+        self, tmp_path, bgenix_bin, varied_strings_fixture, level
+    ):
+        bgen_src, _ = cfg.bgen_for_field(varied_strings_fixture, level, "rsid")
+        vcztools_bgi = pathlib.Path(str(bgen_src) + ".bgi")
+        assert vcztools_bgi.exists(), (
+            f"expected vcztools-produced .bgi alongside {bgen_src}"
+        )
+        bgenix_bgen = _stage_with_index(bgenix_bin, bgen_src, tmp_path / "ref.bgen")
+        bgenix_bgi = pathlib.Path(str(bgenix_bgen) + ".bgi")
         ours = _read_variant_table(vcztools_bgi)
         theirs = _read_variant_table(bgenix_bgi)
         assert ours == theirs

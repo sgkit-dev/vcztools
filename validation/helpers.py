@@ -92,13 +92,23 @@ def run_view_bgen(
     out_stem: pathlib.Path,
     *,
     compression_level: int = -1,
+    variant_id_field: str | None = None,
     extra_args: str = "",
 ) -> pathlib.Path:
-    """Invoke ``vcztools view-bgen``; return the output stem."""
+    """Invoke ``vcztools view-bgen``; return the output stem.
+
+    ``variant_id_field`` (``"rsid"`` or ``"varid"``) chooses which BGEN
+    string slot carries the zarr ``variant_id``; the other becomes the
+    literal ``"."``. ``None`` (the default) leaves the CLI default in
+    place (``"rsid"``).
+    """
+    field_arg = ""
+    if variant_id_field is not None:
+        field_arg = f"--variant-id-field {variant_id_field} "
     cmd = (
         f"view-bgen {pathlib.Path(vcz_path).as_posix()} "
         f"--output {out_stem.as_posix()} "
-        f"--compression-level {compression_level} {extra_args}"
+        f"--compression-level {compression_level} {field_arg}{extra_args}"
     )
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
@@ -110,7 +120,13 @@ def run_view_bgen(
     return out_stem
 
 
-def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathlib.Path:
+def run_bgen_encoder(
+    vcz_path: pathlib.Path,
+    out_prefix: pathlib.Path,
+    *,
+    variant_id_field: str | None = None,
+    total_string_length: int | None = None,
+) -> pathlib.Path:
     """Encode ``vcz_path`` to a fixed-size BGEN via :class:`vcztools.bgen.BgenEncoder`.
 
     Writes ``<out_prefix>.bgen``, ``<out_prefix>.sample``, and the
@@ -118,7 +134,21 @@ def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathli
     layout. The encoder rejects multi-allelic variants, so a
     biallelic-only filter is materialised first (matching what
     ``view-bgen --max-alleles 2`` does for the variable-size path).
+
+    ``variant_id_field`` (``"rsid"`` or ``"varid"``) is forwarded to
+    :class:`vcztools.bgen.BgenEncoder`; ``None`` leaves the encoder
+    default in place (``"rsid"``).
+
+    ``total_string_length`` overrides the encoder's default combined
+    budget for the five BGEN string slots. Pass a value larger than 64
+    when the fixture has long contig names or alleles that push the
+    per-variant sum over the default.
     """
+    encoder_kwargs = {}
+    if variant_id_field is not None:
+        encoder_kwargs["variant_id_field"] = variant_id_field
+    if total_string_length is not None:
+        encoder_kwargs["total_string_length"] = total_string_length
     root = zarr.open_group(str(vcz_path), mode="r")
     bgen_path = out_prefix.with_suffix(".bgen")
     sample_path = out_prefix.with_suffix(".sample")
@@ -129,7 +159,7 @@ def run_bgen_encoder(vcz_path: pathlib.Path, out_prefix: pathlib.Path) -> pathli
         )
         reader.set_variant_filter(biallelic_filter)
         reader.materialise_variant_filter()
-        with bgen.BgenEncoder(reader) as enc:
+        with bgen.BgenEncoder(reader, **encoder_kwargs) as enc:
             with open(bgen_path, "wb") as f:
                 enc.write_to(f)
             bgen.write_bgi(reader, bgi_path, enc.variant_offsets)

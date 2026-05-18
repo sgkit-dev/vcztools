@@ -362,19 +362,126 @@ def build_fixture(size: str) -> None:
     )
 
 
-PLOIDY_KINDS = ("haploid", "mixed_ploidy")
-"""Supported ``--kind`` values: single-store ploidy fixtures derived
-from the ``small`` simulation. ``<DATA_DIR>/<kind>.vcz`` plus a
-``<DATA_DIR>/<kind>.vcz.ready`` marker."""
+PLOIDY_KINDS = ("haploid", "mixed_ploidy", "varied_strings")
+"""Supported ``--kind`` values: single-store fixtures derived from the
+``small`` simulation. ``<DATA_DIR>/<kind>.vcz`` plus a
+``<DATA_DIR>/<kind>.vcz.ready`` marker.
+
+``haploid`` and ``mixed_ploidy`` exercise the BGEN encoder paths
+against different ploidy shapes; ``varied_strings`` rewrites
+``contig_id``, ``variant_contig``, and ``variant_allele`` so all four
+actual-length BGEN string fields (chrom, allele1, allele2, variant_id)
+vary across the fixture, exercising every per-variant length-prefix
+path in the encoders."""
+
+
+VARIED_CONTIG_IDS: tuple[str, ...] = (
+    "1",
+    "chr_02",
+    "X",
+    "supercontig_chr22_alt",
+)
+"""Contig names of varying byte length (1, 6, 1, 21 bytes) used by the
+``varied_strings`` fixture. Variants are round-robin-assigned across
+these four entries so every chrom-length code path runs."""
+
+
+VARIED_ALLELE_RECIPES: tuple[tuple[str, str], ...] = (
+    ("A", "T"),
+    ("AT", "A"),
+    ("G", "GTAC"),
+    ("ACGT", "TGCA"),
+    ("AAAAAAAAAA", "A"),
+    ("C", "CGTACGTACG"),
+)
+"""(REF, ALT) recipes cycled across the variants axis of the
+``varied_strings`` fixture. Mixes SNPs and indels with REF/ALT byte
+lengths from 1 to 10. Applied to a copy of every variant's alleles so
+genotype values (0=REF, 1=ALT) stay valid."""
+
+
+def write_varied_strings_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> None:
+    """Write a VCZ where chrom, allele1, allele2, and variant_id all
+    vary in byte length across the variants axis.
+
+    Reuses the ``small`` simulation for genotypes / samples. Rewrites:
+
+    - ``contig_id`` with :data:`VARIED_CONTIG_IDS` (4 contigs of byte
+      lengths 1, 6, 1, 21).
+    - ``variant_contig`` to cycle each variant through the four contigs.
+    - ``variant_allele`` so every variant's (REF, ALT) pair is drawn from
+      :data:`VARIED_ALLELE_RECIPES`; genotypes are untouched (0=REF,
+      1=ALT regardless of allele length).
+    - ``variant_id`` via :func:`_inject_variant_ids` (same variable-
+      length scheme as the diploid fixtures).
+
+    No PLINK output is produced from this store: PLINK 1.9 only accepts
+    a fixed set of chromosome names without ``--allow-extra-chr``, and
+    keeping the suite simple is more valuable than smuggling that flag
+    through every PLINK invocation. The store is BGEN-only.
+    """
+    group = _convert_to_vcz(ts, vcz_path)
+
+    contig_arr = group["contig_id"]
+    new_contigs = np.array(list(VARIED_CONTIG_IDS), dtype=contig_arr.dtype)
+    del group["contig_id"]
+    new_contig_arr = group.create_array(
+        "contig_id",
+        shape=new_contigs.shape,
+        chunks=(len(new_contigs),),
+        dtype=contig_arr.dtype,
+    )
+    new_contig_arr[:] = new_contigs
+    new_contig_arr.attrs["_ARRAY_DIMENSIONS"] = ["contigs"]
+
+    variant_contig_arr = group["variant_contig"]
+    n_variants = variant_contig_arr.shape[0]
+    new_variant_contig = (np.arange(n_variants) % len(VARIED_CONTIG_IDS)).astype(
+        variant_contig_arr.dtype
+    )
+    variant_contig_arr[:] = new_variant_contig
+
+    variant_allele_arr = group["variant_allele"]
+    new_alleles = np.empty(variant_allele_arr.shape, dtype=variant_allele_arr.dtype)
+    new_alleles[:] = ""
+    for i in range(n_variants):
+        ref, alt = VARIED_ALLELE_RECIPES[i % len(VARIED_ALLELE_RECIPES)]
+        new_alleles[i, 0] = ref
+        if new_alleles.shape[1] >= 2:
+            new_alleles[i, 1] = alt
+    variant_allele_arr[:] = new_alleles
+
+    # msprime occasionally produces tri-allelic recurrent mutations
+    # (genotype value 2 referencing the third allele slot). The
+    # biallelic rewrite above collapses the third slot to "", so any
+    # remaining 2 in call_genotype would reference an allele that no
+    # longer exists. Fold those into the ALT bucket (value 1) so every
+    # call is valid under the biallelic recipe.
+    gt = group["call_genotype"]
+    gt_values = gt[:]
+    gt_values[gt_values >= 2] = 1
+    gt[:] = gt_values
+
+    if "call_genotype_phased" in group.array_keys():
+        group["call_genotype_phased"][...] = False
+
+    _inject_variant_ids(group)
+    logger.info(
+        "Wrote varied-strings VCZ store at %s (%d variants, %d contigs)",
+        vcz_path,
+        n_variants,
+        len(VARIED_CONTIG_IDS),
+    )
 
 
 def build_ploidy_fixture(kind: str) -> None:
-    """Build the ``haploid`` or ``mixed_ploidy`` single-store fixture.
+    """Build the ``haploid``, ``mixed_ploidy``, or ``varied_strings``
+    single-store fixture.
 
-    Both reuse the ``small`` simulation so genotype content matches
-    what the diploid fixtures see. No phenotype file is generated:
-    REGENIE / BOLT (the only phenotype consumers) are diploid-only and
-    are not exercised on these stores.
+    All three reuse the ``small`` simulation so genotype content
+    matches what the diploid fixtures see. No phenotype file is
+    generated: REGENIE / BOLT (the only phenotype consumers) are
+    diploid-only and are not exercised on these stores.
     """
     if kind not in PLOIDY_KINDS:
         raise ValueError(f"unknown ploidy kind {kind!r}")
@@ -385,8 +492,10 @@ def build_ploidy_fixture(kind: str) -> None:
     ts = simulate(spec)
     if kind == "haploid":
         write_haploid_vcz(ts, vcz_path)
-    else:
+    elif kind == "mixed_ploidy":
         write_mixed_ploidy_vcz(ts, vcz_path)
+    else:
+        write_varied_strings_vcz(ts, vcz_path)
 
     marker = DATA_DIR / f"{kind}.vcz.ready"
     marker.write_text(

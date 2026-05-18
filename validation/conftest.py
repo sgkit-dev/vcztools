@@ -113,6 +113,13 @@ parametrisations: :class:`vcztools.bgen.BgenEncoder` is uniform-ploidy
 only, so it has no output flavour for the mixed fixture."""
 
 
+VARIANT_ID_FIELDS = ["rsid", "varid"]
+"""Both BGEN slots that ``view-bgen`` / :class:`vcztools.bgen.BgenEncoder`
+can route the zarr ``variant_id`` into. The other slot becomes the
+padding field — ``"."`` for ``write_bgen``, or ``"." + pad_byte *
+(slack - 1)`` for ``BgenEncoder``."""
+
+
 @dataclasses.dataclass
 class BgenOnlyFixture:
     """Like :class:`FixtureOutputs` but without the PLINK and phenotype
@@ -284,3 +291,83 @@ def haploid_fixture(tmp_path_factory) -> BgenOnlyFixture:
 def mixed_ploidy_fixture(tmp_path_factory) -> BgenOnlyFixture:
     work = tmp_path_factory.mktemp("mixed_ploidy_outputs")
     return _build_bgen_only_outputs("mixed_ploidy", work, with_encoder=False)
+
+
+@dataclasses.dataclass
+class VariedStringsOutputs:
+    """BGEN outputs for the ``varied_strings`` fixture, built once per
+    ``(level, variant_id_field)`` combination. The varied-strings store
+    varies all four actual-length BGEN string fields (chrom, allele1,
+    allele2, variant_id), so both encoder paths and both routing modes
+    need their own ``.bgen``.
+    """
+
+    name: str
+    vcz_path: pathlib.Path
+    # (level, variant_id_field) -> (bgen_path, sample_path)
+    bgens: dict
+
+
+def _build_varied_strings_outputs(work: pathlib.Path) -> VariedStringsOutputs:
+    vcz = _require_ploidy_fixture("varied_strings")
+    bgens: dict = {}
+    extra = "--max-alleles 2"
+
+    for variant_id_field in VARIANT_ID_FIELDS:
+        for level in BGEN_CLI_LEVELS:
+            compression_level = int(level.split("=")[1])
+            stem = work / f"bgen_{level}_{variant_id_field}"
+            helpers.run_view_bgen(
+                vcz,
+                stem,
+                compression_level=compression_level,
+                variant_id_field=variant_id_field,
+                extra_args=extra,
+            )
+            sample_path = stem.with_suffix(".sample")
+            if not sample_path.exists():
+                raise AssertionError(f"missing .sample file at {sample_path}")
+            bgens[(level, variant_id_field)] = (
+                stem.with_suffix(".bgen"),
+                sample_path,
+            )
+
+        encoder_stem = work / f"bgen_encoder_{variant_id_field}"
+        # Default total_string_length=64 is too tight for this fixture:
+        # the longest (chrom, allele1, allele2, variant_id) combination
+        # sums to ~87 bytes (21-byte contig + 10+10 indel + ~46-byte
+        # variant_id). 128 leaves headroom for the padding slot's
+        # leading "." on every variant.
+        helpers.run_bgen_encoder(
+            vcz,
+            encoder_stem,
+            variant_id_field=variant_id_field,
+            total_string_length=128,
+        )
+        encoder_sample = encoder_stem.with_suffix(".sample")
+        if not encoder_sample.exists():
+            raise AssertionError(f"missing .sample file at {encoder_sample}")
+        bgens[("encoder", variant_id_field)] = (
+            encoder_stem.with_suffix(".bgen"),
+            encoder_sample,
+        )
+
+    return VariedStringsOutputs(name="varied_strings", vcz_path=vcz, bgens=bgens)
+
+
+@pytest.fixture(scope="session")
+def varied_strings_fixture(tmp_path_factory) -> VariedStringsOutputs:
+    work = tmp_path_factory.mktemp("varied_strings_outputs")
+    return _build_varied_strings_outputs(work)
+
+
+def bgen_for_field(
+    fx: VariedStringsOutputs, level: str, variant_id_field: str
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Return ``(bgen_path, sample_path)`` for the varied-strings
+    fixture at the given ``level`` (``lvl=-1`` / ``lvl=0`` / ``encoder``)
+    and ``variant_id_field`` (``rsid`` / ``varid``)."""
+    key = (level, variant_id_field)
+    if key not in fx.bgens:
+        raise ValueError(f"no BGEN output for {key!r}")
+    return fx.bgens[key]

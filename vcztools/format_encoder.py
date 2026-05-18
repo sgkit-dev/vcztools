@@ -199,6 +199,24 @@ class FormatEncoder(abc.ABC):
 
     # --- Read pipeline ---
 
+    def _normalise_range(self, off: int, size: int) -> tuple[int, int]:
+        """Validate ``off`` / ``size`` and return ``(off, end)`` clamped
+        to :attr:`total_size`. Shared validation entry for :meth:`read`,
+        :meth:`write_to`, and :meth:`try_cached_read`.
+
+        Both arguments must be non-negative ``int``; negative values
+        raise ``ValueError``. Callers detect EOF / empty requests via
+        ``off >= end``. :meth:`write_to` resolves its own
+        ``off=None`` / ``size=None`` defaults before delegating here.
+        """
+        self._check_open()
+        if off < 0:
+            raise ValueError(f"off must be >= 0 (got {off})")
+        if size < 0:
+            raise ValueError(f"size must be >= 0 (got {size})")
+        end = min(off + size, self._total_size)
+        return off, end
+
     def read(self, off: int, size: int) -> bytes:
         """Return up to ``size`` bytes from the virtual stream at ``off``.
 
@@ -214,14 +232,9 @@ class FormatEncoder(abc.ABC):
         Reads whose start is further away rebuild the iterator at the
         chunk containing ``off``.
         """
-        self._check_open()
-        if off < 0:
-            raise ValueError(f"off must be >= 0 (got {off})")
-        if size < 0:
-            raise ValueError(f"size must be >= 0 (got {size})")
-        if off >= self._total_size or size == 0:
+        off, end = self._normalise_range(off, size)
+        if off >= end:
             return b""
-        end = min(off + size, self._total_size)
 
         out = bytearray()
         if off < self._prefix_size:
@@ -247,22 +260,16 @@ class FormatEncoder(abc.ABC):
         issued in blocks of :attr:`_encode_block_bytes` (the same
         granularity the parallel encode fan-out uses to split work).
         """
-        self._check_open()
         if off is None:
             off = 0
-        if off < 0:
-            raise ValueError(f"off must be >= 0 (got {off})")
-        if size is not None and size < 0:
-            raise ValueError(f"size must be >= 0 (got {size})")
         if size is None:
-            end = self._total_size
-        else:
-            end = min(off + size, self._total_size)
+            size = self._total_size
+        off, end = self._normalise_range(off, size)
         block = self._encode_block_bytes
         written = 0
         while off < end:
             buf = self.read(off, min(block, end - off))
-            if not buf:
+            if len(buf) == 0:
                 break
             out.write(buf)
             written += len(buf)
@@ -290,14 +297,9 @@ class FormatEncoder(abc.ABC):
         negative ``off`` or ``size`` raises ``ValueError``; closed
         encoder raises ``RuntimeError``.
         """
-        self._check_open()
-        if off < 0:
-            raise ValueError(f"off must be >= 0 (got {off})")
-        if size < 0:
-            raise ValueError(f"size must be >= 0 (got {size})")
-        if off >= self._total_size or size == 0:
+        off, end = self._normalise_range(off, size)
+        if off >= end:
             return b""
-        end = min(off + size, self._total_size)
 
         out = bytearray()
         if off < self._prefix_size:

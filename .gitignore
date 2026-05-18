@@ -168,8 +168,6 @@ cython_debug/
 vcz_test_cache/
 **/.DS_Store
 performance/results/
-performance/wide_bench.vcz*
-performance/long_bench.vcz*
-performance/data/wide_bench.vcz*
-performance/data/long_bench.vcz*
-performance/bench_biallelic.vcz*
+# Generated benchmark / validation datasets live outside the repo, in
+# ../datasets/perf-bench/ and ../datasets/validation/, so they no
+# longer need explicit ignore patterns here.

@@ -21,7 +21,11 @@ from . import helpers
 
 HERE = pathlib.Path(__file__).parent
 TOOLS_DIR = HERE / "tools"
-DATA_DIR = HERE / "data"
+# Fixtures live outside the repo. Default location is
+# ``../datasets/validation`` (relative to the vcztools repo root).
+# Anchored to this file so the path is stable regardless of where
+# pytest is launched from.
+DATA_DIR = HERE.parent.parent / "datasets" / "validation"
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +150,8 @@ def bgen_for_level(
 
 
 def _require_fixture(size: str, variant: str) -> pathlib.Path:
-    """Resolve ``data/<size>_<variant>.vcz``; skip if the size's marker
-    file (which signals *both* variants are built) is missing."""
+    """Resolve ``<DATA_DIR>/<size>_<variant>.vcz``; skip if the size's
+    marker file (which signals *both* variants are built) is missing."""
     vcz = DATA_DIR / f"{size}_{variant}.vcz"
     if not (DATA_DIR / f"{size}.vcz.ready").exists():
         pytest.skip(
@@ -223,7 +227,7 @@ def large_phased_fixture(tmp_path_factory) -> FixtureOutputs:
 
 
 def _require_ploidy_fixture(name: str) -> pathlib.Path:
-    """Resolve ``data/<name>.vcz``; skip if its marker file is missing."""
+    """Resolve ``<DATA_DIR>/<name>.vcz``; skip if its marker file is missing."""
     vcz = DATA_DIR / f"{name}.vcz"
     if not (DATA_DIR / f"{name}.vcz.ready").exists():
         pytest.skip(

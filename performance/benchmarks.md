@@ -13,7 +13,7 @@ separately when the long-bench generation lands.
 - **Reproduce:**
   ```
   uv run python performance/benchmarks.py run \
-      --dataset performance/data/wide_bench.vcz \
+      --dataset ../datasets/perf-bench/wide_bench.vcz \
       --shape wide \
       --output performance/results/run.jsonl
   uv run python performance/benchmarks.py compare \
@@ -119,7 +119,7 @@ differ by ~2× so a shared chunk count would over- or under-spend.
 
 - **Source run:** `performance/benchmarks.py run --task output_vcf
   --task output_plink --task output_bed_stream` against
-  `performance/wide_bench.vcz`, recorded 2026-05-06.
+  `../datasets/perf-bench/wide_bench.vcz`, recorded 2026-05-06.
 - **Hardware:** 4-CPU host `claude-worker1`.
 - **Dataset:** 100 000 diploid samples, ~98 % biallelic (the rest
   dropped via per-chunk materialisation in
@@ -128,7 +128,7 @@ differ by ~2× so a shared chunk count would over- or under-spend.
 - **Reproduce:**
   ```
   uv run python performance/benchmarks.py run \
-      --dataset performance/wide_bench.vcz \
+      --dataset ../datasets/perf-bench/wide_bench.vcz \
       --task output_vcf --task output_plink --task output_bed_stream \
       --output /tmp/output.jsonl
   ```

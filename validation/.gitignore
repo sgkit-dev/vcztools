@@ -1,5 +1,4 @@
 tools/
-data/
 *.log
 *.tmp
 __pycache__/

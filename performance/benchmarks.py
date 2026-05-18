@@ -6,9 +6,9 @@ proportional chunk sizes for variant-only fields), ``run`` (execute the
 task/backend matrix against the generated sibling layout), ``run-one``
 (execute one task against an arbitrary Zarr path on a single storage
 backend), and ``compare`` (diff two JSONL runs). The wide dataset lives
-at ``performance/data/wide_bench.vcz`` by default and the long dataset
-at ``performance/data/long_bench.vcz``, so ``generate`` / ``generate-long``
-and ``run`` can be invoked without arguments.
+at ``../datasets/perf-bench/wide_bench.vcz`` by default and the long
+dataset at ``../datasets/perf-bench/long_bench.vcz``, so ``generate`` /
+``generate-long`` and ``run`` can be invoked without arguments.
 
 The generator produces several on-disk copies of the same logical data
 so we can benchmark different storage backends apples-to-apples:
@@ -63,8 +63,8 @@ from vcztools import utils as vcz_utils
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_DATASET = pathlib.Path("performance/data/wide_bench.vcz")
-DEFAULT_LONG_DATASET = pathlib.Path("performance/data/long_bench.vcz")
+DEFAULT_DATASET = pathlib.Path("../datasets/perf-bench/wide_bench.vcz")
+DEFAULT_LONG_DATASET = pathlib.Path("../datasets/perf-bench/long_bench.vcz")
 
 # Target uncompressed bytes per variant-only-field chunk on long_bench.
 # Each variant-only array (variant_position, variant_allele, variant_DP,

@@ -204,6 +204,21 @@ class _ChunkStrings:
     allele2: np.ndarray
 
 
+def _to_fixed_bytes(arr, lengths):
+    """Cast ``arr`` to an ``S{max_len}`` byte array, where ``max_len``
+    is the maximum of the pre-computed per-element ``lengths`` array
+    (clamped to at least 1 since numpy rejects ``S0``).
+
+    Equivalent to :func:`utils._as_fixed_length_string` but lets the
+    caller hand in the byte lengths it has already computed, avoiding
+    a second ``np.strings.str_len`` pass over ``arr``.
+    """
+    if lengths.size == 0:
+        return arr.astype("S1")
+    max_len = max(int(lengths.max()), 1)
+    return arr.astype(f"S{max_len}")
+
+
 def _prepare_chunk_strings(
     chunk,
     contig_ids,
@@ -215,13 +230,12 @@ def _prepare_chunk_strings(
     """Build the five per-variant string byte arrays consumed by the
     BGEN encoder paths.
 
-    The four "actual length" fields — ``chrom``, ``allele1``,
+    Each of the four "actual length" fields — ``chrom``, ``allele1``,
     ``allele2``, and whichever of ``varid``/``rsid`` carries the
-    variant id — are converted to ``S``-dtype byte arrays via
-    :func:`utils._as_fixed_length_string`, the same pattern
-    :mod:`vcf_writer` uses to hand strings to its C encoder. The
-    fifth field is the padding field, which absorbs per-variant
-    slack:
+    variant id — is converted to an ``S``-dtype byte array sized to
+    the chunk-wide max byte length, using the per-element length
+    array computed up front. The fifth field is the padding field,
+    which absorbs per-variant slack:
 
     - :class:`BgenEncoder` (``total_string_length`` is an int): the
       padding field is ``b"." + pad_byte * (slack - 1)`` per variant,
@@ -258,15 +272,18 @@ def _prepare_chunk_strings(
     else:
         variant_id_arr = np.full(n, ".")
 
+    # Compute per-element byte lengths once; reused for the slack
+    # check (BgenEncoder path) and for sizing the S-dtype rows.
+    chrom_len = np.strings.str_len(chrom_arr)
+    a1_len = np.strings.str_len(a1_arr)
+    a2_len = np.strings.str_len(a2_arr)
+    variant_id_len = np.strings.str_len(variant_id_arr)
+
     if total_string_length is None:
         padding_arr = np.full(n, ".")
+        padding_len = np.ones(n, dtype=np.int64)
     else:
-        used = (
-            np.strings.str_len(chrom_arr)
-            + np.strings.str_len(a1_arr)
-            + np.strings.str_len(a2_arr)
-            + np.strings.str_len(variant_id_arr)
-        )
+        used = chrom_len + a1_len + a2_len + variant_id_len
         slack = total_string_length - used
         if n > 0:
             min_slack = int(slack.min())
@@ -280,20 +297,21 @@ def _prepare_chunk_strings(
                 )
         padding_list = [b"." + pad_byte * (int(s) - 1) for s in slack]
         padding_arr = np.array(padding_list, dtype=object)
+        padding_len = slack
 
     if variant_id_field == "rsid":
-        rsid_arr = variant_id_arr
-        varid_arr = padding_arr
+        rsid_arr, rsid_len = variant_id_arr, variant_id_len
+        varid_arr, varid_len = padding_arr, padding_len
     else:
-        varid_arr = variant_id_arr
-        rsid_arr = padding_arr
+        varid_arr, varid_len = variant_id_arr, variant_id_len
+        rsid_arr, rsid_len = padding_arr, padding_len
 
     return _ChunkStrings(
-        varid=utils._as_fixed_length_string(varid_arr),
-        rsid=utils._as_fixed_length_string(rsid_arr),
-        chrom=utils._as_fixed_length_string(chrom_arr),
-        allele1=utils._as_fixed_length_string(a1_arr),
-        allele2=utils._as_fixed_length_string(a2_arr),
+        varid=_to_fixed_bytes(varid_arr, varid_len),
+        rsid=_to_fixed_bytes(rsid_arr, rsid_len),
+        chrom=_to_fixed_bytes(chrom_arr, chrom_len),
+        allele1=_to_fixed_bytes(a1_arr, a1_len),
+        allele2=_to_fixed_bytes(a2_arr, a2_len),
     )
 
 

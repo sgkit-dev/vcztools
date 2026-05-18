@@ -688,6 +688,25 @@ class BgenEncoder(format_encoder.FormatEncoder):
         :attr:`~vcztools.format_encoder.FormatEncoder.total_size`)."""
         return self.total_size
 
+    @property
+    def variant_id_field(self) -> str:
+        """Which BGEN id slot (``"rsid"`` or ``"varid"``) the encoder
+        routes ``variant_id`` into; the other slot is the padding field."""
+        return self._variant_id_field
+
+    @property
+    def total_string_length(self) -> int:
+        """Combined byte budget for the five BGEN string slots —
+        :func:`write_bgi` needs this to reproduce the per-variant padding
+        the encoder wrote into the unused id slot."""
+        return self._total_string_length
+
+    @property
+    def pad_byte(self) -> bytes:
+        """Single byte used to fill the padding slot beyond its leading
+        ``b"."``. Default ``b"."``, never the NUL byte."""
+        return self._pad_byte
+
     def _encode_chunk(self, chunk: dict) -> bytes:
         # String prep is hoisted out of the worker pool: building the
         # per-variant byte arrays (and the padding-field bytes) holds
@@ -830,7 +849,63 @@ _BGI_INSERT_SQL = (
 )
 
 
-def write_bgi(reader, output, variant_offsets):
+def _bgi_rsid_column(
+    chrom_arr: np.ndarray,
+    a1_arr: np.ndarray,
+    a2_arr: np.ndarray,
+    variant_id_arr: np.ndarray,
+    *,
+    variant_id_field: str,
+    total_string_length: int | None,
+    pad_byte: bytes,
+) -> np.ndarray:
+    """Build the .bgi ``rsid`` column to match the bytes the encoder
+    wrote into the BGEN ``rsid`` slot.
+
+    When ``variant_id_field == "rsid"``, the slot carries
+    ``variant_id`` directly. When ``variant_id_field == "varid"``, the
+    slot is the padding field — the same per-variant string
+    :func:`_prepare_chunk_strings` builds, so the .bgi column matches
+    what bgenix would record when reindexing the same BGEN file.
+    """
+    if variant_id_field == "rsid":
+        return variant_id_arr
+    chrom_len = np.strings.str_len(chrom_arr)
+    a1_len = np.strings.str_len(a1_arr)
+    a2_len = np.strings.str_len(a2_arr)
+    variant_id_len = np.strings.str_len(variant_id_arr)
+    n = chrom_arr.shape[0]
+    if total_string_length is None:
+        # write_bgen path: padding is a literal "." per variant.
+        return np.full(n, ".")
+    used = chrom_len + a1_len + a2_len + variant_id_len
+    slack = total_string_length - used
+    if n > 0:
+        min_slack = int(slack.min())
+        if min_slack < 1:
+            bad = int(np.argmin(slack))
+            raise ValueError(
+                f"variant {bad}: chrom/allele1/allele2/variant_id "
+                f"byte sum is {int(used[bad])}, leaving no room "
+                f"for the padding field's leading '.' under "
+                f"total_string_length={total_string_length}"
+            )
+    pad_char = pad_byte.decode("ascii")
+    return np.array(
+        ["." + pad_char * (int(s) - 1) for s in slack],
+        dtype=object,
+    )
+
+
+def write_bgi(
+    reader,
+    output,
+    variant_offsets,
+    *,
+    variant_id_field: str = "rsid",
+    total_string_length: int | None = None,
+    pad_byte: bytes = b".",
+):
     """Write the bgenix ``.bgen.bgi`` SQLite sidecar for ``reader``.
 
     ``output`` is a filesystem path (``str`` / ``pathlib.Path``); the
@@ -848,6 +923,17 @@ def write_bgi(reader, output, variant_offsets):
     BGEN prefix length) for the variable-size :func:`write_bgen`
     path.
 
+    ``variant_id_field`` mirrors :func:`write_bgen` /
+    :class:`BgenEncoder`: when ``"rsid"`` (default), ``variant_id``
+    populates the .bgi ``rsid`` column directly; when ``"varid"``, the
+    BGEN ``rsid`` slot was the padding field at encode time, so the
+    .bgi ``rsid`` column carries the same padding bytes the BGEN file
+    holds. ``total_string_length`` and ``pad_byte`` are the same
+    parameters as on :class:`BgenEncoder` and reconstruct the
+    per-variant padding strings: ``None`` matches :func:`write_bgen`'s
+    single-byte ``"."`` padding, an integer matches the encoder's
+    ``"." + pad_byte * (slack - 1)`` pattern.
+
     Variant-metadata columns (chromosome, position, rsid, alleles)
     are read via the reader's standard ``variant_chunks`` API and
     assembled as numpy arrays; per-row tuples are streamed into
@@ -856,6 +942,11 @@ def write_bgi(reader, output, variant_offsets):
     biallelic only; multi-allelic raises ``ValueError`` lazily on
     the chunk containing the offending row.
     """
+    if variant_id_field not in ("rsid", "varid"):
+        raise ValueError(
+            f"variant_id_field must be 'rsid' or 'varid' (got {variant_id_field!r})"
+        )
+
     start_total = time.perf_counter()
 
     num_variants = int(reader.variant_counts_per_chunk().sum())
@@ -884,7 +975,7 @@ def write_bgi(reader, output, variant_offsets):
     pos_parts: list[np.ndarray] = []
     a1_parts: list[np.ndarray] = []
     a2_parts: list[np.ndarray] = []
-    rsid_parts: list[np.ndarray] = []
+    variant_id_parts: list[np.ndarray] = []
 
     read_start = time.perf_counter()
     for chunk in reader.variant_chunks(fields=fields):
@@ -899,9 +990,9 @@ def write_bgi(reader, output, variant_offsets):
         else:
             a2_parts.append(np.full(n, "."))
         if has_variant_id:
-            rsid_parts.append(np.asarray(chunk["variant_id"]))
+            variant_id_parts.append(np.asarray(chunk["variant_id"]))
         else:
-            rsid_parts.append(np.full(n, "."))
+            variant_id_parts.append(np.full(n, "."))
     read_seconds = time.perf_counter() - read_start
 
     assemble_start = time.perf_counter()
@@ -911,16 +1002,25 @@ def write_bgi(reader, output, variant_offsets):
         pos_arr = np.concatenate(pos_parts)
         a1_arr = np.concatenate(a1_parts)
         a2_arr = np.concatenate(a2_parts)
-        rsid_arr = np.concatenate(rsid_parts)
+        variant_id_arr = np.concatenate(variant_id_parts)
         # Match the .bim/.bgi monomorphic / missing-rsid convention used
         # by write_bgen and BgenEncoder.
-        rsid_arr = np.where(rsid_arr == "", ".", rsid_arr)
+        variant_id_arr = np.where(variant_id_arr == "", ".", variant_id_arr)
         a2_arr = np.where(a2_arr == "", ".", a2_arr)
         if chrom_arr.shape[0] != num_variants:
             raise ValueError(
                 f"reader yielded {chrom_arr.shape[0]} variants but "
                 f"variant_offsets implies {num_variants}"
             )
+        rsid_arr = _bgi_rsid_column(
+            chrom_arr,
+            a1_arr,
+            a2_arr,
+            variant_id_arr,
+            variant_id_field=variant_id_field,
+            total_string_length=total_string_length,
+            pad_byte=pad_byte,
+        )
         starts = variant_offsets[:-1]
         sizes = np.diff(variant_offsets)
 
@@ -1168,4 +1268,4 @@ def write_bgen(
         )
 
     if bgi_path is not None:
-        write_bgi(reader, bgi_path, variant_offsets)
+        write_bgi(reader, bgi_path, variant_offsets, variant_id_field=variant_id_field)

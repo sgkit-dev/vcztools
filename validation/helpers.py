@@ -162,6 +162,17 @@ def run_bgen_encoder(
         with bgen.BgenEncoder(reader, **encoder_kwargs) as enc:
             with open(bgen_path, "wb") as f:
                 enc.write_to(f)
-            bgen.write_bgi(reader, bgi_path, enc.variant_offsets)
+            # Match the encoder's variant_id_field / padding so the
+            # .bgi rsid column carries the same bytes the BGEN file
+            # holds in its rsid slot (the padding pattern, when
+            # variant_id_field="varid").
+            bgen.write_bgi(
+                reader,
+                bgi_path,
+                enc.variant_offsets,
+                variant_id_field=enc.variant_id_field,
+                total_string_length=enc.total_string_length,
+                pad_byte=enc.pad_byte,
+            )
         bgen.write_sample(reader, sample_path)
     return bgen_path

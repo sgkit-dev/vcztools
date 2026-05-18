@@ -47,9 +47,10 @@
 #define VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS (-204)
 
 /* BGEN encoder errors */
-#define VCZ_ERR_BGEN_INVALID_PLOIDY (-301)
-#define VCZ_ERR_BGEN_INVALID_ALLELE (-302)
-#define VCZ_ERR_BGEN_MIXED_PLOIDY   (-303)
+#define VCZ_ERR_BGEN_INVALID_PLOIDY         (-301)
+#define VCZ_ERR_BGEN_INVALID_ALLELE         (-302)
+#define VCZ_ERR_BGEN_MIXED_PLOIDY           (-303)
+#define VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH (-304)
 
 typedef struct {
     // maximum length + 1 for NULL byte
@@ -131,12 +132,13 @@ int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
     uint32_t *out_lens);
 size_t vcz_bgen_geno_block_size(size_t num_samples, size_t uniform_ploidy);
-size_t vcz_bgen_variant_block_size(size_t num_samples, size_t uniform_ploidy,
-    size_t varid_max, size_t rsid_max, size_t chrom_max, size_t allele_max);
+size_t vcz_bgen_variant_block_size(
+    size_t num_samples, size_t uniform_ploidy, size_t total_string_length);
 int vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
-    size_t uniform_ploidy, const uint8_t *varid, size_t varid_max, const uint8_t *rsid,
-    size_t rsid_max, const uint8_t *chrom, size_t chrom_max, const uint8_t *allele1,
-    const uint8_t *allele2, size_t allele_max, const int32_t *position,
+    size_t uniform_ploidy, size_t total_string_length, const uint8_t *varid,
+    size_t varid_stride, const uint8_t *rsid, size_t rsid_stride, const uint8_t *chrom,
+    size_t chrom_stride, const uint8_t *allele1, size_t allele1_stride,
+    const uint8_t *allele2, size_t allele2_stride, const int32_t *position,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *out_buf);
 
 /* Drop-in replacements for the zlib symbols referenced by the BGEN encoder.

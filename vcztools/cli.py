@@ -871,6 +871,7 @@ class ViewBgenOptions:
     no_sample_file: bool = False
     no_header_samples: bool = False
     unphased: bool = False
+    variant_id_field: str = "rsid"
 
     @staticmethod
     def decorator(f):
@@ -880,6 +881,16 @@ class ViewBgenOptions:
         f = ReaderOptions.decorator(f)
         f = ZarrStoreOptions.decorator(f)
         f = SelectionOptions.decorator(f)
+        f = click.option(
+            "--variant-id-field",
+            type=click.Choice(["rsid", "varid"]),
+            default="rsid",
+            show_default=True,
+            help=(
+                "Which BGEN slot carries the zarr variant_id. The other "
+                "slot is written as a literal '.' for every variant."
+            ),
+        )(f)
         f = click.option(
             "--unphased",
             is_flag=True,
@@ -929,6 +940,7 @@ class ViewBgenOptions:
             no_sample_file=kwargs.get("no_sample_file", False),
             no_header_samples=kwargs.get("no_header_samples", False),
             unphased=kwargs.get("unphased", False),
+            variant_id_field=kwargs.get("variant_id_field", "rsid"),
         )
 
     def make_reader(self, path: str) -> retrieval.VczReader:
@@ -1335,6 +1347,7 @@ def view_bgen(path, output, compression_level, **kwargs):
             embed_header_samples=embed_header_samples,
             compression_level=compression_level,
             unphased=opts.unphased,
+            variant_id_field=opts.variant_id_field,
         )
 
 

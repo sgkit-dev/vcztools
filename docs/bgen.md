@@ -238,9 +238,7 @@ Every per-variant block is exactly `bytes_per_variant` bytes wide, so
 `byte offset → variant index` is O(1):
 
 ```
-bytes_per_variant = 28 + varid_max + rsid_max + chrom_max
-                    + 2 * allele_max
-                    + zlib_stored_size(geno_size)
+bytes_per_variant = 28 + total_string_length + zlib_stored_size(geno_size)
 
 geno_size = 10 + (uniform_ploidy + 1) * num_samples
 ```
@@ -248,34 +246,36 @@ geno_size = 10 + (uniform_ploidy + 1) * num_samples
 For haploid stores `geno_size = 10 + 2 * num_samples`; for diploid
 `geno_size = 10 + 3 * num_samples`.
 
-The fixed width is achieved by NUL-padding the variable-length string
-fields (variant id, rsid, chromosome, alleles) to caller-configured
-maximum widths, and by emitting the genotype block as zlib **level 0**
-(stored, no DEFLATE) so its compressed length is a deterministic
-function of the uncompressed length. The bgen-reader reference reader
-strips trailing NULs from string fields, so padded values round-trip
-cleanly.
+The five BGEN string fields (varid, rsid, chrom, allele1, allele2) share
+a single `total_string_length` budget per variant. Four of them — chrom,
+allele1, allele2, and whichever of varid/rsid is selected by
+`variant_id_field` — are emitted at their actual UTF-8 byte lengths.
+The fifth slot is the **padding field**: its content is
+`b"." + pad_byte * (slack - 1)`, where `slack` is whatever's left of
+`total_string_length` after the other four. The genotype block is
+emitted as zlib **level 0** (stored, no DEFLATE) so its compressed
+length is a deterministic function of the uncompressed length.
 
 Defaults target biobank biallelic SNP-array data:
 
 | Argument | Default | Notes |
 | --- | --- | --- |
-| `varid_max` | 64 | uint16 length prefix limit is 65535 |
-| `rsid_max` | 64 | uint16 length prefix limit is 65535 |
-| `chrom_max` | 8 | uint16 length prefix limit is 65535 |
-| `allele_max` | 1 | SNP-only; uint32 length prefix limit |
+| `total_string_length` | 64 | combined byte budget for all five string fields per variant |
+| `pad_byte` | `b"."` | single-byte pad written into the padding field after the leading `"."` |
+| `variant_id_field` | `"rsid"` | BGEN slot that carries the zarr `variant_id`; the other slot is the padding field |
 | `encode_threads` | 4 | thread pool size for parallel encode |
 | `encode_block_bytes` | 10 MiB | input target per sub-block |
 
-Overflowing any `*_max` raises `ValueError` lazily during `read()`,
-with a clear message naming the field and the configured limit. Indel
-or SV stores opt in by passing larger maxes (e.g. `allele_max=16`).
+If a variant's content sums past `total_string_length - 1` (the padding
+field can't even fit its leading `"."`), `read()` raises `ValueError`
+naming the variant index and the configured `total_string_length`.
+Stores with longer rsIDs / alleles opt in by passing a larger
+`total_string_length`.
 
-The output `.bgen` is significantly larger than `view-bgen`'s
-zlib-compressed output — it carries the fixed-size padding for every
-string field and runs no real compression on genotype data — but the
-byte stream is addressable and bytes-per-variant is fully known up
-front. The encoder serves the `.bgen` stream only; `write_sample()`
+The output `.bgen` is larger than `view-bgen`'s zlib-compressed
+output — it runs no real compression on genotype data and reserves
+`total_string_length` bytes per variant for strings — but the byte
+stream is addressable and bytes-per-variant is fully known up front. The encoder serves the `.bgen` stream only; `write_sample()`
 remains the path for the `.sample` sidecar, and a `.bgi` index (if
 needed) can be built from the deterministic offsets
 (`header_size + i * bytes_per_variant`) without iterating the encoder.

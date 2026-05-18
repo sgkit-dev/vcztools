@@ -1687,16 +1687,18 @@ decode_u32_le(const uint8_t *buf)
 }
 
 /* Inputs for vcz_encode_bgen_chunk_slice_level0 tests. Caller stages the
- * arrays; helper kicks the kernel and returns its rc. Use scope-block
- * decls only at function tops to satisfy the house style. */
+ * arrays; helper kicks the kernel and returns its rc. Each ``*_stride``
+ * is the S-dtype row width for the corresponding field. */
 typedef struct {
     size_t num_variants;
     size_t num_samples;
     size_t uniform_ploidy;
-    size_t varid_max;
-    size_t rsid_max;
-    size_t chrom_max;
-    size_t allele_max;
+    size_t total_string_length;
+    size_t varid_stride;
+    size_t rsid_stride;
+    size_t chrom_stride;
+    size_t allele1_stride;
+    size_t allele2_stride;
     const uint8_t *varid;
     const uint8_t *rsid;
     const uint8_t *chrom;
@@ -1711,9 +1713,9 @@ static int
 call_chunk_slice(const chunk_slice_args_t *a, uint8_t *out_buf)
 {
     return vcz_encode_bgen_chunk_slice_level0(a->num_variants, a->num_samples,
-        a->uniform_ploidy, a->varid, a->varid_max, a->rsid, a->rsid_max, a->chrom,
-        a->chrom_max, a->allele1, a->allele2, a->allele_max, a->position, a->genotypes,
-        a->phased, out_buf);
+        a->uniform_ploidy, a->total_string_length, a->varid, a->varid_stride, a->rsid,
+        a->rsid_stride, a->chrom, a->chrom_stride, a->allele1, a->allele1_stride,
+        a->allele2, a->allele2_stride, a->position, a->genotypes, a->phased, out_buf);
 }
 
 static void
@@ -1722,7 +1724,7 @@ test_bgen_chunk_slice_zero_variants(void)
     /* num_variants=0: kernel must not touch out_buf. */
     uint8_t out_buf[64];
     chunk_slice_args_t args
-        = { 0, 5, 2, 1, 1, 1, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+        = { 0, 5, 2, 5, 1, 1, 1, 1, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     size_t j;
     int rc;
 
@@ -1739,7 +1741,9 @@ test_bgen_chunk_slice_single_variant_diploid(void)
 {
     /* 1 variant x 1 sample, hom-ref diploid, unphased. Drives the
      * variant-header layout, the K=2 marker, the C/D framing and the
-     * vcz_compress2 stored-zlib envelope. */
+     * vcz_compress2 stored-zlib envelope. total_string_length = 2 +
+     * 2 + 4 + 1 + 1 = 10 covers the rsid="rs" + varid="rs" + chrom=
+     * "chr1" + allele1="A" + allele2="T" byte sum. */
     uint8_t varid[2] = { 'r', 's' };
     uint8_t rsid[2] = { 'r', 's' };
     uint8_t chrom[4] = { 'c', 'h', 'r', '1' };
@@ -1748,11 +1752,11 @@ test_bgen_chunk_slice_single_variant_diploid(void)
     int32_t position[1] = { 100 };
     int8_t genotypes[2] = { 0, 0 };
     uint8_t phased[1] = { 0 };
-    chunk_slice_args_t args = { 1, 1, 2, 2, 2, 4, 1, varid, rsid, chrom, allele1,
+    chunk_slice_args_t args = { 1, 1, 2, 10, 2, 2, 4, 1, 1, varid, rsid, chrom, allele1,
         allele2, position, genotypes, phased };
     size_t geno_size = vcz_bgen_geno_block_size(1, 2);
     size_t payload_size = vcz_compress_bound(geno_size);
-    size_t bpv = vcz_bgen_variant_block_size(1, 2, 2, 2, 4, 1);
+    size_t bpv = vcz_bgen_variant_block_size(1, 2, 10);
     uint8_t *out = malloc(bpv);
     const uint8_t *p;
     int rc;
@@ -1828,9 +1832,9 @@ test_bgen_chunk_slice_multi_variant_offsets(void)
     int8_t genotypes[3 * 2 * 2]
         = { 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0 }; /* 3 variants x 2 samples */
     uint8_t phased[3] = { 0, 0, 0 };
-    chunk_slice_args_t args = { 3, 2, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+    chunk_slice_args_t args = { 3, 2, 2, 5, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
         allele2, position, genotypes, phased };
-    size_t bpv = vcz_bgen_variant_block_size(2, 2, 1, 1, 1, 1);
+    size_t bpv = vcz_bgen_variant_block_size(2, 2, 5);
     size_t v;
     uint8_t *out = malloc(3 * bpv);
     int rc;
@@ -1862,10 +1866,10 @@ test_bgen_chunk_slice_uniform_haploid(void)
     int32_t position[1] = { 42 };
     int8_t genotypes[2 * 2] = { 0, -2, 1, -2 }; /* 1 variant x 2 haploid samples */
     uint8_t phased[1] = { 0 };
-    chunk_slice_args_t args = { 1, 2, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+    chunk_slice_args_t args = { 1, 2, 1, 5, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
         allele2, position, genotypes, phased };
     size_t geno_size = vcz_bgen_geno_block_size(2, 1);
-    size_t bpv = vcz_bgen_variant_block_size(2, 1, 1, 1, 1, 1);
+    size_t bpv = vcz_bgen_variant_block_size(2, 1, 5);
     uint8_t *out = malloc(bpv);
     const uint8_t *p;
     int rc;
@@ -1894,9 +1898,9 @@ test_bgen_chunk_slice_invalid_ploidy(void)
     int32_t position[1] = { 1 };
     int8_t genotypes[2] = { -2, 0 };
     uint8_t phased[1] = { 0 };
-    chunk_slice_args_t args = { 1, 1, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+    chunk_slice_args_t args = { 1, 1, 2, 5, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
         allele2, position, genotypes, phased };
-    size_t bpv = vcz_bgen_variant_block_size(1, 2, 1, 1, 1, 1);
+    size_t bpv = vcz_bgen_variant_block_size(1, 2, 5);
     uint8_t *out = malloc(bpv);
     int rc;
 
@@ -1919,9 +1923,9 @@ test_bgen_chunk_slice_invalid_allele(void)
     int32_t position[1] = { 1 };
     int8_t genotypes[2] = { 0, 2 };
     uint8_t phased[1] = { 0 };
-    chunk_slice_args_t args = { 1, 1, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+    chunk_slice_args_t args = { 1, 1, 2, 5, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
         allele2, position, genotypes, phased };
-    size_t bpv = vcz_bgen_variant_block_size(1, 2, 1, 1, 1, 1);
+    size_t bpv = vcz_bgen_variant_block_size(1, 2, 5);
     uint8_t *out = malloc(bpv);
     int rc;
 
@@ -1947,15 +1951,43 @@ test_bgen_chunk_slice_mixed_ploidy(void)
      * haploid (0/-2). */
     int8_t genotypes[2 * 2] = { 0, 0, 0, -2 };
     uint8_t phased[1] = { 0 };
-    chunk_slice_args_t args = { 1, 2, 2, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+    chunk_slice_args_t args = { 1, 2, 2, 5, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
         allele2, position, genotypes, phased };
-    size_t bpv = vcz_bgen_variant_block_size(2, 2, 1, 1, 1, 1);
+    size_t bpv = vcz_bgen_variant_block_size(2, 2, 5);
     uint8_t *out = malloc(bpv);
     int rc;
 
     CU_ASSERT_FATAL(out != NULL);
     rc = call_chunk_slice(&args, out);
     CU_ASSERT_EQUAL_FATAL(rc, VCZ_ERR_BGEN_MIXED_PLOIDY);
+    free(out);
+}
+
+static void
+test_bgen_chunk_slice_string_length_mismatch(void)
+{
+    /* The Python layer is responsible for sizing the padding field so
+     * the per-variant string sum equals total_string_length. Declaring
+     * a value that doesn't match must surface as
+     * VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH. */
+    uint8_t varid[1] = { '.' };
+    uint8_t rsid[1] = { '.' };
+    uint8_t chrom[1] = { '1' };
+    uint8_t allele1[1] = { 'A' };
+    uint8_t allele2[1] = { 'T' };
+    int32_t position[1] = { 1 };
+    int8_t genotypes[2] = { 0, 0 };
+    uint8_t phased[1] = { 0 };
+    /* Actual sum = 5 bytes, but we tell the kernel 7. */
+    chunk_slice_args_t args = { 1, 1, 2, 7, 1, 1, 1, 1, 1, varid, rsid, chrom, allele1,
+        allele2, position, genotypes, phased };
+    size_t bpv = vcz_bgen_variant_block_size(1, 2, 7);
+    uint8_t *out = malloc(bpv);
+    int rc;
+
+    CU_ASSERT_FATAL(out != NULL);
+    rc = call_chunk_slice(&args, out);
+    CU_ASSERT_EQUAL_FATAL(rc, VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH);
     free(out);
 }
 
@@ -2112,6 +2144,8 @@ main(int argc, char **argv)
         { "test_bgen_chunk_slice_invalid_ploidy", test_bgen_chunk_slice_invalid_ploidy },
         { "test_bgen_chunk_slice_invalid_allele", test_bgen_chunk_slice_invalid_allele },
         { "test_bgen_chunk_slice_mixed_ploidy", test_bgen_chunk_slice_mixed_ploidy },
+        { "test_bgen_chunk_slice_string_length_mismatch",
+            test_bgen_chunk_slice_string_length_mismatch },
         { NULL, NULL },
     };
     return test_main(tests, argc, argv);

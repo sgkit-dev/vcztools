@@ -560,11 +560,8 @@ def _produce_bgen(
     store) and the API shape (streaming vs random-access).
 
     ``bgen_encoder_kwargs`` is forwarded to :class:`BgenEncoder` and
-    ignored on the ``write_bgen`` path. Use it to set ``rsid_max`` /
-    ``varid_max`` / ``allele_max`` when the test needs a slot width
-    that matches the source string lengths (BgenEncoder pads to the
-    slot width with nulls; plink2 doesn't strip those nulls -- see
-    :class:`TestPlink2BgenEncoderVariableLengthLimitations`).
+    ignored on the ``write_bgen`` path; use it for things like
+    ``total_string_length``, ``pad_byte``, or ``variant_id_field``.
     """
     if encode_path == "write_bgen":
         bgen_mod.write_bgen(reader, bgen_path, sample_path=sample_path)
@@ -617,13 +614,10 @@ class TestPlink2ReadsBgen:
 
     def test_uniform_length_rsids(self, tmp_path, encode_path):
         # Uniform-width rsIDs round-trip cleanly through plink2 from
-        # both encoder paths. write_bgen sizes rsid_max per chunk;
-        # BgenEncoder is told the exact rsid_max so each rsID fills
-        # its length-prefixed slot, no padding bytes leak into the
-        # wire stream. variants_chunk_size=2 splits the run across
-        # multiple write_bgen chunks. (Variable-width rsIDs only
-        # survive the write_bgen path -- see
-        # :class:`TestPlink2BgenEncoderVariableLengthLimitations`.)
+        # both encoder paths. Both encoders now emit per-variant
+        # length-prefixed strings so the actual rsID bytes are exactly
+        # what plink2 reads. variants_chunk_size=2 splits the run across
+        # multiple write_bgen chunks.
         rsid_width = 10
         rsids = [f"rs{i:08d}" for i in range(6)]
         assert all(len(r) == rsid_width for r in rsids)
@@ -643,13 +637,7 @@ class TestPlink2ReadsBgen:
         reader = retrieval.VczReader(root)
         bgen_path = tmp_path / "v.bgen"
         sample_path = tmp_path / "v.sample"
-        _produce_bgen(
-            encode_path,
-            reader,
-            bgen_path,
-            sample_path,
-            bgen_encoder_kwargs={"rsid_max": rsid_width},
-        )
+        _produce_bgen(encode_path, reader, bgen_path, sample_path)
         run_plink2_read_bgen("--make-just-pvar", bgen_path, sample_path, tmp_path / "p")
         plink_rsids = _read_pvar_column(tmp_path / "p.pvar", col=2)
         assert plink_rsids == rsids
@@ -689,27 +677,14 @@ class TestPlink2ReadsBgen:
 
 
 @pytest.mark.skipif(PLINK2 is None, reason="plink2 not on PATH")
-class TestPlink2BgenEncoderVariableLengthLimitations:
-    """Document plink2's reaction to ``BgenEncoder`` output that
-    contains variable-length string fields.
+class TestPlink2BgenEncoderVariableLengthRsids:
+    """``BgenEncoder`` produces fixed-size variant blocks with variable-
+    length string fields: the variant_id-carrying slot holds the actual
+    bytes, and the other slot ("padding field") absorbs the per-variant
+    slack as ``"." + pad_byte * (slack - 1)``. No embedded NULs end up
+    on the wire, so plink2's tokeniser parses each line cleanly."""
 
-    ``BgenEncoder`` produces fixed-size variant blocks, so any
-    variable-length string field (rsID, varid, chrom, alleles) is
-    null-padded out to a per-store maximum and the BGEN length prefix
-    is written as that maximum. plink2 takes the prefix at face value,
-    embeds the trailing nulls into its own intermediate ``.pvar``, and
-    then its tokeniser splits each line at the first null and reports
-    "Line N has fewer tokens than expected" when re-parsing the file.
-
-    ``bgen-reader`` handles the same input cleanly (it strips trailing
-    nulls before exposing strings), and ``write_bgen`` avoids the
-    problem entirely by writing per-variant length prefixes.
-
-    These tests pin the current behaviour so a future plink2 release
-    that strips trailing nulls -- or a vcztools change that fixes the
-    fixed-width slot encoding -- surfaces here as a green ``xfail``."""
-
-    def test_variable_length_rsids_break_plink2(self, tmp_path):
+    def test_variable_length_rsids_round_trip(self, tmp_path):
         rsids = ["rs1", "rs1234567890", "snp_with_very_long_id_xyz", "rsZ", "rs42"]
         num_variants = len(rsids)
         num_samples = 4
@@ -728,10 +703,6 @@ class TestPlink2BgenEncoderVariableLengthLimitations:
         bgen_path = tmp_path / "v.bgen"
         sample_path = tmp_path / "v.sample"
         _produce_bgen("bgen_encoder", reader, bgen_path, sample_path)
-        # plink2 reads the .bgen, writes its intermediate pvar with
-        # embedded nulls, then fails to re-parse it. The error message
-        # is the read-back failure, not a BGEN-level rejection.
-        with pytest.raises(AssertionError, match="fewer tokens than expected"):
-            run_plink2_read_bgen(
-                "--make-just-pvar", bgen_path, sample_path, tmp_path / "p"
-            )
+        run_plink2_read_bgen("--make-just-pvar", bgen_path, sample_path, tmp_path / "p")
+        plink_rsids = _read_pvar_column(tmp_path / "p.pvar", col=2)
+        assert plink_rsids == rsids

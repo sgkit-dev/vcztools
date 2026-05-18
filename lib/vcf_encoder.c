@@ -1087,15 +1087,16 @@ vcz_bgen_geno_block_size(size_t num_samples, size_t uniform_ploidy)
 /* Per-variant byte count produced by vcz_encode_bgen_chunk_slice_level0:
  * variant-header framing (28 bytes: three uint16 length prefixes + uint32
  * position + uint16 K + 2 * uint32 allele-length prefixes + uint32 C +
- * uint32 D) + padded varid/rsid/chrom/allele bytes + the stored zlib
- * envelope around the uniform-ploidy genotype block. */
+ * uint32 D) + the per-variant string-content budget (which the encoder
+ * splits across varid + rsid + chrom + allele1 + allele2 with the
+ * padding field absorbing slack) + the stored zlib envelope around
+ * the uniform-ploidy genotype block. */
 size_t
-vcz_bgen_variant_block_size(size_t num_samples, size_t uniform_ploidy, size_t varid_max,
-    size_t rsid_max, size_t chrom_max, size_t allele_max)
+vcz_bgen_variant_block_size(
+    size_t num_samples, size_t uniform_ploidy, size_t total_string_length)
 {
     size_t geno_size = vcz_bgen_geno_block_size(num_samples, uniform_ploidy);
-    return 28 + varid_max + rsid_max + chrom_max + 2 * allele_max
-           + vcz_compress_bound(geno_size);
+    return 28 + total_string_length + vcz_compress_bound(geno_size);
 }
 
 /* Little-endian uint32 store: writes `value` into the four bytes at
@@ -1459,11 +1460,36 @@ vcz_compress2(
     return vcz_compress2_static(dest, dest_len, source, source_len, level);
 }
 
+/* Length of a NUL-terminated-or-row-bounded byte run. ``stride`` is the
+ * S-dtype row width; trailing NULs (numpy's S-dtype zero padding) are
+ * stripped, so the returned length is the actual UTF-8 byte content
+ * for that variant. */
+static size_t
+bgen_field_byte_len(const uint8_t *row, size_t stride)
+{
+    size_t i;
+    for (i = 0; i < stride; i++) {
+        if (row[i] == 0) {
+            return i;
+        }
+    }
+    return stride;
+}
+
 /* Fixed-size BGEN variant block encoder: writes
  *   num_variants * bytes_per_variant
- * bytes into `out_buf`, where bytes_per_variant = 28 + varid_max +
- * rsid_max + chrom_max + 2*allele_max + vcz_compress_bound(geno_size)
- * and geno_size = 10 + (uniform_ploidy + 1) * num_samples.
+ * bytes into `out_buf`, where bytes_per_variant = 28 +
+ * total_string_length + vcz_compress_bound(geno_size) and geno_size =
+ * 10 + (uniform_ploidy + 1) * num_samples.
+ *
+ * The five string fields arrive as S-dtype rows; each `*_stride`
+ * is the per-field row width (chunk-wide max UTF-8 byte length for
+ * that field). The actual length per variant is recovered from the
+ * row via a NUL-bound scan and written as the BGEN length prefix.
+ * The Python caller has pre-built the padding field so that the
+ * per-variant string-content byte sum equals ``total_string_length``;
+ * the encoder asserts this invariant and returns
+ * VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH on any deviation.
  *
  * The genotype block bytes are built directly from `genotypes`
  * (V, S, 2 int8) and `phased` (V, bool) by inlining
@@ -1472,17 +1498,13 @@ vcz_compress2(
  * rejected with VCZ_ERR_BGEN_MIXED_PLOIDY — the fixed-size encoder
  * requires every sample to honour `uniform_ploidy` (1 = haploid,
  * 2 = diploid). Invalid alleles or `-2` in slot 0 surface via the
- * usual VCZ_ERR_BGEN_* codes.
- *
- * Every string field arrives pre-padded to its `*_max` width as a
- * `(num_variants, *_max) uint8` row-major block. `position` is one
- * int32 per variant. Multi-byte writes are byte-at-a-time, little-
- * endian (see vcz_compress2 for the stored DEFLATE framing). */
+ * usual VCZ_ERR_BGEN_* codes. */
 int
 vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
-    size_t uniform_ploidy, const uint8_t *varid, size_t varid_max, const uint8_t *rsid,
-    size_t rsid_max, const uint8_t *chrom, size_t chrom_max, const uint8_t *allele1,
-    const uint8_t *allele2, size_t allele_max, const int32_t *position,
+    size_t uniform_ploidy, size_t total_string_length, const uint8_t *varid,
+    size_t varid_stride, const uint8_t *rsid, size_t rsid_stride, const uint8_t *chrom,
+    size_t chrom_stride, const uint8_t *allele1, size_t allele1_stride,
+    const uint8_t *allele2, size_t allele2_stride, const int32_t *position,
     const int8_t *genotypes, const uint8_t *phased, uint8_t *out_buf)
 {
     size_t v;
@@ -1490,6 +1512,11 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
     size_t payload_size;
     size_t bpv;
     size_t actual_len;
+    size_t varid_len;
+    size_t rsid_len;
+    size_t chrom_len;
+    size_t allele1_len;
+    size_t allele2_len;
     uint8_t *scratch = NULL;
     uint8_t *out;
     uint32_t scratch_len;
@@ -1497,8 +1524,7 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
 
     geno_size = vcz_bgen_geno_block_size(num_samples, uniform_ploidy);
     payload_size = vcz_compress_bound(geno_size);
-    bpv = vcz_bgen_variant_block_size(
-        num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max);
+    bpv = vcz_bgen_variant_block_size(num_samples, uniform_ploidy, total_string_length);
 
     scratch = malloc(geno_size);
     if (scratch == NULL) {
@@ -1522,25 +1548,37 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
             goto out;
         }
 
+        varid_len = bgen_field_byte_len(varid + v * varid_stride, varid_stride);
+        rsid_len = bgen_field_byte_len(rsid + v * rsid_stride, rsid_stride);
+        chrom_len = bgen_field_byte_len(chrom + v * chrom_stride, chrom_stride);
+        allele1_len = bgen_field_byte_len(allele1 + v * allele1_stride, allele1_stride);
+        allele2_len = bgen_field_byte_len(allele2 + v * allele2_stride, allele2_stride);
+
+        if (varid_len + rsid_len + chrom_len + allele1_len + allele2_len
+            != total_string_length) {
+            err = VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH;
+            goto out;
+        }
+
         out = out_buf + v * bpv;
 
         /* varid: uint16 LE length + bytes */
-        encode_u16_le(out, (uint16_t) varid_max);
+        encode_u16_le(out, (uint16_t) varid_len);
         out += 2;
-        memcpy(out, varid + v * varid_max, varid_max);
-        out += varid_max;
+        memcpy(out, varid + v * varid_stride, varid_len);
+        out += varid_len;
 
         /* rsid */
-        encode_u16_le(out, (uint16_t) rsid_max);
+        encode_u16_le(out, (uint16_t) rsid_len);
         out += 2;
-        memcpy(out, rsid + v * rsid_max, rsid_max);
-        out += rsid_max;
+        memcpy(out, rsid + v * rsid_stride, rsid_len);
+        out += rsid_len;
 
         /* chrom */
-        encode_u16_le(out, (uint16_t) chrom_max);
+        encode_u16_le(out, (uint16_t) chrom_len);
         out += 2;
-        memcpy(out, chrom + v * chrom_max, chrom_max);
-        out += chrom_max;
+        memcpy(out, chrom + v * chrom_stride, chrom_len);
+        out += chrom_len;
 
         /* position: uint32 LE */
         encode_u32_le(out, (uint32_t) position[v]);
@@ -1551,16 +1589,16 @@ vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
         out += 2;
 
         /* allele1: uint32 LE length + bytes */
-        encode_u32_le(out, (uint32_t) allele_max);
+        encode_u32_le(out, (uint32_t) allele1_len);
         out += 4;
-        memcpy(out, allele1 + v * allele_max, allele_max);
-        out += allele_max;
+        memcpy(out, allele1 + v * allele1_stride, allele1_len);
+        out += allele1_len;
 
         /* allele2 */
-        encode_u32_le(out, (uint32_t) allele_max);
+        encode_u32_le(out, (uint32_t) allele2_len);
         out += 4;
-        memcpy(out, allele2 + v * allele_max, allele_max);
-        out += allele_max;
+        memcpy(out, allele2 + v * allele2_stride, allele2_len);
+        out += allele2_len;
 
         /* C = 4 + compressed payload size, then D = uncompressed size. */
         encode_u32_le(out, (uint32_t) (4 + payload_size));

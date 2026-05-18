@@ -758,6 +758,11 @@ class _ChunkSliceArgs:
     ``as_tuple()`` method returns the positional argument tuple the C
     wrapper expects. Tests that exercise a single error path build a
     valid baseline and mutate exactly one field.
+
+    The five string fields are passed as ``(N, item_size)`` uint8 rows
+    (S-dtype views). The C kernel scans each row to find the actual
+    UTF-8 byte length, sums them, and verifies the per-variant sum
+    matches ``total_string_length``.
     """
 
     def __init__(
@@ -765,10 +770,9 @@ class _ChunkSliceArgs:
         num_variants=1,
         num_samples=1,
         uniform_ploidy=2,
-        varid_max=2,
-        rsid_max=2,
-        chrom_max=4,
-        allele_max=1,
+        # Default: each string field is one "." byte per variant ⇒
+        # per-variant string sum = 5 bytes.
+        total_string_length=5,
         varid=None,
         rsid=None,
         chrom=None,
@@ -782,24 +786,14 @@ class _ChunkSliceArgs:
         self.num_variants = num_variants
         self.num_samples = num_samples
         self.uniform_ploidy = uniform_ploidy
-        self.varid_max = varid_max
-        self.rsid_max = rsid_max
-        self.chrom_max = chrom_max
-        self.allele_max = allele_max
+        self.total_string_length = total_string_length
         nv, ns = num_variants, num_samples
-        self.varid = (
-            np.zeros((nv, varid_max), dtype=np.uint8) if varid is None else varid
-        )
-        self.rsid = np.zeros((nv, rsid_max), dtype=np.uint8) if rsid is None else rsid
-        self.chrom = (
-            np.zeros((nv, chrom_max), dtype=np.uint8) if chrom is None else chrom
-        )
-        self.allele1 = (
-            np.zeros((nv, allele_max), dtype=np.uint8) if allele1 is None else allele1
-        )
-        self.allele2 = (
-            np.zeros((nv, allele_max), dtype=np.uint8) if allele2 is None else allele2
-        )
+        dot = np.full((nv, 1), ord("."), dtype=np.uint8)
+        self.varid = dot.copy() if varid is None else varid
+        self.rsid = dot.copy() if rsid is None else rsid
+        self.chrom = dot.copy() if chrom is None else chrom
+        self.allele1 = dot.copy() if allele1 is None else allele1
+        self.allele2 = dot.copy() if allele2 is None else allele2
         self.position = np.zeros(nv, dtype=np.int32) if position is None else position
         self.genotypes = (
             np.zeros((nv, ns, 2), dtype=np.int8) if genotypes is None else genotypes
@@ -807,9 +801,8 @@ class _ChunkSliceArgs:
         self.phased = np.zeros(nv, dtype=bool) if phased is None else phased
         if out_buf is None:
             geno_size = 10 + (uniform_ploidy + 1) * ns
-            # exact stored-DEFLATE size, matches vcz_compress_bound
             payload = 2 + 5 * max(1, (geno_size + 65534) // 65535) + geno_size + 4
-            bpv = 28 + varid_max + rsid_max + chrom_max + 2 * allele_max + payload
+            bpv = 28 + total_string_length + payload
             out_buf = np.zeros(nv * bpv, dtype=np.uint8)
         self.out_buf = out_buf
 
@@ -825,6 +818,7 @@ class _ChunkSliceArgs:
             self.phased,
             self.out_buf,
             self.uniform_ploidy,
+            self.total_string_length,
         )
 
 
@@ -846,7 +840,7 @@ class TestEncodeBgenChunkSliceLevel0:
     def test_bad_num_arguments(self):
         with pytest.raises(TypeError):
             _vcztools.encode_bgen_chunk_slice_level0()
-        # 11 args (one too many)
+        # 12 args (one too many — the kernel takes 11)
         a = _ChunkSliceArgs()
         with pytest.raises(TypeError):
             _vcztools.encode_bgen_chunk_slice_level0(*a.as_tuple(), 0)
@@ -887,6 +881,25 @@ class TestEncodeBgenChunkSliceLevel0:
                 a.phased,
                 a.out_buf,
                 bad_ploidy_type,
+                a.total_string_length,
+            )
+
+    @pytest.mark.parametrize("bad_tsl_type", [None, "string", [], {}, 1.5])
+    def test_total_string_length_bad_type(self, bad_tsl_type):
+        a = _ChunkSliceArgs()
+        with pytest.raises(TypeError):
+            _vcztools.encode_bgen_chunk_slice_level0(
+                a.varid,
+                a.rsid,
+                a.chrom,
+                a.allele1,
+                a.allele2,
+                a.position,
+                a.genotypes,
+                a.phased,
+                a.out_buf,
+                a.uniform_ploidy,
+                bad_tsl_type,
             )
 
     # --- check_array: wrong dimension for each array ---
@@ -998,14 +1011,14 @@ class TestEncodeBgenChunkSliceLevel0:
                 a.phased if field != "phased" else mutated,
                 a.out_buf,
                 a.uniform_ploidy,
+                a.total_string_length,
             )
 
-    def test_allele1_allele2_width_mismatch(self):
-        # allele_max comes from allele1; allele2 must match.
-        with pytest.raises(ValueError, match="share the same max width"):
-            _call_chunk_slice(
-                allele2=np.zeros((1, 2), dtype=np.uint8),  # baseline allele_max=1
-            )
+    def test_total_string_length_mismatch(self):
+        # Per-variant actual sum is 5 (1 byte each); declaring 7 means
+        # the kernel's invariant fails on the first variant.
+        with pytest.raises(ValueError, match="string byte sum does not match"):
+            _call_chunk_slice(total_string_length=7)
 
     # --- uniform_ploidy range ---
 
@@ -1074,18 +1087,12 @@ class TestEncodeBgenChunkSliceLevel0:
 _BVBS_PARAM_NAMES = (
     "num_samples",
     "uniform_ploidy",
-    "varid_max",
-    "rsid_max",
-    "chrom_max",
-    "allele_max",
+    "total_string_length",
 )
 _BVBS_VALID_KWARGS = dict(
     num_samples=4,
     uniform_ploidy=2,
-    varid_max=1,
-    rsid_max=1,
-    chrom_max=4,
-    allele_max=1,
+    total_string_length=5,
 )
 _BVBS_VALID_POSITIONAL = tuple(_BVBS_VALID_KWARGS[name] for name in _BVBS_PARAM_NAMES)
 
@@ -1103,12 +1110,8 @@ class TestBgenVariantBlockSize:
         assert result > 0
 
     def test_keyword_call_returns_size(self):
-        # Pass in a deliberately shuffled order to verify kwlist mapping.
         shuffled = dict(
-            allele_max=1,
-            chrom_max=4,
-            rsid_max=1,
-            varid_max=1,
+            total_string_length=5,
             uniform_ploidy=2,
             num_samples=4,
         )
@@ -1120,10 +1123,7 @@ class TestBgenVariantBlockSize:
         result = _vcztools.bgen_variant_block_size(
             4,
             2,
-            varid_max=1,
-            rsid_max=1,
-            chrom_max=4,
-            allele_max=1,
+            total_string_length=5,
         )
         expected = _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL)
         assert result == expected
@@ -1136,7 +1136,7 @@ class TestBgenVariantBlockSize:
 
     def test_too_few_positional_raises_type_error(self):
         with pytest.raises(TypeError):
-            _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL[:5])
+            _vcztools.bgen_variant_block_size(*_BVBS_VALID_POSITIONAL[:2])
 
     def test_too_many_positional_raises_type_error(self):
         with pytest.raises(TypeError):
@@ -1151,7 +1151,7 @@ class TestBgenVariantBlockSize:
     # --- unknown keyword ---
 
     def test_extra_kwarg_raises_type_error(self):
-        with pytest.raises(TypeError, match="takes at most 6 keyword arguments"):
+        with pytest.raises(TypeError, match="takes at most 3 keyword arguments"):
             _vcztools.bgen_variant_block_size(**_BVBS_VALID_KWARGS, extra=1)
 
     # --- bad arg type (PyArg `n` format expects integer-like) ---
@@ -1172,10 +1172,7 @@ class TestBgenVariantBlockSize:
         with pytest.raises(ValueError, match="uniform_ploidy must be 1 or 2"):
             _vcztools.bgen_variant_block_size(**kwargs)
 
-    @pytest.mark.parametrize(
-        "name",
-        ["num_samples", "varid_max", "rsid_max", "chrom_max", "allele_max"],
-    )
+    @pytest.mark.parametrize("name", ["num_samples", "total_string_length"])
     def test_negative_size_arg(self, name):
         kwargs = dict(_BVBS_VALID_KWARGS)
         kwargs[name] = -1
@@ -1186,10 +1183,7 @@ class TestBgenVariantBlockSize:
         result = _vcztools.bgen_variant_block_size(
             num_samples=0,
             uniform_ploidy=2,
-            varid_max=0,
-            rsid_max=0,
-            chrom_max=0,
-            allele_max=0,
+            total_string_length=0,
         )
         assert isinstance(result, int)
         assert result > 0

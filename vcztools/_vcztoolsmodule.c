@@ -41,6 +41,12 @@ handle_library_error(int err)
                 "variants; this chunk contains mixed ploidy. Use write_bgen() "
                 "instead.");
             break;
+        case VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH:
+            PyErr_Format(PyExc_ValueError,
+                "BGEN encoder: per-variant string byte sum does not match "
+                "total_string_length; the padding field was built with the "
+                "wrong slack.");
+            break;
         // TODO handle the other error types.
         default:
             PyErr_Format(PyExc_ValueError, "Error occured: %d: ", err);
@@ -751,16 +757,18 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
     PyArrayObject *phased = NULL;
     PyArrayObject *out_buf = NULL;
     Py_ssize_t uniform_ploidy;
+    Py_ssize_t total_string_length;
     npy_intp num_variants;
     npy_intp num_samples;
-    npy_intp varid_max, rsid_max, chrom_max, allele_max;
+    npy_intp varid_stride, rsid_stride, chrom_stride, allele1_stride, allele2_stride;
     npy_intp expected_bytes;
     int err;
 
-    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!n", &PyArray_Type, &varid,
+    if (!PyArg_ParseTuple(args, "O!O!O!O!O!O!O!O!O!nn", &PyArray_Type, &varid,
             &PyArray_Type, &rsid, &PyArray_Type, &chrom, &PyArray_Type, &allele1,
             &PyArray_Type, &allele2, &PyArray_Type, &position, &PyArray_Type, &genotypes,
-            &PyArray_Type, &phased, &PyArray_Type, &out_buf, &uniform_ploidy)) {
+            &PyArray_Type, &phased, &PyArray_Type, &out_buf, &uniform_ploidy,
+            &total_string_length)) {
         goto out;
     }
 
@@ -830,10 +838,11 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
 
     num_variants = PyArray_DIMS(varid)[0];
     num_samples = PyArray_DIMS(genotypes)[1];
-    varid_max = PyArray_DIMS(varid)[1];
-    rsid_max = PyArray_DIMS(rsid)[1];
-    chrom_max = PyArray_DIMS(chrom)[1];
-    allele_max = PyArray_DIMS(allele1)[1];
+    varid_stride = PyArray_DIMS(varid)[1];
+    rsid_stride = PyArray_DIMS(rsid)[1];
+    chrom_stride = PyArray_DIMS(chrom)[1];
+    allele1_stride = PyArray_DIMS(allele1)[1];
+    allele2_stride = PyArray_DIMS(allele2)[1];
 
     if (PyArray_DIMS(rsid)[0] != num_variants || PyArray_DIMS(chrom)[0] != num_variants
         || PyArray_DIMS(allele1)[0] != num_variants
@@ -846,14 +855,15 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
             (Py_ssize_t) num_variants);
         goto out;
     }
-    if (PyArray_DIMS(allele2)[1] != allele_max) {
-        PyErr_Format(
-            PyExc_ValueError, "allele1 and allele2 must share the same max width");
-        goto out;
-    }
     if (uniform_ploidy != 1 && uniform_ploidy != 2) {
         PyErr_Format(PyExc_ValueError, "uniform_ploidy must be 1 or 2 (got %zd)",
             (Py_ssize_t) uniform_ploidy);
+        goto out;
+    }
+    if (total_string_length < 0) {
+        PyErr_Format(PyExc_ValueError,
+            "total_string_length must be non-negative (got %zd)",
+            (Py_ssize_t) total_string_length);
         goto out;
     }
 
@@ -861,8 +871,7 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
      * shared with the kernel so the wrapper can't drift on the layout. */
     expected_bytes = num_variants
                      * (npy_intp) vcz_bgen_variant_block_size((size_t) num_samples,
-                         (size_t) uniform_ploidy, (size_t) varid_max, (size_t) rsid_max,
-                         (size_t) chrom_max, (size_t) allele_max);
+                         (size_t) uniform_ploidy, (size_t) total_string_length);
     if (PyArray_DIMS(out_buf)[0] < expected_bytes) {
         PyErr_Format(VczBufferTooSmall, "out_buf is too small: got %zd bytes, need %zd",
             (Py_ssize_t) PyArray_DIMS(out_buf)[0], (Py_ssize_t) expected_bytes);
@@ -871,9 +880,10 @@ vcztools_encode_bgen_chunk_slice_level0(PyObject *self, PyObject *args)
 
     Py_BEGIN_ALLOW_THREADS
     err = vcz_encode_bgen_chunk_slice_level0((size_t) num_variants, (size_t) num_samples,
-        (size_t) uniform_ploidy, PyArray_DATA(varid), (size_t) varid_max,
-        PyArray_DATA(rsid), (size_t) rsid_max, PyArray_DATA(chrom), (size_t) chrom_max,
-        PyArray_DATA(allele1), PyArray_DATA(allele2), (size_t) allele_max,
+        (size_t) uniform_ploidy, (size_t) total_string_length, PyArray_DATA(varid),
+        (size_t) varid_stride, PyArray_DATA(rsid), (size_t) rsid_stride,
+        PyArray_DATA(chrom), (size_t) chrom_stride, PyArray_DATA(allele1),
+        (size_t) allele1_stride, PyArray_DATA(allele2), (size_t) allele2_stride,
         PyArray_DATA(position), PyArray_DATA(genotypes), PyArray_DATA(phased),
         PyArray_DATA(out_buf));
     Py_END_ALLOW_THREADS
@@ -890,13 +900,13 @@ out:
 static PyObject *
 vcztools_bgen_variant_block_size(PyObject *self, PyObject *args, PyObject *kwds)
 {
-    static char *kwlist[] = { "num_samples", "uniform_ploidy", "varid_max", "rsid_max",
-        "chrom_max", "allele_max", NULL };
-    Py_ssize_t num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max;
+    static char *kwlist[]
+        = { "num_samples", "uniform_ploidy", "total_string_length", NULL };
+    Py_ssize_t num_samples, uniform_ploidy, total_string_length;
     size_t bpv;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "nnnnnn", kwlist, &num_samples,
-            &uniform_ploidy, &varid_max, &rsid_max, &chrom_max, &allele_max)) {
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "nnn", kwlist, &num_samples,
+            &uniform_ploidy, &total_string_length)) {
         return NULL;
     }
     if (uniform_ploidy != 1 && uniform_ploidy != 2) {
@@ -904,13 +914,12 @@ vcztools_bgen_variant_block_size(PyObject *self, PyObject *args, PyObject *kwds)
             (Py_ssize_t) uniform_ploidy);
         return NULL;
     }
-    if (num_samples < 0 || varid_max < 0 || rsid_max < 0 || chrom_max < 0
-        || allele_max < 0) {
+    if (num_samples < 0 || total_string_length < 0) {
         PyErr_Format(PyExc_ValueError, "size arguments must be non-negative");
         return NULL;
     }
-    bpv = vcz_bgen_variant_block_size((size_t) num_samples, (size_t) uniform_ploidy,
-        (size_t) varid_max, (size_t) rsid_max, (size_t) chrom_max, (size_t) allele_max);
+    bpv = vcz_bgen_variant_block_size(
+        (size_t) num_samples, (size_t) uniform_ploidy, (size_t) total_string_length);
     return PyLong_FromSize_t(bpv);
 }
 

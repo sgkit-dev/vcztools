@@ -151,7 +151,8 @@ doesn't populate one from a tree sequence. The injected IDs cycle
 through three format strings (e.g. `rs0`, `rs_var_00000001`,
 `rs_variant_0000000002_chr_00_pos_0000000178`) so the downstream
 round-trip checks have variable-length signal to verify. All IDs are
-≤ 50 bytes, fitting `BgenEncoder`'s default `rsid_max=64`.
+≤ 50 bytes, comfortably fitting under `BgenEncoder`'s default
+`total_string_length=64` (combined budget for all five string fields).
 
 ## Caveats
 

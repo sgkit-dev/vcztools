@@ -269,27 +269,29 @@ class TestBgenVariantBlockSize:
         ``num_samples`` × ``uniform_ploidy``; return the raw output
         bytes plus the per-variant offsets needed to walk the wire."""
         num_variants = 1
-        varid_max = rsid_max = chrom_max = 1
-        allele_max = 1
+        # Each of the five string slots carries one byte ("." for the
+        # variant id / padding slots, single-char chrom / alleles), so
+        # total_string_length == 5 is the minimum.
+        total_string_length = 5
+        # Each row of the S-dtype-backed uint8 buffer is one byte; the
+        # C kernel uses strnlen to recover the actual content length.
         geno_size = 10 + (uniform_ploidy + 1) * num_samples
         G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
         if uniform_ploidy == 1:
-            # Mark every sample haploid via the -2 sentinel in slot 1.
             G[:, :, 1] = -2
         phased = np.zeros(num_variants, dtype=bool)
-        varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
-        rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
-        chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
-        allele1 = np.zeros((num_variants, allele_max), dtype=np.uint8)
-        allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        # Single-byte content per field: "."
+        dot_row = np.array([[ord(".")]], dtype=np.uint8)
+        varid = dot_row.copy()
+        rsid = dot_row.copy()
+        chrom = dot_row.copy()
+        allele1 = dot_row.copy()
+        allele2 = dot_row.copy()
         position = np.array([100], dtype=np.int32)
         bpv = _vcztools.bgen_variant_block_size(
             num_samples=num_samples,
             uniform_ploidy=uniform_ploidy,
-            varid_max=varid_max,
-            rsid_max=rsid_max,
-            chrom_max=chrom_max,
-            allele_max=allele_max,
+            total_string_length=total_string_length,
         )
         out = np.zeros(bpv, dtype=np.uint8)
         _vcztools.encode_bgen_chunk_slice_level0(
@@ -303,20 +305,21 @@ class TestBgenVariantBlockSize:
             phased,
             out,
             uniform_ploidy,
+            total_string_length,
         )
         header_overhead = (
             2
-            + varid_max
+            + 1  # varid prefix + 1-byte content
             + 2
-            + rsid_max
+            + 1  # rsid
             + 2
-            + chrom_max
+            + 1  # chrom
+            + 4  # position
+            + 2  # K
             + 4
-            + 2
+            + 1  # allele1
             + 4
-            + allele_max
-            + 4
-            + allele_max
+            + 1  # allele2
         )
         return bytes(out), header_overhead, geno_size, bpv
 
@@ -1186,15 +1189,25 @@ def write_to_bgen(request, tmp_path):
       only the ``.bgen`` byte stream (no sidecars).
 
     A single test exercising this fixture covers both paths.
+
+    Optional kwargs are forwarded to the active code path; the
+    ``BgenEncoder``-only ``total_string_length`` / ``pad_byte`` kwargs
+    are silently dropped on the ``write_bgen`` side, while
+    ``variant_id_field`` is honoured by both.
     """
     interface = request.param
 
-    def write(reader):
+    def write(reader, **kwargs):
         bgen_path = tmp_path / "out.bgen"
         if interface == "write_bgen":
-            bgen.write_bgen(reader, bgen_path)
+            kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("total_string_length", "pad_byte")
+            }
+            bgen.write_bgen(reader, bgen_path, **kwargs)
         else:
-            with bgen.BgenEncoder(reader) as enc:
+            with bgen.BgenEncoder(reader, **kwargs) as enc:
                 buf = _drain(enc)
             bgen_path.write_bytes(buf)
         return bgen_path
@@ -1406,26 +1419,24 @@ class TestBgenRoundTripViaBgenReader:
             nt.assert_array_equal(probs[2, v], [1.0, 0.0, 0.0])
 
     @pytest.mark.parametrize(
-        "rsids",
+        ("rsids", "total_string_length"),
         [
-            pytest.param(["rs1", "rs2", "rs3"], id="short"),
+            pytest.param(["rs1", "rs2", "rs3"], 64, id="short"),
             pytest.param(
                 ["rs" + "0" * 60, "rs" + "1" * 60, "rs" + "2" * 60],
+                96,
                 id="long-62-byte",
             ),
-            pytest.param(["1:100:A:T", "1:200:G:C", "."], id="mixed-and-dot"),
-            pytest.param(["x" * 64, "y", "z" * 32], id="at-default-cap"),
+            pytest.param(["1:100:A:T", "1:200:G:C", "."], 64, id="mixed-and-dot"),
+            pytest.param(["x" * 56, "y", "z" * 32], 64, id="near-default-cap"),
         ],
     )
-    def test_rsids_round_trip_exactly(self, write_to_bgen, rsids):
+    def test_rsids_round_trip_exactly(self, write_to_bgen, rsids, total_string_length):
         # rsid values round-trip byte-for-byte through bgen-reader for
-        # a range of short / long / boundary inputs. Locks in NUL-
-        # padding behaviour for BgenEncoder (bgen-reader strips trailing
-        # NULs) and direct length-prefixed encoding for write_bgen.
-        #
-        # Multi-byte UTF-8 rsids are valid per the BGEN spec but
-        # bgen-reader assumes ASCII internally; UTF-8 byte-counting is
-        # covered by TestPadToFixedLength.test_unicode_multibyte_counts_bytes.
+        # a range of short / long / boundary inputs. bgen-reader strips
+        # trailing NUL bytes from string fields; non-NUL pad bytes
+        # ("." by default) are kept, so the round-trip check below
+        # targets the variant-id-carrying slot.
         n = len(rsids)
         reader = _build_reader(
             num_variants=n,
@@ -1435,15 +1446,37 @@ class TestBgenRoundTripViaBgenReader:
             variant_id=rsids,
             call_genotype=np.zeros((n, 2, 2), dtype=np.int8),
         )
-        path = write_to_bgen(reader)
+        path = write_to_bgen(reader, total_string_length=total_string_length)
         with br.open_bgen(path, verbose=False) as bg:
             expected = [r if r != "" else "." for r in rsids]
             nt.assert_array_equal(bg.rsids, expected)
 
+    @pytest.mark.parametrize("variant_id_field", ["rsid", "varid"])
+    def test_variant_id_field_selects_slot(self, write_to_bgen, variant_id_field):
+        # variant_id ends up in the selected BGEN slot; the other slot
+        # carries the literal "." (write_bgen) or "." + pad bytes
+        # (BgenEncoder).
+        rsids = ["rsA", "rsB", "rsC"]
+        n = len(rsids)
+        reader = _build_reader(
+            num_variants=n,
+            num_samples=2,
+            variant_position=list(range(100, 100 + n)),
+            alleles=[("A", "T")] * n,
+            variant_id=rsids,
+            call_genotype=np.zeros((n, 2, 2), dtype=np.int8),
+        )
+        path = write_to_bgen(reader, variant_id_field=variant_id_field)
+        with br.open_bgen(path, verbose=False) as bg:
+            if variant_id_field == "rsid":
+                nt.assert_array_equal(bg.rsids, rsids)
+            else:
+                nt.assert_array_equal(bg.ids, rsids)
+
     def test_rsids_dot_when_variant_id_absent(self, write_to_bgen):
         # A VCZ without a ``variant_id`` field emits all rsids as ".".
-        # For BgenEncoder this triggers the 1-byte rsid_max default;
-        # for write_bgen the rsid literal is "." (1 byte).
+        # For write_bgen the rsid literal is "." (1 byte); for
+        # BgenEncoder it's "." in the variant-id slot too.
         reader = _build_reader(num_variants=3, num_samples=2)
         assert "variant_id" not in reader.field_names
         path = write_to_bgen(reader)
@@ -1651,55 +1684,6 @@ def _drain(encoder):
     return buf.getvalue()
 
 
-class TestEncodeFieldChunk:
-    def test_variable_mode_raw_utf8(self):
-        out = bgen._encode_field_chunk(np.array(["rs1", "rs22"]))
-        assert bytes(out[0]) == b"rs1"
-        assert bytes(out[1]) == b"rs22"
-        assert len(out[0]) == 3
-        assert len(out[1]) == 4
-
-    def test_fixed_mode_nul_padded(self):
-        out = bgen._encode_field_chunk(
-            np.array(["rs1", "rs22"]), max_len=8, field_name="rsid"
-        )
-        assert out.shape == (2, 8)
-        assert bytes(out[0]) == b"rs1\x00\x00\x00\x00\x00"
-        assert bytes(out[1]) == b"rs22\x00\x00\x00\x00"
-        # The length prefix the block encoder writes is len(out[i]); in
-        # fixed mode that must equal max_len regardless of content.
-        assert len(out[0]) == 8
-        assert len(out[1]) == 8
-
-    def test_fixed_mode_exact_length(self):
-        out = bgen._encode_field_chunk(np.array(["ABCD"]), max_len=4, field_name="x")
-        assert bytes(out[0]) == b"ABCD"
-        assert len(out[0]) == 4
-
-    def test_fixed_mode_overflow_raises(self):
-        with pytest.raises(ValueError, match="rsid 'too_long'"):
-            bgen._encode_field_chunk(
-                np.array(["too_long"]), max_len=4, field_name="rsid"
-            )
-
-    def test_fixed_mode_overflow_message_names_field_and_max(self):
-        with pytest.raises(ValueError, match="exceeds configured max of 3"):
-            bgen._encode_field_chunk(np.array(["abcd"]), max_len=3, field_name="varid")
-
-    def test_unicode_multibyte_counts_bytes(self):
-        # "é" = 2 bytes in UTF-8.
-        out = bgen._encode_field_chunk(np.array(["é"]), max_len=4, field_name="x")
-        assert bytes(out[0]) == b"\xc3\xa9\x00\x00"
-        with pytest.raises(ValueError, match="exceeds configured max"):
-            bgen._encode_field_chunk(np.array(["é"]), max_len=1, field_name="x")
-
-    def test_fixed_mode_empty_chunk(self):
-        out = bgen._encode_field_chunk(
-            np.array([], dtype="<U8"), max_len=4, field_name="x"
-        )
-        assert out.shape == (0, 4)
-
-
 def _make_chunk_for_prep(
     *,
     alleles=None,
@@ -1731,12 +1715,13 @@ def _make_chunk_for_prep(
 
 
 class TestPrepareChunkStrings:
-    """:func:`_prepare_chunk_strings` does the full-chunk utf-8 +
-    NUL-pad pass for every variant string field. Hoisted out of
+    """:func:`_prepare_chunk_strings` builds the five S-dtype per-variant
+    byte arrays the BGEN encoder paths consume. Hoisted out of
     :func:`_prepare_chunk` so it runs once per chunk on the main
     thread rather than once per worker slice."""
 
-    def test_variable_mode_basic(self):
+    def test_write_bgen_path_basic(self):
+        # No total_string_length → write_bgen path: padding slot is b".".
         chunk = _make_chunk_for_prep()
         strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
         assert [bytes(b) for b in strings.varid] == [b".", b"."]
@@ -1745,23 +1730,75 @@ class TestPrepareChunkStrings:
         assert [bytes(b) for b in strings.allele1] == [b"A", b"C"]
         assert [bytes(b) for b in strings.allele2] == [b"T", b"G"]
 
-    def test_fixed_mode_pads_to_max_len(self):
+    def test_variant_id_field_rsid_default(self):
+        # variant_id_field="rsid" (default): rsid carries variant_id,
+        # varid is the padding slot.
+        chunk = _make_chunk_for_prep(variant_id=["rsX", "rsY"])
+        strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
+        assert [bytes(b) for b in strings.rsid] == [b"rsX", b"rsY"]
+        assert [bytes(b) for b in strings.varid] == [b".", b"."]
+
+    def test_variant_id_field_varid(self):
+        # variant_id_field="varid": roles swap.
+        chunk = _make_chunk_for_prep(variant_id=["rsX", "rsY"])
+        strings = bgen._prepare_chunk_strings(
+            chunk, contig_ids=np.array(["chr1"]), variant_id_field="varid"
+        )
+        assert [bytes(b) for b in strings.varid] == [b"rsX", b"rsY"]
+        assert [bytes(b) for b in strings.rsid] == [b".", b"."]
+
+    def test_bgenencoder_path_pads_to_total_string_length(self):
+        chunk = _make_chunk_for_prep(variant_id=["rsX", "rsY"])
+        strings = bgen._prepare_chunk_strings(
+            chunk, contig_ids=np.array(["chr1"]), total_string_length=16
+        )
+        # variant_id_field=rsid: rsid="rsX" (3 bytes), varid is padding
+        # = "." + "." * (16 - 4 - 1 - 1 - 3 - 1) = "." + "." * 6 = "."*7
+        # for variant 0.
+        assert bytes(strings.rsid[0]) == b"rsX"
+        assert bytes(strings.varid[0]) == b"......."
+        assert bytes(strings.chrom[0]) == b"chr1"
+        # Per-variant sum equals total_string_length.
+        for i in range(2):
+            total = (
+                len(bytes(strings.varid[i]))
+                + len(bytes(strings.rsid[i]))
+                + len(bytes(strings.chrom[i]))
+                + len(bytes(strings.allele1[i]))
+                + len(bytes(strings.allele2[i]))
+            )
+            assert total == 16
+
+    def test_bgenencoder_path_uses_pad_byte(self):
         chunk = _make_chunk_for_prep(variant_id=["rsX", "rsY"])
         strings = bgen._prepare_chunk_strings(
             chunk,
             contig_ids=np.array(["chr1"]),
-            varid_max_len=8,
-            rsid_max_len=8,
-            chrom_max_len=4,
-            allele_max_len=2,
+            total_string_length=16,
+            pad_byte=b"x",
         )
-        # Fixed mode returns (N, max_len) uint8 rows.
-        assert strings.varid.shape == (2, 8)
-        assert bytes(strings.varid[0]) == b"rsX\x00\x00\x00\x00\x00"
-        assert bytes(strings.chrom[0]) == b"chr1"
-        assert bytes(strings.allele1[0]) == b"A\x00"
-        # rsid is propagated from variant_id; varid mirrors rsid.
-        assert bytes(strings.rsid[0]) == b"rsX\x00\x00\x00\x00\x00"
+        # Padding field: "." + pad_byte * (slack - 1).
+        assert bytes(strings.varid[0]) == b".xxxxxx"
+
+    def test_bgenencoder_overflow_raises(self):
+        # variant_id of 60 bytes leaves no room for chrom + alleles +
+        # padding under total_string_length=64.
+        chunk = _make_chunk_for_prep(variant_id=["x" * 60, "rsY"])
+        with pytest.raises(ValueError, match="variant 0.*total_string_length=64"):
+            bgen._prepare_chunk_strings(
+                chunk,
+                contig_ids=np.array(["chr1"]),
+                total_string_length=64,
+            )
+
+    def test_invalid_variant_id_field_raises(self):
+        chunk = _make_chunk_for_prep()
+        with pytest.raises(ValueError, match="variant_id_field"):
+            bgen._prepare_chunk_strings(
+                chunk,
+                contig_ids=np.array(["chr1"]),
+                variant_id_field="other",
+            )
 
     def test_missing_rsid_normalised_to_dot(self):
         chunk = _make_chunk_for_prep(variant_id=["", "rsY"])
@@ -1773,21 +1810,7 @@ class TestPrepareChunkStrings:
         strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
         assert [bytes(b) for b in strings.allele2] == [b".", b"G"]
 
-    def test_varid_overflow_checked_before_rsid(self):
-        # Both rsid_max_len and varid_max_len would overflow, but the
-        # varid check fires first.
-        chunk = _make_chunk_for_prep(variant_id=["x" * 100, "x" * 100])
-        with pytest.raises(ValueError, match="varid"):
-            bgen._prepare_chunk_strings(
-                chunk,
-                contig_ids=np.array(["chr1"]),
-                varid_max_len=8,
-                rsid_max_len=64,
-            )
-
     def test_rejects_multiallelic(self):
-        # _check_biallelic now lives in the strings step (it runs on
-        # the full chunk, not a slice).
         alleles = np.array([["A", "T", "G"]])
         chunk = _make_chunk_for_prep(alleles=alleles)
         with pytest.raises(ValueError, match="Multi-allelic"):
@@ -1860,19 +1883,13 @@ class TestBgenEncoderMetadata:
             assert enc.num_samples == 5
 
     def test_bytes_per_variant_formula(self):
-        # bpv comes from _vcztools.bgen_variant_block_size; the check
-        # asserts the encoder routes the right per-field maxes through
-        # it. Default _build_reader has no variant_id, so
-        # rsid_max=varid_max=1; default contig "chr1" → chrom_max=4;
-        # allele_max=1.
+        # bpv comes from _vcztools.bgen_variant_block_size with the
+        # simplified signature (single total_string_length knob).
         with _build_encoder(num_variants=2, num_samples=4) as enc:
             expected = _vcztools.bgen_variant_block_size(
                 num_samples=4,
                 uniform_ploidy=2,
-                varid_max=1,
-                rsid_max=1,
-                chrom_max=4,
-                allele_max=1,
+                total_string_length=64,
             )
             assert enc.bytes_per_variant == expected
 
@@ -1887,60 +1904,32 @@ class TestBgenEncoderMetadata:
         with _build_encoder(num_variants=7, num_samples=5) as enc:
             assert enc.bgen_size == enc.header_size + 7 * enc.bytes_per_variant
 
-    def test_custom_maxes_change_bytes_per_variant(self):
-        # Default contig "chr1" → chrom_max=4 (derived, no longer a kwarg).
+    def test_total_string_length_changes_bytes_per_variant(self):
         with _build_encoder(
             num_variants=1,
             num_samples=2,
-            encoder_kwargs=dict(varid_max=16, rsid_max=16, allele_max=2),
+            encoder_kwargs=dict(total_string_length=128),
         ) as enc:
             expected = _vcztools.bgen_variant_block_size(
                 num_samples=2,
                 uniform_ploidy=2,
-                varid_max=16,
-                rsid_max=16,
-                chrom_max=4,
-                allele_max=2,
+                total_string_length=128,
             )
             assert enc.bytes_per_variant == expected
 
-    def test_default_rsid_varid_max_when_variant_id_absent(self):
-        # Defaults shrink to 1 byte when the source has no variant_id.
+    def test_default_params(self):
         with _build_encoder(num_variants=2, num_samples=4) as enc:
-            assert "variant_id" not in enc._reader.field_names
-            assert enc._rsid_max == 1
-            assert enc._varid_max == 1
+            assert enc._total_string_length == 64
+            assert enc._pad_byte == b"."
+            assert enc._variant_id_field == "rsid"
 
-    def test_default_rsid_varid_max_when_variant_id_present(self):
-        # Defaults stay at 64 when variant_id is present.
-        with _build_encoder(
-            num_variants=2, num_samples=4, variant_id=["rsA", "rsB"]
-        ) as enc:
-            assert enc._rsid_max == 64
-            assert enc._varid_max == 64
-
-    def test_varid_max_default_follows_rsid_max(self):
-        # Explicit rsid_max propagates to varid_max when varid_max is
-        # not explicitly set (they share fate in _encode_chunk).
+    def test_variant_id_field_varid(self):
         with _build_encoder(
             num_variants=1,
             num_samples=2,
-            encoder_kwargs=dict(rsid_max=32),
+            encoder_kwargs=dict(variant_id_field="varid"),
         ) as enc:
-            assert enc._rsid_max == 32
-            assert enc._varid_max == 32
-
-    def test_chrom_max_derived_from_contig_ids(self):
-        # chrom_max is derived from the longest contig name in
-        # reader.contig_ids rather than a manual knob.
-        long_contig = "chr19_KI270939v1_alt"  # 20 bytes
-        with _build_encoder(
-            num_variants=1,
-            num_samples=2,
-            contigs=(long_contig,),
-            variant_contig=[0],
-        ) as enc:
-            assert enc._chrom_max == len(long_contig)
+            assert enc._variant_id_field == "varid"
 
     def test_embed_header_samples_false(self, tmp_path):
         # With embed_header_samples=False the SAMPLE_IDS_PRESENT flag is
@@ -2369,19 +2358,19 @@ class TestBgenEncoderLifecycle:
             bgen.BgenEncoder(reader, encode_threads=0)
         with pytest.raises(ValueError, match="encode_block_bytes"):
             bgen.BgenEncoder(reader, encode_block_bytes=0)
-        with pytest.raises(ValueError, match="varid_max"):
-            bgen.BgenEncoder(reader, varid_max=0)
-        with pytest.raises(ValueError, match="rsid_max"):
-            bgen.BgenEncoder(reader, rsid_max=0)
-        with pytest.raises(ValueError, match="allele_max"):
-            bgen.BgenEncoder(reader, allele_max=0)
+        with pytest.raises(ValueError, match="total_string_length"):
+            bgen.BgenEncoder(reader, total_string_length=0)
+        with pytest.raises(ValueError, match="pad_byte"):
+            bgen.BgenEncoder(reader, pad_byte=b"..")
+        with pytest.raises(ValueError, match="pad_byte"):
+            bgen.BgenEncoder(reader, pad_byte=b"\x00")
+        with pytest.raises(ValueError, match="variant_id_field"):
+            bgen.BgenEncoder(reader, variant_id_field="something")
 
-    def test_constructor_rejects_oversized_maxes(self):
+    def test_constructor_rejects_oversized_total_string_length(self):
         reader = _build_reader(num_variants=1, num_samples=1)
-        with pytest.raises(ValueError, match="varid_max=65536"):
-            bgen.BgenEncoder(reader, varid_max=0x10000)
-        with pytest.raises(ValueError, match="allele_max"):
-            bgen.BgenEncoder(reader, allele_max=0x100000000)
+        with pytest.raises(ValueError, match="total_string_length=65536"):
+            bgen.BgenEncoder(reader, total_string_length=0x10000)
 
 
 class TestBgenEncoderSharedReader:
@@ -2461,18 +2450,17 @@ class TestBgenEncoderWithSetVariants:
 
 
 class TestBgenEncoderOverflowRaises:
-    def test_varid_too_long(self):
-        reader = _build_reader(num_variants=1, num_samples=1, variant_id=["x" * 100])
-        with bgen.BgenEncoder(reader, varid_max=8) as enc:
-            with pytest.raises(ValueError, match="varid"):
+    def test_variant_id_overflows_total_string_length(self):
+        # 60-byte variant_id + chr1 + alleles exceeds total_string_length=64.
+        reader = _build_reader(num_variants=1, num_samples=1, variant_id=["x" * 60])
+        with bgen.BgenEncoder(reader, total_string_length=64) as enc:
+            with pytest.raises(ValueError, match="total_string_length=64"):
                 enc.read(0, enc.bgen_size)
 
     def test_contig_exceeds_bgen_length_prefix(self):
-        # chrom_max is now derived from reader.contig_ids, so an
-        # arbitrarily long contig name produces a wider variant block
-        # rather than failing. A name that exceeds the uint16 length
-        # prefix is the only remaining error path; caught at
-        # construction time, not lazily.
+        # chrom_max is derived from reader.contig_ids; a name that
+        # exceeds the uint16 length prefix is caught at construction
+        # time.
         #
         # vcz_builder stores contig_id with dtype "<U32" which truncates
         # 70000-char strings, so inject directly into the reader's
@@ -2482,14 +2470,19 @@ class TestBgenEncoderOverflowRaises:
         with pytest.raises(ValueError, match="longest contig is 70000 bytes"):
             bgen.BgenEncoder(reader)
 
-    def test_allele_too_long(self):
+    def test_allele_overflows_total_string_length(self):
+        # _build_reader truncates allele storage at 16 chars; use a
+        # tighter total_string_length so the truncated content still
+        # exceeds the budget.
         reader = _build_reader(
             num_variants=1,
             num_samples=1,
-            alleles=[("AT", "G")],
+            alleles=[("AAAAAAAAAAAAAAAA", "G")],
         )
-        with bgen.BgenEncoder(reader) as enc:
-            with pytest.raises(ValueError, match="allele1"):
+        # chrom="chr1" (4) + allele1=16 + allele2=1 + variant_id="."(1)
+        # = 22 used, leaving zero room for padding at total=22.
+        with bgen.BgenEncoder(reader, total_string_length=22) as enc:
+            with pytest.raises(ValueError, match="total_string_length=22"):
                 enc.read(0, enc.bgen_size)
 
 
@@ -2512,10 +2505,7 @@ class TestBgenEncoderUniformPloidy:
             expected = _vcztools.bgen_variant_block_size(
                 num_samples=num_samples,
                 uniform_ploidy=1,
-                varid_max=1,
-                rsid_max=1,
-                chrom_max=4,
-                allele_max=1,
+                total_string_length=64,
             )
             assert enc.bytes_per_variant == expected
             assert enc._uniform_ploidy == 1
@@ -2604,6 +2594,25 @@ def _python_encode_variant_range(prep, uniform_len):
     return bytes(out)
 
 
+def _per_variant_header_overhead(
+    varid_len, rsid_len, chrom_len, allele1_len, allele2_len
+):
+    return (
+        2
+        + varid_len
+        + 2
+        + rsid_len
+        + 2
+        + chrom_len
+        + 4  # position
+        + 2  # K
+        + 4
+        + allele1_len
+        + 4
+        + allele2_len
+    )
+
+
 class TestBgenChunkSliceLevel0Kernel:
     """Direct unit tests for ``_vcztools.encode_bgen_chunk_slice_level0``."""
 
@@ -2612,14 +2621,16 @@ class TestBgenChunkSliceLevel0Kernel:
         [(1, 2), (1024, 1), (1024, 2)],
     )
     @pytest.mark.parametrize(
-        ("varid_max", "rsid_max", "chrom_max", "allele_max"),
-        [(1, 1, 4, 1), (32, 32, 8, 4)],
+        ("total_string_length", "variant_id_field"),
+        [(64, "rsid"), (96, "varid")],
     )
     def test_byte_for_byte_parity_with_python(
-        self, num_samples, uniform_ploidy, varid_max, rsid_max, chrom_max, allele_max
+        self,
+        num_samples,
+        uniform_ploidy,
+        total_string_length,
+        variant_id_field,
     ):
-        # rsid_max=1 is paired with no variant_id field (encoder emits "."
-        # for every rsid in that case); the >1 case carries real ids.
         num_variants = 6
         rng = np.random.default_rng(0)
         G = rng.integers(
@@ -2629,49 +2640,38 @@ class TestBgenChunkSliceLevel0Kernel:
             missing = (G[:, :, 0] == -1) | (G[:, :, 1] == -1)
             G[missing, 0] = -1
             G[missing, 1] = -1
-        if rsid_max == 1:
-            variant_id = None
-        else:
-            variant_id = [f"rs{i}" for i in range(num_variants)]
-        contig_name = "chr" + "X" * (chrom_max - 3)
-        reader_kwargs = dict(
+        variant_id = [f"rs{i}" for i in range(num_variants)]
+        contig_name = "chr1"
+        reader = _build_reader(
             num_variants=num_variants,
             num_samples=num_samples,
             variant_position=list(range(100, 100 + num_variants)),
-            alleles=[("A" * allele_max, "T" * allele_max)] * num_variants,
+            alleles=[("A", "T")] * num_variants,
             contigs=(contig_name,),
             variant_contig=[0] * num_variants,
             call_genotype=G,
             ploidy=uniform_ploidy,
+            variant_id=variant_id,
         )
-        if variant_id is not None:
-            reader_kwargs["variant_id"] = variant_id
-        reader = _build_reader(**reader_kwargs)
         with bgen.BgenEncoder(
             reader,
-            varid_max=varid_max,
-            rsid_max=rsid_max,
-            allele_max=allele_max,
+            total_string_length=total_string_length,
+            variant_id_field=variant_id_field,
         ) as enc:
             c_out = _drain(enc)[enc.header_size :]
         # Build the reference by replaying _prepare_chunk + Python loop.
         chunk = {
             "call_genotype": G,
-            "variant_allele": np.array(
-                [("A" * allele_max, "T" * allele_max) for _ in range(num_variants)]
-            ),
+            "variant_allele": np.array([("A", "T") for _ in range(num_variants)]),
             "variant_contig": np.zeros(num_variants, dtype=np.int32),
             "variant_position": np.arange(100, 100 + num_variants, dtype=np.int32),
+            "variant_id": np.asarray(variant_id),
         }
-        if variant_id is not None:
-            chunk["variant_id"] = np.asarray(variant_id)
         chunk_strings = bgen._prepare_chunk_strings(
             chunk,
             contig_ids=np.array([contig_name]),
-            varid_max_len=varid_max,
-            rsid_max_len=rsid_max,
-            chrom_max_len=chrom_max,
-            allele_max_len=allele_max,
+            variant_id_field=variant_id_field,
+            total_string_length=total_string_length,
         )
         prep = bgen._prepare_chunk(chunk, chunk_strings, start=0, end=num_variants)
         uniform_len = 10 + (uniform_ploidy + 1) * num_samples
@@ -2685,54 +2685,35 @@ class TestBgenChunkSliceLevel0Kernel:
         # 22000-sample VCZ store.
         num_samples = 22000
         num_variants = 2
-        varid_max = rsid_max = chrom_max = 4
-        allele_max = 1
+        total_string_length = 5
         uniform_ploidy = 2
         geno_size = 10 + 3 * num_samples
         G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
         phased = np.zeros(num_variants, dtype=bool)
-        varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
-        rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
-        chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
-        allele1 = np.zeros((num_variants, allele_max), dtype=np.uint8)
-        allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        # Each string field is one "." byte per variant.
+        dot = np.full((num_variants, 1), ord("."), dtype=np.uint8)
         position = np.array([100, 200], dtype=np.int32)
         bpv = _vcztools.bgen_variant_block_size(
             num_samples=num_samples,
             uniform_ploidy=uniform_ploidy,
-            varid_max=varid_max,
-            rsid_max=rsid_max,
-            chrom_max=chrom_max,
-            allele_max=allele_max,
+            total_string_length=total_string_length,
         )
         out = np.empty(num_variants * bpv, dtype=np.uint8)
         _vcztools.encode_bgen_chunk_slice_level0(
-            varid,
-            rsid,
-            chrom,
-            allele1,
-            allele2,
+            dot,
+            dot,
+            dot,
+            dot,
+            dot,
             position,
             G,
             phased,
             out,
             uniform_ploidy,
+            total_string_length,
         )
 
-        header_overhead = (
-            2
-            + varid_max
-            + 2
-            + rsid_max
-            + 2
-            + chrom_max
-            + 4
-            + 2
-            + 4
-            + allele_max
-            + 4
-            + allele_max
-        )
+        header_overhead = _per_variant_header_overhead(1, 1, 1, 1, 1)
         v0 = bytes(out[:bpv])
         (C,) = struct.unpack_from("<I", v0, header_overhead)
         (D,) = struct.unpack_from("<I", v0, header_overhead + 4)
@@ -2759,25 +2740,35 @@ class TestBgenChunkSliceLevel0Kernel:
             buf = _drain(enc)[enc.header_size :]
             bpv = enc.bytes_per_variant
             uniform_len = enc._uniform_geno_size
-        header_overhead = (
-            2
-            + enc._varid_max
-            + 2
-            + enc._rsid_max
-            + 2
-            + enc._chrom_max
-            + 4
-            + 2
-            + 4
-            + enc._allele_max
-            + 4
-            + enc._allele_max
+            total_string_length = enc._total_string_length
+        # No variant_id field on _build_reader default → variant_id slot
+        # is "." (1 byte). Padding field is "." + pad_byte * (slack-1).
+        # chrom="chr1" (4 bytes). allele1="A", allele2="T" (1 byte each).
+        # used = 1 (chrom 4? actually "chr1"=4) + 1 + 1 + 1 = 7, but
+        # actually chrom="chr1"=4 bytes; so used = 4 + 1 + 1 + 1 = 7,
+        # and padding length = total_string_length - 7 = 57. We just
+        # compute it from the actual buffer instead of hard-coding.
+        # Find the actual per-variant header_overhead from the first
+        # variant: read uint16 prefixes off the wire.
+        v0 = buf[:bpv]
+        (varid_len,) = struct.unpack_from("<H", v0, 0)
+        (rsid_len,) = struct.unpack_from("<H", v0, 2 + varid_len)
+        (chrom_len,) = struct.unpack_from("<H", v0, 2 + varid_len + 2 + rsid_len)
+        # K=2 is at: 2+varid+2+rsid+2+chrom+4 (position) + 0; then alleles.
+        allele1_off = 2 + varid_len + 2 + rsid_len + 2 + chrom_len + 4 + 2
+        (allele1_len,) = struct.unpack_from("<I", v0, allele1_off)
+        allele2_off = allele1_off + 4 + allele1_len
+        (allele2_len,) = struct.unpack_from("<I", v0, allele2_off)
+        header_overhead = _per_variant_header_overhead(
+            varid_len, rsid_len, chrom_len, allele1_len, allele2_len
+        )
+        assert (
+            varid_len + rsid_len + chrom_len + allele1_len + allele2_len
+            == total_string_length
         )
         # Cross-check adler32 against the actual uncompressed block built
         # by the geno-block C kernel — same input the kernel saw.
         G2 = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
-        # Match _build_reader default (zeros) — but use the same gt the
-        # encoder ran on to keep results consistent.
         G2[:] = gt
         phased = np.zeros(num_variants, dtype=bool)
         geno_blocks, geno_lens = _vcztools.encode_bgen_geno_blocks(G2, phased)
@@ -2793,29 +2784,25 @@ class TestBgenChunkSliceLevel0Kernel:
         # Build a valid inputs set with bytes_per_variant > short buffer.
         num_variants = 2
         num_samples = 2
-        varid_max = rsid_max = chrom_max = 4
-        allele_max = 1
+        total_string_length = 5
         G = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
         phased = np.zeros(num_variants, dtype=bool)
-        varid = np.zeros((num_variants, varid_max), dtype=np.uint8)
-        rsid = np.zeros((num_variants, rsid_max), dtype=np.uint8)
-        chrom = np.zeros((num_variants, chrom_max), dtype=np.uint8)
-        allele1 = np.zeros((num_variants, allele_max), dtype=np.uint8)
-        allele2 = np.zeros((num_variants, allele_max), dtype=np.uint8)
+        dot = np.full((num_variants, 1), ord("."), dtype=np.uint8)
         position = np.zeros(num_variants, dtype=np.int32)
         out_buf = np.zeros(8, dtype=np.uint8)  # deliberately too small
         with pytest.raises(_vcztools.VczBufferTooSmall):
             _vcztools.encode_bgen_chunk_slice_level0(
-                varid,
-                rsid,
-                chrom,
-                allele1,
-                allele2,
+                dot,
+                dot,
+                dot,
+                dot,
+                dot,
                 position,
                 G,
                 phased,
                 out_buf,
                 2,  # uniform_ploidy
+                total_string_length,
             )
 
     def test_round_trip_via_bgen_reader(self, tmp_path):

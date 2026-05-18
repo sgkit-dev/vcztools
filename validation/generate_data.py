@@ -106,9 +106,11 @@ VARIANT_ID_BUCKETS: tuple[str, ...] = (
 )
 """Three format strings cycled across the variants axis to produce a
 deterministic mix of short (3–7 byte), medium (15 byte), and long
-(~46 byte) variant IDs. Lengths stay below
-:class:`vcztools.bgen.BgenEncoder`'s default ``rsid_max=64`` so the
-encoder's defaults still apply when this fixture is fed through it.
+(~46 byte) variant IDs. Lengths comfortably fit under
+:class:`vcztools.bgen.BgenEncoder`'s default
+``total_string_length=64`` (which budgets all five string fields
+combined), so the encoder's defaults still apply when this fixture
+is fed through it.
 """
 
 

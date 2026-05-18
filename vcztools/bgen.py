@@ -150,62 +150,26 @@ def _build_header(num_variants, num_samples, sample_id_block, embed_samples=True
     return bytes(out)
 
 
-def _encode_field_chunk(values, *, max_len=None, field_name=None):
-    """Vectorised UTF-8 byte preparation for a chunk's worth of variant
-    string-field values.
-
-    ``values`` is a numpy string array of length ``N``. Returns a
-    ``len()``-able sequence whose element ``i`` is the UTF-8 byte
-    form of ``values[i]``, optionally NUL-padded.
-
-    - ``max_len is None``: variable mode. Returns an ``S``-dtype
-      numpy array; element ``i`` is the raw UTF-8 form of
-      ``values[i]``. ``len(arr[i])`` equals the actual byte length.
-    - ``max_len is int``: fixed mode. Returns a 2D ``uint8`` array
-      of shape ``(N, max_len)``; each row is NUL-padded to exactly
-      ``max_len`` bytes. Overflow raises ``ValueError`` naming
-      ``field_name`` and the offending value. The 2D ``uint8`` view
-      is necessary because numpy's ``S``-dtype strips trailing NULs
-      on element access — ``len(arr[i])`` would return the unpadded
-      length, breaking the length-prefix invariant.
-
-    Both modes preserve the invariant ``len(arr[i]) == length-prefix``
-    so the downstream block encoder can read the prefix off the bytes
-    themselves.
-    """
-    encoded = np.strings.encode(values, "utf-8")
-    if max_len is None:
-        return encoded
-    lens = np.strings.str_len(encoded)
-    if lens.size > 0 and int(lens.max()) > max_len:
-        bad = int(np.argmax(lens > max_len))
-        raise ValueError(
-            f"{field_name} {str(values[bad])!r} encodes to "
-            f"{int(lens[bad])} UTF-8 bytes, exceeds configured max "
-            f"of {max_len}"
-        )
-    return encoded.astype(f"S{max_len}").view(np.uint8).reshape(-1, max_len)
-
-
 @dataclasses.dataclass
 class _ChunkBytes:
     """Per-slice byte-prepared inputs to the BGEN variant-block encoder.
 
-    The five string ``*`` arrays follow :func:`_encode_field_chunk`'s
-    dtype convention: an ``S``-dtype array in variable mode (length of
-    element ``i`` is the actual UTF-8 byte length) or a
-    ``(N, max_len) uint8`` view in fixed mode (length of element ``i``
-    is ``max_len``). Either way ``len(arr[i])`` equals the BGEN
-    length-prefix value that :func:`_encode_variant_block` writes.
+    Each of the five string fields is an ``S``-dtype array; the row
+    width is the chunk-wide max byte length. ``len(arr[i])`` (or
+    ``bytes(arr[i])``) returns the actual UTF-8 bytes of the field
+    for variant ``i`` — numpy strips trailing NULs on element access,
+    which is exactly what :func:`_encode_variant_block` writes as the
+    BGEN length prefix.
+
+    For the :class:`BgenEncoder` (fixed-stride) path, the byte sums
+    over all five fields are pinned to ``total_string_length`` per
+    variant by the padding field (built in
+    :func:`_prepare_chunk_strings`); for the :func:`write_bgen`
+    variable-stride path the padding slot is just ``b"."``.
 
     ``genotypes`` is the slice's ``(V, S, 2)`` int8 array (normalised
     haploid → ``-2``-padded form); ``phased`` is the per-variant bool
-    flag. The C kernel
-    (:c:func:`vcz_encode_bgen_chunk_slice_level0`) builds each
-    variant's BGEN genotype block from these on the fly. The
-    :func:`write_bgen` path materialises the geno blocks via
-    :func:`_vcztools.encode_bgen_geno_blocks` before its per-variant
-    Python loop runs.
+    flag.
     """
 
     varid: np.ndarray
@@ -225,13 +189,12 @@ class _ChunkStrings:
 
     Built once per chunk on the main thread (see
     :func:`_prepare_chunk_strings`); worker slices read rows out of
-    these instead of running their own UTF-8 encode + NUL pad. The
-    string-prep step holds the GIL, so hoisting it out of the worker
-    pool is what lets parallel slice encodes actually overlap.
+    these instead of running their own encode + pad. The string-prep
+    step holds the GIL, so hoisting it out of the worker pool is what
+    lets parallel slice encodes actually overlap.
 
-    Each array follows :func:`_encode_field_chunk`'s dtype convention:
-    an ``S``-dtype 1D array in variable mode (``max_len=None``) or a
-    ``(num_variants, max_len) uint8`` view in fixed mode.
+    Each array is an ``S``-dtype 1D array with row width equal to
+    the chunk-wide max byte length for that field.
     """
 
     varid: np.ndarray
@@ -245,25 +208,39 @@ def _prepare_chunk_strings(
     chunk,
     contig_ids,
     *,
-    varid_max_len=None,
-    rsid_max_len=None,
-    chrom_max_len=None,
-    allele_max_len=None,
+    variant_id_field="rsid",
+    total_string_length=None,
+    pad_byte=b".",
 ):
-    """Vectorised UTF-8 + NUL-pad of every variant string field in
-    ``chunk``. Runs once per chunk on the main thread; the resulting
-    :class:`_ChunkStrings` is sliced row-by-row inside parallel
-    workers via :func:`_prepare_chunk`.
+    """Build the five per-variant string byte arrays consumed by the
+    BGEN encoder paths.
 
-    Mirrors the normalisation shared by :class:`BgenEncoder` and
-    :func:`write_bgen`: ``rsid=""`` and ``allele2=""`` become ``"."``,
-    and variant id mirrors rsid. ``contig_ids`` resolves
-    ``variant_contig`` integer indices to chromosome name strings.
+    The four "actual length" fields — ``chrom``, ``allele1``,
+    ``allele2``, and whichever of ``varid``/``rsid`` carries the
+    variant id — are converted to ``S``-dtype byte arrays via
+    :func:`utils._as_fixed_length_string`, the same pattern
+    :mod:`vcf_writer` uses to hand strings to its C encoder. The
+    fifth field is the padding field, which absorbs per-variant
+    slack:
 
-    ``varid`` is validated before ``rsid`` so a too-narrow
-    ``varid_max_len`` surfaces as a ``"varid"`` error even when both
-    fields would overflow with the default ``rsid_max_len=64``.
+    - :class:`BgenEncoder` (``total_string_length`` is an int): the
+      padding field is ``b"." + pad_byte * (slack - 1)`` per variant,
+      where ``slack = total_string_length - sum-of-other-four``.
+      Raises :class:`ValueError` if any variant has ``slack < 1`` (the
+      leading ``"."`` always has to fit).
+    - :func:`write_bgen` (``total_string_length is None``): the
+      padding field is the literal ``"."`` (one byte) for every
+      variant.
+
+    ``variant_id_field`` selects which BGEN slot the variant id
+    occupies (``"rsid"`` or ``"varid"``); the other slot is the
+    padding field. Empty ``variant_id`` values normalise to ``"."``;
+    a missing ``variant_id`` field degrades every row to ``"."``.
     """
+    if variant_id_field not in ("rsid", "varid"):
+        raise ValueError(
+            f"variant_id_field must be 'rsid' or 'varid' (got {variant_id_field!r})"
+        )
     alleles = chunk["variant_allele"]
     _check_biallelic(alleles)
     n = alleles.shape[0]
@@ -277,21 +254,46 @@ def _prepare_chunk_strings(
     else:
         a2_arr = np.full(n, ".")
     if varids is not None:
-        rsid_arr = np.where(varids == "", ".", varids)
+        variant_id_arr = np.where(varids == "", ".", varids)
     else:
-        rsid_arr = np.full(n, ".")
+        variant_id_arr = np.full(n, ".")
 
-    varid_b = _encode_field_chunk(rsid_arr, max_len=varid_max_len, field_name="varid")
-    rsid_b = _encode_field_chunk(rsid_arr, max_len=rsid_max_len, field_name="rsid")
-    chrom_b = _encode_field_chunk(chrom_arr, max_len=chrom_max_len, field_name="chrom")
-    a1_b = _encode_field_chunk(a1_arr, max_len=allele_max_len, field_name="allele1")
-    a2_b = _encode_field_chunk(a2_arr, max_len=allele_max_len, field_name="allele2")
+    if total_string_length is None:
+        padding_arr = np.full(n, ".")
+    else:
+        used = (
+            np.strings.str_len(chrom_arr)
+            + np.strings.str_len(a1_arr)
+            + np.strings.str_len(a2_arr)
+            + np.strings.str_len(variant_id_arr)
+        )
+        slack = total_string_length - used
+        if n > 0:
+            min_slack = int(slack.min())
+            if min_slack < 1:
+                bad = int(np.argmin(slack))
+                raise ValueError(
+                    f"variant {bad}: chrom/allele1/allele2/variant_id "
+                    f"byte sum is {int(used[bad])}, leaving no room "
+                    f"for the padding field's leading '.' under "
+                    f"total_string_length={total_string_length}"
+                )
+        padding_list = [b"." + pad_byte * (int(s) - 1) for s in slack]
+        padding_arr = np.array(padding_list, dtype=object)
+
+    if variant_id_field == "rsid":
+        rsid_arr = variant_id_arr
+        varid_arr = padding_arr
+    else:
+        varid_arr = variant_id_arr
+        rsid_arr = padding_arr
+
     return _ChunkStrings(
-        varid=varid_b,
-        rsid=rsid_b,
-        chrom=chrom_b,
-        allele1=a1_b,
-        allele2=a2_b,
+        varid=utils._as_fixed_length_string(varid_arr),
+        rsid=utils._as_fixed_length_string(rsid_arr),
+        chrom=utils._as_fixed_length_string(chrom_arr),
+        allele1=utils._as_fixed_length_string(a1_arr),
+        allele2=utils._as_fixed_length_string(a2_arr),
     )
 
 
@@ -372,23 +374,20 @@ def _encode_variant_block(
         uint32 D = len(uncompressed_geno_block)
         compressed (zlib, level = ``compression_level``)
 
-    All string fields arrive pre-encoded as UTF-8 bytes via
-    :func:`_encode_field_chunk` — in variable mode (``max_len=None``)
-    their length is the actual encoding; in fixed mode their length is
-    the configured ``*_max`` and the bytes carry trailing NUL padding.
-    Either way ``len(bytes)`` is the length-prefix that goes on the
-    wire, so the encoder doesn't need to know which mode it's in.
+    All string fields arrive pre-encoded as ``S``-dtype rows from
+    :func:`_prepare_chunk_strings`. Element access on an ``S``-dtype
+    array strips trailing NULs, so ``len(bytes(arr[i]))`` is the actual
+    UTF-8 byte length — exactly the length prefix that goes on the
+    wire.
 
     ``geno_block_bytes`` is the uncompressed BGEN genotype-block bytes
     (spec layout: N/K/Pmin/Pmax header, ploidy, phased flag, B, prob
     bytes) — assembled at chunk-level by
     ``_vcztools.encode_bgen_geno_blocks`` in :func:`_prepare_chunk`.
 
-    bgen-reader strips trailing NULs from variable-length string
-    fields, so the NUL-padded form round-trips as the original UTF-8
-    string. ``compression_level`` is forwarded verbatim to
-    :func:`zlib.compress`; :class:`BgenEncoder` always passes ``0``
-    (stored) to keep block sizes deterministic.
+    ``compression_level`` is forwarded verbatim to :func:`zlib.compress`;
+    :class:`BgenEncoder` always passes ``0`` (stored) to keep block sizes
+    deterministic.
     """
     compressed = zlib.compress(geno_block_bytes, compression_level)
 
@@ -475,8 +474,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
     ``byte offset → variant index`` is O(1):
 
         bytes_per_variant
-          = 28 + varid_max + rsid_max + chrom_max
-              + 2 * allele_max + zlib_stored_size(geno_size)
+          = 28 + total_string_length + zlib_stored_size(geno_size)
 
         geno_size = 10 + (uniform_ploidy + 1) * num_samples
 
@@ -487,19 +485,18 @@ class BgenEncoder(format_encoder.FormatEncoder):
     ``geno_size = 10 + 2 * num_samples``) or 2 (diploid;
     ``geno_size = 10 + 3 * num_samples``).
 
-    Variable-length string fields (variant id, rsid, chromosome, alleles)
-    are NUL-padded to the configured ``*_max`` widths. The bgen-reader
-    reference reader strips trailing NULs from string fields, so the
-    padded values round-trip cleanly. Overflowing any configured max
-    raises :class:`ValueError` during chunk encoding, naming the field
-    and the offending value.
-
-    Defaults are tuned for biobank biallelic SNP arrays:
-    ``allele_max=1`` for SNPs; ``rsid_max=varid_max=64`` when the
-    source has a ``variant_id`` field, else ``1`` (the encoder emits
-    ``"."`` for every rsid in that case). ``chrom_max`` is always
-    derived from ``reader.contig_ids`` — no manual knob. Indel or SV
-    stores must opt in to larger ``allele_max`` / ``rsid_max`` values.
+    The five BGEN string fields (varid, rsid, chrom, allele1, allele2)
+    share a single ``total_string_length`` budget per variant. Four of
+    them — chrom, allele1, allele2, and whichever of varid/rsid is
+    selected by ``variant_id_field`` — are emitted at their actual UTF-8
+    byte lengths. The fifth slot is the padding field, holding
+    ``b"." + pad_byte * (slack - 1)`` where ``slack`` is whatever's left
+    of ``total_string_length`` after the other four. If a variant's
+    actual content sums past ``total_string_length - 1`` (i.e. the
+    padding field can't even fit its leading ``"."``), encoding raises
+    :class:`ValueError`. Defaults are tuned for biobank biallelic SNP
+    arrays: ``total_string_length=64``, ``pad_byte=b"."``,
+    ``variant_id_field="rsid"``.
 
     Variant scope: biallelic and uniform ploidy. ``call_genotype``
     must have ``shape[2] == 1`` (haploid) or ``shape[2] == 2``
@@ -532,59 +529,63 @@ class BgenEncoder(format_encoder.FormatEncoder):
         self,
         reader: retrieval.VczReader,
         *,
-        varid_max: int | None = None,
-        rsid_max: int | None = None,
-        allele_max: int | None = None,
+        total_string_length: int | None = None,
+        pad_byte: bytes | None = None,
+        variant_id_field: str | None = None,
         embed_header_samples: bool = True,
         encode_threads: int | None = None,
         encode_block_bytes: int | None = None,
         unphased: bool = False,
     ):
-        has_variant_id = "variant_id" in reader.field_names
-        if rsid_max is None:
-            # When variant_id is absent, _encode_chunk emits "." (1 byte)
-            # for every rsid — no point reserving 64 bytes per variant.
-            rsid_max = 64 if has_variant_id else 1
-        if varid_max is None:
-            # _encode_chunk sets varid = rsid, so they share fate.
-            varid_max = rsid_max
-        if allele_max is None:
-            allele_max = 1
+        if total_string_length is None:
+            total_string_length = 64
+        if pad_byte is None:
+            pad_byte = b"."
+        if variant_id_field is None:
+            variant_id_field = "rsid"
 
-        # chrom_max is derived from contig_ids via vectorised numpy ops:
-        # str_len on the UTF-8-encoded form gives byte length per element.
-        # The max(initial=1) floor covers empty contig_ids and the all-
-        # empty-string degenerate case; bytes_per_variant needs >= 1.
+        if not isinstance(pad_byte, bytes) or len(pad_byte) != 1:
+            raise ValueError(f"pad_byte must be a single byte (got {pad_byte!r})")
+        if pad_byte == b"\x00":
+            # numpy S-dtype strips trailing NULs on element access, so
+            # a NUL pad byte would collapse the padding field down to
+            # just the leading "." on the wire and the variant block
+            # would be shorter than bytes_per_variant.
+            raise ValueError("pad_byte must not be the NUL byte")
+        if variant_id_field not in ("rsid", "varid"):
+            raise ValueError(
+                f"variant_id_field must be 'rsid' or 'varid' (got {variant_id_field!r})"
+            )
+        if total_string_length < 5:
+            # Each of the five string slots needs at least one byte
+            # (the leading "." in the padding field, and one byte each
+            # for chrom/allele1/allele2/variant_id).
+            raise ValueError(
+                f"total_string_length must be >= 5 (got {total_string_length})"
+            )
+        if total_string_length > 0xFFFF:
+            # Both variant-id slots use uint16 BGEN length prefixes;
+            # the chrom slot does too. With a >0xFFFF budget the
+            # padding slot could overflow its prefix.
+            raise ValueError(
+                f"total_string_length={total_string_length} exceeds "
+                f"BGEN length-prefix width 65535"
+            )
+
         contig_ids = reader.contig_ids
         chrom_max = int(
             np.strings.str_len(np.strings.encode(contig_ids)).max(initial=1)
         )
-
-        # rsid_max validated before varid_max: when the user passes
-        # rsid_max=X (and varid_max=None), varid_max propagates to X
-        # above, so rsid_max owns the error message.
-        for name, value, ceiling in (
-            ("rsid_max", rsid_max, 0xFFFF),
-            ("varid_max", varid_max, 0xFFFF),
-            ("allele_max", allele_max, 0xFFFFFFFF),
-        ):
-            if value < 1:
-                raise ValueError(f"{name} must be >= 1 (got {value})")
-            if value > ceiling:
-                raise ValueError(
-                    f"{name}={value} exceeds BGEN length-prefix width {ceiling}"
-                )
         if chrom_max > 0xFFFF:
             raise ValueError(
                 f"longest contig is {chrom_max} bytes, exceeds BGEN "
                 f"length-prefix width 65535"
             )
 
-        self._varid_max = varid_max
-        self._rsid_max = rsid_max
-        self._chrom_max = chrom_max
-        self._allele_max = allele_max
-        self._has_variant_id = has_variant_id
+        self._total_string_length = total_string_length
+        self._pad_byte = pad_byte
+        self._variant_id_field = variant_id_field
+        self._has_variant_id = "variant_id" in reader.field_names
         self._has_phased = (
             not unphased
         ) and "call_genotype_phased" in reader.field_names
@@ -611,10 +612,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
         bytes_per_variant = _vcztools.bgen_variant_block_size(
             num_samples=num_samples,
             uniform_ploidy=uniform_ploidy,
-            varid_max=varid_max,
-            rsid_max=rsid_max,
-            chrom_max=chrom_max,
-            allele_max=allele_max,
+            total_string_length=total_string_length,
         )
 
         if embed_header_samples:
@@ -662,20 +660,20 @@ class BgenEncoder(format_encoder.FormatEncoder):
         return self.total_size
 
     def _encode_chunk(self, chunk: dict) -> bytes:
-        # String prep is hoisted out of the worker pool: utf-8 encode +
-        # NUL-pad of varid/rsid/chrom/allele1/allele2 holds the GIL, so
-        # running it once per chunk on the main thread (rather than
-        # once per worker slice) is what lets parallel slice encodes
-        # actually overlap. Per-slice mixed_phase_count partials are
-        # appended to a closure-captured list (list.append is GIL-safe
-        # under CPython) and summed once _parallel_encode returns.
+        # String prep is hoisted out of the worker pool: building the
+        # per-variant byte arrays (and the padding-field bytes) holds
+        # the GIL, so running it once per chunk on the main thread
+        # (rather than once per worker slice) is what lets parallel
+        # slice encodes actually overlap. Per-slice mixed_phase_count
+        # partials are appended to a closure-captured list (list.append
+        # is GIL-safe under CPython) and summed once _parallel_encode
+        # returns.
         chunk_strings = _prepare_chunk_strings(
             chunk,
             self._contig_ids,
-            varid_max_len=self._varid_max,
-            rsid_max_len=self._rsid_max,
-            chrom_max_len=self._chrom_max,
-            allele_max_len=self._allele_max,
+            variant_id_field=self._variant_id_field,
+            total_string_length=self._total_string_length,
+            pad_byte=self._pad_byte,
         )
         num_variants = int(chunk["call_genotype"].shape[0])
         phase_counts: list[int] = []
@@ -703,21 +701,35 @@ class BgenEncoder(format_encoder.FormatEncoder):
         prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
         phase_counts.append(prep.mixed_phase_count)
         position = np.ascontiguousarray(prep.position, dtype=np.int32)
+        # The C kernel reads each S-dtype row as a (N, item_size) uint8
+        # buffer and computes the actual byte length per variant via
+        # an internal NUL-bound scan. Pre-viewing here keeps the C
+        # binding's dtype/shape checks straightforward.
+        varid_2d = prep.varid.view(np.uint8).reshape(-1, prep.varid.dtype.itemsize)
+        rsid_2d = prep.rsid.view(np.uint8).reshape(-1, prep.rsid.dtype.itemsize)
+        chrom_2d = prep.chrom.view(np.uint8).reshape(-1, prep.chrom.dtype.itemsize)
+        allele1_2d = prep.allele1.view(np.uint8).reshape(
+            -1, prep.allele1.dtype.itemsize
+        )
+        allele2_2d = prep.allele2.view(np.uint8).reshape(
+            -1, prep.allele2.dtype.itemsize
+        )
         # The kernel builds each variant's BGEN genotype block on the
         # fly from prep.genotypes + prep.phased; mixed-ploidy variants
         # surface via VCZ_ERR_BGEN_MIXED_PLOIDY (handle_library_error
         # converts to NotImplementedError pointing at write_bgen).
         _vcztools.encode_bgen_chunk_slice_level0(
-            prep.varid,
-            prep.rsid,
-            prep.chrom,
-            prep.allele1,
-            prep.allele2,
+            varid_2d,
+            rsid_2d,
+            chrom_2d,
+            allele1_2d,
+            allele2_2d,
             position,
             prep.genotypes,
             prep.phased,
             out_view,
             self._uniform_ploidy,
+            self._total_string_length,
         )
 
     def _close_hook(self) -> None:
@@ -929,6 +941,7 @@ def write_bgen(
     compression_level: int | None = None,
     encode_threads: int | None = None,
     unphased: bool = False,
+    variant_id_field: str | None = None,
 ):
     """Write an Oxford BGEN payload for ``reader`` to ``output``.
 
@@ -986,6 +999,10 @@ def write_bgen(
     downstream tool only accepts unphased BGEN (e.g. qctool's
     ``-snp-stats``, whose ``ToGP`` setter rejects per-haplotype-per-
     allele probabilities).
+
+    ``variant_id_field`` chooses which BGEN slot — ``"rsid"`` (default)
+    or ``"varid"`` — carries the zarr ``variant_id``. The other slot
+    is written as the literal ``"."`` for every variant.
     """
     if encode_threads is None:
         encode_threads = 4
@@ -995,6 +1012,8 @@ def write_bgen(
         embed_header_samples = True
     if compression_level is None:
         compression_level = 1
+    if variant_id_field is None:
+        variant_id_field = "rsid"
 
     reader.materialise_variant_filter()
 
@@ -1067,7 +1086,9 @@ def write_bgen(
             # String prep is hoisted out of the worker pool — it holds
             # the GIL, so running it once per chunk lets the workers
             # actually overlap.
-            chunk_strings = _prepare_chunk_strings(chunk, contig_id)
+            chunk_strings = _prepare_chunk_strings(
+                chunk, contig_id, variant_id_field=variant_id_field
+            )
             slice_variants = max(1, (n + encode_threads - 1) // encode_threads)
             slice_ranges = [
                 (s, min(s + slice_variants, n)) for s in range(0, n, slice_variants)

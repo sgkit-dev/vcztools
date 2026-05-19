@@ -197,14 +197,15 @@ flag a test update.
 
 ### FID convention
 
-`generate_data.py` overwrites bio2zarr's `tsk_0, tsk_1, ...` sample
-naming with `s0, s1, ...` and writes the pheno file with
-`FID="0", IID=s_N` — matching the `.fam` written by `view-plink`
-(also `FID="0"`) without any in-test rewrite. `view-bgen` writes
-`.sample` with `ID_1=ID_2=sample_id` (the BGEN "double-id"
-convention), so BGEN-consumer tests (`REGENIE`, `BOLT-LMM`) call
-`_remap_sample_fid0` to swap `ID_1` to `"0"` before handing the
-file to the tool — that's the only FID rewrite still in the suite.
+`generate_data.py` names individuals `s0, s1, ...` via the
+`tskit` → VCF model mapping passed to `bio2zarr.tskit.convert`, and
+writes the pheno file with `FID="0", IID=s_N` — matching the
+`.fam` written by `view-plink` (also `FID="0"`) without any in-test
+rewrite. `view-bgen` writes `.sample` with `ID_1=ID_2=sample_id`
+(the BGEN "double-id" convention), so BGEN-consumer tests
+(`REGENIE`, `BOLT-LMM`) call `_remap_sample_fid0` to swap `ID_1`
+to `"0"` before handing the file to the tool — that's the only
+FID rewrite still in the suite.
 
 ### Parallel pytest workers
 

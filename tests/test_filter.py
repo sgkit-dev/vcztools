@@ -4,6 +4,7 @@ import pyparsing as pp
 import pytest
 
 from vcztools import bcftools_filter as filter_mod
+from vcztools import constants
 
 
 class TestFilterExpressionParser:
@@ -62,11 +63,26 @@ class TestFilterExpressionParser:
         with pytest.raises(exception_class):
             fx_parser.parse_string(expression, parse_all=True)
 
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "N_ALT >= 1",
+            "N_MISSING == 0",
+            "F_MISSING < 0.5",
+            "N_MISSING > 0 && F_MISSING < 0.5",
+        ],
+    )
+    def test_supported_calculated_variables(self, fx_parser, expression):
+        # These calculated variables are intercepted by their own
+        # pp.Keyword parse actions, so they never reach Identifier and
+        # the UnsupportedCalculatedVariableError check.
+        fx_parser.parse_string(expression, parse_all=True)
+
 
 class TestIdentifierResolutionErrors:
-    """``Identifier.__init__`` raises two ``ValueError`` variants
-    after consulting the name mapper — neither reachable with the
-    identity mapper used by ``TestFilterExpressionParser``."""
+    """``Identifier.__init__`` raises errors that depend on the name
+    mapper, so they aren't reachable with the identity mapper used by
+    ``TestFilterExpressionParser``."""
 
     def test_undefined_tag(self):
         parser = filter_mod.make_bcftools_filter_parser(
@@ -81,6 +97,38 @@ class TestIdentifierResolutionErrors:
         )
         with pytest.raises(ValueError, match="ambiguous filtering expression"):
             parser.parse_string("DP>0", parse_all=True)
+
+    @pytest.mark.parametrize(
+        "expression",
+        ["AC>0", "AF<0.1", "MAC==1", "MAF>=0.05", "AN>0", "ILEN>0", "N_SAMPLES>100"],
+    )
+    def test_unsupported_calculated_variable(self, expression):
+        # When the calculated-variable tag isn't otherwise defined in
+        # the dataset, parsing surfaces the dedicated error.
+        parser = filter_mod.make_bcftools_filter_parser(
+            all_fields=set(), map_vcf_identifiers=True
+        )
+        with pytest.raises(filter_mod.UnsupportedCalculatedVariableError):
+            parser.parse_string(expression, parse_all=True)
+
+    @pytest.mark.parametrize(
+        ("expression", "all_fields"),
+        [
+            ("AC>0", {"variant_AC"}),
+            ("AN>0", {"variant_AN"}),
+            ("AF<0.5", {"variant_AF"}),
+        ],
+    )
+    def test_calculated_variable_name_shadowed_by_real_field(
+        self, expression, all_fields
+    ):
+        # When the dataset defines a real INFO field with the same name
+        # as a bcftools calculated variable, the real field wins — the
+        # parser must NOT raise UnsupportedCalculatedVariableError.
+        parser = filter_mod.make_bcftools_filter_parser(
+            all_fields=all_fields, map_vcf_identifiers=True
+        )
+        parser.parse_string(expression, parse_all=True)
 
 
 class TestFilterExpressionSample:
@@ -308,6 +356,150 @@ class TestFilterExpression:
         fee = filter_mod.BcftoolsFilter(include="N_ALT >= 2")
         assert fee.referenced_fields == {"variant_allele"}
         assert fee.scope == "variant"
+
+    # Synthetic 3-sample, diploid genotype matrix used by the
+    # N_MISSING / F_MISSING tests below. Per-variant missing counts:
+    # [0, 0, 0, 3, 2]; fractions: [0, 0, 0, 1.0, 2/3].
+    _MISSING_GT_DATA = {
+        "call_genotype": [
+            [[0, 0], [0, 1], [1, 1]],
+            [[0, 0], [0, 2], [2, 2]],
+            [[0, 1], [1, 2], [2, 2]],
+            [
+                [constants.INT_MISSING, constants.INT_MISSING],
+                [constants.INT_MISSING, constants.INT_MISSING],
+                [constants.INT_FILL, constants.INT_FILL],
+            ],
+            [
+                [constants.INT_MISSING, constants.INT_MISSING],
+                [0, 3],
+                [constants.INT_FILL, constants.INT_FILL],
+            ],
+        ],
+        "variant_position": [100, 200, 300, 400, 500],
+    }
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("N_MISSING == 0", [True, True, True, False, False]),
+            ("N_MISSING == 2", [False, False, False, False, True]),
+            ("N_MISSING == 3", [False, False, False, True, False]),
+            ("N_MISSING >= 1", [False, False, False, True, True]),
+            ("N_MISSING > 2", [False, False, False, True, False]),
+            ("N_MISSING <= 2", [True, True, True, False, True]),
+            ("N_MISSING != 0", [False, False, False, True, True]),
+            ("N_MISSING > 0 && N_MISSING < 3", [False, False, False, False, True]),
+            ("N_MISSING == 0 || N_MISSING == 3", [True, True, True, True, False]),
+        ],
+    )
+    def test_evaluate_n_missing(self, expression, expected):
+        fee = filter_mod.BcftoolsFilter(include=expression)
+        result = fee.evaluate(numpify_values(self._MISSING_GT_DATA))
+        nt.assert_array_equal(result, expected)
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("F_MISSING == 0", [True, True, True, False, False]),
+            ("F_MISSING < 0.5", [True, True, True, False, False]),
+            ("F_MISSING > 0.5", [False, False, False, True, True]),
+            ("F_MISSING == 1", [False, False, False, True, False]),
+            ("F_MISSING > 0", [False, False, False, True, True]),
+            ("F_MISSING >= 0.6 && F_MISSING < 1", [False, False, False, False, True]),
+        ],
+    )
+    def test_evaluate_f_missing(self, expression, expected):
+        fee = filter_mod.BcftoolsFilter(include=expression)
+        result = fee.evaluate(numpify_values(self._MISSING_GT_DATA))
+        nt.assert_array_equal(result, expected)
+
+    def test_evaluate_n_missing_combined_with_other(self):
+        # Combination with TYPE checks that the N_MISSING pseudo-identifier
+        # interoperates with other variant-scoped operators.
+        data = {
+            "call_genotype": np.array(
+                [
+                    [[0, 0], [0, 1]],  # 0 missing, SNP
+                    [[-1, -1], [-1, -1]],  # 2 missing, SNP
+                    [[0, 0], [-1, -1]],  # 1 missing, indel
+                ]
+            ),
+            "variant_allele": np.array(
+                [
+                    ["A", "T", ""],
+                    ["A", "C", ""],
+                    ["A", "AT", ""],
+                ]
+            ),
+            "variant_position": np.array([1, 2, 3]),
+        }
+        fee = filter_mod.BcftoolsFilter(
+            include='N_MISSING > 0 && TYPE~"snp"',
+        )
+        nt.assert_array_equal(fee.evaluate(data), [False, True, False])
+
+    def test_n_missing_referenced_fields(self):
+        fee = filter_mod.BcftoolsFilter(include="N_MISSING == 0")
+        assert fee.referenced_fields == {"call_genotype", "variant_position"}
+        assert fee.scope == "variant"
+
+    def test_f_missing_referenced_fields(self):
+        fee = filter_mod.BcftoolsFilter(include="F_MISSING < 0.5")
+        assert fee.referenced_fields == {"call_genotype", "variant_position"}
+        assert fee.scope == "variant"
+
+    def test_combined_missing_referenced_fields(self):
+        # Combining N_MISSING and F_MISSING with a real INFO field
+        # collects all references at the BcftoolsFilter level.
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"variant_DP"},
+            include="N_MISSING == 0 && F_MISSING < 0.05 && INFO/DP > 10",
+        )
+        assert fee.referenced_fields == {
+            "call_genotype",
+            "variant_position",
+            "variant_DP",
+        }
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("N_MISSING == 0", [True, True, True]),
+            ("N_MISSING > 0", [False, False, False]),
+            ("F_MISSING == 0", [True, True, True]),
+            ("F_MISSING < 0.05", [True, True, True]),
+            ("F_MISSING > 0", [False, False, False]),
+        ],
+    )
+    def test_evaluate_missing_no_call_genotype(self, expression, expected):
+        # When the dataset has no call_genotype (e.g. annotations-only
+        # VCZ), N_MISSING / F_MISSING fall back to 0 for every variant.
+        data = {"variant_position": [10, 20, 30]}
+        fee = filter_mod.BcftoolsFilter(include=expression)
+        nt.assert_array_equal(fee.evaluate(numpify_values(data)), expected)
+
+    def test_evaluate_n_missing_with_fill_only(self):
+        # Mixed-ploidy samples encode the unused ploidy slot as
+        # INT_FILL (-2) — those rows are not "missing" if at least one
+        # slot is a valid allele.
+        data = {
+            "call_genotype": np.array(
+                [
+                    [[0, constants.INT_FILL], [0, 1]],  # haploid + diploid
+                    [
+                        [constants.INT_FILL, constants.INT_FILL],
+                        [
+                            constants.INT_MISSING,
+                            constants.INT_MISSING,
+                        ],
+                    ],
+                ]
+            ),
+            "variant_position": np.array([1, 2]),
+        }
+        fee = filter_mod.BcftoolsFilter(include="N_MISSING == 2")
+        nt.assert_array_equal(fee.evaluate(data), [False, True])
 
     @pytest.mark.parametrize(
         ("expr", "expected"),

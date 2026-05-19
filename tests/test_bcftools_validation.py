@@ -151,6 +151,28 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
         # N_ALT identifier is exposed in the filter language too.
         ("view --no-version -i 'N_ALT >= 2'", "sample.vcf.gz"),
         ("view --no-version -i 'N_ALT == 1'", "sample.vcf.gz"),
+        # N_MISSING / F_MISSING calculated variables computed from
+        # call_genotype. sample.vcf.gz has several variants with
+        # missing GTs spread across its three samples.
+        ("view --no-version -i 'N_MISSING == 0'", "sample.vcf.gz"),
+        ("view --no-version -i 'N_MISSING > 0'", "sample.vcf.gz"),
+        ("view --no-version -i 'N_MISSING >= 1'", "sample.vcf.gz"),
+        ("view --no-version -e 'N_MISSING > 0'", "sample.vcf.gz"),
+        ("view --no-version -i 'F_MISSING < 0.05'", "sample.vcf.gz"),
+        ("view --no-version -i 'F_MISSING > 0'", "sample.vcf.gz"),
+        ("view --no-version -i 'F_MISSING >= 0.3'", "sample.vcf.gz"),
+        ("view --no-version -i 'F_MISSING == 0'", "sample.vcf.gz"),
+        # Combine with another variant-scope filter.
+        (
+            "view --no-version -i 'N_MISSING == 0 && POS > 100000'",
+            "sample.vcf.gz",
+        ),
+        # Annotations-only file has no call_genotype: N_MISSING falls
+        # back to 0 for every variant, matching bcftools.
+        (
+            "view --no-version -i 'N_MISSING == 0'",
+            "1kg_2020_chr20_annotations.bcf",
+        ),
         ("view --no-version -G", "sample.vcf.gz"),
         (
                 "view --no-update --no-version --samples-file "

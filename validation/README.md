@@ -195,14 +195,16 @@ PLINK 1.9 only supports BGEN v1.1; vcztools writes BGEN layout-2
 message so a future PLINK release that adds layout-2 support will
 flag a test update.
 
-### FID convention mismatch
+### FID convention
 
-`view-plink` writes `.fam` with `FID=0`, `IID=sample_id`. `view-bgen`
-writes `.sample` with `ID_1=ID_2=sample_id`. When BOLT-LMM and
-REGENIE consume the PLINK fileset, the pheno file is rewritten in-
-test to `FID=0`. When BOLT-LMM is given both `--bfile` and
-`--bgenFile` it cross-checks the two; the `.sample` is also
-rewritten in-test to `FID=0`.
+`generate_data.py` overwrites bio2zarr's `tsk_0, tsk_1, ...` sample
+naming with `s0, s1, ...` and writes the pheno file with
+`FID="0", IID=s_N` — matching the `.fam` written by `view-plink`
+(also `FID="0"`) without any in-test rewrite. `view-bgen` writes
+`.sample` with `ID_1=ID_2=sample_id` (the BGEN "double-id"
+convention), so BGEN-consumer tests (`REGENIE`, `BOLT-LMM`) call
+`_remap_sample_fid0` to swap `ID_1` to `"0"` before handing the
+file to the tool — that's the only FID rewrite still in the suite.
 
 ### Parallel pytest workers
 

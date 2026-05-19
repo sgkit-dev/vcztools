@@ -45,15 +45,6 @@ KEEP_N_SNPS = 20
 KEEP_N_SAMPLES = 10
 
 
-def _remap_pheno_fid0(pheno_path: pathlib.Path, out_path: pathlib.Path) -> pathlib.Path:
-    """Rewrite a phenotype file's FID column to "0" so it matches the
-    .fam written by ``view-plink``."""
-    df = pd.read_csv(pheno_path, sep=r"\s+", engine="python")
-    df["FID"] = "0"
-    df.to_csv(out_path, sep=" ", index=False)
-    return out_path
-
-
 def _write_exclude_all_but_first_n(
     bim_path: pathlib.Path, out_path: pathlib.Path, keep_n: int = KEEP_N_SNPS
 ) -> pathlib.Path:
@@ -150,9 +141,8 @@ class TestBoltLmmFromPlinkInput:
     def test_loads_bed_and_runs_linreg(
         self, tmp_path, bolt_lmm_bin, large_unphased_fixture
     ):
-        pheno = _remap_pheno_fid0(
-            large_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
-        )
+        # Pheno is FID="0" by construction, matching view-plink's .fam.
+        pheno = large_unphased_fixture.pheno_path
         exclude = _write_exclude_all_but_first_n(
             large_unphased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
@@ -199,12 +189,11 @@ class TestBoltLmmFromBgenInput:
         bgen, sample_src = cfg.bgen_for_level(large_unphased_fixture, level)
         # BOLT also requires a .bed-style anchor input for --lmm even
         # when scoring BGEN variants, so we pass --bfile alongside.
-        # The pheno file and .sample file are both remapped to FID=0
-        # so the (FID, IID) pairs line up with the .fam written by
-        # view-plink (BOLT cross-checks .fam and .sample).
-        pheno = _remap_pheno_fid0(
-            large_unphased_fixture.pheno_path, tmp_path / "pheno.tsv"
-        )
+        # Pheno is already FID="0" by construction; the .sample file is
+        # remapped from ID_1=ID_2=sample_id to FID="0" so (FID, IID)
+        # pairs line up with the .fam written by view-plink (BOLT
+        # cross-checks .fam and .sample).
+        pheno = large_unphased_fixture.pheno_path
         sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
         exclude = _write_exclude_all_but_first_n(
             large_unphased_fixture.plink_prefix.with_suffix(".bim"),
@@ -272,9 +261,7 @@ class TestBoltLmmPhasedBgen:
             large_phased_fixture.bgen_minus1,
             large_phased_fixture.sample_path,
         )
-        pheno = _remap_pheno_fid0(
-            large_phased_fixture.pheno_path, tmp_path / "pheno.tsv"
-        )
+        pheno = large_phased_fixture.pheno_path
         sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
         exclude = _write_exclude_all_but_first_n(
             large_phased_fixture.plink_prefix.with_suffix(".bim"),

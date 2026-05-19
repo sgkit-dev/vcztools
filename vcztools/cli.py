@@ -821,6 +821,20 @@ class ViewPlinkOptions:
         )
 
 
+def _pad_byte_callback(ctx, param, value):
+    """Click callback for ``--pad-byte``: convert the user's ASCII
+    character to a single-byte ``bytes`` value (or ``None`` if the
+    option was not supplied)."""
+    if value is None:
+        return None
+    encoded = value.encode("ascii", errors="strict")
+    if len(encoded) != 1:
+        raise click.BadParameter(
+            f"--pad-byte must be a single ASCII character (got {value!r})"
+        )
+    return encoded
+
+
 @dataclasses.dataclass(frozen=True)
 class ViewBgenOptions:
     """Public API bundle of every ``view-bgen`` option except
@@ -872,11 +886,13 @@ class ViewBgenOptions:
     no_header_samples: bool = False
     unphased: bool = False
     variant_id_field: str = "rsid"
+    total_string_length: int | None = None
+    pad_byte: bytes | None = None
 
     @staticmethod
     def decorator(f):
-        """Click decorator: add every view-bgen option except ``-o`` and
-        ``--compression-level`` to f."""
+        """Click decorator: add every view-bgen option except ``-o``,
+        ``--compression-level``, and ``--fixed-variant-size`` to f."""
         f = LogOptions.decorator(f)
         f = ReaderOptions.decorator(f)
         f = ZarrStoreOptions.decorator(f)
@@ -889,6 +905,22 @@ class ViewBgenOptions:
             help=(
                 "Which BGEN slot carries the zarr variant_id. The other "
                 "slot is written as a literal '.' for every variant."
+            ),
+        )(f)
+        f = click.option(
+            "--total-string-length",
+            type=int,
+            default=None,
+            help=("Combined byte budget (default 64) for the five BGEN string slots."),
+        )(f)
+        f = click.option(
+            "--pad-byte",
+            type=str,
+            default=None,
+            callback=_pad_byte_callback,
+            help=(
+                "Single ASCII char used to fill the padding slot beyond "
+                "its leading '.'. Default: '.'."
             ),
         )(f)
         f = click.option(
@@ -941,6 +973,8 @@ class ViewBgenOptions:
             no_header_samples=kwargs.get("no_header_samples", False),
             unphased=kwargs.get("unphased", False),
             variant_id_field=kwargs.get("variant_id_field", "rsid"),
+            total_string_length=kwargs.get("total_string_length"),
+            pad_byte=kwargs.get("pad_byte"),
         )
 
     def make_reader(self, path: str) -> retrieval.VczReader:
@@ -1301,26 +1335,12 @@ def view_plink(path, output, **kwargs):
         "Produce a fixed-stride BGEN where every variant block is "
         "exactly the same number of bytes wide (random-access, "
         "BgenEncoder path). Requires --compression-level=0 (default in "
-        "this mode) and uniform ploidy across the store. See the "
-        "'Fixed-size random-access encoding' docs section."
-    ),
-)
-@click.option(
-    "--total-string-length",
-    type=int,
-    default=None,
-    help=(
-        "Override BgenEncoder's default combined byte budget (64) for "
-        "the five BGEN string slots. Only valid with --fixed-variant-size."
-    ),
-)
-@click.option(
-    "--pad-byte",
-    type=str,
-    default=None,
-    help=(
-        "Single ASCII char used to fill the padding slot beyond its "
-        "leading '.'. Default: '.'. Only valid with --fixed-variant-size."
+        "this mode) and uniform ploidy across the store. The "
+        "--total-string-length and --pad-byte options feed the "
+        "fixed-stride encoder's per-variant string-slot budget and the "
+        "filler byte for the padding slot beyond its leading '.'; they "
+        "are inert without --fixed-variant-size. See the 'Fixed-size "
+        "random-access encoding' docs section."
     ),
 )
 @ViewBgenOptions.decorator
@@ -1330,8 +1350,6 @@ def view_bgen(
     output,
     compression_level,
     fixed_variant_size,
-    total_string_length,
-    pad_byte,
     **kwargs,
 ):
     """
@@ -1359,14 +1377,6 @@ def view_bgen(
     opts = ViewBgenOptions.from_click_kwargs(kwargs)
     opts.log.apply()
     embed_header_samples = not opts.no_header_samples
-    pad_byte_value: bytes | None = None
-    if pad_byte is not None:
-        encoded = pad_byte.encode("ascii", errors="strict")
-        if len(encoded) != 1:
-            raise click.BadParameter(
-                f"--pad-byte must be a single ASCII character (got {pad_byte!r})"
-            )
-        pad_byte_value = encoded
     if output is None:
         # Stream .bgen to stdout. Sidecars have no stem to derive paths
         # from, so they're omitted.
@@ -1396,8 +1406,8 @@ def view_bgen(
             unphased=opts.unphased,
             variant_id_field=opts.variant_id_field,
             fixed_variant_size=fixed_variant_size,
-            total_string_length=total_string_length,
-            pad_byte=pad_byte_value,
+            total_string_length=opts.total_string_length,
+            pad_byte=opts.pad_byte,
         )
 
 

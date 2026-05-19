@@ -487,7 +487,6 @@ class TestViewPlink:
         )
         fam = self._read_fam(tmp_path / "p.fam")
         assert len(fam) == 2
-        # FID column is "0", IID is the second column.
         iids = [line.split("\t")[1] for line in fam]
         assert iids == ["NA00001", "NA00003"]
 

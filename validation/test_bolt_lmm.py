@@ -88,26 +88,6 @@ def _write_remove_all_but_first_n(
     return out_path
 
 
-def _remap_sample_fid0(
-    sample_path: pathlib.Path, out_path: pathlib.Path
-) -> pathlib.Path:
-    """Rewrite a BGEN ``.sample`` file's ID_1 column to "0" so the
-    (FID, IID) pairs match the ``.fam`` written by ``view-plink``.
-    BOLT-LMM, when given both ``--bfile`` and ``--bgenFile``, cross-
-    checks the two on (FID, IID) and aborts if any sample is missing
-    on either side."""
-    lines = sample_path.read_text().splitlines()
-    # .sample format: header row, then a per-column type row
-    # (0=identifier), then one row per sample.
-    out = [lines[0], lines[1]]
-    for row in lines[2:]:
-        parts = row.split()
-        parts[0] = "0"
-        out.append(" ".join(parts))
-    out_path.write_text("\n".join(out) + "\n")
-    return out_path
-
-
 def _bolt_run(
     bolt: pathlib.Path,
     args: list[str],
@@ -141,7 +121,6 @@ class TestBoltLmmFromPlinkInput:
     def test_loads_bed_and_runs_linreg(
         self, tmp_path, bolt_lmm_bin, large_unphased_fixture
     ):
-        # Pheno is FID="0" by construction, matching view-plink's .fam.
         pheno = large_unphased_fixture.pheno_path
         exclude = _write_exclude_all_but_first_n(
             large_unphased_fixture.plink_prefix.with_suffix(".bim"),
@@ -186,15 +165,13 @@ class TestBoltLmmFromPlinkInput:
 class TestBoltLmmFromBgenInput:
     @pytest.mark.parametrize("level", cfg.BGEN_LEVELS)
     def test_loads_bgen(self, tmp_path, bolt_lmm_bin, large_unphased_fixture, level):
-        bgen, sample_src = cfg.bgen_for_level(large_unphased_fixture, level)
+        bgen, sample = cfg.bgen_for_level(large_unphased_fixture, level)
         # BOLT also requires a .bed-style anchor input for --lmm even
         # when scoring BGEN variants, so we pass --bfile alongside.
-        # Pheno is already FID="0" by construction; the .sample file is
-        # remapped from ID_1=ID_2=sample_id to FID="0" so (FID, IID)
-        # pairs line up with the .fam written by view-plink (BOLT
-        # cross-checks .fam and .sample).
+        # BOLT cross-checks (FID, IID) between .fam and .sample, and
+        # view-plink/view-bgen agree on FID = ID_1 = sample_id, so the
+        # .sample is fed in unchanged.
         pheno = large_unphased_fixture.pheno_path
-        sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
         exclude = _write_exclude_all_but_first_n(
             large_unphased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",
@@ -257,12 +234,11 @@ class TestBoltLmmPhasedBgen:
     summary lines we'd expect for either phase."""
 
     def test_loads_phased_bgen(self, tmp_path, bolt_lmm_bin, large_phased_fixture):
-        bgen, sample_src = (
+        bgen, sample = (
             large_phased_fixture.bgen_minus1,
             large_phased_fixture.sample_path,
         )
         pheno = large_phased_fixture.pheno_path
-        sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
         exclude = _write_exclude_all_but_first_n(
             large_phased_fixture.plink_prefix.with_suffix(".bim"),
             tmp_path / "exclude.txt",

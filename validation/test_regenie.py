@@ -28,28 +28,6 @@ from . import conftest as cfg
 from . import helpers, reference
 
 
-def _remap_sample_fid0(
-    sample_path: pathlib.Path, out_path: pathlib.Path
-) -> pathlib.Path:
-    """Rewrite a BGEN ``.sample`` file's ID_1 column to "0" so the
-    (FID, IID) pairs match the .fam written by ``view-plink`` (which
-    uses FID="0") and the pheno file written by ``generate_data.py``
-    (also FID="0"). ``view-bgen`` writes ID_1=ID_2=sample_id by
-    convention, so this swap puts every BGEN consumer onto the same
-    FID=0 axis the PLINK side already uses.
-    """
-    lines = sample_path.read_text().splitlines()
-    # .sample format: header row, then a per-column type row
-    # (0=identifier), then one row per sample.
-    out = [lines[0], lines[1]]
-    for row in lines[2:]:
-        parts = row.split()
-        parts[0] = "0"
-        out.append(" ".join(parts))
-    out_path.write_text("\n".join(out) + "\n")
-    return out_path
-
-
 def _run_step1_plink(
     regenie: pathlib.Path,
     bed_prefix: pathlib.Path,
@@ -196,11 +174,7 @@ class TestRegenieFromBgenInput:
     def test_a1freq_matches_reference(
         self, tmp_path, regenie_bin, small_unphased_fixture, level
     ):
-        bgen, sample_src = cfg.bgen_for_level(small_unphased_fixture, level)
-        # view-bgen writes ID_1=ID_2=sample_id; the pheno file uses
-        # FID="0". Rewrite the .sample's family column to "0" so
-        # REGENIE matches (FID, IID) between the two.
-        sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         pheno = small_unphased_fixture.pheno_path
         pred = _run_step1_bgen(
             regenie_bin,
@@ -258,8 +232,7 @@ class TestRegenieVariantIds:
     def test_bgen_input_id_column_matches_reference(
         self, tmp_path, regenie_bin, small_unphased_fixture, level
     ):
-        bgen, sample_src = cfg.bgen_for_level(small_unphased_fixture, level)
-        sample = _remap_sample_fid0(sample_src, tmp_path / "remap.sample")
+        bgen, sample = cfg.bgen_for_level(small_unphased_fixture, level)
         pheno = small_unphased_fixture.pheno_path
         pred = _run_step1_bgen(
             regenie_bin,

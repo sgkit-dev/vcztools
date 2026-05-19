@@ -47,11 +47,11 @@ def write_fam(reader, output):
 
     ``output`` is a filesystem path (``str`` / ``pathlib.Path``) or a
     writable text file-like object. The on-disk format is tab-separated,
-    one row per sample, with FamilyID = ``"0"`` to match the default of
-    ``plink2 --vcf X --make-bed``; IndividualID is the sample ID; the
-    remaining four columns (FatherID, MotherID, Sex, Phenotype) are
-    ``0/0/0/-9``. Whitespace in any sample ID is rejected — the FAM
-    format is whitespace-separated.
+    one row per sample, with FamilyID = IndividualID = the sample ID
+    (the BOLT-LMM / qctool convention; accepted by PLINK 2, REGENIE, and
+    BOLT-LMM without family-aware flags). The remaining four columns
+    (FatherID, MotherID, Sex, Phenotype) are ``0/0/0/-9``. Whitespace in
+    any sample ID is rejected — the FAM format is whitespace-separated.
     """
     # sample_ids excludes null samples and reflects any caller-applied
     # subset, matching the column axis of the BED that _stream_bed_to_file
@@ -65,10 +65,9 @@ def write_fam(reader, output):
                 "PLINK FAM is whitespace-separated."
             )
     zeros = np.zeros(sample_id.shape, dtype=int)
-    family_id = np.full(sample_id.shape, "0", dtype="U1")
     df = pd.DataFrame(
         {
-            "FamilyID": family_id,
+            "FamilyID": sample_id,
             "IndividualID": sample_id,
             "FatherID": zeros,
             "MotherId": zeros,

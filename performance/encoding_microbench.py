@@ -41,6 +41,7 @@ plink and bgen, and a one-dimensional ``threads``-only table for VCF.
 
 import statistics
 import time
+import zlib
 
 import click
 import numpy as np
@@ -232,6 +233,17 @@ def _open_encoder(fmt: str, reader: _FakeReader, threads: int, block_bytes: int)
     if fmt == "bgen_python":
         encoder = bgen.BgenEncoder(
             reader, encode_threads=threads, encode_block_bytes=block_bytes
+        )
+        # Python's zlib.compress(_, 0) finalises the stream with a
+        # trailing empty stored block, so its envelope can be a few
+        # bytes longer than the C kernel's vcz_compress2 for the same
+        # input length. The production _bytes_per_variant is sized for
+        # the C envelope, so we re-derive it from one zlib call on the
+        # uniform geno-block size and overwrite the attribute that
+        # _parallel_encode reads to size out_view.
+        python_geno_size = len(zlib.compress(b"\x00" * encoder._uniform_geno_size, 0))
+        encoder._bytes_per_variant = (
+            28 + encoder._total_string_length + python_geno_size
         )
         # Swap the per-variant loop back to the pre-C-kernel Python
         # implementation. _encode_chunk dispatches via this method (one

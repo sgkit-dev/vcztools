@@ -63,12 +63,14 @@ def run_plink2(args: str, vcf_path: Path, out_prefix: Path) -> Path:
     """Run plink2 against a VCF/BCF fixture and return ``out_prefix``.
 
     ``args`` is the plink2 argument string (without --vcf/--bcf,
-    --out, or --make-bed, which the helper supplies). Asserts that
-    plink2 exited 0; on non-zero exit, dumps stderr into the
-    AssertionError so the failure is debuggable.
+    --out, --make-bed, or --double-id, which the helper supplies).
+    ``--double-id`` makes plink2 set FID = IID = the VCF sample ID,
+    matching vcztools' .fam convention so the round-trip comparison is
+    byte-meaningful. Asserts that plink2 exited 0; on non-zero exit,
+    dumps stderr into the AssertionError so the failure is debuggable.
     """
     cmd = (
-        f"{PLINK2} {_input_flag(vcf_path)} {vcf_path} --make-bed "
+        f"{PLINK2} {_input_flag(vcf_path)} {vcf_path} --make-bed --double-id "
         f"--out {out_prefix} {args}"
     )
     completed = subprocess.run(cmd, capture_output=True, check=False, shell=True)
@@ -84,7 +86,7 @@ def run_plink2(args: str, vcf_path: Path, out_prefix: Path) -> Path:
 def run_plink2_expect_error(args: str, vcf_path: Path, out_prefix: Path) -> str:
     """Run plink2; assert it failed; return combined stderr/stdout."""
     cmd = (
-        f"{PLINK2} {_input_flag(vcf_path)} {vcf_path} --make-bed "
+        f"{PLINK2} {_input_flag(vcf_path)} {vcf_path} --make-bed --double-id "
         f"--out {out_prefix} {args}"
     )
     completed = subprocess.run(cmd, capture_output=True, check=False, shell=True)
@@ -308,8 +310,8 @@ class TestSampleSubset:
 
     @staticmethod
     def _write_keep_file(path: Path, iids: list[str]) -> Path:
-        # FID column is "0" to match what vcztools writes; IIDs follow.
-        path.write_text("\n".join(f"0\t{iid}" for iid in iids) + "\n")
+        # FID = IID (plink2 --double-id convention, also what vcztools writes).
+        path.write_text("\n".join(f"{iid}\t{iid}" for iid in iids) + "\n")
         return path
 
     def test_keep_subset(self, tmp_path, fx_chr22_vcz):
@@ -387,7 +389,7 @@ class TestSubsetInducedEdgeCases:
 
     @staticmethod
     def _write_keep_file(path: Path, iids: list[str]) -> Path:
-        path.write_text("\n".join(f"0\t{iid}" for iid in iids) + "\n")
+        path.write_text("\n".join(f"{iid}\t{iid}" for iid in iids) + "\n")
         return path
 
     @staticmethod

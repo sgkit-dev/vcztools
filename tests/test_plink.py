@@ -281,8 +281,8 @@ def _bim_string(reader):
 class TestWriteFam:
     def test_plain_ascii_sample_ids(self):
         reader = _build_reader(num_samples=2, sample_id=["s1", "s2"])
-        # FID = "0" matches plink 2 default for `--vcf`.
-        assert _fam_string(reader) == "0\ts1\t0\t0\t0\t-9\n0\ts2\t0\t0\t0\t-9\n"
+        # FID = IID = sample_id (BOLT-LMM / qctool convention).
+        assert _fam_string(reader) == "s1\ts1\t0\t0\t0\t-9\ns2\ts2\t0\t0\t0\t-9\n"
 
     def test_zero_samples(self):
         reader = _build_reader(num_samples=0, call_genotype=None)
@@ -299,7 +299,7 @@ class TestWriteFam:
         assert list(df["IID"]) == ["s1", "s3"]
         # There must be no empty-IID rows.
         assert not (df["IID"] == "").any()
-        assert list(df["FID"]) == ["0", "0"]
+        assert list(df["FID"]) == ["s1", "s3"]
 
     @pytest.mark.parametrize(
         "bad_id",
@@ -319,14 +319,14 @@ class TestWriteFam:
         reader = _build_reader(num_samples=2, sample_id=[long_id, "s2"])
         df = _parse_fam(_fam_string(reader))
         assert df["IID"].iloc[0] == long_id
-        assert df["FID"].iloc[0] == "0"
+        assert df["FID"].iloc[0] == long_id
 
     def test_sample_subset_reflected_in_fam(self):
         reader = _build_reader(num_samples=4, sample_id=["s0", "s1", "s2", "s3"])
         reader.set_samples([2, 0])
         df = _parse_fam(_fam_string(reader))
         assert list(df["IID"]) == ["s2", "s0"]
-        assert list(df["FID"]) == ["0", "0"]
+        assert list(df["FID"]) == ["s2", "s0"]
 
     def test_path_output_matches_buffer(self, tmp_path):
         reader = _build_reader(num_samples=3)

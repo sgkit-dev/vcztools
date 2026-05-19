@@ -327,16 +327,14 @@ def simulate_phenotype(
     )
     pheno = sim_result.phenotype
     # IIDs match the s0, s1, ... naming carried by the VCZ store's
-    # ``sample_id`` array and the ``.fam`` written by view-plink.
-    # FID="0" follows view-plink's .fam convention so the pheno file
-    # feeds straight into REGENIE / BOLT on PLINK input without any
-    # in-test rewrite; BGEN consumers see ID_1=ID_2=s_N in the
-    # ``.sample`` and remap its family column to "0" to line up
-    # (FID, IID) with the .fam.
+    # ``sample_id`` array. FID = IID matches the convention used by
+    # both view-plink (.fam) and view-bgen (.sample), so the pheno
+    # file feeds straight into REGENIE / BOLT on either backend
+    # without an intermediate rewrite.
     iids = [f"s{int(i)}" for i in pheno["individual_id"]]
     df = pd.DataFrame(
         {
-            "FID": "0",
+            "FID": iids,
             "IID": iids,
             "Y1": pheno["phenotype"].astype(np.float64),
         }

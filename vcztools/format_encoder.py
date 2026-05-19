@@ -44,6 +44,7 @@ Subclass authoring:
 
 import abc
 import concurrent.futures as cf
+import dataclasses
 import logging
 from collections.abc import Callable
 from typing import ClassVar
@@ -51,6 +52,17 @@ from typing import ClassVar
 import numpy as np
 
 from vcztools import retrieval
+
+
+@dataclasses.dataclass(frozen=True)
+class _EncodedChunk:
+    """One chunk's encoded output bytes plus the byte offset at which
+    they begin in the virtual stream. Yielded by
+    :meth:`FormatEncoder._encoded_chunks`.
+    """
+
+    chunk_start: int
+    encoded: bytes
 
 
 class FormatEncoder(abc.ABC):
@@ -352,13 +364,36 @@ class FormatEncoder(abc.ABC):
         return bytes(out)
 
     def _advance(self) -> None:
-        chunk = next(self._iterator)
-        encoded = self._encode_chunk(chunk)
+        item = next(self._iterator)
         self._chunk_plan_pos += 1
-        self._chunk_start = int(self._chunk_byte_offsets[self._chunk_plan_pos])
-        self._chunk_bytes = bytes(encoded)
+        self._chunk_start = item.chunk_start
+        self._chunk_bytes = item.encoded
         # Publish last: try_cached_read snapshots this single attribute.
-        self._published_chunk = (self._chunk_start, self._chunk_bytes)
+        self._published_chunk = (item.chunk_start, item.encoded)
+
+    def _encoded_chunks(self, start_plan_pos: int):
+        """Pull decoded variant chunks from the reader, run
+        :meth:`_encode_chunk` on each, and yield
+        :class:`_EncodedChunk` items in plan order starting at
+        ``start_plan_pos``.
+
+        Each item carries the chunk's encoded bytes and its byte
+        offset in the virtual stream (derived from
+        :attr:`_chunk_byte_offsets`).
+        """
+        chunk_iter = self._reader.variant_chunks(
+            fields=self._iterator_fields,
+            start=start_plan_pos,
+        )
+        try:
+            pos = start_plan_pos
+            for chunk in chunk_iter:
+                chunk_start = int(self._chunk_byte_offsets[pos])
+                encoded = bytes(self._encode_chunk(chunk))
+                pos += 1
+                yield _EncodedChunk(chunk_start, encoded)
+        finally:
+            chunk_iter.close()
 
     def _restart(self, off: int) -> None:
         prev_plan_pos = self._chunk_plan_pos
@@ -368,10 +403,7 @@ class FormatEncoder(abc.ABC):
         # entries (the trailing entry is total_size); off < total_size is
         # guaranteed by read(), so the index is in range.
         plan_pos = int(np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1)
-        self._iterator = self._reader.variant_chunks(
-            fields=self._iterator_fields,
-            start=plan_pos,
-        )
+        self._iterator = self._encoded_chunks(plan_pos)
         self._chunk_plan_pos = plan_pos - 1
         self._advance()
         label = type(self).__name__

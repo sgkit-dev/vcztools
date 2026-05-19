@@ -1241,8 +1241,19 @@ class VczReader:
         # can't change behaviour for this generator.
         variant_filter = self.variant_filter
         query_fields = self._resolve_query_fields(fields)
+        # Drop referenced fields not present in the zarr root so that
+        # calculated identifiers (N_MISSING, F_MISSING) referencing
+        # optional fields like ``call_genotype`` work on datasets that
+        # don't carry them (e.g. annotations-only files). Plain
+        # ``Identifier`` references are validated against the root at
+        # parse time, so the drop can only affect built-in
+        # calculated-variable nodes.
         filter_fields = frozenset(
-            variant_filter.referenced_fields if variant_filter is not None else ()
+            f
+            for f in (
+                variant_filter.referenced_fields if variant_filter is not None else ()
+            )
+            if f in self.root
         )
         if self._filter_samples is None:
             # Default: filter axis IS the subset axis. Covers non-empty

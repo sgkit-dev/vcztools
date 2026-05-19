@@ -1105,6 +1105,65 @@ def write_bgi(
     )
 
 
+def _write_bgen_fixed(
+    reader,
+    output,
+    *,
+    display_name,
+    bgi_path,
+    embed_header_samples,
+    encode_threads,
+    unphased,
+    variant_id_field,
+    total_string_length,
+    pad_byte,
+):
+    """Fixed-stride :func:`write_bgen` body — drives :class:`BgenEncoder`
+    end-to-end (``.bgen`` payload + optional ``.bgi`` sidecar).
+
+    Assumes the caller has already resolved defaults, validated kwargs,
+    materialised the variant filter, and written the ``.sample`` sidecar
+    if requested. ``None`` overrides for ``total_string_length`` and
+    ``pad_byte`` fall through to :class:`BgenEncoder`'s own defaults.
+    """
+    encoder_kwargs = {
+        "variant_id_field": variant_id_field,
+        "embed_header_samples": embed_header_samples,
+        "encode_threads": encode_threads,
+        "unphased": unphased,
+    }
+    if total_string_length is not None:
+        encoder_kwargs["total_string_length"] = total_string_length
+    if pad_byte is not None:
+        encoder_kwargs["pad_byte"] = pad_byte
+
+    start = time.perf_counter()
+    with (
+        BgenEncoder(reader, **encoder_kwargs) as enc,
+        utils.open_file_like(output, mode="wb") as bgen_stream,
+    ):
+        bytes_written = enc.write_to(bgen_stream)
+        if bgi_path is not None:
+            write_bgi(
+                reader,
+                bgi_path,
+                enc.variant_offsets,
+                variant_id_field=enc.variant_id_field,
+                total_string_length=enc.total_string_length,
+                pad_byte=enc.pad_byte,
+            )
+
+    elapsed = time.perf_counter() - start
+    mib = bytes_written / (1024 * 1024)
+    rate = mib / elapsed if elapsed > 0 else 0.0
+    logger.info(
+        f"write_bgen: wrote {mib:.1f} MiB to {display_name} in "
+        f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
+        f"fixed_variant_size=True, compression_level=0, "
+        f"encode_threads={encode_threads}"
+    )
+
+
 def write_bgen(
     reader,
     output,
@@ -1116,6 +1175,9 @@ def write_bgen(
     encode_threads: int | None = None,
     unphased: bool = False,
     variant_id_field: str | None = None,
+    fixed_variant_size: bool = False,
+    total_string_length: int | None = None,
+    pad_byte: bytes | None = None,
 ):
     """Write an Oxford BGEN payload for ``reader`` to ``output``.
 
@@ -1152,15 +1214,16 @@ def write_bgen(
     ``compression_level`` is forwarded to :func:`zlib.compress` for each
     variant's genotype probability block; accepts ``-1..9`` (``-1`` =
     zlib default ≈ level 6; ``0`` = stored, still framed as zlib;
-    ``9`` = maximum). The default is ``1`` — fast compression. Hard-call
-    BGEN payloads are short, low-entropy byte runs (mostly 1.0/0.0 in
-    8-bit form, repeated across samples), so the marginal compression
-    above level 1 is small relative to the CPU cost: level 6 (zlib
-    default) typically shrinks the file by ~10-30% but spends several
-    times more CPU. Since the BGEN flag word always advertises
-    ``COMPRESSION_ZLIB`` regardless of level, every reader handles the
-    output. Pass ``--compression-level 9`` (or ``compression_level=9``)
-    when archival size matters more than encode throughput.
+    ``9`` = maximum). The default is ``1`` — fast compression — on the
+    variable-size path, and ``0`` (the only valid value) on the
+    ``fixed_variant_size=True`` path. Hard-call BGEN payloads are
+    short, low-entropy byte runs (mostly 1.0/0.0 in 8-bit form,
+    repeated across samples), so the marginal compression above level
+    1 is small relative to the CPU cost: level 6 (zlib default)
+    typically shrinks the file by ~10-30% but spends several times
+    more CPU. Since the BGEN flag word always advertises
+    ``COMPRESSION_ZLIB`` regardless of level, every reader handles
+    the output.
 
     ``encode_threads`` sizes the worker pool that runs per-slice
     :func:`_prepare_chunk` + per-variant ``_encode_variant_block`` for
@@ -1176,7 +1239,27 @@ def write_bgen(
 
     ``variant_id_field`` chooses which BGEN slot — ``"rsid"`` (default)
     or ``"varid"`` — carries the zarr ``variant_id``. The other slot
-    is written as the literal ``"."`` for every variant.
+    is the padding field; on the variable-size path it is written as
+    the literal ``"."`` for every variant, on the fixed-size path it
+    is ``b"." + pad_byte * (slack - 1)`` per variant.
+
+    ``fixed_variant_size=True`` switches output to the random-access
+    fixed-stride encoding produced by :class:`BgenEncoder` — every
+    variant block is exactly ``28 + total_string_length +
+    zlib_stored_size(geno_size)`` bytes wide. The path requires
+    uniform ploidy across the store (all haploid or all diploid);
+    mixed-ploidy stores must leave ``fixed_variant_size=False``.
+    Requires ``compression_level`` to be ``None`` (default) or ``0`` —
+    any other value raises :class:`ValueError`.
+
+    ``total_string_length`` overrides :class:`BgenEncoder`'s default
+    combined byte budget (64) for the five BGEN string slots when
+    ``fixed_variant_size=True``. Only valid alongside
+    ``fixed_variant_size=True``.
+
+    ``pad_byte`` overrides :class:`BgenEncoder`'s default padding byte
+    (``b"."``) used to fill the padding slot beyond its leading
+    ``b"."``. Only valid alongside ``fixed_variant_size=True``.
     """
     if encode_threads is None:
         encode_threads = 4
@@ -1184,10 +1267,23 @@ def write_bgen(
         raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
     if embed_header_samples is None:
         embed_header_samples = True
-    if compression_level is None:
-        compression_level = 1
     if variant_id_field is None:
         variant_id_field = "rsid"
+
+    if not fixed_variant_size and (
+        total_string_length is not None or pad_byte is not None
+    ):
+        raise ValueError(
+            "total_string_length / pad_byte require fixed_variant_size=True"
+        )
+    if fixed_variant_size and compression_level is not None and compression_level != 0:
+        raise ValueError(
+            "fixed_variant_size=True requires compression_level=0 "
+            "(fixed-size variant blocks have a deterministic block size); "
+            f"got compression_level={compression_level}"
+        )
+    if compression_level is None:
+        compression_level = 0 if fixed_variant_size else 1
 
     reader.materialise_variant_filter()
 
@@ -1206,6 +1302,21 @@ def write_bgen(
         display_name = str(output)
     else:
         display_name = getattr(output, "name", "<stream>")
+
+    if fixed_variant_size:
+        _write_bgen_fixed(
+            reader,
+            output,
+            display_name=display_name,
+            bgi_path=bgi_path,
+            embed_header_samples=embed_header_samples,
+            encode_threads=encode_threads,
+            unphased=unphased,
+            variant_id_field=variant_id_field,
+            total_string_length=total_string_length,
+            pad_byte=pad_byte,
+        )
+        return
 
     start = time.perf_counter()
     encode_seconds = 0.0

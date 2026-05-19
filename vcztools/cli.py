@@ -1283,18 +1283,57 @@ def view_plink(path, output, **kwargs):
 @click.option(
     "--compression-level",
     type=click.IntRange(-1, 9),
-    default=1,
-    show_default=True,
+    default=None,
+    show_default=False,
     help=(
         "zlib compression level for the BGEN genotype probability "
-        "blocks. 1 (default) is fast and within ~10-30% of the size "
-        "of level 6 on hard-call BGEN; -1 = zlib default (~6); 0 = "
-        "stored (no compression); 9 = max."
+        "blocks. Default: 1 for variable-size output; required to be 0 "
+        "when --fixed-variant-size is set. 1 is fast and within ~10-30% "
+        "of the size of level 6 on hard-call BGEN; -1 = zlib default "
+        "(~6); 0 = stored (no compression); 9 = max."
+    ),
+)
+@click.option(
+    "--fixed-variant-size",
+    is_flag=True,
+    default=False,
+    help=(
+        "Produce a fixed-stride BGEN where every variant block is "
+        "exactly the same number of bytes wide (random-access, "
+        "BgenEncoder path). Requires --compression-level=0 (default in "
+        "this mode) and uniform ploidy across the store. See the "
+        "'Fixed-size random-access encoding' docs section."
+    ),
+)
+@click.option(
+    "--total-string-length",
+    type=int,
+    default=None,
+    help=(
+        "Override BgenEncoder's default combined byte budget (64) for "
+        "the five BGEN string slots. Only valid with --fixed-variant-size."
+    ),
+)
+@click.option(
+    "--pad-byte",
+    type=str,
+    default=None,
+    help=(
+        "Single ASCII char used to fill the padding slot beyond its "
+        "leading '.'. Default: '.'. Only valid with --fixed-variant-size."
     ),
 )
 @ViewBgenOptions.decorator
 @handle_exception
-def view_bgen(path, output, compression_level, **kwargs):
+def view_bgen(
+    path,
+    output,
+    compression_level,
+    fixed_variant_size,
+    total_string_length,
+    pad_byte,
+    **kwargs,
+):
     """
     Generate Oxford BGEN output from a VCZ dataset.
 
@@ -1320,6 +1359,14 @@ def view_bgen(path, output, compression_level, **kwargs):
     opts = ViewBgenOptions.from_click_kwargs(kwargs)
     opts.log.apply()
     embed_header_samples = not opts.no_header_samples
+    pad_byte_value: bytes | None = None
+    if pad_byte is not None:
+        encoded = pad_byte.encode("ascii", errors="strict")
+        if len(encoded) != 1:
+            raise click.BadParameter(
+                f"--pad-byte must be a single ASCII character (got {pad_byte!r})"
+            )
+        pad_byte_value = encoded
     if output is None:
         # Stream .bgen to stdout. Sidecars have no stem to derive paths
         # from, so they're omitted.
@@ -1348,6 +1395,9 @@ def view_bgen(path, output, compression_level, **kwargs):
             compression_level=compression_level,
             unphased=opts.unphased,
             variant_id_field=opts.variant_id_field,
+            fixed_variant_size=fixed_variant_size,
+            total_string_length=total_string_length,
+            pad_byte=pad_byte_value,
         )
 
 

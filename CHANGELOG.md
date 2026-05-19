@@ -12,6 +12,13 @@ Features:
   view. The filter language exposes a new `N_ALT` identifier
   (count of non-empty ALT slots), so e.g. `-i 'N_ALT >= 2'` is now
   valid. On `view-plink`, `--max-alleles` also gains a `-M` short flag.
+- Filter language exposes `N_MISSING` and `F_MISSING` calculated
+  variables (count and fraction of samples with all-missing GTs per
+  variant), so e.g. `-i 'F_MISSING < 0.05'` and `-i 'N_MISSING == 0'`
+  are now valid. Both default to 0 on datasets without `call_genotype`.
+  Other bcftools-style calculated variables (`AC`, `AF`, `MAC`,
+  `MAF`, `AN`, `ILEN`, `N_SAMPLES`) now raise a dedicated
+  `UnsupportedCalculatedVariableError` pointing at issue #171.
 - `view`'s `--max-alleles` and `-v/-V/-m` now compose with
   sample-scope `-i 'FMT/...'` filters via axis-1 broadcasting in
   the AND combinator (previously rejected). `view-plink` still

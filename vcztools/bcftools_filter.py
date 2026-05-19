@@ -70,6 +70,19 @@ class UnsupportedHigherDimensionalFormatFieldsError(UnsupportedFilteringFeatureE
     feature = "Higher dimensional FORMAT fields"
 
 
+class UnsupportedCalculatedVariableError(UnsupportedFilteringFeatureError):
+    issue = "171"
+    feature = "Calculated variables (AC, AF, AN, MAC, MAF, ILEN, N_SAMPLES)"
+
+
+# bcftools calculated variables we recognise but do not yet implement.
+# Intercepted in Identifier.__init__ so the user sees a dedicated error
+# instead of the generic "the tag X is not defined".
+UNSUPPORTED_CALCULATED_VARIABLES = frozenset(
+    {"N_SAMPLES", "AC", "MAC", "AF", "MAF", "AN", "ILEN"}
+)
+
+
 # The parser and evaluation model here are based on the eval_arith example
 # in the pyparsing docs:
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
@@ -149,6 +162,14 @@ class Identifier(EvaluationNode):
             raise UnsupportedGenotypeValuesError()
         field_names = mapper(token)
         if len(field_names) == 0:
+            # Known bcftools calculated variables we haven't implemented
+            # yet — surface a dedicated error rather than the generic
+            # "the tag X is not defined". An identifier like ``AC`` that
+            # IS present as a real INFO field uses that real field
+            # (matches bcftools), so the check only fires when the tag
+            # is otherwise undefined.
+            if token in UNSUPPORTED_CALCULATED_VARIABLES:
+                raise UnsupportedCalculatedVariableError()
             raise ValueError(f'the tag "{token}" is not defined')
         elif len(field_names) == 1:
             self.field_name = field_names[0]
@@ -569,6 +590,56 @@ class NAltIdentifier(EvaluationNode):
         return frozenset(["variant_allele"])
 
 
+def _count_missing_gt(gt):
+    # A sample's genotype is "missing" when every ploidy slot is a
+    # missing sentinel (negative value: INT_MISSING or INT_FILL).
+    return np.sum(np.all(gt < 0, axis=-1), axis=1)
+
+
+class NMissingIdentifier(EvaluationNode):
+    """Pseudo-identifier for the number of samples with all-missing
+    genotypes per variant, computed from ``call_genotype``. Defaults to
+    0 when ``call_genotype`` is absent from the dataset (matching
+    bcftools when there are no GTs to be missing).
+    """
+
+    def eval(self, data):
+        # call_genotype is referenced but may have been dropped by
+        # retrieval if absent from the zarr root (see _variant_chunks_gen).
+        # variant_position is also referenced so we always have a shape
+        # source.
+        if "call_genotype" not in data:
+            return np.zeros(len(data["variant_position"]), dtype=np.int64)
+        gt = np.asarray(data["call_genotype"])
+        return _count_missing_gt(gt)
+
+    def __repr__(self):
+        return "N_MISSING"
+
+    def referenced_fields(self):
+        return frozenset(["call_genotype", "variant_position"])
+
+
+class FMissingIdentifier(EvaluationNode):
+    """Pseudo-identifier for the fraction of samples with all-missing
+    genotypes per variant. Returns 0 when ``call_genotype`` is absent.
+    """
+
+    def eval(self, data):
+        if "call_genotype" not in data:
+            return np.zeros(len(data["variant_position"]), dtype=np.float64)
+        gt = np.asarray(data["call_genotype"])
+        n_samples = gt.shape[1]
+        n_missing = _count_missing_gt(gt)
+        return n_missing / n_samples
+
+    def __repr__(self):
+        return "F_MISSING"
+
+    def referenced_fields(self):
+        return frozenset(["call_genotype", "variant_position"])
+
+
 def _identity_list(x):
     return [x]
 
@@ -615,11 +686,18 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     type_expr = type_identifier + pp.one_of("= == != ~ !~") + type_string
     type_expr = type_expr.set_parse_action(TypeOperator)
 
-    # N_ALT is a value identifier (not paired with a string operand like
-    # TYPE), so it must be listed in the atoms ahead of the bare
-    # identifier rule to win against ``pp.common.identifier``.
+    # N_ALT / N_MISSING / F_MISSING are value identifiers (not paired
+    # with a string operand like TYPE), so they must be listed in the
+    # atoms ahead of the bare identifier rule to win against
+    # ``pp.common.identifier``.
     n_alt_identifier = pp.Keyword("N_ALT")
     n_alt_identifier = n_alt_identifier.set_parse_action(NAltIdentifier)
+
+    n_missing_identifier = pp.Keyword("N_MISSING")
+    n_missing_identifier = n_missing_identifier.set_parse_action(NMissingIdentifier)
+
+    f_missing_identifier = pp.Keyword("F_MISSING")
+    f_missing_identifier = f_missing_identifier.set_parse_action(FMissingIdentifier)
 
     lbracket, rbracket = map(pp.Suppress, "[]")
     # TODO we need to define the indexing grammar more carefully, but
@@ -651,6 +729,8 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
         | filter_field_expr
         | type_expr
         | n_alt_identifier
+        | n_missing_identifier
+        | f_missing_identifier
         | function
         | constant
         | indexed_identifier

@@ -20,6 +20,7 @@ HERE  := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 DATA_DIR := $(abspath $(HERE)../../datasets/validation)
 
 TOOLS := qctool regenie plink19 bgenix bolt_lmm
+TOOL_MARKERS := $(addprefix $(HERE)tools/,$(addsuffix /.installed,$(TOOLS)))
 
 .PHONY: all tools data test clean clean-tools clean-data $(TOOLS)
 
@@ -28,10 +29,22 @@ TOOLS := qctool regenie plink19 bgenix bolt_lmm
 # `tools` and `data` so it doesn't run against half-installed binaries.
 all: test
 
-tools: $(TOOLS)
+# `tools` depends on the per-tool .installed marker files, not on the
+# phony per-tool target names, so a no-op rebuild walks the marker
+# mtimes and skips the install scripts entirely (the scripts
+# self-short-circuit when the marker is already present, but the
+# shell invocation alone added noise on every `make all`).
+tools: $(TOOL_MARKERS)
 
-$(TOOLS):
-	bash $(HERE)install/install_$@.sh
+# Pattern rule: tools/<name>/.installed is rebuilt when its install
+# script changes (or the marker is missing). The install script
+# creates the marker as its last step.
+$(HERE)tools/%/.installed: $(HERE)install/install_%.sh
+	bash $<
+
+# Convenience phony aliases (`make qctool`, `make bgenix`, etc.):
+# trigger the marker rule above but do nothing themselves.
+$(TOOLS): %: $(HERE)tools/%/.installed
 
 data: $(DATA_DIR)/small.vcz.ready $(DATA_DIR)/large.vcz.ready $(DATA_DIR)/haploid.vcz.ready $(DATA_DIR)/mixed_ploidy.vcz.ready $(DATA_DIR)/varied_strings.vcz.ready
 

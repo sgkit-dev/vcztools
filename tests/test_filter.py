@@ -394,7 +394,12 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate_n_missing(self, expression, expected):
-        fee = filter_mod.BcftoolsFilter(include=expression)
+        # field_names must include call_genotype so the parser picks
+        # the real NMissingIdentifier rather than the all-zero
+        # NMissingZeroIdentifier degenerate fallback.
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"call_genotype"}, include=expression
+        )
         result = fee.evaluate(numpify_values(self._MISSING_GT_DATA))
         nt.assert_array_equal(result, expected)
 
@@ -410,7 +415,9 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate_f_missing(self, expression, expected):
-        fee = filter_mod.BcftoolsFilter(include=expression)
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"call_genotype"}, include=expression
+        )
         result = fee.evaluate(numpify_values(self._MISSING_GT_DATA))
         nt.assert_array_equal(result, expected)
 
@@ -435,32 +442,46 @@ class TestFilterExpression:
             "variant_position": np.array([1, 2, 3]),
         }
         fee = filter_mod.BcftoolsFilter(
+            field_names={"call_genotype"},
             include='N_MISSING > 0 && TYPE~"snp"',
         )
         nt.assert_array_equal(fee.evaluate(data), [False, True, False])
 
-    def test_n_missing_referenced_fields(self):
-        fee = filter_mod.BcftoolsFilter(include="N_MISSING == 0")
-        assert fee.referenced_fields == {"call_genotype", "variant_position"}
+    def test_n_missing_referenced_fields_with_call_genotype(self):
+        # Real-path identifier references only call_genotype.
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"call_genotype"}, include="N_MISSING == 0"
+        )
+        assert fee.referenced_fields == {"call_genotype"}
         assert fee.scope == "variant"
 
-    def test_f_missing_referenced_fields(self):
-        fee = filter_mod.BcftoolsFilter(include="F_MISSING < 0.5")
-        assert fee.referenced_fields == {"call_genotype", "variant_position"}
+    def test_n_missing_referenced_fields_without_call_genotype(self):
+        # Degenerate fallback references variant_position only (as a
+        # shape source for the all-zero result).
+        fee = filter_mod.BcftoolsFilter(field_names=set(), include="N_MISSING == 0")
+        assert fee.referenced_fields == {"variant_position"}
+        assert fee.scope == "variant"
+
+    def test_f_missing_referenced_fields_with_call_genotype(self):
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"call_genotype"}, include="F_MISSING < 0.5"
+        )
+        assert fee.referenced_fields == {"call_genotype"}
+        assert fee.scope == "variant"
+
+    def test_f_missing_referenced_fields_without_call_genotype(self):
+        fee = filter_mod.BcftoolsFilter(field_names=set(), include="F_MISSING < 0.5")
+        assert fee.referenced_fields == {"variant_position"}
         assert fee.scope == "variant"
 
     def test_combined_missing_referenced_fields(self):
         # Combining N_MISSING and F_MISSING with a real INFO field
         # collects all references at the BcftoolsFilter level.
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_DP"},
+            field_names={"variant_DP", "call_genotype"},
             include="N_MISSING == 0 && F_MISSING < 0.05 && INFO/DP > 10",
         )
-        assert fee.referenced_fields == {
-            "call_genotype",
-            "variant_position",
-            "variant_DP",
-        }
+        assert fee.referenced_fields == {"call_genotype", "variant_DP"}
 
     @pytest.mark.parametrize(
         ("expression", "expected"),
@@ -498,7 +519,9 @@ class TestFilterExpression:
             ),
             "variant_position": np.array([1, 2]),
         }
-        fee = filter_mod.BcftoolsFilter(include="N_MISSING == 2")
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"call_genotype"}, include="N_MISSING == 2"
+        )
         nt.assert_array_equal(fee.evaluate(data), [False, True])
 
     @pytest.mark.parametrize(

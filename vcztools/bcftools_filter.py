@@ -598,18 +598,12 @@ def _count_missing_gt(gt):
 
 class NMissingIdentifier(EvaluationNode):
     """Pseudo-identifier for the number of samples with all-missing
-    genotypes per variant, computed from ``call_genotype``. Defaults to
-    0 when ``call_genotype`` is absent from the dataset (matching
-    bcftools when there are no GTs to be missing).
+    genotypes per variant, computed from ``call_genotype``. Selected
+    by the parser when the dataset has ``call_genotype``; the
+    no-genotype fallback uses :class:`NMissingZeroIdentifier` instead.
     """
 
     def eval(self, data):
-        # call_genotype is referenced but may have been dropped by
-        # retrieval if absent from the zarr root (see _variant_chunks_gen).
-        # variant_position is also referenced so we always have a shape
-        # source.
-        if "call_genotype" not in data:
-            return np.zeros(len(data["variant_position"]), dtype=np.int64)
         gt = np.asarray(data["call_genotype"])
         return _count_missing_gt(gt)
 
@@ -617,27 +611,55 @@ class NMissingIdentifier(EvaluationNode):
         return "N_MISSING"
 
     def referenced_fields(self):
-        return frozenset(["call_genotype", "variant_position"])
+        return frozenset(["call_genotype"])
 
 
 class FMissingIdentifier(EvaluationNode):
     """Pseudo-identifier for the fraction of samples with all-missing
-    genotypes per variant. Returns 0 when ``call_genotype`` is absent.
+    genotypes per variant, computed from ``call_genotype``. Selected
+    by the parser when the dataset has ``call_genotype``; the
+    no-genotype fallback uses :class:`FMissingZeroIdentifier` instead.
     """
 
     def eval(self, data):
-        if "call_genotype" not in data:
-            return np.zeros(len(data["variant_position"]), dtype=np.float64)
         gt = np.asarray(data["call_genotype"])
         n_samples = gt.shape[1]
-        n_missing = _count_missing_gt(gt)
-        return n_missing / n_samples
+        return _count_missing_gt(gt) / n_samples
 
     def __repr__(self):
         return "F_MISSING"
 
     def referenced_fields(self):
-        return frozenset(["call_genotype", "variant_position"])
+        return frozenset(["call_genotype"])
+
+
+class NMissingZeroIdentifier(EvaluationNode):
+    """Degenerate N_MISSING for datasets without ``call_genotype``:
+    no samples means no samples-with-missing-GT, so it's always 0.
+    ``variant_position`` is always present in vcz and supplies shape.
+    """
+
+    def eval(self, data):
+        return np.zeros(len(data["variant_position"]), dtype=np.int64)
+
+    def __repr__(self):
+        return "N_MISSING"
+
+    def referenced_fields(self):
+        return frozenset(["variant_position"])
+
+
+class FMissingZeroIdentifier(EvaluationNode):
+    """Degenerate F_MISSING: always 0 when ``call_genotype`` is absent."""
+
+    def eval(self, data):
+        return np.zeros(len(data["variant_position"]), dtype=np.float64)
+
+    def __repr__(self):
+        return "F_MISSING"
+
+    def referenced_fields(self):
+        return frozenset(["variant_position"])
 
 
 def _identity_list(x):
@@ -689,15 +711,21 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     # N_ALT / N_MISSING / F_MISSING are value identifiers (not paired
     # with a string operand like TYPE), so they must be listed in the
     # atoms ahead of the bare identifier rule to win against
-    # ``pp.common.identifier``.
+    # ``pp.common.identifier``. N_MISSING / F_MISSING swap to a
+    # degenerate all-zero variant on datasets without call_genotype,
+    # detected once at parse time so the real implementation never
+    # needs to handle the no-GT case at eval time.
     n_alt_identifier = pp.Keyword("N_ALT")
     n_alt_identifier = n_alt_identifier.set_parse_action(NAltIdentifier)
 
+    gt_present = "call_genotype" in all_fields
+    n_missing_action = NMissingIdentifier if gt_present else NMissingZeroIdentifier
     n_missing_identifier = pp.Keyword("N_MISSING")
-    n_missing_identifier = n_missing_identifier.set_parse_action(NMissingIdentifier)
+    n_missing_identifier = n_missing_identifier.set_parse_action(n_missing_action)
 
+    f_missing_action = FMissingIdentifier if gt_present else FMissingZeroIdentifier
     f_missing_identifier = pp.Keyword("F_MISSING")
-    f_missing_identifier = f_missing_identifier.set_parse_action(FMissingIdentifier)
+    f_missing_identifier = f_missing_identifier.set_parse_action(f_missing_action)
 
     lbracket, rbracket = map(pp.Suppress, "[]")
     # TODO we need to define the indexing grammar more carefully, but

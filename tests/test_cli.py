@@ -899,6 +899,130 @@ class TestViewBgen:
         assert "WARNING" in log_text
         assert "sample IDs nowhere" in log_text
 
+    def test_fixed_variant_size_produces_sidecars(self, tmp_path, fx_vcz_path):
+        # The fixed-size path goes through write_bgen end-to-end, so the
+        # .sample and .bgen.bgi sidecars are produced just like on the
+        # variable-size path.
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --fixed-variant-size"
+        )
+        assert (tmp_path / "b.bgen").exists()
+        assert (tmp_path / "b.sample").exists()
+        assert (tmp_path / "b.bgen.bgi").exists()
+
+    def test_fixed_variant_size_uniform_block_offsets(self, tmp_path, fx_vcz_path):
+        # The defining property of the fixed-stride encoding: every
+        # variant block is exactly bytes_per_variant wide. The .bgi
+        # ``file_start_position`` deltas across consecutive variants
+        # must all match.
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --fixed-variant-size"
+        )
+        conn = sqlite3.connect(str(tmp_path / "b.bgen.bgi"))
+        try:
+            offsets = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT file_start_position FROM Variant "
+                    "ORDER BY file_start_position"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+        deltas = [b - a for a, b in zip(offsets, offsets[1:])]
+        assert len(deltas) > 0
+        assert all(d == deltas[0] for d in deltas)
+
+    def test_fixed_variant_size_total_string_length_widens_blocks(
+        self, tmp_path, fx_vcz_path
+    ):
+        # --total-string-length sets the combined per-variant string
+        # budget; raising it widens every variant block by the same
+        # amount. Compare the .bgi block widths at 64 vs 96.
+        def block_width(stem, extra):
+            out = tmp_path / stem
+            run_vcztools(
+                f"view-bgen {fx_vcz_path} --max-alleles 2 "
+                f"-e 'CHROM==\"X\"' -o {out.as_posix()} --fixed-variant-size {extra}"
+            )
+            conn = sqlite3.connect(str(tmp_path / f"{stem}.bgen.bgi"))
+            try:
+                rows = conn.execute(
+                    "SELECT file_start_position FROM Variant "
+                    "ORDER BY file_start_position"
+                ).fetchall()
+            finally:
+                conn.close()
+            return rows[1][0] - rows[0][0]
+
+        width_64 = block_width("b64", "--total-string-length 64")
+        width_96 = block_width("b96", "--total-string-length 96")
+        assert width_96 - width_64 == 32
+
+    def test_fixed_variant_size_pad_byte_appears_in_padding_slot(
+        self, tmp_path, fx_vcz_path
+    ):
+        # With --variant-id-field varid, the BGEN rsid slot holds the
+        # padding field — "." followed by pad_byte filler. Pick a
+        # distinctive --pad-byte and confirm bgen-reader sees it.
+        out = tmp_path / "b"
+        run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} "
+            f"--fixed-variant-size --variant-id-field varid --pad-byte X"
+        )
+        with br.open_bgen(tmp_path / "b.bgen", verbose=False) as bg:
+            for rsid in bg.rsids:
+                rsid_str = str(rsid)
+                assert rsid_str.startswith(".")
+                assert set(rsid_str[1:]) == {"X"}
+
+    def test_fixed_variant_size_rejects_non_zero_compression(
+        self, tmp_path, fx_vcz_path
+    ):
+        out = tmp_path / "b"
+        _, err = run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} "
+            f"--fixed-variant-size --compression-level 1",
+            expect_error=True,
+        )
+        assert "fixed_variant_size=True requires compression_level=0" in err
+
+    def test_total_string_length_requires_fixed_variant_size(
+        self, tmp_path, fx_vcz_path
+    ):
+        out = tmp_path / "b"
+        _, err = run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --total-string-length 64",
+            expect_error=True,
+        )
+        assert "total_string_length / pad_byte require fixed_variant_size=True" in err
+
+    def test_pad_byte_requires_fixed_variant_size(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        _, err = run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} --pad-byte X",
+            expect_error=True,
+        )
+        assert "total_string_length / pad_byte require fixed_variant_size=True" in err
+
+    def test_multi_char_pad_byte_rejected(self, tmp_path, fx_vcz_path):
+        out = tmp_path / "b"
+        _, err = run_vcztools(
+            f"view-bgen {fx_vcz_path} --max-alleles 2 "
+            f"-e 'CHROM==\"X\"' -o {out.as_posix()} "
+            f"--fixed-variant-size --pad-byte XY",
+            expect_error=True,
+        )
+        assert "single ASCII character" in err
+
 
 class TestIndex:
     def test_stats(self, fx_vcz_path):

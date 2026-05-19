@@ -126,35 +126,27 @@ def _convert_to_vcz(ts: tskit.TreeSequence, vcz_path: pathlib.Path) -> zarr.Grou
     """Run ``bio2zarr.tskit.convert`` into ``vcz_path`` (overwriting any
     existing store) and return the opened group in r+ mode.
 
-    bio2zarr.tskit.convert names individuals ``tsk_0, tsk_1, ...``;
-    we overwrite the ``sample_id`` array with the shorter, predictable
-    ``s0, s1, ...`` form so the validation fixtures (pheno files,
-    .fam, .sample) can share the same naming without any tstrait-
-    output parsing.
+    Individuals are named ``s0, s1, ...`` via the VCF-model mapping,
+    so the ``sample_id`` array in the resulting VCZ store, the
+    ``.fam`` written by view-plink, the ``.sample`` written by
+    view-bgen, and the pheno file written by :func:`simulate_phenotype`
+    all share the same short, predictable naming.
     """
     if vcz_path.exists():
         # bio2zarr refuses to overwrite an existing store; clean up first.
         shutil.rmtree(vcz_path)
+    individual_names = [f"s{i}" for i in range(ts.num_individuals)]
+    mapping = ts.map_to_vcf_model(individual_names=individual_names)
     b2z_tskit.convert(
         ts,
         str(vcz_path),
+        model_mapping=mapping,
         variants_chunk_size=1000,
         samples_chunk_size=1000,
         worker_processes=0,
         show_progress=False,
     )
-    group = zarr.open_group(str(vcz_path), mode="r+")
-    _rename_samples(group)
-    return group
-
-
-def _rename_samples(group: zarr.Group) -> None:
-    """Overwrite ``sample_id`` with ``s0, s1, ...``. The dtype and
-    chunking of the existing array are preserved so the rewrite is a
-    pure value swap."""
-    n_samples = group["sample_id"].shape[0]
-    new_ids = np.array([f"s{i}" for i in range(n_samples)], dtype=str)
-    group["sample_id"][:] = new_ids
+    return zarr.open_group(str(vcz_path), mode="r+")
 
 
 def _inject_variant_ids(group: zarr.Group) -> None:
@@ -334,13 +326,13 @@ def simulate_phenotype(
         random_seed=spec.seed,
     )
     pheno = sim_result.phenotype
-    # IIDs match the s0, s1, ... naming installed on the VCZ store by
-    # :func:`_rename_samples` and on the .fam by view-plink. FID="0"
-    # follows view-plink's .fam convention, so the pheno file feeds
-    # straight into REGENIE / BOLT on PLINK input without any in-test
-    # rewrite. BGEN consumers see ID_1=ID_2=s_N in the .sample, so
-    # those tests still remap the .sample's family column to "0" to
-    # line up (FID, IID) with the .fam.
+    # IIDs match the s0, s1, ... naming carried by the VCZ store's
+    # ``sample_id`` array and the ``.fam`` written by view-plink.
+    # FID="0" follows view-plink's .fam convention so the pheno file
+    # feeds straight into REGENIE / BOLT on PLINK input without any
+    # in-test rewrite; BGEN consumers see ID_1=ID_2=s_N in the
+    # ``.sample`` and remap its family column to "0" to line up
+    # (FID, IID) with the .fam.
     iids = [f"s{int(i)}" for i in pheno["individual_id"]]
     df = pd.DataFrame(
         {

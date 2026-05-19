@@ -1105,26 +1105,47 @@ def write_bgi(
     )
 
 
+@dataclasses.dataclass
+class _BgenPayloadInfo:
+    """Per-variant byte boundaries and padding parameters needed to
+    write the bgenix ``.bgen.bgi`` sidecar matching a BGEN payload.
+
+    The two ``write_bgen`` payload helpers return this so the
+    top-level :func:`write_bgen` can drive :func:`write_bgi` with a
+    single call shape regardless of which encoder ran. The variable-
+    size path returns ``total_string_length=None`` and
+    ``pad_byte=b"."`` — :func:`write_bgi`'s defaults — so the .bgi
+    rsid column reproduces the per-variant ``b"."`` padding the BGEN
+    payload carries.
+    """
+
+    variant_offsets: np.ndarray
+    total_string_length: int | None
+    pad_byte: bytes
+
+
 def _write_bgen_fixed(
     reader,
     output,
     *,
     display_name,
-    bgi_path,
     embed_header_samples,
     encode_threads,
     unphased,
     variant_id_field,
     total_string_length,
     pad_byte,
-):
-    """Fixed-stride :func:`write_bgen` body — drives :class:`BgenEncoder`
-    end-to-end (``.bgen`` payload + optional ``.bgi`` sidecar).
+) -> _BgenPayloadInfo:
+    """Fixed-stride payload body — drives :class:`BgenEncoder`
+    end-to-end and writes its byte stream to ``output``.
 
     Assumes the caller has already resolved defaults, validated kwargs,
     materialised the variant filter, and written the ``.sample`` sidecar
     if requested. ``None`` overrides for ``total_string_length`` and
-    ``pad_byte`` fall through to :class:`BgenEncoder`'s own defaults.
+    ``pad_byte`` fall through to :class:`BgenEncoder`'s own defaults;
+    the returned :class:`_BgenPayloadInfo` carries the encoder's
+    resolved values so the top-level caller can run :func:`write_bgi`
+    against the same parameters.
     """
     encoder_kwargs = {
         "variant_id_field": variant_id_field,
@@ -1143,15 +1164,11 @@ def _write_bgen_fixed(
         utils.open_file_like(output, mode="wb") as bgen_stream,
     ):
         bytes_written = enc.write_to(bgen_stream)
-        if bgi_path is not None:
-            write_bgi(
-                reader,
-                bgi_path,
-                enc.variant_offsets,
-                variant_id_field=enc.variant_id_field,
-                total_string_length=enc.total_string_length,
-                pad_byte=enc.pad_byte,
-            )
+        info = _BgenPayloadInfo(
+            variant_offsets=enc.variant_offsets,
+            total_string_length=enc.total_string_length,
+            pad_byte=enc.pad_byte,
+        )
 
     elapsed = time.perf_counter() - start
     mib = bytes_written / (1024 * 1024)
@@ -1161,6 +1178,137 @@ def _write_bgen_fixed(
         f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
         f"fixed_variant_size=True, compression_level=0, "
         f"encode_threads={encode_threads}"
+    )
+    return info
+
+
+def _write_bgen_variable(
+    reader,
+    output,
+    *,
+    display_name,
+    embed_header_samples,
+    compression_level,
+    encode_threads,
+    unphased,
+    variant_id_field,
+) -> _BgenPayloadInfo:
+    """Variable-stride payload body — runs the per-chunk parallel
+    encoder loop and streams variant blocks to ``output``.
+
+    Assumes the caller has already resolved defaults, validated kwargs,
+    materialised the variant filter, and written the ``.sample`` sidecar
+    if requested.
+    """
+    start = time.perf_counter()
+    encode_seconds = 0.0
+    write_seconds = 0.0
+    bytes_written = 0
+
+    num_variants = int(reader.variant_counts_per_chunk().sum())
+    sample_ids = reader.sample_ids
+    num_samples = int(sample_ids.size)
+
+    contig_id = reader.contig_ids
+    has_variant_id = "variant_id" in reader.field_names
+    has_phased = (not unphased) and "call_genotype_phased" in reader.field_names
+
+    fields = ["call_genotype", "variant_allele", "variant_contig", "variant_position"]
+    if has_variant_id:
+        fields.append("variant_id")
+    if has_phased:
+        fields.append("call_genotype_phased")
+
+    if embed_header_samples:
+        sample_id_block = _build_sample_id_block(sample_ids)
+    else:
+        sample_id_block = b""
+    header_bytes = _build_header(
+        num_variants,
+        num_samples,
+        sample_id_block,
+        embed_samples=embed_header_samples,
+    )
+
+    variant_offsets = np.empty(num_variants + 1, dtype=np.int64)
+    variant_offsets[0] = len(header_bytes)
+    mixed_phase_count = 0
+    idx = 0
+
+    with (
+        utils.open_file_like(output, mode="wb") as bgen_stream,
+        cf.ThreadPoolExecutor(
+            max_workers=encode_threads,
+            thread_name_prefix="write-bgen-encode",
+        ) as executor,
+    ):
+        bgen_stream.write(header_bytes)
+        bytes_written += len(header_bytes)
+
+        for chunk in reader.variant_chunks(fields=fields):
+            n = int(chunk["call_genotype"].shape[0])
+            # Dispatch slice encodes in submit order; collect in submit
+            # order so the file byte layout (and variant_offsets) stay
+            # deterministic regardless of which worker finishes first.
+            # String prep is hoisted out of the worker pool — it holds
+            # the GIL, so running it once per chunk lets the workers
+            # actually overlap.
+            chunk_strings = _prepare_chunk_strings(
+                chunk, contig_id, variant_id_field=variant_id_field
+            )
+            slice_variants = max(1, (n + encode_threads - 1) // encode_threads)
+            slice_ranges = [
+                (s, min(s + slice_variants, n)) for s in range(0, n, slice_variants)
+            ]
+            t_enc = time.perf_counter()
+            futures = [
+                executor.submit(
+                    _encode_chunk_slice,
+                    chunk,
+                    chunk_strings,
+                    s,
+                    e,
+                    compression_level=compression_level,
+                )
+                for (s, e) in slice_ranges
+            ]
+            for fut in futures:
+                slice_bytes, lens, slice_mpc = fut.result()
+                t_after_enc = time.perf_counter()
+                encode_seconds += t_after_enc - t_enc
+                bgen_stream.write(slice_bytes)
+                write_seconds += time.perf_counter() - t_after_enc
+                t_enc = time.perf_counter()
+
+                mixed_phase_count += slice_mpc
+                slice_lens = np.asarray(lens, dtype=np.int64)
+                n_slice = slice_lens.size
+                variant_offsets[idx + 1 : idx + 1 + n_slice] = variant_offsets[
+                    idx
+                ] + np.cumsum(slice_lens)
+                idx += n_slice
+                bytes_written += len(slice_bytes)
+
+    elapsed = time.perf_counter() - start
+    mib = bytes_written / (1024 * 1024)
+    rate = mib / elapsed if elapsed > 0 else 0.0
+    logger.info(
+        f"write_bgen: wrote {mib:.1f} MiB to {display_name} in "
+        f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
+        f"compression_level={compression_level}, encode_threads={encode_threads}; "
+        f"encode={encode_seconds:.2f}s, write={write_seconds:.2f}s"
+    )
+    if mixed_phase_count > 0:
+        logger.warning(
+            f"write_bgen: {mixed_phase_count} variant(s) had mixed phase "
+            "across samples; emitted as unphased (BGEN has one phase flag "
+            "per variant)."
+        )
+
+    return _BgenPayloadInfo(
+        variant_offsets=variant_offsets,
+        total_string_length=None,
+        pad_byte=b".",
     )
 
 
@@ -1304,11 +1452,10 @@ def write_bgen(
         display_name = getattr(output, "name", "<stream>")
 
     if fixed_variant_size:
-        _write_bgen_fixed(
+        info = _write_bgen_fixed(
             reader,
             output,
             display_name=display_name,
-            bgi_path=bgi_path,
             embed_header_samples=embed_header_samples,
             encode_threads=encode_threads,
             unphased=unphased,
@@ -1316,112 +1463,24 @@ def write_bgen(
             total_string_length=total_string_length,
             pad_byte=pad_byte,
         )
-        return
-
-    start = time.perf_counter()
-    encode_seconds = 0.0
-    write_seconds = 0.0
-    bytes_written = 0
-
-    num_variants = int(reader.variant_counts_per_chunk().sum())
-    sample_ids = reader.sample_ids
-    num_samples = int(sample_ids.size)
-
-    contig_id = reader.contig_ids
-    has_variant_id = "variant_id" in reader.field_names
-    has_phased = (not unphased) and "call_genotype_phased" in reader.field_names
-
-    fields = ["call_genotype", "variant_allele", "variant_contig", "variant_position"]
-    if has_variant_id:
-        fields.append("variant_id")
-    if has_phased:
-        fields.append("call_genotype_phased")
-
-    if embed_header_samples:
-        sample_id_block = _build_sample_id_block(sample_ids)
     else:
-        sample_id_block = b""
-    header_bytes = _build_header(
-        num_variants,
-        num_samples,
-        sample_id_block,
-        embed_samples=embed_header_samples,
-    )
-
-    variant_offsets = np.empty(num_variants + 1, dtype=np.int64)
-    variant_offsets[0] = len(header_bytes)
-    mixed_phase_count = 0
-    idx = 0
-
-    with (
-        utils.open_file_like(output, mode="wb") as bgen_stream,
-        cf.ThreadPoolExecutor(
-            max_workers=encode_threads,
-            thread_name_prefix="write-bgen-encode",
-        ) as executor,
-    ):
-        bgen_stream.write(header_bytes)
-        bytes_written += len(header_bytes)
-
-        for chunk in reader.variant_chunks(fields=fields):
-            n = int(chunk["call_genotype"].shape[0])
-            # Dispatch slice encodes in submit order; collect in submit
-            # order so the file byte layout (and variant_offsets) stay
-            # deterministic regardless of which worker finishes first.
-            # String prep is hoisted out of the worker pool — it holds
-            # the GIL, so running it once per chunk lets the workers
-            # actually overlap.
-            chunk_strings = _prepare_chunk_strings(
-                chunk, contig_id, variant_id_field=variant_id_field
-            )
-            slice_variants = max(1, (n + encode_threads - 1) // encode_threads)
-            slice_ranges = [
-                (s, min(s + slice_variants, n)) for s in range(0, n, slice_variants)
-            ]
-            t_enc = time.perf_counter()
-            futures = [
-                executor.submit(
-                    _encode_chunk_slice,
-                    chunk,
-                    chunk_strings,
-                    s,
-                    e,
-                    compression_level=compression_level,
-                )
-                for (s, e) in slice_ranges
-            ]
-            for fut in futures:
-                slice_bytes, lens, slice_mpc = fut.result()
-                t_after_enc = time.perf_counter()
-                encode_seconds += t_after_enc - t_enc
-                bgen_stream.write(slice_bytes)
-                write_seconds += time.perf_counter() - t_after_enc
-                t_enc = time.perf_counter()
-
-                mixed_phase_count += slice_mpc
-                slice_lens = np.asarray(lens, dtype=np.int64)
-                n_slice = slice_lens.size
-                variant_offsets[idx + 1 : idx + 1 + n_slice] = variant_offsets[
-                    idx
-                ] + np.cumsum(slice_lens)
-                idx += n_slice
-                bytes_written += len(slice_bytes)
-
-    elapsed = time.perf_counter() - start
-    mib = bytes_written / (1024 * 1024)
-    rate = mib / elapsed if elapsed > 0 else 0.0
-    logger.info(
-        f"write_bgen: wrote {mib:.1f} MiB to {display_name} in "
-        f"{elapsed:.2f}s ({rate:.1f} MiB/s); "
-        f"compression_level={compression_level}, encode_threads={encode_threads}; "
-        f"encode={encode_seconds:.2f}s, write={write_seconds:.2f}s"
-    )
-    if mixed_phase_count > 0:
-        logger.warning(
-            f"write_bgen: {mixed_phase_count} variant(s) had mixed phase "
-            "across samples; emitted as unphased (BGEN has one phase flag "
-            "per variant)."
+        info = _write_bgen_variable(
+            reader,
+            output,
+            display_name=display_name,
+            embed_header_samples=embed_header_samples,
+            compression_level=compression_level,
+            encode_threads=encode_threads,
+            unphased=unphased,
+            variant_id_field=variant_id_field,
         )
 
     if bgi_path is not None:
-        write_bgi(reader, bgi_path, variant_offsets, variant_id_field=variant_id_field)
+        write_bgi(
+            reader,
+            bgi_path,
+            info.variant_offsets,
+            variant_id_field=variant_id_field,
+            total_string_length=info.total_string_length,
+            pad_byte=info.pad_byte,
+        )

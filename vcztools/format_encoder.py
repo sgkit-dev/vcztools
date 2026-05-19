@@ -51,7 +51,7 @@ from typing import ClassVar
 
 import numpy as np
 
-from vcztools import retrieval
+from vcztools import retrieval, utils
 
 
 @dataclasses.dataclass(frozen=True)
@@ -403,7 +403,7 @@ class FormatEncoder(abc.ABC):
         # entries (the trailing entry is total_size); off < total_size is
         # guaranteed by read(), so the index is in range.
         plan_pos = int(np.searchsorted(self._chunk_byte_offsets, off, side="right") - 1)
-        self._iterator = self._encoded_chunks(plan_pos)
+        self._iterator = utils.PrefetchIterator(self._encoded_chunks(plan_pos))
         self._chunk_plan_pos = plan_pos - 1
         self._advance()
         label = type(self).__name__

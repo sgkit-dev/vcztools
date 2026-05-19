@@ -12,12 +12,14 @@ Goal: 100% line + branch coverage of ``vcztools/format_encoder.py``.
 
 import io
 import logging
+import threading
+import time
 
 import numpy as np
 import pytest
 
 from tests import vcz_builder
-from vcztools import bcftools_filter, format_encoder, retrieval
+from vcztools import bcftools_filter, format_encoder, retrieval, utils
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -55,8 +57,15 @@ class _FakeEncoder(format_encoder.FormatEncoder):
         self._encode_calls = 0
         self._close_hook_calls = 0
         self._chunks_received = []
+        self._encode_thread_names: list[str] = []
         self._encode_raise_once = False
         self._encode_raise_in_worker = False
+        # When set, _encode_chunk raises if the chunk's first variant
+        # has this value in call_genotype[0, 0, 0]. Used for tests that
+        # need a deterministic failure trigger independent of prefetch
+        # ordering (since _encode_raise_once may be consumed by an
+        # in-flight prefetched chunk during teardown).
+        self._fail_if_first_variant: int | None = None
         super().__init__(
             reader,
             bytes_per_variant=bpv,
@@ -68,11 +77,17 @@ class _FakeEncoder(format_encoder.FormatEncoder):
 
     def _encode_chunk(self, chunk):
         self._encode_calls += 1
+        self._encode_thread_names.append(threading.current_thread().name)
         self._chunks_received.append(tuple(sorted(chunk.keys())))
         if self._encode_raise_once:
             self._encode_raise_once = False
             raise ValueError("fake encode failure")
         G = chunk["call_genotype"]
+        if (
+            self._fail_if_first_variant is not None
+            and int(G[0, 0, 0]) == self._fail_if_first_variant
+        ):
+            raise ValueError("fake encode failure")
         num_variants = G.shape[0]
         bpv = self._bytes_per_variant
         if self._fake_use_parallel:
@@ -903,11 +918,14 @@ class TestRestart:
         enc.read(prefix, 4)
         assert enc._chunk_plan_pos == 0
 
-        # Force the next restart-induced encode to raise mid-flight
-        enc._encode_raise_once = True
+        # Force the encode of chunk 2 (variants [8:12]) to raise. Chunk-content-
+        # based so the failure is robust against prefetch-induced extra encode
+        # calls on chunks the consumer never observes.
+        enc._fail_if_first_variant = 8
         with pytest.raises(ValueError, match="fake encode failure"):
             enc.read(prefix + 8 * bpv, 4)  # skip to chunk 2
 
+        enc._fail_if_first_variant = None
         with caplog.at_level(logging.DEBUG, logger=_FakeEncoder.__module__):
             enc.read(prefix + 12 * bpv, 4)  # retry into chunk 3
         messages = [
@@ -1285,3 +1303,86 @@ class TestEmptyStore:
         enc = _FakeEncoder(self._zero_variant_reader())
         enc.close()
         assert enc._closed is True
+
+
+# ---------------------------------------------------------------------------
+# Encode readahead (PrefetchIterator wrap)
+# ---------------------------------------------------------------------------
+
+
+def _prefetch_threads():
+    return [t for t in threading.enumerate() if "vcztools-prefetch" in t.name]
+
+
+def _wait_for_thread_count(target, timeout=1.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if len(_prefetch_threads()) <= target:
+            return
+        time.sleep(0.01)
+
+
+class TestReadahead:
+    """The encoded-chunk iterator is wrapped in
+    :class:`utils.PrefetchIterator`, so ``_encode_chunk`` runs on a
+    background prefetch worker one chunk ahead of the consumer.
+    """
+
+    def test_iterator_is_wrapped_after_first_read(self):
+        enc = _FakeEncoder(_build_reader(num_variants=20, variants_chunk_size=4))
+        try:
+            enc.read(enc.prefix_size, 4)
+            assert isinstance(enc._iterator, utils.PrefetchIterator)
+        finally:
+            enc.close()
+
+    def test_encode_runs_on_prefetch_worker_not_caller(self):
+        # Drain the full stream, then assert every _encode_chunk call
+        # ran on a vcztools-prefetch-named thread, never on MainThread.
+        enc = _FakeEncoder(_build_reader(num_variants=20, variants_chunk_size=4))
+        try:
+            _drain(enc, step=enc.bytes_per_variant)
+            assert len(enc._encode_thread_names) >= 5  # 20 variants / 4 = 5 chunks
+            assert all("vcztools-prefetch" in name for name in enc._encode_thread_names)
+            assert not any("MainThread" in name for name in enc._encode_thread_names)
+        finally:
+            enc.close()
+
+    def test_worker_exception_propagates_to_consumer_read(self):
+        # An encode failure on chunk N surfaces on the consumer's read()
+        # that crosses chunk N — the PrefetchIterator stashes the
+        # worker exception in its future and re-raises on next().
+        enc = _FakeEncoder(_build_reader(num_variants=20, variants_chunk_size=4), bpv=4)
+        try:
+            prefix = enc.prefix_size
+            bpv = enc.bytes_per_variant
+            # First read loads chunk 0 successfully.
+            enc.read(prefix, 4)
+            # Arm a chunk-content failure for chunk 2 (variants [8:12]).
+            enc._fail_if_first_variant = 8
+            with pytest.raises(ValueError, match="fake encode failure"):
+                # Drain forward across chunks 1 and 2; chunk 2 raises.
+                _drain(enc, step=bpv * 2)
+        finally:
+            # close() must still join cleanly even after a worker
+            # exception — proves no hang on teardown.
+            enc.close()
+
+    def test_close_joins_prefetch_worker(self):
+        before = len(_prefetch_threads())
+        enc = _FakeEncoder(_build_reader(num_variants=20, variants_chunk_size=4))
+        enc.read(enc.prefix_size, 4)  # spawn prefetch worker via _restart
+        enc.close()
+        _wait_for_thread_count(before)
+        assert len(_prefetch_threads()) <= before
+
+    def test_no_thread_leak_across_many_construct_close_cycles(self):
+        # Build and tear down 100 encoders; the prefetch worker count
+        # must return to baseline after each close.
+        before = len(_prefetch_threads())
+        for _ in range(100):
+            enc = _FakeEncoder(_build_reader(num_variants=8, variants_chunk_size=4))
+            enc.read(enc.prefix_size, 4)
+            enc.close()
+        _wait_for_thread_count(before, timeout=2.0)
+        assert len(_prefetch_threads()) <= before

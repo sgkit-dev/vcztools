@@ -76,78 +76,6 @@ def _freeze(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-class _PrefetchIterator:
-    """One-deep prefetch wrapper around an iterator.
-
-    On every ``__next__`` returns the previously prefetched item and
-    submits the next ``__next__`` call on the underlying iterator to
-    a dedicated single-worker pool. While the consumer's per-item
-    work runs, the producer's next item is being computed in the
-    background. Exceptions raised by the underlying iterator surface
-    on the consumer's ``__next__`` call.
-
-    Lifetime: the worker pool is created in ``__init__`` and shut
-    down by ``close()`` (also called from ``__del__`` defensively to
-    prevent thread leaks if a caller forgets to close).
-    """
-
-    _SENTINEL = object()
-
-    def __init__(self, source):
-        self._source = source
-        self._executor = cf.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="vcztools-prefetch"
-        )
-        self._next_future = self._executor.submit(self._fetch)
-        self._closed = False
-
-    def _fetch(self):
-        try:
-            return next(self._source)
-        except StopIteration:
-            return self._SENTINEL
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._closed:
-            raise StopIteration
-        result = self._next_future.result()
-        if result is self._SENTINEL:
-            self._closed = True
-            self._executor.shutdown(wait=False)
-            raise StopIteration
-        self._next_future = self._executor.submit(self._fetch)
-        return result
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        # Drain the in-flight fetch so the worker isn't left producing
-        # into the void; the result (next item, sentinel, or
-        # exception) is no longer needed.
-        try:
-            self._next_future.result()
-        except BaseException:
-            pass
-        # Plain iterators (e.g. list_iterator) have no close(); only
-        # generators and similar resource-holding iterators do.
-        source_close = getattr(self._source, "close", None)
-        if source_close is not None:
-            source_close()
-        self._executor.shutdown(wait=True)
-
-    def __del__(self):
-        # Defensive: prevent thread leaks if a caller forgets close().
-        # Mirrors generator finalisation semantics.
-        try:
-            self.close()
-        except Exception:
-            pass
-
-
 DEFAULT_READAHEAD_BYTES = 256 * 1024 * 1024
 # Fixed by design: these threads dispatch I/O to the Zarr backend
 # (which already handles its own async/decompression parallelism),
@@ -1294,7 +1222,9 @@ class VczReader:
         if fields is not None and len(fields) == 0:
             return iter(())
 
-        return _PrefetchIterator(self._variant_chunks_gen(fields=fields, start=start))
+        return utils.PrefetchIterator(
+            self._variant_chunks_gen(fields=fields, start=start)
+        )
 
     def _variant_chunks_gen(
         self,

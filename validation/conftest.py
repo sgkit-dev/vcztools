@@ -19,6 +19,12 @@ import pytest
 
 from . import helpers
 
+# Pytest walks every subdirectory of the given path looking for
+# ``test_*.py``; ``tools/`` contains hundreds of MB of downloaded
+# binaries and ``install/`` is shell scripts, so excluding them
+# turns ``pytest validation/`` collection from ~2 min into < 1 s.
+collect_ignore = ["tools", "install"]
+
 HERE = pathlib.Path(__file__).parent
 TOOLS_DIR = HERE / "tools"
 # Fixtures live outside the repo. Default location is

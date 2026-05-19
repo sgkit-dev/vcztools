@@ -1147,20 +1147,18 @@ def _write_bgen_fixed(
     resolved values so the top-level caller can run :func:`write_bgi`
     against the same parameters.
     """
-    encoder_kwargs = {
-        "variant_id_field": variant_id_field,
-        "embed_header_samples": embed_header_samples,
-        "encode_threads": encode_threads,
-        "unphased": unphased,
-    }
-    if total_string_length is not None:
-        encoder_kwargs["total_string_length"] = total_string_length
-    if pad_byte is not None:
-        encoder_kwargs["pad_byte"] = pad_byte
 
     start = time.perf_counter()
     with (
-        BgenEncoder(reader, **encoder_kwargs) as enc,
+        BgenEncoder(
+            reader,
+            variant_id_field=variant_id_field,
+            embed_header_samples=embed_header_samples,
+            encode_threads=encode_threads,
+            unphased=unphased,
+            total_string_length=total_string_length,
+            pad_byte=pad_byte,
+        ) as enc,
         utils.open_file_like(output, mode="wb") as bgen_stream,
     ):
         bytes_written = enc.write_to(bgen_stream)

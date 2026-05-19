@@ -983,11 +983,11 @@ class TestWriteBgi:
             last_start, last_size = rows[-1]
             assert last_start + last_size == enc.bgen_size
 
-    def test_write_bgen_and_encoder_paths_agree_on_metadata(self, tmp_path):
+    def test_variable_and_fixed_size_paths_agree_on_metadata(self, tmp_path):
         # The Variant-metadata columns (chrom, pos, rsid, alleles)
-        # produced by the two call sites must match for the same reader.
-        # Offsets/sizes differ (variable- vs fixed-size encoding) and
-        # are excluded from the comparison.
+        # produced by the two write_bgen modes must match for the same
+        # reader. Offsets/sizes differ (variable- vs fixed-size
+        # encoding) and are excluded from the comparison.
         kwargs = dict(num_variants=4, num_samples=3)
 
         wb_bgen = tmp_path / "wb.bgen"
@@ -1002,18 +1002,23 @@ class TestWriteBgi:
         finally:
             conn.close()
 
-        with _build_encoder(**kwargs) as enc:
-            enc_bgi = tmp_path / "enc.bgen.bgi"
-            bgen.write_bgi(enc._reader, enc_bgi, enc.variant_offsets)
-            conn = sqlite3.connect(str(enc_bgi))
-            try:
-                enc_rows = conn.execute(
-                    "SELECT chromosome, position, rsid, number_of_alleles, "
-                    "allele1, allele2 FROM Variant ORDER BY file_start_position"
-                ).fetchall()
-            finally:
-                conn.close()
-        assert wb_rows == enc_rows
+        fx_bgen = tmp_path / "fx.bgen"
+        fx_bgi = tmp_path / "fx.bgen.bgi"
+        bgen.write_bgen(
+            _build_reader(**kwargs),
+            fx_bgen,
+            bgi_path=fx_bgi,
+            fixed_variant_size=True,
+        )
+        conn = sqlite3.connect(str(fx_bgi))
+        try:
+            fx_rows = conn.execute(
+                "SELECT chromosome, position, rsid, number_of_alleles, "
+                "allele1, allele2 FROM Variant ORDER BY file_start_position"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert wb_rows == fx_rows
 
     def test_varid_routing_puts_padding_in_rsid_column(self, tmp_path):
         # When variant_id_field="varid", the BGEN rsid slot holds the
@@ -1277,46 +1282,81 @@ class TestCompressionLevel:
         size_l9 = out9.stat().st_size
         assert size_l9 < size_l0
 
+    @pytest.mark.parametrize("level", [1, 6, 9, -1])
+    def test_fixed_variant_size_rejects_non_zero_compression(self, tmp_path, level):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        with pytest.raises(
+            ValueError, match="fixed_variant_size=True requires compression_level=0"
+        ):
+            bgen.write_bgen(
+                reader,
+                tmp_path / "out.bgen",
+                fixed_variant_size=True,
+                compression_level=level,
+            )
+
+    def test_fixed_variant_size_accepts_compression_level_zero(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        bgen.write_bgen(
+            reader,
+            tmp_path / "out.bgen",
+            fixed_variant_size=True,
+            compression_level=0,
+        )
+
+    def test_total_string_length_requires_fixed_variant_size(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        with pytest.raises(
+            ValueError,
+            match="total_string_length / pad_byte require fixed_variant_size=True",
+        ):
+            bgen.write_bgen(reader, tmp_path / "out.bgen", total_string_length=64)
+
+    def test_pad_byte_requires_fixed_variant_size(self, tmp_path):
+        reader = _build_reader(num_variants=2, num_samples=2)
+        with pytest.raises(
+            ValueError,
+            match="total_string_length / pad_byte require fixed_variant_size=True",
+        ):
+            bgen.write_bgen(reader, tmp_path / "out.bgen", pad_byte=b"x")
+
 
 # ---------------------------------------------------------------------------
 # Round-trip via bgen-reader, parametrized over both encoder code paths.
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(params=["write_bgen", "BgenEncoder"])
+@pytest.fixture(params=[False, True], ids=["variable_size", "fixed_size"])
 def write_to_bgen(request, tmp_path):
-    """Write a reader to a ``.bgen`` file via one of the two encoder
-    code paths and return the resulting path.
+    """Write a reader to a ``.bgen`` file via :func:`vcztools.bgen.write_bgen`
+    and return the resulting path. Parametrized over the two
+    ``write_bgen`` modes:
 
-    Parametrized over the two BGEN code paths in ``vcztools.bgen``:
+    * ``fixed_variant_size=False`` — variable-size, configurably-
+      compressed variant blocks.
+    * ``fixed_variant_size=True`` — fixed-size, zlib-stored variant
+      blocks (driven internally by :class:`BgenEncoder`); the path
+      requires ``compression_level=0`` and uniform ploidy.
 
-    * ``write_bgen`` — variable-size, configurably-compressed variant
-      blocks; also writes ``.sample`` and ``.bgen.bgi`` sidecars.
-    * ``BgenEncoder`` — fixed-size, zlib-stored variant blocks; emits
-      only the ``.bgen`` byte stream (no sidecars).
-
-    A single test exercising this fixture covers both paths.
-
-    Optional kwargs are forwarded to the active code path; the
-    ``BgenEncoder``-only ``total_string_length`` / ``pad_byte`` kwargs
-    are silently dropped on the ``write_bgen`` side, while
-    ``variant_id_field`` is honoured by both.
+    Optional kwargs are forwarded verbatim to ``write_bgen``. The
+    fixed-size branch sets ``compression_level=0`` automatically so
+    tests can pass ``total_string_length`` / ``pad_byte`` without
+    repeating it.
     """
-    interface = request.param
+    fixed_variant_size = request.param
 
     def write(reader, **kwargs):
         bgen_path = tmp_path / "out.bgen"
-        if interface == "write_bgen":
+        if fixed_variant_size:
+            kwargs.setdefault("fixed_variant_size", True)
+            kwargs.setdefault("compression_level", 0)
+        else:
             kwargs = {
                 k: v
                 for k, v in kwargs.items()
                 if k not in ("total_string_length", "pad_byte")
             }
-            bgen.write_bgen(reader, bgen_path, **kwargs)
-        else:
-            with bgen.BgenEncoder(reader, **kwargs) as enc:
-                buf = _drain(enc)
-            bgen_path.write_bytes(buf)
+        bgen.write_bgen(reader, bgen_path, **kwargs)
         return bgen_path
 
     return write
@@ -1422,11 +1462,9 @@ class TestBgenRoundTripViaBgenReader:
         with br.open_bgen(bgen_path, verbose=False) as bg:
             assert not bool(bg.phased[0])
 
-        # BgenEncoder path: same input, unphased=True.
+        # Fixed-size path: same input, unphased=True.
         bgen_path2 = tmp_path / "out2.bgen"
-        with bgen.BgenEncoder(reader, unphased=True) as enc:
-            buf = _drain(enc)
-        bgen_path2.write_bytes(buf)
+        bgen.write_bgen(reader, bgen_path2, unphased=True, fixed_variant_size=True)
         with br.open_bgen(bgen_path2, verbose=False) as bg:
             assert not bool(bg.phased[0])
 

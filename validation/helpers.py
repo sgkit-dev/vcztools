@@ -14,12 +14,8 @@ import pathlib
 import subprocess
 
 import click.testing as ct
-import zarr
 
-import vcztools.bcftools_filter as bcftools_filter
-import vcztools.bgen as bgen
 import vcztools.cli as cli
-import vcztools.retrieval as retrieval
 
 
 @dataclasses.dataclass
@@ -93,23 +89,42 @@ def run_view_bgen(
     *,
     compression_level: int = -1,
     variant_id_field: str | None = None,
+    fixed_variant_size: bool = False,
+    total_string_length: int | None = None,
+    pad_byte: str | None = None,
     extra_args: str = "",
 ) -> pathlib.Path:
     """Invoke ``vcztools view-bgen``; return the output stem.
 
     ``variant_id_field`` (``"rsid"`` or ``"varid"``) chooses which BGEN
     string slot carries the zarr ``variant_id``; the other becomes the
-    literal ``"."``. ``None`` (the default) leaves the CLI default in
+    padding field. ``None`` (the default) leaves the CLI default in
     place (``"rsid"``).
+
+    ``fixed_variant_size=True`` switches output to the random-access
+    fixed-stride encoding (``BgenEncoder`` path); requires
+    ``compression_level=0``. ``total_string_length`` and ``pad_byte``
+    override the encoder defaults in that mode.
     """
-    field_arg = ""
+    parts = [
+        "view-bgen",
+        pathlib.Path(vcz_path).as_posix(),
+        "--output",
+        out_stem.as_posix(),
+        "--compression-level",
+        str(compression_level),
+    ]
     if variant_id_field is not None:
-        field_arg = f"--variant-id-field {variant_id_field} "
-    cmd = (
-        f"view-bgen {pathlib.Path(vcz_path).as_posix()} "
-        f"--output {out_stem.as_posix()} "
-        f"--compression-level {compression_level} {field_arg}{extra_args}"
-    )
+        parts += ["--variant-id-field", variant_id_field]
+    if fixed_variant_size:
+        parts.append("--fixed-variant-size")
+    if total_string_length is not None:
+        parts += ["--total-string-length", str(total_string_length)]
+    if pad_byte is not None:
+        parts += ["--pad-byte", pad_byte]
+    if extra_args:
+        parts.append(extra_args)
+    cmd = " ".join(parts)
     runner = ct.CliRunner()
     result = runner.invoke(cli.vcztools_main, cmd, catch_exceptions=False)
     if result.exit_code != 0:
@@ -118,61 +133,3 @@ def run_view_bgen(
             f"command: vcztools {cmd}\nstderr: {result.stderr}"
         )
     return out_stem
-
-
-def run_bgen_encoder(
-    vcz_path: pathlib.Path,
-    out_prefix: pathlib.Path,
-    *,
-    variant_id_field: str | None = None,
-    total_string_length: int | None = None,
-) -> pathlib.Path:
-    """Encode ``vcz_path`` to a fixed-size BGEN via :class:`vcztools.bgen.BgenEncoder`.
-
-    Writes ``<out_prefix>.bgen``, ``<out_prefix>.sample``, and the
-    bgenix ``.bgen.bgi`` sidecar matching the encoder's fixed-size
-    layout. The encoder rejects multi-allelic variants, so a
-    biallelic-only filter is materialised first (matching what
-    ``view-bgen --max-alleles 2`` does for the variable-size path).
-
-    ``variant_id_field`` (``"rsid"`` or ``"varid"``) is forwarded to
-    :class:`vcztools.bgen.BgenEncoder`; ``None`` leaves the encoder
-    default in place (``"rsid"``).
-
-    ``total_string_length`` overrides the encoder's default combined
-    budget for the five BGEN string slots. Pass a value larger than 64
-    when the fixture has long contig names or alleles that push the
-    per-variant sum over the default.
-    """
-    encoder_kwargs = {}
-    if variant_id_field is not None:
-        encoder_kwargs["variant_id_field"] = variant_id_field
-    if total_string_length is not None:
-        encoder_kwargs["total_string_length"] = total_string_length
-    root = zarr.open_group(str(vcz_path), mode="r")
-    bgen_path = out_prefix.with_suffix(".bgen")
-    sample_path = out_prefix.with_suffix(".sample")
-    bgi_path = pathlib.Path(str(bgen_path) + ".bgi")
-    with retrieval.VczReader(root) as reader:
-        biallelic_filter = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include="N_ALT <= 1"
-        )
-        reader.set_variant_filter(biallelic_filter)
-        reader.materialise_variant_filter()
-        with bgen.BgenEncoder(reader, **encoder_kwargs) as enc:
-            with open(bgen_path, "wb") as f:
-                enc.write_to(f)
-            # Match the encoder's variant_id_field / padding so the
-            # .bgi rsid column carries the same bytes the BGEN file
-            # holds in its rsid slot (the padding pattern, when
-            # variant_id_field="varid").
-            bgen.write_bgi(
-                reader,
-                bgi_path,
-                enc.variant_offsets,
-                variant_id_field=enc.variant_id_field,
-                total_string_length=enc.total_string_length,
-                pad_byte=enc.pad_byte,
-            )
-        bgen.write_sample(reader, sample_path)
-    return bgen_path

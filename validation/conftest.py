@@ -186,13 +186,18 @@ def _build_outputs(size: str, variant: str, work: pathlib.Path) -> FixtureOutput
     # the same site, so a small fraction of variants are tri-allelic.
     # PLINK 1 .bed and BGEN layout 2 (as we write it) are biallelic-
     # only; --max-alleles 2 drops those rows, matching what every
-    # downstream tool expects. run_bgen_encoder applies the same
-    # biallelic-only filter internally.
+    # downstream tool expects.
     extra = "--max-alleles 2"
     helpers.run_view_plink(vcz, plink_prefix, extra_args=extra)
     helpers.run_view_bgen(vcz, bgen_minus1, compression_level=-1, extra_args=extra)
     helpers.run_view_bgen(vcz, bgen_stored, compression_level=0, extra_args=extra)
-    helpers.run_bgen_encoder(vcz, bgen_encoder)
+    helpers.run_view_bgen(
+        vcz,
+        bgen_encoder,
+        compression_level=0,
+        fixed_variant_size=True,
+        extra_args=extra,
+    )
 
     # view-bgen writes a `.sample` next to each BGEN; the two view-bgen
     # outputs share a sample list, the encoder writes its own.
@@ -270,7 +275,13 @@ def _build_bgen_only_outputs(
     encoder_sample_path: pathlib.Path | None = None
     if with_encoder:
         bgen_encoder = work / "bgen_encoder"
-        helpers.run_bgen_encoder(vcz, bgen_encoder)
+        helpers.run_view_bgen(
+            vcz,
+            bgen_encoder,
+            compression_level=0,
+            fixed_variant_size=True,
+            extra_args=extra,
+        )
         bgen_encoder_path = bgen_encoder.with_suffix(".bgen")
         encoder_sample_path = bgen_encoder.with_suffix(".sample")
         if not encoder_sample_path.exists():
@@ -344,11 +355,14 @@ def _build_varied_strings_outputs(work: pathlib.Path) -> VariedStringsOutputs:
         # sums to ~87 bytes (21-byte contig + 10+10 indel + ~46-byte
         # variant_id). 128 leaves headroom for the padding slot's
         # leading "." on every variant.
-        helpers.run_bgen_encoder(
+        helpers.run_view_bgen(
             vcz,
             encoder_stem,
+            compression_level=0,
             variant_id_field=variant_id_field,
+            fixed_variant_size=True,
             total_string_length=128,
+            extra_args=extra,
         )
         encoder_sample = encoder_stem.with_suffix(".sample")
         if not encoder_sample.exists():

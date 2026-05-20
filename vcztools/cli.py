@@ -474,6 +474,7 @@ def make_reader(
     storage_options=None,
     readahead_workers=None,
     readahead_bytes=None,
+    force_recompute=False,
 ):
     """Resolve file arguments and create a VczReader."""
     if regions is not None and regions_file is not None:
@@ -526,6 +527,7 @@ def make_reader(
         root,
         readahead_workers=readahead_workers,
         readahead_bytes=readahead_bytes,
+        force_recompute=force_recompute,
     )
 
     variant_filter = None
@@ -996,6 +998,7 @@ def make_reader_from_groups(
     reader: ReaderOptions | None = None,
     view_semantics: bool = False,
     drop_genotypes: bool = False,
+    force_recompute: bool = False,
 ) -> retrieval.VczReader:
     """Construct a :class:`VczReader` from the category-aligned option
     bundles. Single seam between the public dataclasses and
@@ -1010,6 +1013,7 @@ def make_reader_from_groups(
         path,
         view_semantics=view_semantics,
         drop_genotypes=drop_genotypes,
+        force_recompute=force_recompute,
         **dataclasses.asdict(selection),
         **dataclasses.asdict(zarr_store),
         **dataclasses.asdict(reader),
@@ -1229,6 +1233,16 @@ def view(
     if (selection.samples or selection.samples_file) and drop_genotypes:
         raise ValueError("Cannot select samples and drop genotypes.")
 
+    # Match ``bcftools view -s …`` semantics: when the user subsets
+    # samples and hasn't passed ``--no-update``, AC / AN / AF must be
+    # recomputed over the subset. The reader exposes them as virtual
+    # fields gated by ``force_recompute``; the writer then picks them
+    # up out of chunk_data like any other INFO field.
+    force_recompute = (
+        not drop_genotypes
+        and not no_update
+        and (selection.samples is not None or selection.samples_file is not None)
+    )
     reader = make_reader_from_groups(
         path,
         selection=selection,
@@ -1236,21 +1250,15 @@ def view(
         reader=reader_opts,
         view_semantics=True,
         drop_genotypes=drop_genotypes,
-    )
-    subsetting_samples = (
-        selection.samples is not None
-        or selection.samples_file is not None
-        or drop_genotypes
+        force_recompute=force_recompute,
     )
     with reader, handle_broken_pipe(output):
         vcf_writer.write_vcf(
             reader,
             output,
-            subsetting_samples=subsetting_samples,
             header_only=header_only,
             no_header=no_header,
             no_version=no_version,
-            no_update=no_update,
             drop_genotypes=drop_genotypes,
             encode_threads=encode_threads,
         )

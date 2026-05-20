@@ -965,6 +965,111 @@ test_encode_plink_all_zeros(void)
     test_encode_plink_all_zeros_instance(100, 400);
 }
 
+static void
+test_compute_ac_an_basic(void)
+{
+    const size_t num_variants = 5;
+    const size_t num_samples = 3;
+    const size_t ploidy = 2;
+    const size_t num_alt_alleles = 2;
+    /* clang-format off */
+    int8_t genotypes[] = {
+        /* var 0: 0/0 0/1 1/1   -> AN=6, AC=[3,0] */
+         0,  0,  0,  1,  1,  1,
+        /* var 1: 0/0 0/2 2/2   -> AN=6, AC=[0,3] (value 2 -> ac[1]) */
+         0,  0,  0,  2,  2,  2,
+        /* var 2: 0/1 1/2 2/2   -> AN=6, AC=[2,3] */
+         0,  1,  1,  2,  2,  2,
+        /* var 3: ./. ./. fill  -> AN=0, AC=[0,0] */
+        -1, -1, -1, -1, -2, -2,
+        /* var 4: ./. 0/3 fill  -> AN=2, AC=[0,0]; value 3 ignored (> A) */
+        -1, -1,  0,  3, -2, -2,
+    };
+    int32_t expected_ac[] = {
+        3, 0,
+        0, 3,
+        2, 3,
+        0, 0,
+        0, 0,
+    };
+    int32_t expected_an[] = { 6, 6, 6, 0, 2 };
+    /* clang-format on */
+    int32_t ac_buf[10];
+    int32_t an_buf[5];
+    size_t i;
+    int ret;
+
+    /* Pre-fill the output buffers with sentinel values to verify the
+     * kernel zeroes them before accumulating. */
+    for (i = 0; i < 10; i++) {
+        ac_buf[i] = 999;
+    }
+    for (i = 0; i < 5; i++) {
+        an_buf[i] = 999;
+    }
+
+    ret = vcz_compute_ac_an(
+        num_variants, num_samples, ploidy, num_alt_alleles, genotypes, ac_buf, an_buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    for (i = 0; i < 10; i++) {
+        CU_ASSERT_EQUAL_FATAL(ac_buf[i], expected_ac[i]);
+    }
+    for (i = 0; i < 5; i++) {
+        CU_ASSERT_EQUAL_FATAL(an_buf[i], expected_an[i]);
+    }
+}
+
+static void
+test_compute_ac_an_an_only(void)
+{
+    /* Same genotypes as test_compute_ac_an_basic but num_alt_alleles=0,
+     * so the kernel must produce only AN and never touch ac_out. */
+    const size_t num_variants = 5;
+    const size_t num_samples = 3;
+    const size_t ploidy = 2;
+    /* clang-format off */
+    int8_t genotypes[] = {
+         0,  0,  0,  1,  1,  1,
+         0,  0,  0,  2,  2,  2,
+         0,  1,  1,  2,  2,  2,
+        -1, -1, -1, -1, -2, -2,
+        -1, -1,  0,  3, -2, -2,
+    };
+    /* clang-format on */
+    int32_t expected_an[] = { 6, 6, 6, 0, 2 };
+    int32_t an_buf[5];
+    int32_t *ac_buf = NULL;
+    size_t i;
+    int ret;
+
+    ret = vcz_compute_ac_an(
+        num_variants, num_samples, ploidy, 0, genotypes, ac_buf, an_buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    for (i = 0; i < 5; i++) {
+        CU_ASSERT_EQUAL_FATAL(an_buf[i], expected_an[i]);
+    }
+}
+
+static void
+test_compute_ac_an_zero_variants(void)
+{
+    /* No variants -> kernel must not write anything; pre-filled
+     * sentinels in unrelated buffers stay untouched. */
+    int8_t genotypes[1] = { 0 };
+    int32_t ac_buf[4] = { 11, 22, 33, 44 };
+    int32_t an_buf[2] = { 55, 66 };
+    int ret;
+
+    ret = vcz_compute_ac_an(0, 2, 2, 2, genotypes, ac_buf, an_buf);
+    CU_ASSERT_EQUAL_FATAL(ret, 0);
+    CU_ASSERT_EQUAL_FATAL(ac_buf[0], 11);
+    CU_ASSERT_EQUAL_FATAL(ac_buf[1], 22);
+    CU_ASSERT_EQUAL_FATAL(ac_buf[2], 33);
+    CU_ASSERT_EQUAL_FATAL(ac_buf[3], 44);
+    CU_ASSERT_EQUAL_FATAL(an_buf[0], 55);
+    CU_ASSERT_EQUAL_FATAL(an_buf[1], 66);
+}
+
 /* Diploid single-sample test vectors: both alleles non-(-2). The kernel
  * emits two probability bytes per sample for these (K=2). */
 struct bgen_single_diploid_case {
@@ -2106,6 +2211,9 @@ main(int argc, char **argv)
         { "test_encode_plink_single_genotype", test_encode_plink_single_genotype },
         { "test_encode_plink_example", test_encode_plink_example },
         { "test_encode_plink_all_zeros", test_encode_plink_all_zeros },
+        { "test_compute_ac_an_basic", test_compute_ac_an_basic },
+        { "test_compute_ac_an_an_only", test_compute_ac_an_an_only },
+        { "test_compute_ac_an_zero_variants", test_compute_ac_an_zero_variants },
         { "test_bgen_geno_blocks_single_sample_diploid_unphased",
             test_bgen_geno_blocks_single_sample_diploid_unphased },
         { "test_bgen_geno_blocks_single_sample_diploid_phased",

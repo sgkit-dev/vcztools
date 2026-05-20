@@ -100,7 +100,7 @@ class TestIdentifierResolutionErrors:
 
     @pytest.mark.parametrize(
         "expression",
-        ["AC>0", "AF<0.1", "MAC==1", "MAF>=0.05", "AN>0", "ILEN>0", "N_SAMPLES>100"],
+        ["MAC==1", "MAF>=0.05", "ILEN>0", "N_SAMPLES>100"],
     )
     def test_unsupported_calculated_variable(self, expression):
         # When the calculated-variable tag isn't otherwise defined in
@@ -119,16 +119,28 @@ class TestIdentifierResolutionErrors:
             ("AF<0.5", {"variant_AF"}),
         ],
     )
-    def test_calculated_variable_name_shadowed_by_real_field(
-        self, expression, all_fields
-    ):
-        # When the dataset defines a real INFO field with the same name
-        # as a bcftools calculated variable, the real field wins — the
-        # parser must NOT raise UnsupportedCalculatedVariableError.
+    def test_ac_an_af_resolve_via_stored_field(self, expression, all_fields):
+        # AC / AN / AF resolve through the ordinary Identifier rule:
+        # when ``variant_AC`` etc. is in ``all_fields`` the parser
+        # accepts the expression. The same names appear in
+        # ``reader.field_names`` automatically when the reader was
+        # constructed with ``force_recompute=True``, so the parser
+        # behaviour is identical for stored and virtual AC/AN/AF.
         parser = filter_mod.make_bcftools_filter_parser(
             all_fields=all_fields, map_vcf_identifiers=True
         )
         parser.parse_string(expression, parse_all=True)
+
+    @pytest.mark.parametrize("expression", ["AC>0", "AN>0", "AF<0.5"])
+    def test_ac_an_af_undefined_without_stored_or_virtual(self, expression):
+        # No stored ``variant_AC`` and no force_recompute → the
+        # identifier path falls through to the generic
+        # "the tag X is not defined" error.
+        parser = filter_mod.make_bcftools_filter_parser(
+            all_fields=set(), map_vcf_identifiers=True
+        )
+        with pytest.raises(ValueError, match="is not defined"):
+            parser.parse_string(expression, parse_all=True)
 
 
 class TestFilterExpressionSample:

@@ -6,11 +6,10 @@ import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
 
-from vcztools.constants import INT_FILL, INT_MISSING
 from vcztools.retrieval import VczReader
 from vcztools.samples import resolve_sample_selection
 from vcztools.utils import open_zarr
-from vcztools.vcf_writer import VcfWriter, _compute_info_fields, write_vcf
+from vcztools.vcf_writer import VcfWriter, write_vcf
 
 from .utils import assert_vcfs_close, make_reader, to_vcz_icechunk
 from .vcz_builder import copy_vcz, make_vcz
@@ -545,50 +544,6 @@ def test_write_vcf__generate_header(fx_sample_vcz):
     expected_vcf_header = expected_vcf_header.format(source_attr)
 
     assert output_header.getvalue() == expected_vcf_header
-
-
-def test_compute_info_fields():
-    gt = np.array(
-        [
-            [[0, 0], [0, 1], [1, 1]],
-            [[0, 0], [0, 2], [2, 2]],
-            [[0, 1], [1, 2], [2, 2]],
-            [
-                [INT_MISSING, INT_MISSING],
-                [INT_MISSING, INT_MISSING],
-                [INT_FILL, INT_FILL],
-            ],
-            [[INT_MISSING, INT_MISSING], [0, 3], [INT_FILL, INT_FILL]],
-        ]
-    )
-    alt = np.array(
-        [
-            [b"A", b"B", b""],
-            [b"A", b"B", b"C"],
-            [b"A", b"B", b"C"],
-            [b"", b"", b""],
-            [b"A", b"B", b"C"],
-        ]
-    )
-    expected_result = {
-        "AC": np.array(
-            [
-                [3, 0, INT_FILL],
-                [0, 3, 0],
-                [2, 3, 0],
-                [INT_FILL, INT_FILL, INT_FILL],
-                [0, 0, 1],
-            ]
-        ),
-        "AN": np.array([6, 6, 6, 0, 2]),
-    }
-
-    computed_info_fields = _compute_info_fields(gt, alt)
-
-    assert expected_result.keys() == computed_info_fields.keys()
-
-    for key in expected_result.keys():
-        np.testing.assert_array_equal(expected_result[key], computed_info_fields[key])
 
 
 class TestApiErrors:

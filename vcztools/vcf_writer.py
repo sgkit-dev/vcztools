@@ -14,7 +14,7 @@ from vcztools.utils import (
     open_file_like,
 )
 
-from . import _vcztools, constants
+from . import _vcztools
 from .constants import FLOAT32_MISSING, RESERVED_VARIABLE_NAMES
 
 logger = logging.getLogger(__name__)
@@ -77,11 +77,11 @@ class VcfWriter:
     :class:`~concurrent.futures.ThreadPoolExecutor` are owned for the
     duration of the ``with`` block.
 
-    ``subsetting_samples`` mirrors the bcftools distinction between
-    "default output" and "a subset was requested": when ``True``,
-    ``AC``/``AN`` are force-recomputed in the header and per-chunk
-    (matching ``bcftools view -s …`` semantics). Callers that already
-    configured ``reader.set_samples(...)`` should pass ``True``.
+    AC / AN / AF recomputation when subsetting samples is the reader's
+    responsibility — open it with ``force_recompute=True`` and those
+    fields appear as virtual entries in ``chunk_data`` and in
+    ``reader.field_names`` (so the header picks them up automatically).
+    The writer itself stays agnostic.
 
     ``encode_threads`` sets the size of the per-chunk line encoding
     thread pool (default 4). Each chunk's rows are split into
@@ -94,8 +94,6 @@ class VcfWriter:
         reader,
         output,
         *,
-        subsetting_samples: bool = False,
-        no_update=None,
         drop_genotypes: bool = False,
         encode_threads: int | None = None,
     ):
@@ -105,8 +103,6 @@ class VcfWriter:
             raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
         self.reader = reader
         self._output_arg = output
-        self.subsetting_samples = subsetting_samples
-        self.no_update = no_update
         self.drop_genotypes = drop_genotypes
         self.encode_threads = encode_threads
         # Populated in __enter__
@@ -143,10 +139,7 @@ class VcfWriter:
             )
 
     def write_header(self, *, no_version: bool = False) -> None:
-        force_ac_an = not self.drop_genotypes and self.subsetting_samples
-        header = _generate_header(
-            self.reader, no_version=no_version, force_ac_an=force_ac_an
-        )
+        header = _generate_header(self.reader, no_version=no_version)
         print(header, end="", file=self.output)
         self._bytes_written += len(header)
 
@@ -159,8 +152,6 @@ class VcfWriter:
         contigs = self.reader.contigs
         filters = self.reader.filters
         drop_genotypes = self.drop_genotypes
-        no_update = self.no_update
-        subsetting_samples = self.subsetting_samples
 
         format_fields = {}
         info_fields = {}
@@ -229,18 +220,6 @@ class VcfWriter:
 
         if len(id.shape) == 1:
             id = id.reshape((-1, 1))
-        if (
-            not no_update
-            and subsetting_samples
-            and "call_genotype" in chunk_data
-            and not drop_genotypes
-        ):
-            # Recompute INFO/AC and INFO/AN. When the effective subset is
-            # empty (num_samples == 0), ``gt`` still contains all samples
-            # (see the bypass in ``VariantChunkReader.get_chunk_data``), so
-            # AC/AN are recomputed over the full genotype set to match
-            # bcftools.
-            info_fields |= _compute_info_fields(gt, alt)
         if num_samples == 0:
             gt = None
 
@@ -318,11 +297,9 @@ def write_vcf(
     reader,
     output,
     *,
-    subsetting_samples: bool = False,
     header_only: bool = False,
     no_header: bool = False,
     no_version: bool = False,
-    no_update=None,
     drop_genotypes: bool = False,
     encode_threads: int | None = None,
 ) -> None:
@@ -333,8 +310,6 @@ def write_vcf(
     with VcfWriter(
         reader,
         output,
-        subsetting_samples=subsetting_samples,
-        no_update=no_update,
         drop_genotypes=drop_genotypes,
         encode_threads=encode_threads,
     ) as writer:
@@ -348,7 +323,6 @@ def _generate_header(
     reader,
     *,
     no_version: bool = False,
-    force_ac_an: bool = False,
 ):
     output = io.StringIO()
 
@@ -406,17 +380,6 @@ def _generate_header(
             f'##INFO=<ID={key},Number={vcf_number},Type={vcf_type},Description="{vcf_description}">',
             file=output,
         )
-
-    if force_ac_an:
-        # bcftools always recomputes the AC and AN fields when samples are specified,
-        # even if these fields don't exist before
-        for key, number in [("AC", "A"), ("AN", "1")]:
-            if key not in info_fields:
-                print(
-                    f"##INFO=<ID={key},Number={number},Type=Integer,"
-                    f'Description="{RESERVED_INFO_KEY_DESCRIPTIONS[key]}">',
-                    file=output,
-                )
 
     # [1.4.3 Filter field format]
     filter_descriptions = reader.filter_descriptions
@@ -530,23 +493,3 @@ def _array_to_vcf_type(info):
         return "String"
     else:
         raise ValueError(f"Unsupported dtype: {info.dtype}")
-
-
-def _compute_info_fields(gt: np.ndarray, alt: np.ndarray):
-    flatter_gt = gt.reshape((gt.shape[0], -1))
-    allele_count = alt.shape[1] + 1
-
-    def filter_and_bincount(values: np.ndarray):
-        positive = values[values > 0]
-        return np.bincount(positive, minlength=allele_count)[1:]
-
-    computed_ac = np.apply_along_axis(filter_and_bincount, 1, flatter_gt).astype(
-        np.int32
-    )
-    computed_ac[alt == b""] = constants.INT_FILL
-    computed_an = np.sum(flatter_gt >= 0, axis=1, dtype=np.int32)
-
-    return {
-        "AC": computed_ac,
-        "AN": computed_an,
-    }

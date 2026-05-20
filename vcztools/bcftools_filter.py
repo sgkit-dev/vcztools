@@ -72,15 +72,15 @@ class UnsupportedHigherDimensionalFormatFieldsError(UnsupportedFilteringFeatureE
 
 class UnsupportedCalculatedVariableError(UnsupportedFilteringFeatureError):
     issue = "171"
-    feature = "Calculated variables (AC, AF, AN, MAC, MAF, ILEN, N_SAMPLES)"
+    feature = "Calculated variables (MAC, MAF, ILEN, N_SAMPLES)"
 
 
 # bcftools calculated variables we recognise but do not yet implement.
 # Intercepted in Identifier.__init__ so the user sees a dedicated error
-# instead of the generic "the tag X is not defined".
-UNSUPPORTED_CALCULATED_VARIABLES = frozenset(
-    {"N_SAMPLES", "AC", "MAC", "AF", "MAF", "AN", "ILEN"}
-)
+# instead of the generic "the tag X is not defined". AC / AN / AF are
+# supplied by the VczReader's force_recompute virtual-field machinery
+# (see vcztools/retrieval.py); they no longer surface here.
+UNSUPPORTED_CALCULATED_VARIABLES = frozenset({"N_SAMPLES", "MAC", "MAF", "ILEN"})
 
 
 # The parser and evaluation model here are based on the eval_arith example

@@ -50,6 +50,37 @@ def run_vcztools(args: str, expect_error=False) -> tuple[str, str]:
     return result.stdout, result.stderr
 
 
+@functools.cache
+def _bcftools_missing_table(vcf_path) -> tuple[tuple[str, int, float], ...]:
+    """Run ``bcftools +fill-tags`` to materialise ``N_MISSING`` and
+    ``F_MISSING`` as INFO fields, then read the per-row values out with
+    ``bcftools query``. Returns an immutable tuple of
+    ``(f"{CHROM}:{POS}", n_missing, f_missing)`` rows in file order so
+    duplicate-POS fixtures (sample-split-alleles) are preserved.
+
+    bcftools query has no ``%N_MISSING`` / ``%F_MISSING`` format
+    specifier; the fill-tags plugin is the only path through bcftools
+    that materialises them as queryable INFO. The plugin needs an
+    explicit expression for the integer ``N_MISSING`` (the built-in
+    ``N_MISSING`` it knows about is a float, same as ``F_MISSING``).
+    """
+    cmd = (
+        f"bcftools +fill-tags {vcf_path} -- "
+        f"-t F_MISSING,'N_MISSING:1=int(N_MISSING)' 2>/dev/null "
+        f"| bcftools query -f "
+        f"'%CHROM:%POS\\t%INFO/N_MISSING\\t%INFO/F_MISSING\\n' -"
+    )
+    completed = subprocess.run(cmd, capture_output=True, check=True, shell=True)
+    out = completed.stdout.decode("utf-8")
+    rows = []
+    for line in out.splitlines():
+        if len(line.strip()) == 0:
+            continue
+        key, n_missing_s, f_missing_s = line.split("\t")
+        rows.append((key, int(n_missing_s), float(f_missing_s)))
+    return tuple(rows)
+
+
 # fmt: off
 @pytest.mark.parametrize(
     ("args", "vcf_file"),
@@ -1034,3 +1065,108 @@ class TestChr22:
         assert vcztools_output == bcftools_output
         non_empty_lines = [line for line in vcztools_output.splitlines() if line]
         assert len(non_empty_lines) == expected_lines
+
+
+class TestCalculatedMissingTags:
+    """Validate the exact per-row value of ``N_MISSING`` and
+    ``F_MISSING`` against bcftools.
+
+    ``bcftools query -f`` has no ``%N_MISSING`` / ``%F_MISSING`` format
+    specifier — they are computed identifiers exposed only inside
+    filter expressions. The canonical per-row value is obtained by
+    piping the fixture through ``bcftools +fill-tags
+    -t F_MISSING,N_MISSING`` (which materialises them as INFO fields)
+    and reading the integers/floats out with
+    ``bcftools query -f '...%INFO/N_MISSING...%INFO/F_MISSING...'``.
+
+    vcztools cannot output the tags via ``query -f`` either, so its
+    per-row value is recovered by bucketing: ``vcztools query
+    -i 'N_MISSING == k' -f '%CHROM:%POS\\n'`` for each integer ``k`` the
+    canonical table reports. The vcztools bucket for each ``k`` must
+    equal the multiset of rows bcftools assigned to ``N_MISSING == k``
+    — duplicate-POS rows in ``sample-split-alleles.vcf.gz`` are
+    preserved in row order. ``F_MISSING`` is checked the same way using
+    a ``±0.5/n_samples`` band around bcftools' six-digit canonical
+    fraction (the bucket spacing is exactly ``1/n_samples``).
+
+    The chosen fixtures cover:
+
+    - ``sample.vcf.gz``: 3 diploid samples plus the mixed-ploidy row
+      at ``X:10`` (one haploid sample, two diploid). bcftools reports
+      ``N_MISSING=0`` there — the haploid ``0`` is not a missing call.
+    - ``msprime_diploid.vcf.gz``: 3 diploid samples, every GT called.
+    - ``1kg_2020_chrM.vcf.gz``: 3 samples, every GT called.
+    - ``chr22.vcf.gz``: 100 samples with a wide spread of N_MISSING
+      values (>30 distinct buckets), exercising the multi-bucket path.
+    - ``sample-split-alleles.vcf.gz``: duplicate-POS rows must end up
+      in the same bucket as in bcftools' output.
+    """
+
+    FIXTURES = [
+        "sample.vcf.gz",
+        "msprime_diploid.vcf.gz",
+        "1kg_2020_chrM.vcf.gz",
+        "chr22.vcf.gz",
+        "sample-split-alleles.vcf.gz",
+    ]
+
+    @pytest.mark.parametrize("vcf_file", FIXTURES)
+    def test_n_missing(self, fx_all_vcz, vcf_file):
+        fx = fx_all_vcz[vcf_file]
+        rows = _bcftools_missing_table(fx.vcf_path)
+        bcftools_buckets: dict[int, list[str]] = {}
+        for key, n_missing, _ in rows:
+            bcftools_buckets.setdefault(n_missing, []).append(key)
+        for k, expected_keys in bcftools_buckets.items():
+            out, _ = run_vcztools(
+                f"query -f '%CHROM:%POS\\n' -i 'N_MISSING == {k}' "
+                f"{fx.zip_path}"
+            )
+            actual_keys = [line for line in out.splitlines() if len(line) > 0]
+            assert actual_keys == expected_keys, (
+                f"N_MISSING == {k}: vcztools selected {actual_keys}, "
+                f"bcftools selected {expected_keys}"
+            )
+
+    @pytest.mark.parametrize("vcf_file", FIXTURES)
+    def test_f_missing(self, fx_all_vcz, vcf_file):
+        fx = fx_all_vcz[vcf_file]
+        rows = _bcftools_missing_table(fx.vcf_path)
+        n_samples = fx.group["sample_id"].shape[0]
+        # Adjacent F_MISSING values differ by 1/n_samples, so a band
+        # of half-step around bcftools' canonical six-digit fraction
+        # is wide enough to absorb the printing rounding but narrow
+        # enough to exclude neighbouring fractions.
+        eps = 0.5 / n_samples
+        bcftools_buckets: dict[float, list[str]] = {}
+        for key, _, f_missing in rows:
+            bcftools_buckets.setdefault(f_missing, []).append(key)
+        for f_canonical, expected_keys in bcftools_buckets.items():
+            lower = f_canonical - eps
+            upper = f_canonical + eps
+            expr = f"F_MISSING > {lower} && F_MISSING < {upper}"
+            out, _ = run_vcztools(
+                f"query -f '%CHROM:%POS\\n' -i '{expr}' {fx.zip_path}"
+            )
+            actual_keys = [line for line in out.splitlines() if len(line) > 0]
+            assert actual_keys == expected_keys, (
+                f"F_MISSING in ({lower}, {upper}) (canonical "
+                f"{f_canonical}): vcztools={actual_keys}, "
+                f"bcftools={expected_keys}"
+            )
+
+    def test_mixed_ploidy_x10_not_missing(self, fx_sample_vcz):
+        # X:10 in sample.vcf.gz mixes a haploid call ('0') with two
+        # diploid calls ('0/1', '0|2'). bcftools reports N_MISSING=0
+        # at that row — the haploid encoding (with the unused ploidy
+        # slot held as INT_FILL=-2) must not be counted as missing.
+        # Pin the behaviour explicitly so a regression that miscounts
+        # the fill sentinel fails here with a localised error.
+        rows = _bcftools_missing_table(fx_sample_vcz.vcf_path)
+        x10 = [row for row in rows if row[0] == "X:10"]
+        assert x10 == [("X:10", 0, 0.0)]
+        out, _ = run_vcztools(
+            f"query -f '%CHROM:%POS\\n' -i 'N_MISSING == 0' "
+            f"{fx_sample_vcz.zip_path}"
+        )
+        assert "X:10" in out.splitlines()

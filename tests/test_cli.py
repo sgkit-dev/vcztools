@@ -1620,6 +1620,7 @@ class TestReadaheadOptions:
         assert captured == {
             "readahead_workers": 4,
             "readahead_bytes": 100 * 1024 * 1024,
+            "force_recompute": False,
         }
 
     def test_query_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
@@ -1634,7 +1635,11 @@ class TestReadaheadOptions:
             catch_exceptions=False,
         )
         assert result.exit_code == 0
-        assert captured == {"readahead_workers": 2, "readahead_bytes": 1024}
+        assert captured == {
+            "readahead_workers": 2,
+            "readahead_bytes": 1024,
+            "force_recompute": False,
+        }
 
     def test_view_plink_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
         captured = self._spy_vcz_reader_init(monkeypatch)
@@ -1651,6 +1656,7 @@ class TestReadaheadOptions:
         assert captured == {
             "readahead_workers": 8,
             "readahead_bytes": 2 * 1024 * 1024,
+            "force_recompute": False,
         }
 
     def test_view_invalid_buffer_size(self, tmp_path, fx_vcz_path):

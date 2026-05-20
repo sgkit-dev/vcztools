@@ -1073,6 +1073,39 @@ vcz_encode_plink(
     return 0;
 }
 
+int
+vcz_compute_ac_an(size_t num_variants, size_t num_samples, size_t ploidy,
+    size_t num_alt_alleles, const int8_t *genotypes, int32_t *ac_out, int32_t *an_out)
+{
+    size_t j, k, slots_per_variant;
+    int32_t an;
+    int32_t *ac_row;
+    const int8_t *gt_row;
+    int8_t v;
+
+    slots_per_variant = num_samples * ploidy;
+    for (j = 0; j < num_variants; j++) {
+        gt_row = genotypes + j * slots_per_variant;
+        ac_row = ac_out + j * num_alt_alleles;
+        for (k = 0; k < num_alt_alleles; k++) {
+            ac_row[k] = 0;
+        }
+        an = 0;
+        for (k = 0; k < slots_per_variant; k++) {
+            v = gt_row[k];
+            if (v < 0) {
+                continue;
+            }
+            an++;
+            if (v > 0 && (size_t) v <= num_alt_alleles) {
+                ac_row[v - 1]++;
+            }
+        }
+        an_out[j] = an;
+    }
+    return 0;
+}
+
 /* Uniform-ploidy genotype block size: 8-byte header + num_samples
  * ploidy bytes + 2 flag bytes + uniform_ploidy probability bytes per
  * sample. uniform_ploidy must be 1 (haploid) or 2 (diploid); the

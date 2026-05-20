@@ -204,6 +204,16 @@ def _bcftools_missing_table(vcf_path) -> tuple[tuple[str, int, float], ...]:
             "view --no-version -i 'N_MISSING == 0'",
             "1kg_2020_chr20_annotations.bcf",
         ),
+        # AC / AN / AF used in filter expressions. Stored INFO/AC is
+        # mostly missing in sample.vcf.gz, so the no-subset cases use
+        # AC>=1 to keep at least the AC=[1,1] row alive. The -s cases
+        # below also exercise force_recompute=True, where AC/AN/AF
+        # come from the C-backed virtual-field path.
+        ("view --no-version -i 'AC>=1'", "sample.vcf.gz"),
+        ("view --no-version -i 'AN>=4'", "sample.vcf.gz"),
+        ("view --no-version -i 'AF>=0.3'", "sample.vcf.gz"),
+        ("view --no-version -s NA00001,NA00002 -i 'AC>=1'", "sample.vcf.gz"),
+        ("view --no-version -s NA00001,NA00002 -i 'AN==4'", "sample.vcf.gz"),
         ("view --no-version -G", "sample.vcf.gz"),
         (
                 "view --no-update --no-version --samples-file "

@@ -923,11 +923,82 @@ vcztools_bgen_variant_block_size(PyObject *self, PyObject *args, PyObject *kwds)
     return PyLong_FromSize_t(bpv);
 }
 
+static PyObject *
+vcztools_compute_ac_an(PyObject *self, PyObject *args)
+{
+    PyObject *ret = NULL;
+    PyArrayObject *genotypes = NULL;
+    PyArrayObject *ac_out = NULL;
+    PyArrayObject *an_out = NULL;
+    npy_intp num_variants, num_samples, ploidy, num_alt_alleles;
+
+    if (!PyArg_ParseTuple(args, "O!O!O!", &PyArray_Type, &genotypes, &PyArray_Type,
+            &ac_out, &PyArray_Type, &an_out)) {
+        goto out;
+    }
+    if (check_array("genotypes", genotypes, 3) != 0) {
+        goto out;
+    }
+    if (check_dtype("genotypes", genotypes, NPY_INT8) != 0) {
+        goto out;
+    }
+    if (check_array("ac_out", ac_out, 2) != 0) {
+        goto out;
+    }
+    if (check_dtype("ac_out", ac_out, NPY_INT32) != 0) {
+        goto out;
+    }
+    if (check_array_writeable("ac_out", ac_out) != 0) {
+        goto out;
+    }
+    if (check_array("an_out", an_out, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("an_out", an_out, NPY_INT32) != 0) {
+        goto out;
+    }
+    if (check_array_writeable("an_out", an_out) != 0) {
+        goto out;
+    }
+    num_variants = PyArray_DIMS(genotypes)[0];
+    num_samples = PyArray_DIMS(genotypes)[1];
+    ploidy = PyArray_DIMS(genotypes)[2];
+    num_alt_alleles = PyArray_DIMS(ac_out)[1];
+    if (PyArray_DIMS(ac_out)[0] != num_variants) {
+        PyErr_Format(PyExc_ValueError,
+            "ac_out.shape[0] must equal genotypes.shape[0] (%zd != %zd)",
+            (Py_ssize_t) PyArray_DIMS(ac_out)[0], (Py_ssize_t) num_variants);
+        goto out;
+    }
+    if (PyArray_DIMS(an_out)[0] != num_variants) {
+        PyErr_Format(PyExc_ValueError,
+            "an_out.shape[0] must equal genotypes.shape[0] (%zd != %zd)",
+            (Py_ssize_t) PyArray_DIMS(an_out)[0], (Py_ssize_t) num_variants);
+        goto out;
+    }
+
+    Py_BEGIN_ALLOW_THREADS
+    vcz_compute_ac_an((size_t) num_variants, (size_t) num_samples, (size_t) ploidy,
+        (size_t) num_alt_alleles, PyArray_DATA(genotypes), PyArray_DATA(ac_out),
+        PyArray_DATA(an_out));
+    Py_END_ALLOW_THREADS
+
+    ret = Py_BuildValue("");
+out:
+    return ret;
+}
+
 static PyMethodDef vcztools_methods[] = {
     { .ml_name = "encode_plink",
         .ml_meth = (PyCFunction) vcztools_encode_plink,
         .ml_flags = METH_VARARGS,
         .ml_doc = "Encode genotypes in plink format" },
+    { .ml_name = "compute_ac_an",
+        .ml_meth = (PyCFunction) vcztools_compute_ac_an,
+        .ml_flags = METH_VARARGS,
+        .ml_doc = "Compute per-variant AC (allele count) and AN (total called "
+                  "alleles) from a (V, S, P) int8 genotype buffer. Writes raw "
+                  "counts into caller-allocated int32 buffers." },
     { .ml_name = "encode_bgen_geno_blocks",
         .ml_meth = (PyCFunction) vcztools_encode_bgen_geno_blocks,
         .ml_flags = METH_VARARGS,

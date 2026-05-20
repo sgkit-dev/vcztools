@@ -123,6 +123,16 @@ int vcz_ftoa(char *buf, float v);
 int vcz_encode_plink(
     size_t num_variants, size_t num_samples, const int8_t *genotypes, char *buf);
 
+/* Per-variant AC (allele count) and AN (total called alleles) from a
+ * 3-D genotype buffer of shape (num_variants, num_samples, ploidy).
+ * Slots holding VCZ_INT_MISSING / VCZ_INT_FILL (any negative value)
+ * are excluded from both. Allele values v with 0 < v <= num_alt_alleles
+ * increment ac_out[j*num_alt_alleles + (v-1)]; values exceeding
+ * num_alt_alleles are silently ignored. Padding for empty ALT slots
+ * is the caller's responsibility — the kernel writes only raw counts. */
+int vcz_compute_ac_an(size_t num_variants, size_t num_samples, size_t ploidy,
+    size_t num_alt_alleles, const int8_t *genotypes, int32_t *ac_out, int32_t *an_out);
+
 #define VCZ_BGEN_PLOIDY_HAPLOID         0x01
 #define VCZ_BGEN_PLOIDY_DIPLOID         0x02
 #define VCZ_BGEN_PLOIDY_MISSING_HAPLOID 0x81

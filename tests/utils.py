@@ -58,7 +58,9 @@ def make_reader(
 
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include=include, exclude=exclude
+            field_names=reader.field_names | reader.virtual_field_names,
+            include=include,
+            exclude=exclude,
         )
         reader.set_variant_filter(variant_filter)
 

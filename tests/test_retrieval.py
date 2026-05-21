@@ -3282,7 +3282,7 @@ class TestVariantChunksPrefetch:
         # swallowed.
         sentinel = RuntimeError("boom from inner generator")
 
-        def faulty_gen(self, *, fields=None, start=0):
+        def faulty_gen(self, *, fields=None, start=0, force_recompute=False):
             yield {"variant_position": np.array([0])}
             raise sentinel
 
@@ -3484,36 +3484,67 @@ def _make_virtual_field_vcz():
     )
 
 
+_EXPECTED_AC = np.array(
+    [
+        [3, 0],
+        [0, 3],
+        [2, 3],
+        [constants.INT_FILL, constants.INT_FILL],
+        [0, 0],
+    ],
+    dtype=np.int32,
+)
+_EXPECTED_AN = np.array([6, 6, 6, 0, 2], dtype=np.int32)
+
+
 class TestVirtualFields:
-    """Per-variant AC/AN/AF computed on the fly by ``VczReader``."""
+    """Per-variant AC/AN/AF/NS/N_ALT/N_MISSING/F_MISSING computed on
+    the fly by ``VczReader`` via the virtual-fields registry."""
 
-    def test_field_names_includes_virtual_when_enabled(self):
-        root = _make_virtual_field_vcz()
-        reader = VczReader(root, force_recompute=True)
-        for name in ("variant_AC", "variant_AN"):
-            assert name in reader.field_names
-
-    def test_field_names_excludes_virtual_when_disabled(self):
+    def test_field_names_is_stored_only(self):
         root = _make_virtual_field_vcz()
         reader = VczReader(root)
-        for name in ("variant_AC", "variant_AN"):
+        # field_names is the set of Zarr-backed arrays; virtual fields
+        # are NOT in it even though they are addressable by name.
+        for name in ("variant_AC", "variant_AN", "variant_AF"):
             assert name not in reader.field_names
 
-    def test_field_names_omits_virtual_without_call_genotype(self):
-        # ``force_recompute=True`` is a no-op when there's no
-        # ``call_genotype`` to derive from — annotations-only VCZ.
+    def test_virtual_field_names_lists_available_virtuals(self):
+        root = _make_virtual_field_vcz()
+        reader = VczReader(root)
+        # Every registry entry whose deps are satisfied turns up here.
+        expected = {
+            "variant_AC",
+            "variant_AN",
+            "variant_AF",
+            "variant_NS",
+            "variant_N_ALT",
+            "variant_N_MISSING",
+            "variant_F_MISSING",
+        }
+        assert expected <= reader.virtual_field_names
+
+    def test_virtual_field_names_omits_call_geno_dependent_without_gt(self):
+        # Annotations-only VCZ: only fields whose deps are present (or
+        # whose degenerate form is present) appear.
         root = vcz_builder.make_vcz(
             variant_contig=[0] * 3,
             variant_position=[1, 2, 3],
             alleles=[("A", "T")] * 3,
         )
-        reader = VczReader(root, force_recompute=True)
-        for name in ("variant_AC", "variant_AN"):
-            assert name not in reader.field_names
+        reader = VczReader(root)
+        assert "variant_AC" not in reader.virtual_field_names
+        assert "variant_AN" not in reader.virtual_field_names
+        assert "variant_NS" not in reader.virtual_field_names
+        # N_ALT needs only variant_allele.
+        assert "variant_N_ALT" in reader.virtual_field_names
+        # N_MISSING / F_MISSING fall back to the all-zero degenerate.
+        assert "variant_N_MISSING" in reader.virtual_field_names
+        assert "variant_F_MISSING" in reader.virtual_field_names
 
     def test_get_field_info_ac(self):
         root = _make_virtual_field_vcz()
-        reader = VczReader(root, force_recompute=True)
+        reader = VczReader(root)
         info = reader.get_field_info("variant_AC")
         assert info.name == "variant_AC"
         assert info.dtype == np.int32
@@ -3523,7 +3554,7 @@ class TestVirtualFields:
 
     def test_get_field_info_an(self):
         root = _make_virtual_field_vcz()
-        reader = VczReader(root, force_recompute=True)
+        reader = VczReader(root)
         info = reader.get_field_info("variant_AN")
         assert info.dtype == np.int32
         assert info.shape == (5,)
@@ -3531,73 +3562,101 @@ class TestVirtualFields:
 
     def test_chunk_values_match_kernel(self):
         root = _make_virtual_field_vcz()
-        reader = VczReader(root, force_recompute=True)
+        reader = VczReader(root)
         chunk = next(reader.variant_chunks(fields=["variant_AC", "variant_AN"]))
-        expected_ac = np.array(
-            [
-                [3, 0],
-                [0, 3],
-                [2, 3],
-                [constants.INT_FILL, constants.INT_FILL],
-                [0, 0],
-            ],
-            dtype=np.int32,
-        )
-        expected_an = np.array([6, 6, 6, 0, 2], dtype=np.int32)
-        nt.assert_array_equal(chunk["variant_AC"], expected_ac)
-        nt.assert_array_equal(chunk["variant_AN"], expected_an)
+        nt.assert_array_equal(chunk["variant_AC"], _EXPECTED_AC)
+        nt.assert_array_equal(chunk["variant_AN"], _EXPECTED_AN)
 
-    def test_chunk_values_use_stored_when_disabled(self):
-        # With force_recompute off, the stored variant_AC (zeros)
-        # shows up rather than the kernel-computed values.
+    def test_stored_field_wins_by_default(self):
+        # Stored variant_AC (zeros) is returned by default, not the
+        # registry-computed value.
         root = _make_virtual_field_vcz()
         root["variant_AC"] = np.zeros((5, 2), dtype=np.int32)
         reader = VczReader(root)
         chunk = next(reader.variant_chunks(fields=["variant_AC"]))
         nt.assert_array_equal(chunk["variant_AC"], np.zeros((5, 2)))
 
-    def test_filter_via_virtual_ac_without_stored(self):
-        # No stored variant_AC, but force_recompute=True makes ``AC``
-        # resolve through the virtual field — the filter still works.
-        # bcftools-compatible note: filter evaluation uses the stored
-        # field when one exists; here we have only the virtual route.
+    def test_force_recompute_true_recomputes_all_virtuals(self):
         root = _make_virtual_field_vcz()
-        reader = VczReader(root, force_recompute=True)
-        bf = BcftoolsFilter(field_names=reader.field_names, include="AC>1")
+        root["variant_AC"] = np.zeros((5, 2), dtype=np.int32)
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=["variant_AC"], force_recompute=True))
+        nt.assert_array_equal(chunk["variant_AC"], _EXPECTED_AC)
+
+    def test_force_recompute_iterable_targets_named_fields(self):
+        root = _make_virtual_field_vcz()
+        root["variant_AC"] = np.zeros((5, 2), dtype=np.int32)
+        root["variant_AN"] = np.zeros(5, dtype=np.int32)
+        reader = VczReader(root)
+        chunk = next(
+            reader.variant_chunks(
+                fields=["variant_AC", "variant_AN"],
+                force_recompute=["variant_AC"],
+            )
+        )
+        # AC recomputed; AN still the stored sentinel zeros.
+        nt.assert_array_equal(chunk["variant_AC"], _EXPECTED_AC)
+        nt.assert_array_equal(chunk["variant_AN"], np.zeros(5, dtype=np.int32))
+
+    def test_virtual_field_without_stored_always_computed(self):
+        # No stored variant_AN, no stored variant_AC — the field is
+        # always computed even without force_recompute.
+        root = _make_virtual_field_vcz()
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=["variant_AN"]))
+        nt.assert_array_equal(chunk["variant_AN"], _EXPECTED_AN)
+
+    def test_filter_via_virtual_ac_without_stored(self):
+        # No stored variant_AC; ``AC>1`` resolves through the virtual
+        # field uniformly.
+        root = _make_virtual_field_vcz()
+        reader = VczReader(root)
+        bf = BcftoolsFilter(
+            field_names=reader.field_names | reader.virtual_field_names,
+            include="AC>1",
+        )
         reader.set_variant_filter(bf)
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
-        # AC>1 hits variants 0, 1, 2 (anywhere an alt-allele count > 1).
         nt.assert_array_equal(
             np.concatenate([c["variant_position"] for c in chunks]),
             [100, 200, 300],
         )
 
-    def test_output_ac_overrides_stored_when_recompute(self):
-        # When stored variant_AC differs from the computed value, the
-        # output chunk-data carries the recomputed (virtual) value —
-        # this is the writer-side override path that replaces the old
-        # ``_compute_info_fields`` recompute.
+    def test_variant_af_computed(self):
         root = _make_virtual_field_vcz()
-        # Sentinel zeros distinct from the kernel-computed values.
-        root["variant_AC"] = np.zeros((5, 2), dtype=np.int32)
-        reader = VczReader(root, force_recompute=True)
-        chunk = next(reader.variant_chunks(fields=["variant_AC"]))
-        # Row 0: 0/0 0/1 1/1 -> AC=[3, 0]; recompute must win over the
-        # zeros we put into the stored variant_AC above.
-        nt.assert_array_equal(chunk["variant_AC"][0], [3, 0])
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=["variant_AF"]))
+        # Row 0: AC=[3, 0], AN=6 -> AF=[0.5, 0.0]
+        nt.assert_allclose(chunk["variant_AF"][0], [0.5, 0.0])
+        # Row 3 has empty ALT slots, so AC=[INT_FILL, INT_FILL] and
+        # the FILL float sentinel propagates to AF — "no allele here"
+        # wins over "AN==0 -> missing" for non-existent slots.
+        fill_bits = constants.FLOAT32_FILL.view(np.int32)
+        missing_bits = constants.FLOAT32_MISSING.view(np.int32)
+        af3_bits = chunk["variant_AF"][3].view(np.int32)
+        assert af3_bits[0] == fill_bits
+        assert af3_bits[1] == fill_bits
+        # Row 4: AC=[0, 0], AN=2 -> AF=[0.0, 0.0].
+        nt.assert_allclose(chunk["variant_AF"][4], [0.0, 0.0])
+        # Spot-check the masking helpers stay in sync.
+        assert missing_bits != fill_bits
 
-    def test_virtual_field_not_in_default_query_when_disabled(self):
-        # Default fields=None auto-discovery excludes virtual names
-        # unless force_recompute is on.
+    def test_variant_ns_computed(self):
         root = _make_virtual_field_vcz()
-        reader_off = VczReader(root)
-        names_off = list(reader_off.variant_chunks().__next__().keys())
-        assert "variant_AC" not in names_off
-        assert "variant_AN" not in names_off
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=["variant_NS"]))
+        # Rows 0-2: every sample has at least one called slot -> NS=3
+        # Row 3: all samples all-missing -> NS=0
+        # Row 4: sample 1 is called (0/3), others missing -> NS=1
+        nt.assert_array_equal(chunk["variant_NS"], [3, 3, 3, 0, 1])
 
-    def test_virtual_field_appears_in_default_query_when_enabled(self):
-        root = _make_virtual_field_vcz()
-        reader_on = VczReader(root, force_recompute=True)
-        names_on = list(reader_on.variant_chunks().__next__().keys())
-        for n in ("variant_AC", "variant_AN"):
-            assert n in names_on
+    def test_variant_n_alt_no_call_geno_required(self):
+        # N_ALT only needs variant_allele, so it works on annotations-only.
+        root = vcz_builder.make_vcz(
+            variant_contig=[0] * 3,
+            variant_position=[1, 2, 3],
+            alleles=[("A", "T"), ("A", "T", "G"), ("A", "")],
+        )
+        reader = VczReader(root)
+        chunk = next(reader.variant_chunks(fields=["variant_N_ALT"]))
+        nt.assert_array_equal(chunk["variant_N_ALT"], [1, 2, 0])

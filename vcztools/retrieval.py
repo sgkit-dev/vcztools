@@ -28,10 +28,11 @@ import time
 
 import numpy as np
 
-from vcztools import calculate, utils
 from vcztools import regions as regions_mod
 from vcztools import samples as samples_mod
+from vcztools import utils
 from vcztools import variant_filter as variant_filter_mod
+from vcztools import virtual_fields as virtual_fields_mod
 from vcztools.utils import (
     _as_fixed_length_string,
 )
@@ -109,36 +110,6 @@ class FieldInfo:
 # Query-only pseudo-fields recognised by :meth:`VczReader.variant_chunks`.
 # Each is emitted from per-chunk plan state, never from a Zarr array.
 _PSEUDO_QUERY_FIELDS = frozenset({"variant_index"})
-
-# Per-variant fields computed on the fly from ``call_genotype`` rather
-# than read from a Zarr array. They appear in
-# :attr:`VczReader.field_names` only when the reader was constructed
-# with ``force_recompute=True``. ``_VIRTUAL_FIELD_DEPS`` lists each
-# virtual field's real-field prerequisites so the prefetch pipeline
-# can read those instead. Only AC and AN are virtualised — matching
-# ``bcftools view -s``, which leaves AF unchanged in the output.
-_VIRTUAL_VARIANT_FIELDS = frozenset({"variant_AC", "variant_AN"})
-_VIRTUAL_FIELD_DEPS = {
-    "variant_AC": ("call_genotype", "variant_allele"),
-    "variant_AN": ("call_genotype",),
-}
-
-# Fixed FieldInfo metadata for virtual fields. ``shape`` is filled in
-# at lookup time from the matching real field on the store.
-_VIRTUAL_FIELD_INFOS = {
-    "variant_AC": dict(
-        dtype=np.dtype(np.int32),
-        dims=("variants", "alt_alleles"),
-        attrs={"description": "Allele count in genotypes"},
-        shape_from="variant_allele",
-    ),
-    "variant_AN": dict(
-        dtype=np.dtype(np.int32),
-        dims=("variants",),
-        attrs={"description": "Total number of alleles in called genotypes"},
-        shape_from="variant_position",
-    ),
-}
 
 
 def _absolute_variant_indexes(entry: utils.ChunkRead, chunk_size: int) -> np.ndarray:
@@ -751,14 +722,12 @@ class VczReader:
         *,
         readahead_workers: int | None = None,
         readahead_bytes: int | None = None,
-        force_recompute: bool = False,
     ):
         self.root = root
         utils.validate_variants_axis_chunking(
             root, utils.compute_min_variants_chunk_size(root)
         )
         self.readahead_bytes = readahead_bytes
-        self.force_recompute = force_recompute
         workers = (
             readahead_workers
             if readahead_workers is not None
@@ -1171,19 +1140,37 @@ class VczReader:
 
     @functools.cached_property
     def field_names(self) -> frozenset[str]:
-        """Set of field names present in the store.
+        """Set of real (Zarr-backed) field names present in the store.
 
-        When the reader was constructed with ``force_recompute=True``
-        and ``call_genotype`` is present, the virtual fields
-        ``variant_AC``, ``variant_AN``, and ``variant_AF`` are
-        included. They are not Zarr-backed — the per-chunk
-        :meth:`variant_chunks` path computes them from
-        ``call_genotype`` (and ``variant_allele`` for AC/AF).
+        Virtual fields (e.g. ``variant_AC`` on a store without a stored
+        ``variant_AC`` array) are not included here even though
+        :meth:`variant_chunks` can yield them — they are addressable by
+        name but not auto-discovered by the default-emit path. See
+        :attr:`virtual_field_names` for the available virtual set.
         """
-        real = frozenset(self.root)
-        if self.force_recompute and "call_genotype" in real:
-            return real | _VIRTUAL_VARIANT_FIELDS
-        return real
+        return frozenset(self.root)
+
+    @functools.cached_property
+    def _virtual_fields(self) -> dict:
+        """The subset of :data:`virtual_fields.REGISTRY` whose deps
+        are satisfied by this store (with degenerate fallbacks chosen
+        where the primary's deps are absent). Resolved lazily so the
+        constructor stays cheap and store-touching tests can introspect
+        the reader without paying for a metadata walk."""
+        return virtual_fields_mod.resolve_for_root(self.root)
+
+    @functools.cached_property
+    def virtual_field_names(self) -> frozenset[str]:
+        """Names of virtual fields whose dependencies are satisfied by
+        the current store.
+
+        A name appears here when its primary form's deps are present,
+        or — for ``variant_N_MISSING`` / ``variant_F_MISSING`` on
+        annotations-only stores — when the degenerate fallback's deps
+        are present. Used by ``BcftoolsFilter`` to resolve bare names
+        like ``N_MISSING`` and by the ``--fill-tags`` validator.
+        """
+        return frozenset(self._virtual_fields)
 
     @functools.cached_property
     def _field_info_cache(self) -> dict[str, FieldInfo]:
@@ -1192,56 +1179,56 @@ class VczReader:
     def get_field_info(self, name: str) -> FieldInfo:
         """Return a :class:`FieldInfo` snapshot for the named field.
         Reads Zarr metadata on first access, then memoizes per-field.
-        Raises ``KeyError`` if the field is absent."""
+        Raises ``KeyError`` if the field is absent.
+
+        For a stored field, returns the real on-disk metadata.
+        For a virtual field with no stored counterpart, synthesises
+        :class:`FieldInfo` from the registry entry. For a virtual field
+        that *also* exists as a stored array, the stored array wins
+        (its ``attrs.description`` is preserved); the registry only
+        substitutes its description if the stored array has none.
+        """
         cache = self._field_info_cache
         if name in cache:
             return cache[name]
-        # Virtual AC / AN / AF only override the stored field when the
-        # reader was constructed with force_recompute=True. Otherwise
-        # fall through to the stored field's metadata (preserves any
-        # custom description on the original Zarr field).
-        if name in _VIRTUAL_VARIANT_FIELDS and self.force_recompute:
-            spec = _VIRTUAL_FIELD_INFOS[name]
-            source = self.root[spec["shape_from"]]
-            num_variants = source.shape[0]
-            if len(spec["dims"]) == 1:
-                shape = (num_variants,)
-            else:
-                # 2-D virtual fields are sized by variant_allele's
-                # alt-allele axis (allele count minus the REF column).
-                shape = (num_variants, source.shape[1] - 1)
-            attrs = dict(spec["attrs"])
-            # Preserve any stored description so bcftools-parity output
-            # carries the original header's wording (e.g. "Allele count
-            # in genotypes, for each ALT allele, in the same order as
-            # listed" vs. the reserved short form).
-            if name in self.root:
-                stored_desc = self.root[name].attrs.get("description")
-                if stored_desc is not None:
-                    attrs["description"] = stored_desc
+        if name in self.root:
+            arr = self.root[name]
+            attrs = dict(arr.attrs)
+            vf = self._virtual_fields.get(name)
+            if vf is not None and "description" not in attrs:
+                attrs["description"] = vf.description
             cache[name] = FieldInfo(
                 name=name,
-                dtype=spec["dtype"],
-                shape=shape,
-                dims=spec["dims"],
+                dtype=arr.dtype,
+                shape=tuple(arr.shape),
+                dims=tuple(utils.array_dims(arr)),
                 attrs=attrs,
             )
             return cache[name]
-        arr = self.root[name]
-        cache[name] = FieldInfo(
-            name=name,
-            dtype=arr.dtype,
-            shape=tuple(arr.shape),
-            dims=tuple(utils.array_dims(arr)),
-            attrs=dict(arr.attrs),
-        )
-        return cache[name]
+        if name in self._virtual_fields:
+            vf = self._virtual_fields[name]
+            source = self.root[vf.shape_from]
+            num_variants = source.shape[0]
+            if len(vf.dims) == 1:
+                shape = (num_variants,)
+            else:
+                shape = (num_variants, source.shape[1] - 1)
+            cache[name] = FieldInfo(
+                name=name,
+                dtype=vf.dtype,
+                shape=shape,
+                dims=vf.dims,
+                attrs={"description": vf.description},
+            )
+            return cache[name]
+        raise KeyError(name)
 
     def variant_chunks(
         self,
         *,
         fields: list[str] | None = None,
         start: int = 0,
+        force_recompute=False,
     ):
         """Yield dict[str, np.ndarray] per variant chunk that passes the
         current variants/samples/variant-filter selection.
@@ -1250,6 +1237,15 @@ class VczReader:
         begins at ``variant_chunk_plan[start]``. ``start=0`` (default)
         iterates the full plan. ``start >= len(variant_chunk_plan)``
         yields no chunks. Negative ``start`` raises ``ValueError``.
+
+        ``force_recompute`` controls how virtual fields (see
+        :attr:`virtual_field_names`) resolve when a same-named stored
+        array also exists. ``False`` (default): if the field is in the
+        store, return the stored value; otherwise compute. ``True``:
+        every requested field that is virtual is recomputed, ignoring
+        any stored value. Iterable of field names: only the listed
+        virtual fields are recomputed. Virtual fields that don't have
+        a stored counterpart are always computed regardless.
 
         The per-chunk flow:
 
@@ -1298,7 +1294,9 @@ class VczReader:
             return iter(())
 
         return utils.PrefetchIterator(
-            self._variant_chunks_gen(fields=fields, start=start)
+            self._variant_chunks_gen(
+                fields=fields, start=start, force_recompute=force_recompute
+            )
         )
 
     def _variant_chunks_gen(
@@ -1306,6 +1304,7 @@ class VczReader:
         *,
         fields: list[str] | None = None,
         start: int = 0,
+        force_recompute=False,
     ):
         """Inner generator backing :meth:`variant_chunks`. The public
         entry point validates arguments eagerly and wraps this
@@ -1340,25 +1339,44 @@ class VczReader:
         # and dynamic (prefetched per stream chunk). Pseudo-fields
         # (e.g. ``variant_index``) are query-only and never enter the
         # Zarr-backed split; they are emitted directly from per-chunk
-        # plan state. Virtual fields (e.g. ``variant_AC``) are computed
-        # from real fields **for the output path**; their dependencies
-        # replace them in the prefetch set. Filter expressions
-        # normally resolve AC/AN against the stored field (matching
-        # bcftools), but when ``force_recompute=True`` and the stored
-        # counterpart is absent, the filter falls back to the virtual
-        # value so ``AC>0`` works on stores that never had INFO/AC.
-        active_virtual = (
-            _VIRTUAL_VARIANT_FIELDS if self.force_recompute else frozenset()
+        # plan state.
+        #
+        # Virtual fields go through the registry. Filter and output
+        # paths resolve them with different rules, matching bcftools:
+        #
+        # * Filter context: always read the stored array when it
+        #   exists; only fall back to the registry when there is no
+        #   stored counterpart. This preserves bcftools' rule that
+        #   ``-i INFO/AC>10`` evaluates against the file's INFO column,
+        #   unaffected by whatever recompute the user has requested.
+        # * Output context: read the stored array unless
+        #   ``force_recompute`` names the field, in which case the
+        #   registry's compute wins. ``force_recompute=True`` covers
+        #   every available virtual; an iterable scopes it to a set.
+        force_set = self._resolve_force_recompute(force_recompute)
+
+        def _is_virtual_for_output(name):
+            if name not in self._virtual_fields:
+                return False
+            if name not in self.root:
+                return True
+            return name in force_set
+
+        def _is_virtual_for_filter(name):
+            return name in self._virtual_fields and name not in self.root
+
+        virtual_query_fields = frozenset(
+            f for f in query_fields if _is_virtual_for_output(f)
         )
         virtual_filter_fields = frozenset(
-            f for f in filter_fields if f in active_virtual and f not in self.root
+            f for f in filter_fields if _is_virtual_for_filter(f)
         )
 
-        def _expand_virtual_deps(names):
+        def _expand_virtual_deps(names, predicate):
             out = []
             for n in names:
-                if n in active_virtual:
-                    out.extend(_VIRTUAL_FIELD_DEPS[n])
+                if predicate(n):
+                    out.extend(self._virtual_fields[n].deps)
                 else:
                     out.append(n)
             return out
@@ -1366,9 +1384,8 @@ class VczReader:
         real_query_fields = [
             f
             for f in query_fields
-            if f not in _PSEUDO_QUERY_FIELDS and f not in active_virtual
+            if f not in _PSEUDO_QUERY_FIELDS and f not in virtual_query_fields
         ]
-        virtual_query_fields = [f for f in query_fields if f in active_virtual]
         real_filter_fields = [
             f for f in filter_fields if f not in virtual_filter_fields
         ]
@@ -1376,9 +1393,13 @@ class VczReader:
             dict.fromkeys(
                 [
                     *real_filter_fields,
-                    *_expand_virtual_deps(list(virtual_filter_fields)),
+                    *_expand_virtual_deps(
+                        list(virtual_filter_fields), _is_virtual_for_filter
+                    ),
                     *real_query_fields,
-                    *_expand_virtual_deps(virtual_query_fields),
+                    *_expand_virtual_deps(
+                        list(virtual_query_fields), _is_virtual_for_output
+                    ),
                 ]
             )
         )
@@ -1461,46 +1482,32 @@ class VczReader:
                 # can emit only matching samples in FORMAT-loop queries.
                 variants_selection = None
                 sample_filter_pass = None
-                # Per-chunk cache so AC, AN, AF (which all derive from
-                # the same kernel pass) only call ``compute_ac_an``
-                # once. Computed on the output (subset) sample axis;
-                # this matches bcftools' rule that AC/AN/AF are
-                # post-subset values whether they appear in a filter
-                # expression or in the INFO column.
-                output_virtual_cache: dict = {}
+                # Per-chunk cache for virtual-field outputs. Compute
+                # functions may publish sibling values into it (e.g.
+                # the AC kernel pass also yields AN) so a later request
+                # for the sibling short-circuits. Virtual fields are
+                # computed on the output (subset) sample axis whether
+                # they appear in a filter expression or in the INFO
+                # column, matching bcftools' post-subset semantics.
+                virtual_cache: dict = {}
 
                 def _virtual_value(name, view_fn, cache):
                     if name in cache:
                         return cache[name]
-                    if name == "variant_AC":
-                        gt = view_fn("call_genotype")
-                        alt = view_fn("variant_allele")[:, 1:]
-                        ac, an = calculate.compute_ac_an(gt, alt)
-                        cache["variant_AC"] = ac
-                        cache["variant_AN"] = an
-                        return ac
-                    if name == "variant_AN":
-                        gt = view_fn("call_genotype")
-                        an = calculate.compute_an(gt)
-                        cache["variant_AN"] = an
-                        return an
-                    raise AssertionError(f"unknown virtual field {name}")
+                    vf = self._virtual_fields[name]
+                    deps = {dep: view_fn(dep) for dep in vf.deps}
+                    value = vf.compute(deps, cache)
+                    cache[name] = value
+                    return value
 
                 if variant_filter is not None:
-                    # AC/AN in filter expressions resolve to the stored
-                    # field when present (matching bcftools, which
-                    # uses the file's INFO column for filter
-                    # evaluation). When force_recompute=True and the
-                    # stored counterpart is absent, the filter falls
-                    # back to the virtual value so the filter still
-                    # works on stores that never had INFO/AC.
                     filter_data = {}
                     for f in filter_fields:
                         if f in referenced_static_fields:
                             filter_data[f] = referenced_static_fields[f]
                         elif f in virtual_filter_fields:
                             filter_data[f] = _virtual_value(
-                                f, chunk.output_view, output_virtual_cache
+                                f, chunk.output_view, virtual_cache
                             )
                         else:
                             filter_data[f] = chunk.filter_view(f)
@@ -1542,10 +1549,8 @@ class VczReader:
                         value = _absolute_variant_indexes(
                             chunk.variant_chunk, stream_chunk_size
                         )
-                    elif field in active_virtual:
-                        value = _virtual_value(
-                            field, chunk.output_view, output_virtual_cache
-                        )
+                    elif field in virtual_query_fields:
+                        value = _virtual_value(field, chunk.output_view, virtual_cache)
                     else:
                         value = chunk.output_view(field)
                     if variants_selection is not None:
@@ -1606,6 +1611,22 @@ class VczReader:
             for key in self.field_names
             if key.startswith("variant_") or key.startswith("call_")
         ]
+
+    def _resolve_force_recompute(self, value) -> frozenset[str]:
+        """Normalise the :meth:`variant_chunks` ``force_recompute``
+        argument into the set of virtual field names to recompute even
+        when a stored counterpart exists.
+
+        ``True`` expands to every available virtual name; ``False`` to
+        the empty set; any iterable is taken verbatim (caller-supplied
+        names need not be among the available virtuals — unknown names
+        have no effect, since the virtual check is a separate gate).
+        """
+        if value is True:
+            return self.virtual_field_names
+        if value is False:
+            return frozenset()
+        return frozenset(value)
 
     def variants(
         self,

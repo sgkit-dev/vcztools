@@ -422,6 +422,84 @@ def _parse_types_option(value, option_name):
     return [_BCFTOOLS_TYPE_TO_SINGULAR[t] for t in types]
 
 
+# Tag-name surface for ``vcztools view --fill-tags``. Matches the
+# ``bcftools +fill-tags -t`` accept-list filtered to entries with a
+# corresponding virtual field in
+# :data:`vcztools.virtual_fields.REGISTRY`. ``MAF``, ``AC_Hom``,
+# ``AC_Het``, ``AC_Hemi`` are bcftools-supported but not yet wired in
+# vcztools: they parse as known names and surface a dedicated "not
+# yet implemented" error so the help text stays honest.
+SUPPORTED_FILL_TAGS = frozenset({"AC", "AN", "AF", "NS"})
+_DEFERRED_FILL_TAGS = frozenset({"MAF", "AC_Hom", "AC_Het", "AC_Hemi"})
+_FILL_TAGS_ISSUE_URL = "https://github.com/sgkit-dev/vcztools/issues/171"
+# Tags recomputed by default when ``vcztools view`` is given a sample
+# subset and ``--no-update`` / ``--fill-tags`` are absent. Matches the
+# AC/AN recompute that ``bcftools view -s`` does implicitly.
+_DEFAULT_SUBSET_FILL_TAGS = frozenset({"AC", "AN"})
+
+
+def _parse_fill_tags_option(value):
+    """Validate ``--fill-tags VALUE`` and return the
+    ``frozenset[str]`` of accepted tag names. Empty value, unknown
+    tag, or a deferred tag each raises ``ValueError`` at parse time
+    with a message that names the supported set."""
+    if value is None:
+        return None
+    if value == "":
+        raise ValueError(
+            "--fill-tags requires a non-empty comma-separated tag list; "
+            f"supported tags: {', '.join(sorted(SUPPORTED_FILL_TAGS))}."
+        )
+    tags = [t for t in value.split(",") if len(t) > 0]
+    if len(tags) == 0:
+        raise ValueError(
+            "--fill-tags requires a non-empty comma-separated tag list; "
+            f"supported tags: {', '.join(sorted(SUPPORTED_FILL_TAGS))}."
+        )
+    deferred = [t for t in tags if t in _DEFERRED_FILL_TAGS]
+    if len(deferred) > 0:
+        raise ValueError(
+            f"--fill-tags tag(s) {deferred} not yet implemented; "
+            f"track at {_FILL_TAGS_ISSUE_URL}."
+        )
+    unknown = [t for t in tags if t not in SUPPORTED_FILL_TAGS]
+    if len(unknown) > 0:
+        raise ValueError(
+            f"--fill-tags: unsupported tag(s) {unknown}. "
+            f"Supported: {', '.join(sorted(SUPPORTED_FILL_TAGS))}."
+        )
+    return frozenset(tags)
+
+
+def _resolve_fill_tags(
+    *,
+    fill_tags: frozenset | None,
+    no_update: bool,
+    drop_genotypes: bool,
+    samples_subset: bool,
+) -> frozenset:
+    """Return the set of *VCF-tag* names whose values should be
+    recomputed and emitted by the writer for this ``view`` invocation.
+
+    Three regimes, picked by exactly one of the flags:
+
+    - ``--no-update``: nothing recomputed.
+    - ``--fill-tags=X,Y``: those tags (already validated).
+    - Default with a sample subset in play: ``AC``/``AN``.
+
+    The caller has already enforced mutex constraints (``--no-update``
+    vs ``--fill-tags``, ``--fill-tags`` vs ``--drop-genotypes``) at
+    Click-validation time, so this is pure resolution logic.
+    """
+    if no_update:
+        return frozenset()
+    if fill_tags is not None:
+        return fill_tags
+    if samples_subset and not drop_genotypes:
+        return _DEFAULT_SUBSET_FILL_TAGS
+    return frozenset()
+
+
 def _build_view_filter_expression(types, exclude_types, min_alleles, max_alleles):
     """Translate the bcftools-style ``-v/-V/-m/-M`` view options to a
     synthetic filter expression, or ``None`` if none of them are set.
@@ -474,7 +552,6 @@ def make_reader(
     storage_options=None,
     readahead_workers=None,
     readahead_bytes=None,
-    force_recompute=False,
 ):
     """Resolve file arguments and create a VczReader."""
     if regions is not None and regions_file is not None:
@@ -527,13 +604,16 @@ def make_reader(
         root,
         readahead_workers=readahead_workers,
         readahead_bytes=readahead_bytes,
-        force_recompute=force_recompute,
     )
 
+    # Filter expressions may reference virtual fields (e.g. ``N_MISSING``)
+    # alongside stored ones; the union is the parser's full resolution
+    # surface.
+    filter_field_names = reader.field_names | reader.virtual_field_names
     variant_filter = None
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include=include, exclude=exclude
+            field_names=filter_field_names, include=include, exclude=exclude
         )
 
     view_expr = _build_view_filter_expression(
@@ -541,7 +621,7 @@ def make_reader(
     )
     if view_expr is not None:
         synthetic_filter = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include=view_expr
+            field_names=filter_field_names, include=view_expr
         )
         variant_filter = variant_filter_mod.compose(variant_filter, synthetic_filter)
 
@@ -998,7 +1078,6 @@ def make_reader_from_groups(
     reader: ReaderOptions | None = None,
     view_semantics: bool = False,
     drop_genotypes: bool = False,
-    force_recompute: bool = False,
 ) -> retrieval.VczReader:
     """Construct a :class:`VczReader` from the category-aligned option
     bundles. Single seam between the public dataclasses and
@@ -1013,7 +1092,6 @@ def make_reader_from_groups(
         path,
         view_semantics=view_semantics,
         drop_genotypes=drop_genotypes,
-        force_recompute=force_recompute,
         **dataclasses.asdict(selection),
         **dataclasses.asdict(zarr_store),
         **dataclasses.asdict(reader),
@@ -1183,13 +1261,26 @@ def query(
     "-I",
     "--no-update",
     is_flag=True,
-    help="Do not recalculate INFO fields for the sample subset.",
+    help="Do not recalculate INFO fields for the sample subset. "
+    "Mutually exclusive with --fill-tags.",
 )
 @click.option(
     "-G",
     "--drop-genotypes",
     is_flag=True,
     help="Drop genotypes.",
+)
+@click.option(
+    "--fill-tags",
+    "fill_tags",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated list of INFO tags to (re)compute and emit, "
+        "replacing any source value. Supported: "
+        f"{', '.join(sorted(SUPPORTED_FILL_TAGS))}. "
+        "Mutually exclusive with --no-update and -G."
+    ),
 )
 @SelectionOptions.decorator
 @encode_threads
@@ -1205,6 +1296,7 @@ def view(
     no_version,
     no_update,
     drop_genotypes,
+    fill_tags,
     encode_threads,
     **kwargs,
 ):
@@ -1233,16 +1325,24 @@ def view(
     if (selection.samples or selection.samples_file) and drop_genotypes:
         raise ValueError("Cannot select samples and drop genotypes.")
 
-    # Match ``bcftools view -s …`` semantics: when the user subsets
-    # samples and hasn't passed ``--no-update``, AC / AN / AF must be
-    # recomputed over the subset. The reader exposes them as virtual
-    # fields gated by ``force_recompute``; the writer then picks them
-    # up out of chunk_data like any other INFO field.
-    force_recompute = (
-        not drop_genotypes
-        and not no_update
-        and (selection.samples is not None or selection.samples_file is not None)
+    fill_tags_set = _parse_fill_tags_option(fill_tags)
+    if fill_tags_set is not None:
+        if no_update:
+            raise ValueError("Cannot combine --no-update and --fill-tags.")
+        if drop_genotypes:
+            raise ValueError(
+                "Cannot combine -G/--drop-genotypes and --fill-tags: "
+                "tag computation requires call_genotype."
+            )
+
+    samples_subset = selection.samples is not None or selection.samples_file is not None
+    effective_fill_tags = _resolve_fill_tags(
+        fill_tags=fill_tags_set,
+        no_update=no_update,
+        drop_genotypes=drop_genotypes,
+        samples_subset=samples_subset,
     )
+
     reader = make_reader_from_groups(
         path,
         selection=selection,
@@ -1250,7 +1350,6 @@ def view(
         reader=reader_opts,
         view_semantics=True,
         drop_genotypes=drop_genotypes,
-        force_recompute=force_recompute,
     )
     with reader, handle_broken_pipe(output):
         vcf_writer.write_vcf(
@@ -1261,6 +1360,7 @@ def view(
             no_version=no_version,
             drop_genotypes=drop_genotypes,
             encode_threads=encode_threads,
+            fill_tags=effective_fill_tags,
         )
 
 

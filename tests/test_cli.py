@@ -111,6 +111,48 @@ def test_drop_genotypes_rejects_sample_scope_filter(fx_vcz_path):
         )
 
 
+class TestFillTagsCli:
+    """Parse-time UX for ``vcztools view --fill-tags``.
+
+    These exercise the validator in :func:`vcztools.cli._parse_fill_tags_option`
+    and the mutex checks in the ``view`` command body. The corresponding
+    bcftools-parity tests live in ``test_bcftools_validation.py``.
+    """
+
+    def test_empty_value_rejected(self, fx_vcz_path):
+        _, stderr = run_vcztools(f"view --fill-tags= {fx_vcz_path}", expect_error=True)
+        assert "non-empty comma-separated" in stderr
+
+    def test_unknown_tag_rejected(self, fx_vcz_path):
+        _, stderr = run_vcztools(
+            f"view --fill-tags=NOPE {fx_vcz_path}", expect_error=True
+        )
+        assert "unsupported tag" in stderr.lower()
+        for tag in ("AC", "AN", "AF", "NS"):
+            assert tag in stderr
+
+    def test_deferred_tag_rejected(self, fx_vcz_path):
+        _, stderr = run_vcztools(
+            f"view --fill-tags=MAF {fx_vcz_path}", expect_error=True
+        )
+        assert "not yet implemented" in stderr
+        assert "171" in stderr  # the tracked issue number
+
+    def test_mutex_with_no_update(self, fx_vcz_path):
+        _, stderr = run_vcztools(
+            f"view --no-update --fill-tags=AC {fx_vcz_path}", expect_error=True
+        )
+        assert "--no-update" in stderr
+        assert "--fill-tags" in stderr
+
+    def test_mutex_with_drop_genotypes(self, fx_vcz_path):
+        _, stderr = run_vcztools(
+            f"view -G --fill-tags=AC {fx_vcz_path}", expect_error=True
+        )
+        assert "--fill-tags" in stderr
+        assert "call_genotype" in stderr
+
+
 class TestFilterErrors:
     """Pins the user-visible contract for filter expression errors:
     exit code 1 plus a specific error-message substring in stderr.
@@ -1620,7 +1662,6 @@ class TestReadaheadOptions:
         assert captured == {
             "readahead_workers": 4,
             "readahead_bytes": 100 * 1024 * 1024,
-            "force_recompute": False,
         }
 
     def test_query_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
@@ -1638,7 +1679,6 @@ class TestReadaheadOptions:
         assert captured == {
             "readahead_workers": 2,
             "readahead_bytes": 1024,
-            "force_recompute": False,
         }
 
     def test_view_plink_forwards_flags(self, monkeypatch, tmp_path, fx_vcz_path):
@@ -1656,7 +1696,6 @@ class TestReadaheadOptions:
         assert captured == {
             "readahead_workers": 8,
             "readahead_bytes": 2 * 1024 * 1024,
-            "force_recompute": False,
         }
 
     def test_view_invalid_buffer_size(self, tmp_path, fx_vcz_path):

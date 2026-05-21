@@ -5,6 +5,26 @@ import pytest
 
 from vcztools import bcftools_filter as filter_mod
 from vcztools import constants
+from vcztools import virtual_fields as virtual_fields_mod
+
+
+def _materialise_virtuals(data, names):
+    """Populate ``data`` (a per-chunk-style dict from
+    :func:`numpify_values`) with the named virtual fields by running
+    the registry's compute functions in dependency order. Mirrors what
+    ``VczReader._variant_chunks_gen`` does for the filter-side data
+    dict so unit-level :meth:`BcftoolsFilter.evaluate` tests stay
+    representative."""
+    cache: dict = {}
+    for name in names:
+        vf = virtual_fields_mod.REGISTRY[name]
+        if not all(d in data for d in vf.deps):
+            if vf.degenerate is None:
+                raise KeyError(f"deps for {name} not in test data")
+            vf = vf.degenerate
+        deps = {dep: np.asarray(data[dep]) for dep in vf.deps}
+        data[name] = vf.compute(deps, cache)
+    return data
 
 
 class TestFilterExpressionParser:
@@ -120,12 +140,11 @@ class TestIdentifierResolutionErrors:
         ],
     )
     def test_ac_an_af_resolve_via_stored_field(self, expression, all_fields):
-        # AC / AN / AF resolve through the ordinary Identifier rule:
-        # when ``variant_AC`` etc. is in ``all_fields`` the parser
-        # accepts the expression. The same names appear in
-        # ``reader.field_names`` automatically when the reader was
-        # constructed with ``force_recompute=True``, so the parser
-        # behaviour is identical for stored and virtual AC/AN/AF.
+        # AC / AN / AF resolve through the ordinary Identifier rule.
+        # ``all_fields`` is the union the caller passes in — for the
+        # VczReader that's ``field_names | virtual_field_names`` so
+        # virtual entries make the parser accept the expression even
+        # without a stored counterpart.
         parser = filter_mod.make_bcftools_filter_parser(
             all_fields=all_fields, map_vcf_identifiers=True
         )
@@ -133,9 +152,9 @@ class TestIdentifierResolutionErrors:
 
     @pytest.mark.parametrize("expression", ["AC>0", "AN>0", "AF<0.5"])
     def test_ac_an_af_undefined_without_stored_or_virtual(self, expression):
-        # No stored ``variant_AC`` and no force_recompute → the
-        # identifier path falls through to the generic
-        # "the tag X is not defined" error.
+        # Neither a stored ``variant_AC`` nor a virtual one available →
+        # the identifier path falls through to the generic "the tag X
+        # is not defined" error.
         parser = filter_mod.make_bcftools_filter_parser(
             all_fields=set(), map_vcf_identifiers=True
         )
@@ -360,13 +379,18 @@ class TestFilterExpression:
                 ["A", "T", "G", "C"],
             ],
         }
-        fee = filter_mod.BcftoolsFilter(include=expression)
-        result = fee.evaluate(numpify_values(data))
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"variant_N_ALT", "variant_allele"}, include=expression
+        )
+        evaluated = _materialise_virtuals(numpify_values(data), ["variant_N_ALT"])
+        result = fee.evaluate(evaluated)
         nt.assert_array_equal(result, expected)
 
     def test_n_alt_referenced_fields(self):
-        fee = filter_mod.BcftoolsFilter(include="N_ALT >= 2")
-        assert fee.referenced_fields == {"variant_allele"}
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"variant_N_ALT"}, include="N_ALT >= 2"
+        )
+        assert fee.referenced_fields == {"variant_N_ALT"}
         assert fee.scope == "variant"
 
     # Synthetic 3-sample, diploid genotype matrix used by the
@@ -406,13 +430,13 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate_n_missing(self, expression, expected):
-        # field_names must include call_genotype so the parser picks
-        # the real NMissingIdentifier rather than the all-zero
-        # NMissingZeroIdentifier degenerate fallback.
         fee = filter_mod.BcftoolsFilter(
-            field_names={"call_genotype"}, include=expression
+            field_names={"variant_N_MISSING", "call_genotype"}, include=expression
         )
-        result = fee.evaluate(numpify_values(self._MISSING_GT_DATA))
+        data = _materialise_virtuals(
+            numpify_values(self._MISSING_GT_DATA), ["variant_N_MISSING"]
+        )
+        result = fee.evaluate(data)
         nt.assert_array_equal(result, expected)
 
     @pytest.mark.parametrize(
@@ -428,9 +452,12 @@ class TestFilterExpression:
     )
     def test_evaluate_f_missing(self, expression, expected):
         fee = filter_mod.BcftoolsFilter(
-            field_names={"call_genotype"}, include=expression
+            field_names={"variant_F_MISSING", "call_genotype"}, include=expression
         )
-        result = fee.evaluate(numpify_values(self._MISSING_GT_DATA))
+        data = _materialise_virtuals(
+            numpify_values(self._MISSING_GT_DATA), ["variant_F_MISSING"]
+        )
+        result = fee.evaluate(data)
         nt.assert_array_equal(result, expected)
 
     def test_evaluate_n_missing_combined_with_other(self):
@@ -454,46 +481,43 @@ class TestFilterExpression:
             "variant_position": np.array([1, 2, 3]),
         }
         fee = filter_mod.BcftoolsFilter(
-            field_names={"call_genotype"},
+            field_names={"variant_N_MISSING", "variant_allele"},
             include='N_MISSING > 0 && TYPE~"snp"',
         )
+        data = _materialise_virtuals(data, ["variant_N_MISSING"])
         nt.assert_array_equal(fee.evaluate(data), [False, True, False])
 
-    def test_n_missing_referenced_fields_with_call_genotype(self):
-        # Real-path identifier references only call_genotype.
+    def test_n_missing_referenced_fields(self):
+        # The Identifier resolves to ``variant_N_MISSING``; the dispatcher
+        # is responsible for materialising the value (from ``call_genotype``
+        # or via the all-zero degenerate fallback) before evaluate runs.
         fee = filter_mod.BcftoolsFilter(
-            field_names={"call_genotype"}, include="N_MISSING == 0"
+            field_names={"variant_N_MISSING"}, include="N_MISSING == 0"
         )
-        assert fee.referenced_fields == {"call_genotype"}
+        assert fee.referenced_fields == {"variant_N_MISSING"}
         assert fee.scope == "variant"
 
-    def test_n_missing_referenced_fields_without_call_genotype(self):
-        # Degenerate fallback references variant_position only (as a
-        # shape source for the all-zero result).
-        fee = filter_mod.BcftoolsFilter(field_names=set(), include="N_MISSING == 0")
-        assert fee.referenced_fields == {"variant_position"}
-        assert fee.scope == "variant"
-
-    def test_f_missing_referenced_fields_with_call_genotype(self):
+    def test_f_missing_referenced_fields(self):
         fee = filter_mod.BcftoolsFilter(
-            field_names={"call_genotype"}, include="F_MISSING < 0.5"
+            field_names={"variant_F_MISSING"}, include="F_MISSING < 0.5"
         )
-        assert fee.referenced_fields == {"call_genotype"}
-        assert fee.scope == "variant"
-
-    def test_f_missing_referenced_fields_without_call_genotype(self):
-        fee = filter_mod.BcftoolsFilter(field_names=set(), include="F_MISSING < 0.5")
-        assert fee.referenced_fields == {"variant_position"}
+        assert fee.referenced_fields == {"variant_F_MISSING"}
         assert fee.scope == "variant"
 
     def test_combined_missing_referenced_fields(self):
-        # Combining N_MISSING and F_MISSING with a real INFO field
-        # collects all references at the BcftoolsFilter level.
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_DP", "call_genotype"},
+            field_names={
+                "variant_DP",
+                "variant_N_MISSING",
+                "variant_F_MISSING",
+            },
             include="N_MISSING == 0 && F_MISSING < 0.05 && INFO/DP > 10",
         )
-        assert fee.referenced_fields == {"call_genotype", "variant_DP"}
+        assert fee.referenced_fields == {
+            "variant_N_MISSING",
+            "variant_F_MISSING",
+            "variant_DP",
+        }
 
     @pytest.mark.parametrize(
         ("expression", "expected"),
@@ -508,9 +532,16 @@ class TestFilterExpression:
     def test_evaluate_missing_no_call_genotype(self, expression, expected):
         # When the dataset has no call_genotype (e.g. annotations-only
         # VCZ), N_MISSING / F_MISSING fall back to 0 for every variant.
-        data = {"variant_position": [10, 20, 30]}
-        fee = filter_mod.BcftoolsFilter(include=expression)
-        nt.assert_array_equal(fee.evaluate(numpify_values(data)), expected)
+        # In this unit test the fallback values are precomputed via the
+        # registry's degenerate forms; production wires the same thing
+        # through ``VczReader.virtual_field_names``.
+        data = numpify_values({"variant_position": [10, 20, 30]})
+        data = _materialise_virtuals(data, ["variant_N_MISSING", "variant_F_MISSING"])
+        fee = filter_mod.BcftoolsFilter(
+            field_names={"variant_N_MISSING", "variant_F_MISSING"},
+            include=expression,
+        )
+        nt.assert_array_equal(fee.evaluate(data), expected)
 
     def test_evaluate_n_missing_with_fill_only(self):
         # Mixed-ploidy samples encode the unused ploidy slot as
@@ -532,8 +563,10 @@ class TestFilterExpression:
             "variant_position": np.array([1, 2]),
         }
         fee = filter_mod.BcftoolsFilter(
-            field_names={"call_genotype"}, include="N_MISSING == 2"
+            field_names={"variant_N_MISSING", "call_genotype"},
+            include="N_MISSING == 2",
         )
+        data = _materialise_virtuals(data, ["variant_N_MISSING"])
         nt.assert_array_equal(fee.evaluate(data), [False, True])
 
     @pytest.mark.parametrize(

@@ -77,9 +77,11 @@ class UnsupportedCalculatedVariableError(UnsupportedFilteringFeatureError):
 
 # bcftools calculated variables we recognise but do not yet implement.
 # Intercepted in Identifier.__init__ so the user sees a dedicated error
-# instead of the generic "the tag X is not defined". AC / AN / AF are
-# supplied by the VczReader's force_recompute virtual-field machinery
-# (see vcztools/retrieval.py); they no longer surface here.
+# instead of the generic "the tag X is not defined". AC, AN, AF, NS,
+# N_ALT, N_MISSING and F_MISSING are surfaced by the VczReader's
+# virtual-field registry (see ``vcztools/virtual_fields.py``); the
+# generic Identifier path picks them up uniformly via the
+# ``virtual_field_names`` set that callers fold into ``all_fields``.
 UNSUPPORTED_CALCULATED_VARIABLES = frozenset({"N_SAMPLES", "MAC", "MAF", "ILEN"})
 
 
@@ -572,96 +574,6 @@ class TypeOperator(EvaluationNode):
         return self.op1.referenced_fields()
 
 
-class NAltIdentifier(EvaluationNode):
-    """Pseudo-identifier returning the count of non-empty ALT slots
-    per variant, computed from ``variant_allele``. Behaves like a
-    plain integer identifier in comparisons, e.g. ``N_ALT >= 2``.
-    """
-
-    def eval(self, data):
-        variant_allele = np.asarray(data["variant_allele"])
-        alt = variant_allele[:, 1:]
-        return (alt != "").sum(axis=1)
-
-    def __repr__(self):
-        return "N_ALT"
-
-    def referenced_fields(self):
-        return frozenset(["variant_allele"])
-
-
-def _count_missing_gt(gt):
-    # A sample's genotype is "missing" when every ploidy slot is a
-    # missing sentinel (negative value: INT_MISSING or INT_FILL).
-    return np.sum(np.all(gt < 0, axis=-1), axis=1)
-
-
-class NMissingIdentifier(EvaluationNode):
-    """Pseudo-identifier for the number of samples with all-missing
-    genotypes per variant, computed from ``call_genotype``. Selected
-    by the parser when the dataset has ``call_genotype``; the
-    no-genotype fallback uses :class:`NMissingZeroIdentifier` instead.
-    """
-
-    def eval(self, data):
-        gt = np.asarray(data["call_genotype"])
-        return _count_missing_gt(gt)
-
-    def __repr__(self):
-        return "N_MISSING"
-
-    def referenced_fields(self):
-        return frozenset(["call_genotype"])
-
-
-class FMissingIdentifier(EvaluationNode):
-    """Pseudo-identifier for the fraction of samples with all-missing
-    genotypes per variant, computed from ``call_genotype``. Selected
-    by the parser when the dataset has ``call_genotype``; the
-    no-genotype fallback uses :class:`FMissingZeroIdentifier` instead.
-    """
-
-    def eval(self, data):
-        gt = np.asarray(data["call_genotype"])
-        n_samples = gt.shape[1]
-        return _count_missing_gt(gt) / n_samples
-
-    def __repr__(self):
-        return "F_MISSING"
-
-    def referenced_fields(self):
-        return frozenset(["call_genotype"])
-
-
-class NMissingZeroIdentifier(EvaluationNode):
-    """Degenerate N_MISSING for datasets without ``call_genotype``:
-    no samples means no samples-with-missing-GT, so it's always 0.
-    ``variant_position`` is always present in vcz and supplies shape.
-    """
-
-    def eval(self, data):
-        return np.zeros(len(data["variant_position"]), dtype=np.int64)
-
-    def __repr__(self):
-        return "N_MISSING"
-
-    def referenced_fields(self):
-        return frozenset(["variant_position"])
-
-
-class FMissingZeroIdentifier(EvaluationNode):
-    """Degenerate F_MISSING: always 0 when ``call_genotype`` is absent."""
-
-    def eval(self, data):
-        return np.zeros(len(data["variant_position"]), dtype=np.float64)
-
-    def __repr__(self):
-        return "F_MISSING"
-
-    def referenced_fields(self):
-        return frozenset(["variant_position"])
-
-
 def _identity_list(x):
     return [x]
 
@@ -708,25 +620,6 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
     type_expr = type_identifier + pp.one_of("= == != ~ !~") + type_string
     type_expr = type_expr.set_parse_action(TypeOperator)
 
-    # N_ALT / N_MISSING / F_MISSING are value identifiers (not paired
-    # with a string operand like TYPE), so they must be listed in the
-    # atoms ahead of the bare identifier rule to win against
-    # ``pp.common.identifier``. N_MISSING / F_MISSING swap to a
-    # degenerate all-zero variant on datasets without call_genotype,
-    # detected once at parse time so the real implementation never
-    # needs to handle the no-GT case at eval time.
-    n_alt_identifier = pp.Keyword("N_ALT")
-    n_alt_identifier = n_alt_identifier.set_parse_action(NAltIdentifier)
-
-    gt_present = "call_genotype" in all_fields
-    n_missing_action = NMissingIdentifier if gt_present else NMissingZeroIdentifier
-    n_missing_identifier = pp.Keyword("N_MISSING")
-    n_missing_identifier = n_missing_identifier.set_parse_action(n_missing_action)
-
-    f_missing_action = FMissingIdentifier if gt_present else FMissingZeroIdentifier
-    f_missing_identifier = pp.Keyword("F_MISSING")
-    f_missing_identifier = f_missing_identifier.set_parse_action(f_missing_action)
-
     lbracket, rbracket = map(pp.Suppress, "[]")
     # TODO we need to define the indexing grammar more carefully, but
     # this at least let's us match correct strings and raise an informative
@@ -756,9 +649,6 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
         chrom_field_expr
         | filter_field_expr
         | type_expr
-        | n_alt_identifier
-        | n_missing_identifier
-        | f_missing_identifier
         | function
         | constant
         | indexed_identifier

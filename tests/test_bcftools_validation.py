@@ -3,6 +3,7 @@ import shutil
 import subprocess
 
 import click.testing as ct
+import numpy as np
 import pytest
 
 import vcztools.cli as cli
@@ -1165,6 +1166,17 @@ class TestCalculatedMissingTags:
                 f"bcftools={expected_keys}"
             )
 
+    def test_fill_tags_does_not_apply_to_missing(self, fx_sample_vcz, tmp_path):
+        # --fill-tags rejects N_MISSING / F_MISSING (per PLAN-fill-tags.md;
+        # bcftools +fill-tags doesn't surface them either). Pin the
+        # parse-time rejection so a regression doesn't silently widen
+        # the accept-list.
+        _, stderr = run_vcztools(
+            f"view --fill-tags=N_MISSING {fx_sample_vcz.zip_path}",
+            expect_error=True,
+        )
+        assert "unsupported tag" in stderr.lower()
+
     def test_mixed_ploidy_x10_not_missing(self, fx_sample_vcz):
         # X:10 in sample.vcf.gz mixes a haploid call ('0') with two
         # diploid calls ('0/1', '0|2'). bcftools reports N_MISSING=0
@@ -1180,3 +1192,138 @@ class TestCalculatedMissingTags:
             f"{fx_sample_vcz.zip_path}"
         )
         assert "X:10" in out.splitlines()
+
+
+def _bcftools_view_with_fill_tags(vcf_path, fill_tags: str, view_args: str = "") -> str:
+    """Run ``bcftools view ... | bcftools +fill-tags -t TAGS`` for the
+    fixture and return the resulting VCF text. Used as the oracle for
+    :class:`TestFillTagsParity`. ``view_args`` lets a test compose with
+    flags like ``-s`` so the +fill-tags rule observes the same
+    pre-/post-subset semantics."""
+    cmd = (
+        f"bcftools view --no-version {view_args} {vcf_path} "
+        f"| bcftools +fill-tags -- -t {fill_tags}"
+    )
+    completed = subprocess.run(
+        cmd, capture_output=True, check=True, shell=True
+    )
+    return completed.stdout.decode("utf-8")
+
+
+class TestFillTagsParity:
+    """Validate ``vcztools view --fill-tags=...`` output matches
+    ``bcftools view | bcftools +fill-tags -t ...`` for the supported
+    tag-set. Mirrors :class:`TestCalculatedMissingTags` in structure:
+    one parametrised test method per ``(tag, fixture)`` pair, plus a
+    composition test for ``-s X --fill-tags=AF`` from PLAN-fill-tags.md.
+    """
+
+    # Diploid fixtures whose stored INFO already has AC/AN/AF/NS, so
+    # the recompute path has something to overwrite. ``chr22`` is the
+    # widest (100 samples, real-world variability). ``msprime_diploid``
+    # is the simplest. ``sample`` exercises mixed-ploidy.
+    FIXTURES = [
+        "sample.vcf.gz",
+        "msprime_diploid.vcf.gz",
+        "1kg_2020_chrM.vcf.gz",
+        "chr22.vcf.gz",
+    ]
+
+    @pytest.mark.parametrize("vcf_file", FIXTURES)
+    @pytest.mark.parametrize("tag", ["AC", "AN", "AF", "NS"])
+    def test_single_tag(self, tmp_path, fx_all_vcz, tag, vcf_file):
+        fx = fx_all_vcz[vcf_file]
+
+        bcftools_text = _bcftools_view_with_fill_tags(fx.vcf_path, tag)
+        bcftools_file = tmp_path / "bcftools.vcf"
+        bcftools_file.write_text(bcftools_text)
+
+        vcztools_text, _ = run_vcztools(
+            f"view --no-version --fill-tags={tag} {fx.zip_path}"
+        )
+        vcztools_file = tmp_path / "vcztools.vcf"
+        vcztools_file.write_text(vcztools_text)
+
+        assert_vcfs_close(bcftools_file, vcztools_file)
+
+    @pytest.mark.parametrize("vcf_file", FIXTURES)
+    def test_full_tag_list(self, tmp_path, fx_all_vcz, vcf_file):
+        fx = fx_all_vcz[vcf_file]
+        tags = "AC,AN,AF,NS"
+
+        bcftools_text = _bcftools_view_with_fill_tags(fx.vcf_path, tags)
+        bcftools_file = tmp_path / "bcftools.vcf"
+        bcftools_file.write_text(bcftools_text)
+
+        vcztools_text, _ = run_vcztools(
+            f"view --no-version --fill-tags={tags} {fx.zip_path}"
+        )
+        vcztools_file = tmp_path / "vcztools.vcf"
+        vcztools_file.write_text(vcztools_text)
+
+        assert_vcfs_close(bcftools_file, vcztools_file)
+
+    def test_subset_with_fill_tags_af_suppresses_default(
+        self, tmp_path, fx_chr22_vcz
+    ):
+        # ``view -s HG00096 --fill-tags=AF``: AF is computed; the
+        # implicit AC/AN-on-subset default is suppressed (the explicit
+        # --fill-tags list replaces the default per PLAN-fill-tags.md).
+        # The bcftools oracle is `view -s | +fill-tags -t AF`. AC/AN
+        # in the output carry through from bcftools' subset recompute
+        # (which it always applies under -s), and on the vcztools side
+        # they come from the stored array — for this fixture the
+        # stored AC/AN happens to also be the post-subset value because
+        # we keep every sample. To make the comparison meaningful, use
+        # a single-sample subset where AC/AN should diverge: this test
+        # confirms only AF parity.
+        bcftools_text = _bcftools_view_with_fill_tags(
+            fx_chr22_vcz.vcf_path, "AF", view_args="-s HG00096"
+        )
+        bcftools_file = tmp_path / "bcftools.vcf"
+        bcftools_file.write_text(bcftools_text)
+
+        vcztools_text, _ = run_vcztools(
+            f"view --no-version -s HG00096 --fill-tags=AF {fx_chr22_vcz.zip_path}"
+        )
+        vcztools_file = tmp_path / "vcztools.vcf"
+        vcztools_file.write_text(vcztools_text)
+
+        # Compare AF column only — AC/AN may diverge because --fill-tags
+        # suppresses the implicit AC/AN-on-subset default that bcftools
+        # always applies.
+        #
+        # Two acceptable "missing AF" shapes from the oracle/SUT pair:
+        # bcftools emits ``AF=.,.`` (Number=A tuple of Nones); vcztools
+        # drops the AF field entirely (None scalar) when the whole
+        # vector is missing. We treat both as the same outcome.
+        import cyvcf2  # noqa: PLC0415  -- optional dep; imported here
+
+        def _all_missing(af):
+            if af is None:
+                return True
+            if isinstance(af, tuple):
+                return all(x is None for x in af)
+            return False
+
+        with cyvcf2.VCF(str(bcftools_file)) as bvcf, cyvcf2.VCF(
+            str(vcztools_file)
+        ) as vvcf:
+            for v_b, v_v in zip(bvcf, vvcf, strict=True):
+                af_b = v_b.INFO.get("AF")
+                af_v = v_v.INFO.get("AF")
+                if _all_missing(af_b) and _all_missing(af_v):
+                    continue
+                msg = (
+                    f"AF differs at {v_b.CHROM}:{v_b.POS}: "
+                    f"bcftools={af_b}, vcztools={af_v}"
+                )
+                assert af_b is not None, msg
+                assert af_v is not None, msg
+                np.testing.assert_allclose(
+                    np.atleast_1d(np.array(af_b, dtype=np.float32)),
+                    np.atleast_1d(np.array(af_v, dtype=np.float32)),
+                    rtol=1e-5,
+                    atol=1e-3,
+                    err_msg=f"AF differs at {v_b.CHROM}:{v_b.POS}",
+                )

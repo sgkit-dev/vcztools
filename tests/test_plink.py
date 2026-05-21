@@ -1670,7 +1670,9 @@ class TestBedEncoderWithSetVariants:
     def test_set_variant_filter_is_rejected(self):
         reader = _build_reader(num_variants=5, num_samples=3)
         reader.set_variant_filter(
-            bcftools_filter.BcftoolsFilter(field_names=set(), include="N_ALT <= 1")
+            bcftools_filter.BcftoolsFilter(
+                field_names={"variant_N_ALT"}, include="N_ALT <= 1"
+            )
         )
         with pytest.raises(NotImplementedError, match="set_variant_filter"):
             plink.BedEncoder(reader)

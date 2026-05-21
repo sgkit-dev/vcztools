@@ -77,11 +77,14 @@ class VcfWriter:
     :class:`~concurrent.futures.ThreadPoolExecutor` are owned for the
     duration of the ``with`` block.
 
-    AC / AN / AF recomputation when subsetting samples is the reader's
-    responsibility — open it with ``force_recompute=True`` and those
-    fields appear as virtual entries in ``chunk_data`` and in
-    ``reader.field_names`` (so the header picks them up automatically).
-    The writer itself stays agnostic.
+    ``fill_tags`` is the set of VCF-tag names (e.g. ``{"AC", "AN"}``)
+    that should be emitted as recomputed values, replacing any stored
+    counterpart. The CLI populates this from ``--fill-tags`` and from
+    the implicit ``view -s X`` default. The corresponding
+    ``variant_<TAG>`` virtual fields end up in the per-chunk request
+    with ``force_recompute=`` set, and are injected into the header's
+    INFO section even when the source store had no header line for
+    them.
 
     ``encode_threads`` sets the size of the per-chunk line encoding
     thread pool (default 4). Each chunk's rows are split into
@@ -96,6 +99,7 @@ class VcfWriter:
         *,
         drop_genotypes: bool = False,
         encode_threads: int | None = None,
+        fill_tags: frozenset | None = None,
     ):
         if encode_threads is None:
             encode_threads = 4
@@ -105,6 +109,17 @@ class VcfWriter:
         self._output_arg = output
         self.drop_genotypes = drop_genotypes
         self.encode_threads = encode_threads
+        self.fill_tags = frozenset() if fill_tags is None else frozenset(fill_tags)
+        # The corresponding VCZ array names (variant_AC, ...) used both
+        # to extend the per-chunk read list and to drive
+        # force_recompute. A fill-tags name unknown to the reader's
+        # virtual-field registry is dropped silently; the CLI validator
+        # has already rejected anything unsupported.
+        self._fill_field_names = frozenset(
+            f"variant_{tag}"
+            for tag in self.fill_tags
+            if f"variant_{tag}" in reader.virtual_field_names
+        )
         # Populated in __enter__
         self.output = None
         self._executor = None
@@ -139,12 +154,32 @@ class VcfWriter:
             )
 
     def write_header(self, *, no_version: bool = False) -> None:
-        header = _generate_header(self.reader, no_version=no_version)
+        header = _generate_header(
+            self.reader,
+            no_version=no_version,
+            extra_info_fields=self._fill_field_names,
+        )
         print(header, end="", file=self.output)
         self._bytes_written += len(header)
 
     def write_chunks(self) -> None:
-        for chunk_data in self.reader.variant_chunks():
+        if len(self._fill_field_names) == 0:
+            iterator = self.reader.variant_chunks()
+        else:
+            # Pull the stored field set into a list, layer the
+            # fill-tag virtual names on top (de-duplicated), and tell
+            # the reader to force-recompute precisely those names so
+            # any stored counterpart is overridden.
+            stored = [
+                f
+                for f in self.reader.field_names
+                if f.startswith("variant_") or f.startswith("call_")
+            ]
+            fields = list(dict.fromkeys(stored + list(self._fill_field_names)))
+            iterator = self.reader.variant_chunks(
+                fields=fields, force_recompute=self._fill_field_names
+            )
+        for chunk_data in iterator:
             self.write_chunk(chunk_data)
 
     def write_chunk(self, chunk_data) -> None:
@@ -302,6 +337,7 @@ def write_vcf(
     no_version: bool = False,
     drop_genotypes: bool = False,
     encode_threads: int | None = None,
+    fill_tags: frozenset | None = None,
 ) -> None:
     """Write a VCF to ``output`` from ``reader``. Thin wrapper around
     :class:`VcfWriter`; see that class for details on the per-write
@@ -312,6 +348,7 @@ def write_vcf(
         output,
         drop_genotypes=drop_genotypes,
         encode_threads=encode_threads,
+        fill_tags=fill_tags,
     ) as writer:
         if not no_header:
             writer.write_header(no_version=no_version)
@@ -323,6 +360,7 @@ def _generate_header(
     reader,
     *,
     no_version: bool = False,
+    extra_info_fields: frozenset | None = None,
 ):
     output = io.StringIO()
 
@@ -330,6 +368,12 @@ def _generate_header(
     contigs = list(reader.contig_ids)
     filters = list(_as_fixed_length_unicode(reader.filters))
     field_names = reader.field_names
+    if extra_info_fields is None:
+        extra_info_fields = frozenset()
+    # Union of stored fields and any --fill-tags-driven virtual names
+    # the writer asked for; the latter make sure the header announces
+    # INFO lines for tags the source store didn't ship.
+    header_field_names = field_names | frozenset(extra_info_fields)
     info_fields = []
     format_fields = []
 
@@ -337,7 +381,7 @@ def _generate_header(
         # GT must be the first field if present, per the spec (section 1.6.2)
         format_fields.append("GT")
 
-    for name in sorted(field_names):
+    for name in sorted(header_field_names):
         if (
             name.startswith("variant_")
             and not name.endswith("_fill")

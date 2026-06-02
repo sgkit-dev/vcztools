@@ -1,6 +1,6 @@
 import numpy as np
 
-from . import _vcztools, constants
+from . import _vcztools
 
 # Variant types
 REF = -1  # missing value
@@ -43,33 +43,28 @@ def calculate_variant_type(variant_allele: np.ndarray) -> np.ndarray:
 
 
 def compute_ac_an(gt: np.ndarray, alt: np.ndarray):
-    """Compute (AC, AN) per variant from a genotype chunk + ALT mask.
+    """Compute (AC, AN) per variant from a genotype chunk + ALT matrix.
 
     gt: (V, S, P) int8 genotype array.
-    alt: (V, num_alt_alleles) string ALT-allele matrix (bytes or
-        Unicode). Only the empty-string mask is used, to mark padding
-        positions in the AC output with INT_FILL.
+    alt: (V, max_num_alt) string ALT-allele matrix (bytes or Unicode).
+        Empty-string entries mark padding for variants with fewer ALTs
+        than max_num_alt and define each row's allele count.
 
-    Returns (ac, an) with ac.shape == (V, num_alt_alleles), int32 and
-    an.shape == (V,), int32.
+    Returns (ac, an) with ac.shape == (V, max_num_alt), int32 and
+    an.shape == (V,), int32. AC cells beyond a variant's actual ALT
+    count come back as constants.INT_FILL.
+
+    Raises ValueError if any genotype value lies outside [-2,
+    num_alleles[j]) for its row.
     """
     gt = np.ascontiguousarray(gt, dtype=np.int8)
-    num_alt = alt.shape[1]
-    ac = np.zeros((gt.shape[0], num_alt), dtype=np.int32)
-    an = np.zeros(gt.shape[0], dtype=np.int32)
-    _vcztools.compute_ac_an(gt, ac, an)
     # alt may arrive as bytes (``S``) or Unicode (``U`` / ``T`` /
     # ``O``); pick the matching empty literal so the mask works
     # regardless of how the Zarr store represents strings.
     empty = b"" if alt.dtype.kind == "S" else ""
-    ac[alt == empty] = constants.INT_FILL
-    return ac, an
-
-
-def compute_an(gt: np.ndarray) -> np.ndarray:
-    """AN-only fast path that skips the per-allele bincount work."""
-    gt = np.ascontiguousarray(gt, dtype=np.int8)
-    ac = np.zeros((gt.shape[0], 0), dtype=np.int32)
+    num_alleles = 1 + (alt != empty).sum(axis=1).astype(np.int32)
+    num_alleles = np.ascontiguousarray(num_alleles)
+    ac = np.zeros((gt.shape[0], alt.shape[1]), dtype=np.int32)
     an = np.zeros(gt.shape[0], dtype=np.int32)
-    _vcztools.compute_ac_an(gt, ac, an)
-    return an
+    _vcztools.compute_ac_an(gt, num_alleles, ac, an)
+    return ac, an

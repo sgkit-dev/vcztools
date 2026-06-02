@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import vcztools.cli as cli
+import vcztools.constants as constants_module
 
 from .utils import assert_vcfs_close
 
@@ -1167,10 +1168,9 @@ class TestCalculatedMissingTags:
             )
 
     def test_fill_tags_does_not_apply_to_missing(self, fx_sample_vcz, tmp_path):
-        # --fill-tags rejects N_MISSING / F_MISSING (per PLAN-fill-tags.md;
-        # bcftools +fill-tags doesn't surface them either). Pin the
-        # parse-time rejection so a regression doesn't silently widen
-        # the accept-list.
+        # --fill-tags rejects N_MISSING / F_MISSING; bcftools +fill-tags
+        # doesn't surface them either. Pin the parse-time rejection so a
+        # regression doesn't silently widen the accept-list.
         _, stderr = run_vcztools(
             f"view --fill-tags=N_MISSING {fx_sample_vcz.zip_path}",
             expect_error=True,
@@ -1213,9 +1213,7 @@ def _bcftools_view_with_fill_tags(vcf_path, fill_tags: str, view_args: str = "")
 class TestFillTagsParity:
     """Validate ``vcztools view --fill-tags=...`` output matches
     ``bcftools view | bcftools +fill-tags -t ...`` for the supported
-    tag-set. Mirrors :class:`TestCalculatedMissingTags` in structure:
-    one parametrised test method per ``(tag, fixture)`` pair, plus a
-    composition test for ``-s X --fill-tags=AF`` from PLAN-fill-tags.md.
+    tag-set. One parametrised test method per ``(tag, fixture)`` pair.
     """
 
     # Diploid fixtures whose stored INFO already has AC/AN/AF/NS, so
@@ -1263,67 +1261,192 @@ class TestFillTagsParity:
 
         assert_vcfs_close(bcftools_file, vcztools_file)
 
-    def test_subset_with_fill_tags_af_suppresses_default(
-        self, tmp_path, fx_chr22_vcz
-    ):
-        # ``view -s HG00096 --fill-tags=AF``: AF is computed; the
-        # implicit AC/AN-on-subset default is suppressed (the explicit
-        # --fill-tags list replaces the default per PLAN-fill-tags.md).
-        # The bcftools oracle is `view -s | +fill-tags -t AF`. AC/AN
-        # in the output carry through from bcftools' subset recompute
-        # (which it always applies under -s), and on the vcztools side
-        # they come from the stored array — for this fixture the
-        # stored AC/AN happens to also be the post-subset value because
-        # we keep every sample. To make the comparison meaningful, use
-        # a single-sample subset where AC/AN should diverge: this test
-        # confirms only AF parity.
-        bcftools_text = _bcftools_view_with_fill_tags(
-            fx_chr22_vcz.vcf_path, "AF", view_args="-s HG00096"
+
+@functools.cache
+def _bcftools_fill_tags_table(
+    vcf_path, view_args: str = "", fill_tags: str = "AC,AN,AF,NS"
+) -> tuple[tuple, ...]:
+    """Run ``bcftools view {view_args} {vcf_path} | bcftools +fill-tags
+    -- -t {fill_tags} | bcftools query -f '...'`` and parse the TSV
+    output into rows of ``(key, ac_tuple, an, af_tuple, ns)`` in file
+    order. ``.`` cells become ``None`` (scalars) or all-``None`` tuples
+    (Number=A fields)."""
+    fmt = "%CHROM:%POS\\t%INFO/AC\\t%INFO/AN\\t%INFO/AF\\t%INFO/NS\\n"
+    cmd = (
+        f"bcftools view --no-version {view_args} {vcf_path} "
+        f"| bcftools +fill-tags -- -t {fill_tags} "
+        f"| bcftools query -f '{fmt}' -"
+    )
+    completed = subprocess.run(cmd, capture_output=True, check=True, shell=True)
+    out = completed.stdout.decode("utf-8")
+    rows = []
+    for line in out.splitlines():
+        if len(line.strip()) == 0:
+            continue
+        key, ac_s, an_s, af_s, ns_s = line.split("\t")
+        rows.append(
+            (key, _parse_number_a_int(ac_s), _parse_scalar_int(an_s),
+             _parse_number_a_float(af_s), _parse_scalar_int(ns_s))
         )
-        bcftools_file = tmp_path / "bcftools.vcf"
-        bcftools_file.write_text(bcftools_text)
+    return tuple(rows)
 
-        vcztools_text, _ = run_vcztools(
-            f"view --no-version -s HG00096 --fill-tags=AF {fx_chr22_vcz.zip_path}"
+
+def _parse_scalar_int(cell: str):
+    return None if cell == "." else int(cell)
+
+
+def _parse_number_a_int(cell: str):
+    if cell == ".":
+        return None
+    return tuple(None if p == "." else int(p) for p in cell.split(","))
+
+
+def _parse_number_a_float(cell: str):
+    if cell == ".":
+        return None
+    return tuple(None if p == "." else float(p) for p in cell.split(","))
+
+
+def _vcztools_fill_tags_table(
+    zip_path, view_args_kwargs: dict
+) -> tuple[tuple, ...]:
+    """Open a VczReader on ``zip_path`` configured to match the bcftools
+    view filters in ``view_args_kwargs``, then iterate variant chunks
+    with ``force_recompute=True`` and emit rows in the same shape as
+    :func:`_bcftools_fill_tags_table`."""
+    fields = [
+        "variant_contig",
+        "variant_position",
+        "variant_AC",
+        "variant_AN",
+        "variant_AF",
+        "variant_NS",
+    ]
+    rows: list[tuple] = []
+    with cli.make_reader(
+        str(zip_path), view_semantics=True, **view_args_kwargs
+    ) as reader:
+        contig_ids = reader.contig_ids
+        for chunk in reader.variant_chunks(fields=fields, force_recompute=True):
+            contig = chunk["variant_contig"]
+            position = chunk["variant_position"]
+            ac = chunk["variant_AC"]
+            an = chunk["variant_AN"]
+            af = chunk["variant_AF"]
+            ns = chunk["variant_NS"]
+            for j in range(position.shape[0]):
+                key = f"{contig_ids[contig[j]]}:{position[j]}"
+                rows.append(
+                    (key, _ac_row_to_tuple(ac[j]), int(an[j]),
+                     _af_row_to_tuple(af[j]), int(ns[j]))
+                )
+    return tuple(rows)
+
+
+def _ac_row_to_tuple(row):
+    """Convert a per-variant AC row (int32 array with INT_FILL padding)
+    into the same tuple shape bcftools query emits."""
+    keep = [int(v) for v in row if v != constants_module.INT_FILL]
+    return tuple(keep) if len(keep) > 0 else None
+
+
+def _af_row_to_tuple(row):
+    """Convert a per-variant AF row (float32 with FILL/MISSING sentinels)
+    into the tuple shape bcftools query emits. FILL entries are dropped
+    (matching bcftools dropping padded ALT slots); MISSING entries
+    become ``None``."""
+    fill_bits = constants_module.FLOAT32_FILL.view(np.int32)
+    missing_bits = constants_module.FLOAT32_MISSING.view(np.int32)
+    int_view = np.asarray(row, dtype=np.float32).view(np.int32)
+    keep: list = []
+    for v, bits in zip(row, int_view):
+        if bits == fill_bits:
+            continue
+        if bits == missing_bits:
+            keep.append(None)
+        else:
+            keep.append(float(v))
+    return tuple(keep) if len(keep) > 0 else None
+
+
+class TestFillTagsColumnParity:
+    """Compare AC/AN/AF/NS column-wise between bcftools (+fill-tags |
+    query) and VczReader.variant_chunks(force_recompute=True).
+
+    Avoids VCF-text parsing and the Number=A null-shape divergence that
+    bedeviled the previous AF-only test. Used to broadly cover filter
+    compositions."""
+
+    FILTER_CASES = [
+        ("no-filter", "", {}),
+        ("single-sample", "-s HG00096", {"samples": "HG00096"}),
+        (
+            "multi-sample",
+            "-s HG00096,HG00097,HG00099",
+            {"samples": "HG00096,HG00097,HG00099"},
+        ),
+        (
+            "region",
+            "-r chr22:10510000-10520000",
+            {"regions": "chr22:10510000-10520000"},
+        ),
+        ("include-expr", "-i 'AN > 150'", {"include": "AN > 150"}),
+        (
+            "subset-and-region",
+            "-s HG00096 -r chr22:10510000-10520000",
+            {"samples": "HG00096", "regions": "chr22:10510000-10520000"},
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        ("view_args", "reader_kwargs"),
+        [(view, kw) for _, view, kw in FILTER_CASES],
+        ids=[case_id for case_id, _, _ in FILTER_CASES],
+    )
+    def test_column_parity(self, fx_chr22_vcz, view_args, reader_kwargs):
+        oracle = _bcftools_fill_tags_table(fx_chr22_vcz.vcf_path, view_args=view_args)
+        actual = _vcztools_fill_tags_table(
+            fx_chr22_vcz.zip_path, view_args_kwargs=reader_kwargs
         )
-        vcztools_file = tmp_path / "vcztools.vcf"
-        vcztools_file.write_text(vcztools_text)
+        assert len(oracle) == len(actual), (
+            f"row count differs: bcftools={len(oracle)}, vcztools={len(actual)}"
+        )
+        # Compare key + AC/AN/NS exactly; AF with float tolerance.
+        for row_o, row_a in zip(oracle, actual, strict=True):
+            key_o, ac_o, an_o, af_o, ns_o = row_o
+            key_a, ac_a, an_a, af_a, ns_a = row_a
+            assert key_o == key_a
+            assert ac_o == ac_a, f"AC differs at {key_o}: {ac_o} vs {ac_a}"
+            assert an_o == an_a, f"AN differs at {key_o}: {an_o} vs {an_a}"
+            assert ns_o == ns_a, f"NS differs at {key_o}: {ns_o} vs {ns_a}"
+            _assert_af_close(key_o, af_o, af_a)
 
-        # Compare AF column only — AC/AN may diverge because --fill-tags
-        # suppresses the implicit AC/AN-on-subset default that bcftools
-        # always applies.
-        #
-        # Two acceptable "missing AF" shapes from the oracle/SUT pair:
-        # bcftools emits ``AF=.,.`` (Number=A tuple of Nones); vcztools
-        # drops the AF field entirely (None scalar) when the whole
-        # vector is missing. We treat both as the same outcome.
-        import cyvcf2  # noqa: PLC0415  -- optional dep; imported here
 
-        def _all_missing(af):
-            if af is None:
-                return True
-            if isinstance(af, tuple):
-                return all(x is None for x in af)
-            return False
+def _assert_af_close(key, af_o, af_a):
+    # Normalise: bcftools query renders an entirely missing Number=A
+    # vector as a scalar ``.`` (parsed to ``None``) while vcztools
+    # produces a per-element MISSING tuple. Treat both shapes the same.
+    def _norm(af):
+        if af is None:
+            return None
+        if all(x is None for x in af):
+            return None
+        return af
 
-        with cyvcf2.VCF(str(bcftools_file)) as bvcf, cyvcf2.VCF(
-            str(vcztools_file)
-        ) as vvcf:
-            for v_b, v_v in zip(bvcf, vvcf, strict=True):
-                af_b = v_b.INFO.get("AF")
-                af_v = v_v.INFO.get("AF")
-                if _all_missing(af_b) and _all_missing(af_v):
-                    continue
-                msg = (
-                    f"AF differs at {v_b.CHROM}:{v_b.POS}: "
-                    f"bcftools={af_b}, vcztools={af_v}"
-                )
-                assert af_b is not None, msg
-                assert af_v is not None, msg
-                np.testing.assert_allclose(
-                    np.atleast_1d(np.array(af_b, dtype=np.float32)),
-                    np.atleast_1d(np.array(af_v, dtype=np.float32)),
-                    rtol=1e-5,
-                    atol=1e-3,
-                    err_msg=f"AF differs at {v_b.CHROM}:{v_b.POS}",
-                )
+    af_o = _norm(af_o)
+    af_a = _norm(af_a)
+    if af_o is None and af_a is None:
+        return
+    diff_msg = f"AF differs at {key}: {af_o} vs {af_a}"
+    assert af_o is not None, diff_msg
+    assert af_a is not None, diff_msg
+    assert len(af_o) == len(af_a), f"AF arity differs at {key}: {af_o} vs {af_a}"
+    for a, b in zip(af_o, af_a):
+        if a is None and b is None:
+            continue
+        entry_msg = f"AF entry differs at {key}: {af_o} vs {af_a}"
+        assert a is not None, entry_msg
+        assert b is not None, entry_msg
+        np.testing.assert_allclose(
+            a, b, rtol=1e-5, atol=1e-3, err_msg=f"AF differs at {key}"
+        )

@@ -39,6 +39,7 @@
 #define VCZ_ERR_NO_MEMORY             (-100)
 #define VCZ_ERR_BUFFER_OVERFLOW       (-101)
 #define VCZ_ERR_VARIANT_OUT_OF_BOUNDS (-102)
+#define VCZ_ERR_INVALID_GENOTYPE      (-103)
 
 /* Built-in-limitations */
 #define VCZ_ERR_FIELD_NAME_TOO_LONG           (-201)
@@ -125,13 +126,18 @@ int vcz_encode_plink(
 
 /* Per-variant AC (allele count) and AN (total called alleles) from a
  * 3-D genotype buffer of shape (num_variants, num_samples, ploidy).
- * Slots holding VCZ_INT_MISSING / VCZ_INT_FILL (any negative value)
- * are excluded from both. Allele values v with 0 < v <= num_alt_alleles
- * increment ac_out[j*num_alt_alleles + (v-1)]; values exceeding
- * num_alt_alleles are silently ignored. Padding for empty ALT slots
- * is the caller's responsibility — the kernel writes only raw counts. */
+ * num_alleles[j] is the total allele count (REF + ALT) at variant j;
+ * the accepted genotype range is -2 <= v < num_alleles[j]. Slots
+ * holding VCZ_INT_MISSING (-1) or VCZ_INT_FILL (-2) are excluded from
+ * both AC and AN. Values v with 0 < v < num_alleles[j] increment
+ * ac_out[j*max_num_alt + (v-1)]. Any value outside the accepted range
+ * causes VCZ_ERR_INVALID_GENOTYPE to be returned. AC cells beyond
+ * num_alleles[j]-1 within each row are filled with VCZ_INT_FILL.
+ * max_num_alt is the trailing dimension of ac_out; pass 0 to compute
+ * AN only (ac_out is then untouched). */
 int vcz_compute_ac_an(size_t num_variants, size_t num_samples, size_t ploidy,
-    size_t num_alt_alleles, const int8_t *genotypes, int32_t *ac_out, int32_t *an_out);
+    size_t max_num_alt, const int32_t *num_alleles, const int8_t *genotypes,
+    int32_t *ac_out, int32_t *an_out);
 
 #define VCZ_BGEN_PLOIDY_HAPLOID         0x01
 #define VCZ_BGEN_PLOIDY_DIPLOID         0x02

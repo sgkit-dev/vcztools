@@ -3452,32 +3452,34 @@ class TestProportionalChunkSizes:
 
 def _make_virtual_field_vcz():
     """5-variant, 3-sample diploid VCZ mirroring the C-kernel basic-test
-    inputs so per-variant AC/AN/AF are easy to hand-compute."""
+    inputs so per-variant AC/AN/AF are easy to hand-compute. Variants 3
+    and 4 carry a haploid call in sample 2 (encoded with INT_FILL in the
+    unused ploidy slot) to exercise mixed ploidy."""
     return vcz_builder.make_vcz(
         variant_contig=[0] * 5,
         variant_position=[100, 200, 300, 400, 500],
         alleles=[
+            ("A", "T", ""),
             ("A", "T", "G"),
             ("A", "T", "G"),
-            ("A", "T", "G"),
-            ("A", "", ""),
+            ("A", "T", ""),
             ("A", "T", "G"),
         ],
         num_samples=3,
         ploidy=2,
         call_genotype=[
             [[0, 0], [0, 1], [1, 1]],
-            [[0, 0], [0, 2], [2, 2]],
+            [[0, 0], [0, 2], [1, 2]],
             [[0, 1], [1, 2], [2, 2]],
             [
                 [constants.INT_MISSING, constants.INT_MISSING],
-                [constants.INT_MISSING, constants.INT_MISSING],
-                [constants.INT_FILL, constants.INT_FILL],
+                [constants.INT_MISSING, constants.INT_FILL],
+                [1, constants.INT_FILL],
             ],
             [
-                [constants.INT_MISSING, constants.INT_MISSING],
-                [0, 3],
-                [constants.INT_FILL, constants.INT_FILL],
+                [0, 2],
+                [constants.INT_MISSING, constants.INT_FILL],
+                [1, constants.INT_FILL],
             ],
         ],
         variants_chunk_size=5,
@@ -3486,15 +3488,15 @@ def _make_virtual_field_vcz():
 
 _EXPECTED_AC = np.array(
     [
-        [3, 0],
-        [0, 3],
+        [3, constants.INT_FILL],
+        [1, 2],
         [2, 3],
-        [constants.INT_FILL, constants.INT_FILL],
-        [0, 0],
+        [1, constants.INT_FILL],
+        [1, 1],
     ],
     dtype=np.int32,
 )
-_EXPECTED_AN = np.array([6, 6, 6, 0, 2], dtype=np.int32)
+_EXPECTED_AN = np.array([6, 6, 6, 1, 3], dtype=np.int32)
 
 
 class TestVirtualFields:
@@ -3626,18 +3628,17 @@ class TestVirtualFields:
         root = _make_virtual_field_vcz()
         reader = VczReader(root)
         chunk = next(reader.variant_chunks(fields=["variant_AF"]))
-        # Row 0: AC=[3, 0], AN=6 -> AF=[0.5, 0.0]
-        nt.assert_allclose(chunk["variant_AF"][0], [0.5, 0.0])
-        # Row 3 has empty ALT slots, so AC=[INT_FILL, INT_FILL] and
-        # the FILL float sentinel propagates to AF — "no allele here"
-        # wins over "AN==0 -> missing" for non-existent slots.
+        # Row 0: AC=[3, FILL], AN=6 -> AF=[0.5, FILL]
         fill_bits = constants.FLOAT32_FILL.view(np.int32)
         missing_bits = constants.FLOAT32_MISSING.view(np.int32)
-        af3_bits = chunk["variant_AF"][3].view(np.int32)
-        assert af3_bits[0] == fill_bits
-        assert af3_bits[1] == fill_bits
-        # Row 4: AC=[0, 0], AN=2 -> AF=[0.0, 0.0].
-        nt.assert_allclose(chunk["variant_AF"][4], [0.0, 0.0])
+        assert chunk["variant_AF"][0][0] == np.float32(0.5)
+        assert chunk["variant_AF"][0].view(np.int32)[1] == fill_bits
+        # Row 3 has one ALT (num_alleles=2) -> AF=[1.0, FILL].
+        af3 = chunk["variant_AF"][3]
+        assert af3[0] == np.float32(1.0)
+        assert af3.view(np.int32)[1] == fill_bits
+        # Row 4: AC=[1, 1], AN=3 -> AF=[1/3, 1/3].
+        nt.assert_allclose(chunk["variant_AF"][4], [1 / 3, 1 / 3])
         # Spot-check the masking helpers stay in sync.
         assert missing_bits != fill_bits
 
@@ -3646,9 +3647,9 @@ class TestVirtualFields:
         reader = VczReader(root)
         chunk = next(reader.variant_chunks(fields=["variant_NS"]))
         # Rows 0-2: every sample has at least one called slot -> NS=3
-        # Row 3: all samples all-missing -> NS=0
-        # Row 4: sample 1 is called (0/3), others missing -> NS=1
-        nt.assert_array_equal(chunk["variant_NS"], [3, 3, 3, 0, 1])
+        # Row 3: sample 2 is haploid (1, FILL) so NS=1
+        # Row 4: samples 0 and 2 have called slots -> NS=2
+        nt.assert_array_equal(chunk["variant_NS"], [3, 3, 3, 1, 2])
 
     def test_variant_n_alt_no_call_geno_required(self):
         # N_ALT only needs variant_allele, so it works on annotations-only.

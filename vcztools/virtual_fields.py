@@ -64,7 +64,10 @@ def _compute_an(deps, cache):
     cached = cache.get("variant_AN")
     if cached is not None:
         return cached
-    return calculate.compute_an(deps["call_genotype"])
+    gt = deps["call_genotype"]
+    alt = deps["variant_allele"][:, 1:]
+    _, an = calculate.compute_ac_an(gt, alt)
+    return an
 
 
 def _compute_af(deps, cache):
@@ -123,7 +126,7 @@ REGISTRY: dict[str, VirtualField] = {
     ),
     "variant_AN": VirtualField(
         name="variant_AN",
-        deps=("call_genotype",),
+        deps=("call_genotype", "variant_allele"),
         dtype=np.dtype(np.int32),
         dims=("variants",),
         description="Total number of alleles in called genotypes",

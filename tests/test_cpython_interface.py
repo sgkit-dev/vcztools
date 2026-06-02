@@ -567,11 +567,14 @@ class TestEncodePlink:
 
 
 class TestComputeAcAn:
-    def _ac(self, num_variants, num_alt_alleles):
-        return np.zeros((num_variants, num_alt_alleles), dtype=np.int32)
+    def _ac(self, num_variants, max_num_alt):
+        return np.zeros((num_variants, max_num_alt), dtype=np.int32)
 
     def _an(self, num_variants):
         return np.zeros(num_variants, dtype=np.int32)
+
+    def _na(self, num_variants, value=2):
+        return np.full(num_variants, value, dtype=np.int32)
 
     def test_bad_num_arguments(self):
         with pytest.raises(TypeError):
@@ -579,30 +582,69 @@ class TestComputeAcAn:
         with pytest.raises(TypeError):
             _vcztools.compute_ac_an(np.zeros((1, 1, 2), dtype=np.int8))
         with pytest.raises(TypeError):
-            _vcztools.compute_ac_an(np.zeros((1, 1, 2), dtype=np.int8), self._ac(1, 1))
+            _vcztools.compute_ac_an(np.zeros((1, 1, 2), dtype=np.int8), self._na(1))
+        with pytest.raises(TypeError):
+            _vcztools.compute_ac_an(
+                np.zeros((1, 1, 2), dtype=np.int8), self._na(1), self._ac(1, 1)
+            )
 
     @pytest.mark.parametrize("bad_type", [[], {}, "string", 4])
     def test_genotypes_bad_type(self, bad_type):
         with pytest.raises(TypeError):
-            _vcztools.compute_ac_an(bad_type, self._ac(1, 1), self._an(1))
+            _vcztools.compute_ac_an(bad_type, self._na(1), self._ac(1, 1), self._an(1))
 
     def test_genotypes_wrong_dim(self):
         with pytest.raises(ValueError, match="genotypes has wrong dimension"):
             _vcztools.compute_ac_an(
-                np.zeros((1, 1), dtype=np.int8), self._ac(1, 1), self._an(1)
+                np.zeros((1, 1), dtype=np.int8),
+                self._na(1),
+                self._ac(1, 1),
+                self._an(1),
             )
 
     @pytest.mark.parametrize("bad_dtype", [np.int16, np.int32, np.int64, np.float64])
     def test_genotypes_bad_dtype(self, bad_dtype):
         with pytest.raises(ValueError, match="Wrong dtype for genotypes"):
             _vcztools.compute_ac_an(
-                np.zeros((1, 1, 2), dtype=bad_dtype), self._ac(1, 1), self._an(1)
+                np.zeros((1, 1, 2), dtype=bad_dtype),
+                self._na(1),
+                self._ac(1, 1),
+                self._an(1),
+            )
+
+    def test_num_alleles_wrong_dim(self):
+        with pytest.raises(ValueError, match="num_alleles has wrong dimension"):
+            _vcztools.compute_ac_an(
+                np.zeros((1, 1, 2), dtype=np.int8),
+                np.zeros((1, 1), dtype=np.int32),
+                self._ac(1, 1),
+                self._an(1),
+            )
+
+    @pytest.mark.parametrize("bad_dtype", [np.int8, np.int16, np.int64, np.float32])
+    def test_num_alleles_bad_dtype(self, bad_dtype):
+        with pytest.raises(ValueError, match="Wrong dtype for num_alleles"):
+            _vcztools.compute_ac_an(
+                np.zeros((1, 1, 2), dtype=np.int8),
+                np.full(1, 2, dtype=bad_dtype),
+                self._ac(1, 1),
+                self._an(1),
+            )
+
+    def test_num_alleles_wrong_num_variants(self):
+        with pytest.raises(ValueError, match="num_alleles.shape\\[0\\] must equal"):
+            _vcztools.compute_ac_an(
+                np.zeros((2, 1, 2), dtype=np.int8),
+                self._na(1),
+                self._ac(2, 1),
+                self._an(2),
             )
 
     def test_ac_out_wrong_dim(self):
         with pytest.raises(ValueError, match="ac_out has wrong dimension"):
             _vcztools.compute_ac_an(
                 np.zeros((1, 1, 2), dtype=np.int8),
+                self._na(1),
                 np.zeros(1, dtype=np.int32),
                 self._an(1),
             )
@@ -612,6 +654,7 @@ class TestComputeAcAn:
         with pytest.raises(ValueError, match="Wrong dtype for ac_out"):
             _vcztools.compute_ac_an(
                 np.zeros((1, 1, 2), dtype=np.int8),
+                self._na(1),
                 np.zeros((1, 1), dtype=bad_dtype),
                 self._an(1),
             )
@@ -620,12 +663,15 @@ class TestComputeAcAn:
         ac = self._ac(1, 1)
         ac.setflags(write=False)
         with pytest.raises(ValueError, match="ac_out must be writeable"):
-            _vcztools.compute_ac_an(np.zeros((1, 1, 2), dtype=np.int8), ac, self._an(1))
+            _vcztools.compute_ac_an(
+                np.zeros((1, 1, 2), dtype=np.int8), self._na(1), ac, self._an(1)
+            )
 
     def test_an_out_wrong_dim(self):
         with pytest.raises(ValueError, match="an_out has wrong dimension"):
             _vcztools.compute_ac_an(
                 np.zeros((1, 1, 2), dtype=np.int8),
+                self._na(1),
                 self._ac(1, 1),
                 np.zeros((1, 1), dtype=np.int32),
             )
@@ -635,6 +681,7 @@ class TestComputeAcAn:
         with pytest.raises(ValueError, match="Wrong dtype for an_out"):
             _vcztools.compute_ac_an(
                 np.zeros((1, 1, 2), dtype=np.int8),
+                self._na(1),
                 self._ac(1, 1),
                 np.zeros(1, dtype=bad_dtype),
             )
@@ -644,59 +691,81 @@ class TestComputeAcAn:
         an.setflags(write=False)
         with pytest.raises(ValueError, match="an_out must be writeable"):
             _vcztools.compute_ac_an(
-                np.zeros((1, 1, 2), dtype=np.int8), self._ac(1, 1), an
+                np.zeros((1, 1, 2), dtype=np.int8),
+                self._na(1),
+                self._ac(1, 1),
+                an,
             )
 
     def test_ac_out_wrong_num_variants(self):
         with pytest.raises(ValueError, match="ac_out.shape\\[0\\] must equal"):
             _vcztools.compute_ac_an(
-                np.zeros((2, 1, 2), dtype=np.int8), self._ac(1, 1), self._an(2)
+                np.zeros((2, 1, 2), dtype=np.int8),
+                self._na(2),
+                self._ac(1, 1),
+                self._an(2),
             )
 
     def test_an_out_wrong_num_variants(self):
         with pytest.raises(ValueError, match="an_out.shape\\[0\\] must equal"):
             _vcztools.compute_ac_an(
-                np.zeros((2, 1, 2), dtype=np.int8), self._ac(2, 1), self._an(1)
+                np.zeros((2, 1, 2), dtype=np.int8),
+                self._na(2),
+                self._ac(2, 1),
+                self._an(1),
             )
 
     def test_non_contiguous_genotypes(self):
         full = np.zeros((2, 4, 2), dtype=np.int8)
         view = full[:, ::2, :]
         with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
-            _vcztools.compute_ac_an(view, self._ac(2, 1), self._an(2))
+            _vcztools.compute_ac_an(view, self._na(2), self._ac(2, 1), self._an(2))
 
     def test_non_contiguous_ac_out(self):
         full = np.zeros((4, 2), dtype=np.int32)
         view = full[::2]
         with pytest.raises(ValueError, match="NPY_ARRAY_IN_ARRAY"):
             _vcztools.compute_ac_an(
-                np.zeros((2, 1, 2), dtype=np.int8), view, self._an(2)
+                np.zeros((2, 1, 2), dtype=np.int8), self._na(2), view, self._an(2)
             )
 
     def test_returns_none(self):
         G = np.zeros((1, 1, 2), dtype=np.int8)
-        assert _vcztools.compute_ac_an(G, self._ac(1, 1), self._an(1)) is None
+        assert (
+            _vcztools.compute_ac_an(G, self._na(1), self._ac(1, 1), self._an(1)) is None
+        )
 
     def test_example(self):
         # Mirrors the C-level test_compute_ac_an_basic CUnit test.
         G = np.array(
             [
                 [[0, 0], [0, 1], [1, 1]],
-                [[0, 0], [0, 2], [2, 2]],
-                [[0, 1], [1, 2], [2, 2]],
-                [[-1, -1], [-1, -1], [-2, -2]],
-                [[-1, -1], [0, 3], [-2, -2]],
+                [[0, 0], [0, 2], [1, 2]],
+                [[0, 1], [1, 2], [3, -2]],
+                [[-1, -1], [-1, -2], [1, -2]],
+                [[0, 2], [-1, -2], [1, -2]],
             ],
             dtype=np.int8,
         )
-        ac = self._ac(5, 2)
+        num_alleles = np.array([2, 3, 4, 2, 3], dtype=np.int32)
+        ac = self._ac(5, 3)
         an = self._an(5)
-        _vcztools.compute_ac_an(G, ac, an)
-        np.testing.assert_array_equal(ac, [[3, 0], [0, 3], [2, 3], [0, 0], [0, 0]])
-        np.testing.assert_array_equal(an, [6, 6, 6, 0, 2])
+        FILL = -2
+        _vcztools.compute_ac_an(G, num_alleles, ac, an)
+        np.testing.assert_array_equal(
+            ac,
+            [
+                [3, FILL, FILL],
+                [1, 2, FILL],
+                [2, 1, 1],
+                [1, FILL, FILL],
+                [1, 1, FILL],
+            ],
+        )
+        np.testing.assert_array_equal(an, [6, 6, 5, 1, 3])
 
     def test_an_only(self):
-        # num_alt_alleles == 0 -> AN populated, AC has zero-width second dim.
+        # max_num_alt == 0 -> AN populated, AC has zero-width second dim.
         G = np.array(
             [
                 [[0, 0], [0, 1]],
@@ -704,19 +773,40 @@ class TestComputeAcAn:
             ],
             dtype=np.int8,
         )
+        num_alleles = np.array([2, 2], dtype=np.int32)
         ac = self._ac(2, 0)
         an = self._an(2)
-        _vcztools.compute_ac_an(G, ac, an)
+        _vcztools.compute_ac_an(G, num_alleles, ac, an)
         np.testing.assert_array_equal(an, [4, 1])
 
     def test_zero_variants(self):
         G = np.zeros((0, 3, 2), dtype=np.int8)
+        num_alleles = np.zeros(0, dtype=np.int32)
         ac = self._ac(0, 2)
         an = self._an(0)
-        _vcztools.compute_ac_an(G, ac, an)
-        # No variants -> empty results, kernel must not raise.
+        _vcztools.compute_ac_an(G, num_alleles, ac, an)
         assert ac.shape == (0, 2)
         assert an.shape == (0,)
+
+    @pytest.mark.parametrize(
+        ("bad_value", "num_alleles_value"),
+        [
+            (-3, 2),  # below the missing/fill range
+            (2, 2),  # one past the upper bound
+            (5, 2),  # well above the upper bound
+        ],
+    )
+    def test_invalid_genotype_raises(self, bad_value, num_alleles_value):
+        G = np.array([[[0, bad_value]]], dtype=np.int8)
+        num_alleles = np.array([num_alleles_value], dtype=np.int32)
+        with pytest.raises(ValueError, match="outside accepted range"):
+            _vcztools.compute_ac_an(G, num_alleles, self._ac(1, 1), self._an(1))
+
+    def test_num_alleles_zero_raises(self):
+        G = np.array([[[0, 0]]], dtype=np.int8)
+        num_alleles = np.array([0], dtype=np.int32)
+        with pytest.raises(ValueError, match="outside accepted range"):
+            _vcztools.compute_ac_an(G, num_alleles, self._ac(1, 0), self._an(1))
 
 
 class TestEncodeBgenGenoBlocks:

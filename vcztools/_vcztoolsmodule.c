@@ -928,18 +928,26 @@ vcztools_compute_ac_an(PyObject *self, PyObject *args)
 {
     PyObject *ret = NULL;
     PyArrayObject *genotypes = NULL;
+    PyArrayObject *num_alleles = NULL;
     PyArrayObject *ac_out = NULL;
     PyArrayObject *an_out = NULL;
-    npy_intp num_variants, num_samples, ploidy, num_alt_alleles;
+    npy_intp num_variants, num_samples, ploidy, max_num_alt;
+    int kernel_ret;
 
-    if (!PyArg_ParseTuple(args, "O!O!O!", &PyArray_Type, &genotypes, &PyArray_Type,
-            &ac_out, &PyArray_Type, &an_out)) {
+    if (!PyArg_ParseTuple(args, "O!O!O!O!", &PyArray_Type, &genotypes, &PyArray_Type,
+            &num_alleles, &PyArray_Type, &ac_out, &PyArray_Type, &an_out)) {
         goto out;
     }
     if (check_array("genotypes", genotypes, 3) != 0) {
         goto out;
     }
     if (check_dtype("genotypes", genotypes, NPY_INT8) != 0) {
+        goto out;
+    }
+    if (check_array("num_alleles", num_alleles, 1) != 0) {
+        goto out;
+    }
+    if (check_dtype("num_alleles", num_alleles, NPY_INT32) != 0) {
         goto out;
     }
     if (check_array("ac_out", ac_out, 2) != 0) {
@@ -963,7 +971,7 @@ vcztools_compute_ac_an(PyObject *self, PyObject *args)
     num_variants = PyArray_DIMS(genotypes)[0];
     num_samples = PyArray_DIMS(genotypes)[1];
     ploidy = PyArray_DIMS(genotypes)[2];
-    num_alt_alleles = PyArray_DIMS(ac_out)[1];
+    max_num_alt = PyArray_DIMS(ac_out)[1];
     if (PyArray_DIMS(ac_out)[0] != num_variants) {
         PyErr_Format(PyExc_ValueError,
             "ac_out.shape[0] must equal genotypes.shape[0] (%zd != %zd)",
@@ -976,12 +984,29 @@ vcztools_compute_ac_an(PyObject *self, PyObject *args)
             (Py_ssize_t) PyArray_DIMS(an_out)[0], (Py_ssize_t) num_variants);
         goto out;
     }
+    if (PyArray_DIMS(num_alleles)[0] != num_variants) {
+        PyErr_Format(PyExc_ValueError,
+            "num_alleles.shape[0] must equal genotypes.shape[0] (%zd != %zd)",
+            (Py_ssize_t) PyArray_DIMS(num_alleles)[0], (Py_ssize_t) num_variants);
+        goto out;
+    }
 
     Py_BEGIN_ALLOW_THREADS
-    vcz_compute_ac_an((size_t) num_variants, (size_t) num_samples, (size_t) ploidy,
-        (size_t) num_alt_alleles, PyArray_DATA(genotypes), PyArray_DATA(ac_out),
-        PyArray_DATA(an_out));
+    kernel_ret = vcz_compute_ac_an((size_t) num_variants, (size_t) num_samples,
+        (size_t) ploidy, (size_t) max_num_alt, PyArray_DATA(num_alleles),
+        PyArray_DATA(genotypes), PyArray_DATA(ac_out), PyArray_DATA(an_out));
     Py_END_ALLOW_THREADS
+
+    if (kernel_ret == VCZ_ERR_INVALID_GENOTYPE) {
+        PyErr_SetString(
+            PyExc_ValueError, "genotype value outside accepted range [-2, num_alleles)");
+        goto out;
+    }
+    if (kernel_ret != 0) {
+        PyErr_Format(
+            PyExc_RuntimeError, "vcz_compute_ac_an failed with code %d", kernel_ret);
+        goto out;
+    }
 
     ret = Py_BuildValue("");
 out:

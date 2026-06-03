@@ -4,13 +4,52 @@ import math
 import numpy as np
 import pyparsing as pp
 
-from vcztools import constants, utils
+from vcztools import utils
 
 
 def list_samples(reader, output):
     sample_ids = reader.raw_sample_ids
     # don't show missing samples
     print("\n".join(sample_ids[sample_ids != ""]), file=output)
+
+
+def _format_vector(value):
+    """Render a 1-D fill-padded numeric vector as a list of strings.
+
+    Trailing fill is dropped and each remaining element is rendered as its
+    string, or ``"."`` for a missing sentinel. The numpy scalars are
+    iterated directly (not via ``.tolist()``) so numpy's short float repr
+    is preserved.
+    """
+    trimmed = utils.trim_fill(value)
+    missing_mask = utils.is_missing(trimmed)
+    return ["." if m else str(v) for v, m in zip(trimmed, missing_mask)]
+
+
+def _format_sample_loop_tag(value, sample_count):
+    """Render a tag value across the sample loop as a list of per-sample
+    strings.
+
+    - A 1-D array holds one scalar per sample (e.g. DP): each entry renders
+      as its string, or ``"."`` for a missing sentinel.
+    - A 2-D array holds a multi-valued vector per sample (e.g. HQ): each row
+      is rendered with :func:`_format_vector` and comma-joined, with an empty
+      (all-fill) row rendered as ``"."``.
+    - A scalar (e.g. an INFO tag used inside ``[]``) is broadcast to every
+      sample.
+    """
+    if not isinstance(value, np.ndarray):
+        return [str(value)] * sample_count
+    if value.ndim == 1:
+        return _format_vector(value)
+    result = []
+    for sample_values in value:
+        formatted = _format_vector(sample_values)
+        if len(formatted) > 0:
+            result.append(",".join(formatted))
+        else:
+            result.append(".")
+    return result
 
 
 class QueryFormatParser:
@@ -129,7 +168,7 @@ class QueryFormatter:
 
             value = variant_data[vcz_name]
             is_missing = (
-                False if isinstance(value, str) else np.all(utils.missing(value))
+                False if isinstance(value, str) else np.all(utils.is_missing(value))
             )
             sep = ","
 
@@ -138,7 +177,8 @@ class QueryFormatter:
             if tag == "REF":
                 value = value[0]
             if tag == "ALT":
-                value = [allele for allele in value[1:] if allele] or "."
+                alt_alleles = utils.trim_fill(value[1:])
+                value = alt_alleles if alt_alleles.size > 0 else "."
             if tag == "FILTER":
                 if np.any(value):
                     value = self.filter_ids[value]
@@ -152,36 +192,19 @@ class QueryFormatter:
                     value = f"{value:g}"
 
             if sample_loop:
-                if isinstance(value, np.ndarray):
-                    if value.ndim == 1:
-                        # Scalar per sample (e.g., DP)
-                        return [
-                            (str(v) if v != constants.INT_MISSING else ".")
-                            for v in value.tolist()
-                            if v != constants.INT_FILL
-                        ]
-                    # Multi-valued per sample (e.g., HQ with shape
-                    # [samples, dim])
-                    result = []
-                    for sample_values in value.tolist():
-                        formatted = [
-                            (str(v) if v != constants.INT_MISSING else ".")
-                            for v in sample_values
-                            if v != constants.INT_FILL
-                        ]
-                        result.append(",".join(formatted) if formatted else ".")
-                    return result
-                return [str(value)] * self.sample_count
+                return _format_sample_loop_tag(value, self.sample_count)
             elif subfield:
-                # Return raw value for subfield indexing
+                # Return rendered elements for subfield indexing
                 if is_missing:
                     return "."
+                if isinstance(value, np.ndarray):
+                    return _format_vector(value)
                 return value
             else:
                 if is_missing:
                     return "."
-                if isinstance(value, (np.ndarray, list)):
-                    return sep.join(map(str, value))
+                if isinstance(value, np.ndarray):
+                    return sep.join(_format_vector(value))
                 return value
 
         return format_tag
@@ -194,12 +217,8 @@ class QueryFormatter:
 
         phase = variant_data["call_genotype_phased"]
         result = []
-        for g, p in zip(gt_row.tolist(), phase):
-            alleles = [
-                str(a) if a != constants.INT_MISSING else "."
-                for a in g
-                if a != constants.INT_FILL
-            ]
+        for g, p in zip(gt_row, phase):
+            alleles = _format_vector(g)
             separator = "|" if p else "/"
             result.append(separator.join(alleles))
         return result

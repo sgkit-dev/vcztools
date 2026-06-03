@@ -7,9 +7,11 @@ import pytest
 
 from tests import vcz_builder
 from tests.utils import make_reader
+from vcztools import constants
 from vcztools.query import (
     QueryFormatParser,
     QueryFormatter,
+    _format_sample_loop_tag,
     list_samples,
     write_query,
 )
@@ -291,6 +293,131 @@ class TestQueryFormatterSubfield:
         variants = list(fx_reader.variants())
         result = formatter.format_variant(variants[6])
         assert result == ".\n"
+
+    def test_alt_subfield(self, fx_reader):
+        """ALT subfield indexing into the trimmed ALT alleles."""
+        formatter = QueryFormatter(r"%ALT{1}\n", fx_reader)
+        # Variant at 20:1110696 (index 4) has ALT=G,T.
+        variants = list(fx_reader.variants())
+        assert formatter.format_variant(variants[4]) == "T\n"
+
+    def test_alt_subfield_no_alt(self, fx_reader):
+        """ALT subfield on a variant with no ALT allele returns '.'."""
+        formatter = QueryFormatter(r"%ALT{0}\n", fx_reader)
+        # Variant at 20:1230237 (index 5) has ALT=. (no alternate allele).
+        variants = list(fx_reader.variants())
+        assert formatter.format_variant(variants[5]) == ".\n"
+
+
+class TestFormatSampleLoopTag:
+    """Unit tests for the per-sample tag renderer used inside ``[...]``."""
+
+    def test_scalar_per_sample_int(self):
+        value = np.array([0, constants.INT_MISSING, 5], dtype=np.int32)
+        # One value per sample; the missing sentinel renders as ".".
+        assert _format_sample_loop_tag(value, sample_count=3) == ["0", ".", "5"]
+
+    def test_scalar_per_sample_float_preserves_repr(self):
+        value = np.array([1.5, constants.FLOAT32_MISSING], dtype=np.float32)
+        assert _format_sample_loop_tag(value, sample_count=2) == ["1.5", "."]
+
+    def test_multivalued_per_sample(self):
+        value = np.array([[1, 2], [3, constants.INT_FILL]], dtype=np.int32)
+        # Trailing fill in the second sample is trimmed to a single value.
+        assert _format_sample_loop_tag(value, sample_count=2) == ["1,2", "3"]
+
+    def test_multivalued_all_fill_row(self):
+        value = np.array(
+            [[1, 2], [constants.INT_FILL, constants.INT_FILL]], dtype=np.int32
+        )
+        # An all-fill sample row trims to empty and renders as ".".
+        assert _format_sample_loop_tag(value, sample_count=2) == ["1,2", "."]
+
+    def test_multivalued_all_missing_row(self):
+        value = np.array(
+            [[constants.INT_MISSING, constants.INT_MISSING]], dtype=np.int32
+        )
+        # An all-missing row keeps both elements, each rendered as ".".
+        assert _format_sample_loop_tag(value, sample_count=1) == [".,."]
+
+    def test_scalar_broadcast(self):
+        # A non-array value (e.g. an INFO tag inside []) broadcasts.
+        assert _format_sample_loop_tag("19", sample_count=3) == ["19", "19", "19"]
+
+
+class TestQueryFillTrimming:
+    """Integer FORMAT/INFO multi-valued fields drop trailing fill and
+    render per-element missing as ``.`` in the query path."""
+
+    def _info_store(self, data):
+        return vcz_builder.make_vcz(
+            variant_contig=[0, 0],
+            variant_position=[10, 20],
+            alleles=[["A", "C"], ["G", "T"]],
+            num_samples=1,
+            call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
+            info_fields={"XX": np.asarray(data, dtype=np.int32)},
+        )
+
+    def _query(self, group, query_format):
+        reader = VczReader(group)
+        formatter = QueryFormatter(query_format, reader)
+        return "".join(formatter.format_variant(v) for v in reader.variants())
+
+    def test_info_multivalued_trailing_fill(self):
+        group = self._info_store([[1, 2], [3, constants.INT_FILL]])
+        assert self._query(group, "%INFO/XX\n") == "1,2\n3\n"
+
+    def test_info_subfield_index_into_fill(self):
+        group = self._info_store([[1, constants.INT_FILL], [5, 6]])
+        # Row 0 has only one element after trimming; index 1 points at the
+        # trimmed fill and renders ".".
+        assert self._query(group, "%XX{1}\n") == ".\n6\n"
+        assert self._query(group, "%XX{0}\n") == "1\n5\n"
+
+    def test_format_multivalued_trailing_fill(self):
+        ad = np.array([[[1, 2], [3, constants.INT_FILL]]], dtype=np.int32)
+        group = vcz_builder.make_vcz(
+            variant_contig=[0],
+            variant_position=[10],
+            alleles=[["A", "C"]],
+            num_samples=2,
+            call_genotype=np.zeros((1, 2, 2), dtype=np.int8),
+            call_fields={"AD": ad},
+        )
+        # Sample 0 is full [1, 2]; sample 1 has a trailing fill, trimmed to [3].
+        assert self._query(group, "[%AD ]\n") == "1,2 3 \n"
+
+    def test_format_multivalued_all_fill_sample(self):
+        ad = np.array(
+            [[[1, 2], [constants.INT_FILL, constants.INT_FILL]]], dtype=np.int32
+        )
+        group = vcz_builder.make_vcz(
+            variant_contig=[0],
+            variant_position=[10],
+            alleles=[["A", "C"]],
+            num_samples=2,
+            call_genotype=np.zeros((1, 2, 2), dtype=np.int8),
+            call_fields={"AD": ad},
+        )
+        # Sample 1 is all-fill, trimmed to empty, rendered as ".".
+        assert self._query(group, "[%AD ]\n") == "1,2 . \n"
+
+    def test_gt_mixed_ploidy(self):
+        # Sample 0 is haploid (second allele is INT_FILL); sample 1 diploid.
+        gt = np.array([[[0, constants.INT_FILL], [1, 1]]], dtype=np.int8)
+        group = vcz_builder.make_vcz(
+            variant_contig=[0],
+            variant_position=[10],
+            alleles=[["A", "C"]],
+            num_samples=2,
+            call_genotype=gt,
+        )
+        reader = VczReader(group)
+        formatter = QueryFormatter(r"[%GT ]\n", reader)
+        variant = next(reader.variants())
+        variant["call_genotype_phased"] = np.array([True, False])
+        assert formatter.format_variant(variant) == "0 1/1 \n"
 
 
 class TestWriteQuery:

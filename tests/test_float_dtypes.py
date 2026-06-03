@@ -4,7 +4,7 @@ The reader preserves stored float widths; the VCF text encoder casts to
 canonical float32 in ``VcfWriter.write_chunk`` (``utils.to_vcf_float32``),
 relabelling the width-generalised missing / end-of-vector sentinels to the
 float32 sentinels. ``query`` formats native-width floats directly, relying on
-the width-aware ``utils.missing``. These tests show that float16 and float64
+the width-aware ``utils.is_missing``. These tests show that float16 and float64
 input round-trips correctly through ``view``, ``query`` and ``VczReader``
 filtering, including ragged columns padded with the fill sentinel, and that
 the output is identical to an equivalent float32 store.
@@ -171,6 +171,53 @@ class TestRaggedColumn:
         info_values = [row.split("\t")[7] for row in _rows(group)]
         # Trailing fill truncates the vector; an all-missing row renders ".".
         assert info_values == ["AF=1.5,2.5", "AF=3.5", "."]
+
+    @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
+    def test_query_drops_fill_and_renders_missing(self, dtype):
+        # Query parity with the view test above.
+        group = self._ragged_store(dtype)
+        assert _query(group, "%AF\n") == "1.5,2.5\n3.5\n.\n"
+
+    @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
+    def test_query_subfield_zero(self, dtype):
+        group = self._ragged_store(dtype)
+        assert _query(group, "%AF{0}\n") == "1.5\n3.5\n.\n"
+
+    @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
+    def test_query_subfield_one(self, dtype):
+        # Index 1 points at trimmed fill (row 1) or missing/fill (row 2).
+        group = self._ragged_store(dtype)
+        assert _query(group, "%AF{1}\n") == "2.5\n.\n.\n"
+
+    @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
+    def test_query_parity(self, dtype):
+        assert _query(self._ragged_store(dtype), "%AF\n") == _query(
+            self._ragged_store(np.float32), "%AF\n"
+        )
+
+
+class TestQueryFormatFloat:
+    """A multi-valued FORMAT float field, queried per sample, drops
+    trailing fill and renders an all-missing sample as ``.,.``."""
+
+    def _store(self, dtype):
+        missing, fill = SENTINELS[dtype]
+        # One variant, two samples, two values per sample. Sample 0 has a
+        # trailing fill; sample 1 is all-missing.
+        ab = np.array([[[1.5, fill], [missing, missing]]], dtype=dtype)
+        return make_vcz(
+            variant_contig=[0],
+            variant_position=[10],
+            alleles=[["A", "C"]],
+            num_samples=2,
+            call_genotype=np.zeros((1, 2, 2), dtype=np.int8),
+            call_fields={"AB": ab},
+        )
+
+    @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
+    def test_trailing_fill_and_all_missing(self, dtype):
+        group = self._store(dtype)
+        assert _query(group, "[%AB ]\n") == "1.5 .,. \n"
 
 
 class TestFloatWidthPreserved:

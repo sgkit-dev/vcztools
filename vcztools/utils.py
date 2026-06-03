@@ -719,6 +719,14 @@ _FLOAT_MISSING = {
 }
 
 
+# (signed int view dtype, fill-as-int) per supported float width.
+_FLOAT_FILL = {
+    np.dtype(np.float16): (np.int16, constants.FLOAT16_FILL.view(np.int16)),
+    np.dtype(np.float32): (np.int32, constants.FLOAT32_FILL_AS_INT32),
+    np.dtype(np.float64): (np.int64, constants.FLOAT64_FILL.view(np.int64)),
+}
+
+
 # (signed int view dtype, missing-as-int, fill-as-int) per supported float width.
 _FLOAT_SENTINELS = {
     np.dtype(np.float16): (
@@ -758,7 +766,7 @@ def to_vcf_float32(arr: np.ndarray) -> np.ndarray:
     return out
 
 
-def missing(arr: np.ndarray) -> np.ndarray:
+def is_missing(arr: np.ndarray) -> np.ndarray:
     """Return a boolean array indicating which values are missing sentinels."""
     if arr.dtype.kind == "i":
         return arr == constants.INT_MISSING
@@ -771,6 +779,38 @@ def missing(arr: np.ndarray) -> np.ndarray:
         return ~arr
     else:
         raise ValueError(f"unrecognised dtype: {arr.dtype}")
+
+
+def is_fill(arr: np.ndarray) -> np.ndarray:
+    """Return a boolean array indicating which values are end-of-vector
+    (fill) sentinels. Flag (boolean) fields have no fill, so the mask is
+    all-False for them."""
+    if arr.dtype.kind == "i":
+        return arr == constants.INT_FILL
+    elif arr.dtype.kind == "f":
+        int_dtype, fill_int = _FLOAT_FILL[arr.dtype]
+        return arr.view(int_dtype) == fill_int
+    elif arr.dtype.kind in ("O", "U", "T"):
+        return arr == constants.STR_FILL
+    elif arr.dtype.kind == "b":
+        return np.zeros(arr.shape, dtype=bool)
+    else:
+        raise ValueError(f"unrecognised dtype: {arr.dtype}")
+
+
+def trim_fill(arr: np.ndarray) -> np.ndarray:
+    """Drop trailing fill from a 1-D array.
+
+    Returns a view up to and including the last non-fill element, or an
+    empty slice if every element is fill. Only trailing fill is trimmed;
+    interior fill (a malformed vector) is left in place.
+    """
+    fill_mask = is_fill(arr)
+    non_fill = np.nonzero(~fill_mask)[0]
+    if non_fill.size == 0:
+        return arr[:0]
+    last = int(non_fill[-1]) + 1
+    return arr[:last]
 
 
 def array_memory_bytes(arr: np.ndarray) -> int:

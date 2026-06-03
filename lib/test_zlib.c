@@ -10,7 +10,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <zlib.h>
-#include <vcf_encoder.h>
+#include <vcztools.h>
 
 /* Deterministic LCG so the random tests stay reproducible across runs and
  * platforms. */

@@ -145,7 +145,8 @@ jobs:
       - name: Valgrind
         working-directory: ./lib
         run: |
-          valgrind --leak-check=full --error-exitcode=1 ./build/tests
+          valgrind --leak-check=full --error-exitcode=1 ./build/test_formats
+          valgrind --leak-check=full --error-exitcode=1 ./build/test_compute
 
   packaging:
     name: Packaging

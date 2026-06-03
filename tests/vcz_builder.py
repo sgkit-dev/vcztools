@@ -154,6 +154,10 @@ def make_vcz(
     so every variant-only field defaults to ``variants_chunk_size`` —
     intended for unit tests whose assertions depend on uniform chunking
     (plan counts, multipliers, stream-chunk-size derivations).
+
+    ``variant_quality`` preserves a supplied floating-point dtype (so
+    fixtures can build a non-float32 QUAL); non-float inputs default to
+    float32.
     """
     variant_contig = np.asarray(variant_contig, dtype=np.int32)
     variant_position = np.asarray(variant_position, dtype=np.int32)
@@ -325,10 +329,13 @@ def make_vcz(
                 dimension_names=("variants",),
             )
         if variant_quality is not None:
+            variant_quality = np.asarray(variant_quality)
+            if variant_quality.dtype.kind != "f":
+                variant_quality = variant_quality.astype(np.float32)
             _create_array(
                 root,
                 "variant_quality",
-                np.asarray(variant_quality, dtype=np.float32),
+                variant_quality,
                 chunks=(_vc("variant_quality"),),
                 dimension_names=("variants",),
             )

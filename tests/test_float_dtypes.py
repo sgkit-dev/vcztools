@@ -61,6 +61,8 @@ def _rows(group):
 
 def _query(group, query_format):
     reader = VczReader(group)
+    # write_query enables the float32 cast; mirror that here.
+    reader.set_cast_float32()
     formatter = QueryFormatter(query_format, reader)
     return "".join(formatter.format_variant(v) for v in reader.variants())
 
@@ -169,6 +171,49 @@ class TestRaggedColumn:
         info_values = [row.split("\t")[7] for row in _rows(group)]
         # Trailing fill truncates the vector; an all-missing row renders ".".
         assert info_values == ["AF=1.5,2.5", "AF=3.5", "."]
+
+
+class TestFloat32CastOption:
+    """The float32 cast is opt-in: by default the reader preserves the
+    stored float width; ``set_cast_float32`` casts to canonical float32.
+
+    0.1 is not exactly representable in float32, so truncation is observable.
+    """
+
+    @staticmethod
+    def _read_dp(group, *, cast):
+        reader = VczReader(group)
+        if cast:
+            reader.set_cast_float32()
+        chunk = next(reader.variant_chunks(fields=["variant_DP"]))
+        return chunk["variant_DP"]
+
+    def test_float64_preserved_by_default(self):
+        group = _store(np.float64, info=[0.1, 0.2, 0.3])
+        dp = self._read_dp(group, cast=False)
+        assert dp.dtype == np.float64
+        np.testing.assert_array_equal(dp, np.array([0.1, 0.2, 0.3], dtype=np.float64))
+
+    def test_float16_preserved_by_default(self):
+        group = _store(np.float16, info=[0.1, 0.2, 0.3])
+        dp = self._read_dp(group, cast=False)
+        assert dp.dtype == np.float16
+        np.testing.assert_array_equal(dp, np.array([0.1, 0.2, 0.3], dtype=np.float16))
+
+    def test_cast_option_truncates_to_float32(self):
+        group = _store(np.float64, info=[0.1, 0.2, 0.3])
+        dp = self._read_dp(group, cast=True)
+        assert dp.dtype == np.float32
+        np.testing.assert_array_equal(dp, np.array([0.1, 0.2, 0.3], dtype=np.float32))
+
+    def test_cast_relabels_sentinels(self):
+        missing, fill = SENTINELS[np.float64]
+        group = _store(np.float64, info=[1.5, missing, fill])
+        dp = self._read_dp(group, cast=True)
+        assert dp.dtype == np.float32
+        as_int32 = dp.view(np.int32)
+        assert as_int32[1] == constants.FLOAT32_MISSING_AS_INT32
+        assert as_int32[2] == constants.FLOAT32_FILL_AS_INT32
 
 
 class TestFloat32Parity:

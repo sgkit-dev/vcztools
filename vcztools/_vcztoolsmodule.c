@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <numpy/arrayobject.h>
 
-#include "vcf_encoder.h"
+#include "vcztools.h"
 
 typedef struct {
     PyObject_HEAD

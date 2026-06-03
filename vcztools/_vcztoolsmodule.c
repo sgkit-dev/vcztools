@@ -47,6 +47,13 @@ handle_library_error(int err)
                 "total_string_length; the padding field was built with the "
                 "wrong slack.");
             break;
+        case VCZ_ERR_INVALID_GENOTYPE:
+            PyErr_Format(PyExc_ValueError,
+                "genotype value outside accepted range [-2, num_alleles)");
+            break;
+        case VCZ_ERR_INVALID_NUM_ALLELES:
+            PyErr_Format(PyExc_ValueError, "num_alleles values must be >= 1");
+            break;
         // TODO handle the other error types.
         default:
             PyErr_Format(PyExc_ValueError, "Error occured: %d: ", err);
@@ -997,18 +1004,8 @@ vcztools_compute_ac_an(PyObject *self, PyObject *args)
         PyArray_DATA(genotypes), PyArray_DATA(ac_out), PyArray_DATA(an_out));
     Py_END_ALLOW_THREADS
 
-    if (kernel_ret == VCZ_ERR_INVALID_GENOTYPE) {
-        PyErr_SetString(
-            PyExc_ValueError, "genotype value outside accepted range [-2, num_alleles)");
-        goto out;
-    }
-    if (kernel_ret == VCZ_ERR_INVALID_NUM_ALLELES) {
-        PyErr_SetString(PyExc_ValueError, "num_alleles values must be >= 1");
-        goto out;
-    }
     if (kernel_ret != 0) {
-        PyErr_Format(
-            PyExc_RuntimeError, "vcz_compute_ac_an failed with code %d", kernel_ret);
+        handle_library_error(kernel_ret);
         goto out;
     }
 

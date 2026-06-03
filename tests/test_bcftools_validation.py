@@ -869,11 +869,12 @@ class TestSampleSubsetFilterSemantics:
       record too (matching ``view``). FMT-scope filters, however,
       evaluate on the SUBSET record — sample subsetting happens first.
 
-    vcztools matches both: the ``view`` CLI sets the filter axis to
-    ``reader.non_null_sample_indices`` via ``set_filter_samples``
-    (pre-subset evaluation); the ``query`` CLI leaves the default,
-    which equals the sample subset (post-subset evaluation). INFO-scope
-    filters touch no sample dimension, so the setter is a no-op for them.
+    vcztools matches both via ``set_bcftools_semantics``: the ``view``
+    CLI passes ``full_sample_filter=True`` (pre-subset evaluation over
+    the full non-null sample axis); the ``query`` CLI uses the default
+    ``full_sample_filter=False`` (the sample subset, post-subset
+    evaluation). INFO-scope filters touch no sample dimension, so the
+    axis choice is a no-op for them — both read the stored INFO.
 
     The three methods below cover:
 

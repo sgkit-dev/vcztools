@@ -1782,8 +1782,8 @@ class TestVariantChunksFilterPlusSamples:
         nt.assert_array_equal(positions, [1110696, 1230237, 1234567, 1235237])
 
     def test_default_filter_samples_sample_scope(self, fx_sample_vcz):
-        # Default filter axis (no set_filter_samples call) is the
-        # sample subset — bcftools-query-style post-subset evaluation.
+        # Default filter axis (no full_sample_filter) is the sample
+        # subset — bcftools-query-style post-subset evaluation.
         # Position 1234567 (where NA00001 but not NA00002/NA00003
         # matched FMT/DP>3) is DROPPED.
         reader = VczReader(fx_sample_vcz.group)
@@ -1798,8 +1798,8 @@ class TestVariantChunksFilterPlusSamples:
         nt.assert_array_equal(chunk["variant_position"], [1230237])
 
     def test_explicit_filter_samples_no_subset_is_noop(self, fx_sample_vcz):
-        # With no sample subset, passing non_null_sample_indices (view
-        # semantics) must return identical results to the default.
+        # With no sample subset, view semantics must return identical
+        # results to the default.
         root = fx_sample_vcz.group
 
         def build(view_semantics):
@@ -1808,7 +1808,7 @@ class TestVariantChunksFilterPlusSamples:
                 regions_mod.build_chunk_plan(reader, regions="20:1230236-")
             )
             if view_semantics:
-                reader.set_filter_samples(reader.non_null_sample_indices)
+                reader.set_bcftools_semantics(full_sample_filter=True)
             reader.set_variant_filter(
                 BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>3"),
             )
@@ -1830,7 +1830,7 @@ class TestVariantChunksFilterPlusSamples:
             reader = VczReader(root)
             reader.set_samples([0])
             if view_semantics:
-                reader.set_filter_samples(reader.non_null_sample_indices)
+                reader.set_bcftools_semantics(full_sample_filter=True)
             reader.set_variant_filter(
                 BcftoolsFilter(field_names=reader.field_names, include="POS > 1000000"),
             )
@@ -2276,7 +2276,7 @@ def test_validate_samples_input_none():
 
 
 class TestSettersOneShot:
-    """``set_samples`` and ``set_filter_samples`` are one-shot — a
+    """``set_samples`` and ``set_bcftools_semantics`` are one-shot — a
     second call raises ``RuntimeError``. ``set_variants`` and
     ``set_variant_filter`` are re-callable (covered by
     :class:`TestSettersReplace`)."""
@@ -2287,11 +2287,11 @@ class TestSettersOneShot:
         with pytest.raises(RuntimeError, match="samples already configured"):
             reader.set_samples([1])
 
-    def test_set_filter_samples_twice_raises(self, fx_sample_vcz):
+    def test_set_bcftools_semantics_twice_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_filter_samples([0, 1])
-        with pytest.raises(RuntimeError, match="filter_samples already configured"):
-            reader.set_filter_samples([0, 1])
+        reader.set_bcftools_semantics()
+        with pytest.raises(RuntimeError, match="bcftools semantics already configured"):
+            reader.set_bcftools_semantics()
 
 
 class TestSettersReplace:
@@ -2852,26 +2852,9 @@ class TestVariantChunksStart:
         nt.assert_array_equal(results[3], list(range(109, 112)))
 
 
-class TestNormalizeSampleIndexesSortedUnique:
-    """``_normalize_sample_indexes`` rejects non-sorted-unique input
-    when ``sorted_unique=True`` — the path used by
-    ``set_filter_samples``."""
-
-    def test_unsorted_filter_samples_raises(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        with pytest.raises(ValueError, match="must be sorted ascending and unique"):
-            reader.set_filter_samples([2, 1])
-
-    def test_duplicate_filter_samples_raises(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        with pytest.raises(ValueError, match="must be sorted ascending and unique"):
-            reader.set_filter_samples([1, 1])
-
-
 class TestFilterSampleChunkPlanDefault:
     """``filter_sample_chunk_plan`` returns the same plan as
-    ``sample_chunk_plan`` when ``set_filter_samples`` has not been
-    called."""
+    ``sample_chunk_plan`` in the default (non-view-semantics) mode."""
 
     def test_default_returns_sample_chunk_plan(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
@@ -3499,6 +3482,37 @@ _EXPECTED_AC = np.array(
 _EXPECTED_AN = np.array([6, 6, 6, 1, 3], dtype=np.int32)
 
 
+def _store_variant_array(root, name, data, dimension_names):
+    """Store a variants-axis array carrying dimension metadata. A bare
+    ``root[name] = data`` leaves no dims, so the reader cannot tell the
+    array has a variants axis and misreads it as a static field."""
+    arr = root.create_array(
+        name=name,
+        shape=data.shape,
+        chunks=data.shape,
+        dtype=data.dtype,
+        dimension_names=dimension_names,
+        compressors=None,
+        filters=None,
+    )
+    arr[...] = data
+    arr.attrs["_ARRAY_DIMENSIONS"] = list(dimension_names)
+
+
+# AC / AN recomputed over the sample subset [0, 1] (sample 2 dropped).
+_SUBSET01_AC = np.array(
+    [
+        [1, constants.INT_FILL],
+        [0, 1],
+        [2, 1],
+        [0, constants.INT_FILL],
+        [0, 1],
+    ],
+    dtype=np.int32,
+)
+_SUBSET01_AN = np.array([4, 4, 4, 0, 2], dtype=np.int32)
+
+
 class TestVirtualFields:
     """Per-variant AC/AN/AF/NS/N_ALT/N_MISSING/F_MISSING computed on
     the fly by ``VczReader`` via the virtual-fields registry."""
@@ -3623,6 +3637,111 @@ class TestVirtualFields:
             np.concatenate([c["variant_position"] for c in chunks]),
             [100, 200, 300],
         )
+
+    def test_default_filter_and_output_agree_under_force_recompute(self):
+        # Default mode: the filter and the emitted column resolve a
+        # field identically. With a stale stored AC and force_recompute,
+        # the ``AC>1`` filter sees the recomputed values (the old code
+        # filtered on the stored zeros, disagreeing with the output).
+        root = _make_virtual_field_vcz()
+        _store_variant_array(
+            root,
+            "variant_AC",
+            np.zeros((5, 2), dtype=np.int32),
+            ("variants", "alt_alleles"),
+        )
+        reader = VczReader(root)
+        bf = BcftoolsFilter(
+            field_names=reader.field_names | reader.virtual_field_names,
+            include="AC>1",
+        )
+        reader.set_variant_filter(bf)
+        chunks = list(
+            reader.variant_chunks(
+                fields=["variant_position", "variant_AC"],
+                force_recompute=["variant_AC"],
+            )
+        )
+        pos = np.concatenate([c["variant_position"] for c in chunks])
+        ac = np.concatenate([c["variant_AC"] for c in chunks])
+        nt.assert_array_equal(pos, [100, 200, 300])
+        nt.assert_array_equal(ac, _EXPECTED_AC[[0, 1, 2]])
+
+    def test_default_subset_recomputes_sample_dependent(self):
+        # Default mode: a sample subset makes AC/AN reflect the subset
+        # even with a stale stored array and no force_recompute.
+        root = _make_virtual_field_vcz()
+        _store_variant_array(
+            root,
+            "variant_AC",
+            np.zeros((5, 2), dtype=np.int32),
+            ("variants", "alt_alleles"),
+        )
+        _store_variant_array(
+            root, "variant_AN", np.zeros(5, dtype=np.int32), ("variants",)
+        )
+        reader = VczReader(root)
+        reader.set_samples([0, 1])
+        chunk = next(reader.variant_chunks(fields=["variant_AC", "variant_AN"]))
+        nt.assert_array_equal(chunk["variant_AC"], _SUBSET01_AC)
+        nt.assert_array_equal(chunk["variant_AN"], _SUBSET01_AN)
+
+    def test_default_subset_keeps_sample_independent_stored(self):
+        # N_ALT depends only on variant_allele, so a subset must not
+        # trigger recompute — a stored value survives unchanged.
+        root = _make_virtual_field_vcz()
+        _store_variant_array(
+            root, "variant_N_ALT", np.full(5, 99, dtype=np.int64), ("variants",)
+        )
+        reader = VczReader(root)
+        reader.set_samples([0, 1])
+        chunk = next(reader.variant_chunks(fields=["variant_N_ALT"]))
+        nt.assert_array_equal(chunk["variant_N_ALT"], np.full(5, 99))
+
+    def test_default_empty_subset_keeps_stored(self):
+        # An empty subset has no genotypes to recompute over, so the
+        # subset-recompute rule is suppressed and the stored array wins.
+        root = _make_virtual_field_vcz()
+        _store_variant_array(
+            root,
+            "variant_AC",
+            np.full((5, 2), 7, dtype=np.int32),
+            ("variants", "alt_alleles"),
+        )
+        reader = VczReader(root)
+        reader.set_samples([])
+        chunk = next(reader.variant_chunks(fields=["variant_AC"]))
+        nt.assert_array_equal(chunk["variant_AC"], np.full((5, 2), 7))
+
+    def test_bcftools_semantics_filter_reads_stored_output_recomputes(self):
+        # bcftools mode: the filter reads the stored INFO/AC while the
+        # output recomputes (the confirmed bcftools quirk). Stored AC is
+        # 5 everywhere so ``AC>1`` keeps every row; if the filter used
+        # the recomputed AC, row 400 (AC=[1, FILL]) would be dropped.
+        root = _make_virtual_field_vcz()
+        _store_variant_array(
+            root,
+            "variant_AC",
+            np.full((5, 2), 5, dtype=np.int32),
+            ("variants", "alt_alleles"),
+        )
+        reader = VczReader(root)
+        reader.set_bcftools_semantics()
+        bf = BcftoolsFilter(
+            field_names=reader.field_names | reader.virtual_field_names,
+            include="AC>1",
+        )
+        reader.set_variant_filter(bf)
+        chunks = list(
+            reader.variant_chunks(
+                fields=["variant_position", "variant_AC"],
+                force_recompute=["variant_AC"],
+            )
+        )
+        pos = np.concatenate([c["variant_position"] for c in chunks])
+        ac = np.concatenate([c["variant_AC"] for c in chunks])
+        nt.assert_array_equal(pos, [100, 200, 300, 400, 500])
+        nt.assert_array_equal(ac, _EXPECTED_AC)
 
     def test_variant_af_computed(self):
         root = _make_virtual_field_vcz()

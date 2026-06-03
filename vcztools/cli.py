@@ -661,11 +661,10 @@ def make_reader(
         )
         reader.set_variants(variant_chunk_plan)
 
-    if view_semantics:
-        # bcftools view evaluates sample-scope filters over the
-        # pre-subset (non-null) axis and exposes that axis for AC/AN
-        # recompute.
-        reader.set_filter_samples(reader.non_null_sample_indices)
+    # Every CLI-built reader follows bcftools filter / INFO semantics
+    # (filters read the stored INFO). ``view`` additionally evaluates
+    # sample-scope filters over the full pre-subset sample axis.
+    reader.set_bcftools_semantics(full_sample_filter=view_semantics)
 
     if variant_filter is not None:
         reader.set_variant_filter(variant_filter)

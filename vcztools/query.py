@@ -4,11 +4,7 @@ import math
 import numpy as np
 import pyparsing as pp
 
-from vcztools import constants
-from vcztools.utils import (
-    missing,
-    vcf_name_to_vcz_names,
-)
+from vcztools import constants, utils
 
 
 def list_samples(reader, output):
@@ -115,7 +111,7 @@ class QueryFormatter:
 
         def format_tag(variant_data):
             vcz_names = set(variant_data.keys())
-            vcz_name_matches = vcf_name_to_vcz_names(vcz_names, tag)
+            vcz_name_matches = utils.vcf_name_to_vcz_names(vcz_names, tag)
             if len(vcz_name_matches) == 0:
                 raise ValueError(f"No mapping found for '{tag}'")
             if sample_loop:
@@ -132,7 +128,9 @@ class QueryFormatter:
                     )
 
             value = variant_data[vcz_name]
-            is_missing = False if isinstance(value, str) else np.all(missing(value))
+            is_missing = (
+                False if isinstance(value, str) else np.all(utils.missing(value))
+            )
             sep = ","
 
             if tag == "CHROM":

@@ -1632,9 +1632,13 @@ class VczReader:
         self,
         *,
         fields: list[str] | None = None,
+        force_recompute=False,
     ):
-        """Yield dict[str, scalar/1d-array] per variant row."""
-        for chunk_data in self.variant_chunks(fields=fields):
+        """Yield dict[str, scalar/1d-array] per variant row.
+
+        ``force_recompute`` is forwarded to :meth:`variant_chunks`."""
+        chunks = self.variant_chunks(fields=fields, force_recompute=force_recompute)
+        for chunk_data in chunks:
             first_field = next(iter(chunk_data.values()))
             num_variants = len(first_field)
             for i in range(num_variants):

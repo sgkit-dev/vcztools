@@ -529,7 +529,7 @@ def _array_to_vcf_type(info):
         return "Flag"
     elif np.issubdtype(info.dtype, np.integer):
         return "Integer"
-    elif np.issubdtype(info.dtype, np.float32):
+    elif np.issubdtype(info.dtype, np.floating):
         return "Float"
     elif info.dtype.str[1:] in ("S1", "U1"):
         return "Character"

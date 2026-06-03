@@ -566,6 +566,8 @@ class CachedLogicalVariantsChunk:
         # a copy so each chunk's StringDType array has its own arena.
         if result.dtype.kind == "T" and not result.flags.owndata:
             result = result.copy()
+        if result.dtype.kind == "f" and result.dtype != np.float32:
+            result = utils.to_vcf_float32(result)
         return result
 
     def _slice_variants(self, data):

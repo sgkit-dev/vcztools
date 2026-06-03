@@ -14,8 +14,8 @@ from numpy.testing import assert_array_equal
 
 from tests import vcz_builder
 from tests.utils import to_vcz_icechunk
+from vcztools import constants, utils
 from vcztools import regions as regions_mod
-from vcztools import utils
 from vcztools.constants import (
     FLOAT32_FILL,
     FLOAT32_MISSING,
@@ -32,6 +32,7 @@ from vcztools.utils import (
     normalise_local_selection,
     open_zarr,
     search,
+    to_vcf_float32,
     vcf_name_to_vcz_names,
 )
 
@@ -584,6 +585,44 @@ def test_missing(arr, expected_missing):
 def test_missing__failure():
     with pytest.raises(ValueError, match="unrecognised dtype"):
         missing(np.array([1, 2], dtype=np.complex64))
+
+
+class TestToVcfFloat32:
+    """``to_vcf_float32`` casts non-float32 floats to canonical float32,
+    relabelling the width-generalised sentinels to the float32 sentinels."""
+
+    SENTINELS = {
+        np.float16: (constants.FLOAT16_MISSING, constants.FLOAT16_FILL),
+        np.float64: (constants.FLOAT64_MISSING, constants.FLOAT64_FILL),
+    }
+
+    def test_float32_identity(self):
+        arr = np.array([0.5, 1.5, FLOAT32_MISSING, FLOAT32_FILL], dtype=np.float32)
+        result = to_vcf_float32(arr)
+        assert result is arr
+
+    @pytest.mark.parametrize("dtype", [np.float16, np.float64])
+    def test_finite_values_cast(self, dtype):
+        result = to_vcf_float32(np.array([0.5, 1.5, 2.5], dtype=dtype))
+        assert result.dtype == np.float32
+        assert_array_equal(result, np.array([0.5, 1.5, 2.5], dtype=np.float32))
+
+    @pytest.mark.parametrize("dtype", [np.float16, np.float64])
+    def test_sentinels_relabelled(self, dtype):
+        missing_val, fill_val = self.SENTINELS[dtype]
+        arr = np.array([1.5, missing_val, fill_val], dtype=dtype)
+        result = to_vcf_float32(arr)
+        as_int32 = result.view(np.int32)
+        assert as_int32[1] == constants.FLOAT32_MISSING_AS_INT32
+        assert as_int32[2] == constants.FLOAT32_FILL_AS_INT32
+        assert result[0] == np.float32(1.5)
+
+    @pytest.mark.parametrize("dtype", [np.float16, np.float64])
+    def test_non_contiguous_input(self, dtype):
+        missing_val, _ = self.SENTINELS[dtype]
+        arr = np.array([[1.5, missing_val], [2.5, 3.5]], dtype=dtype)
+        result = to_vcf_float32(arr[:, 0])
+        assert_array_equal(result, np.array([1.5, 2.5], dtype=np.float32))
 
 
 class TestArrayMemoryBytes:

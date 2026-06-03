@@ -711,6 +711,45 @@ def _as_fixed_length_unicode(arr: np.ndarray) -> np.ndarray:
         return arr.astype(f"U{_max_len(arr)}")
 
 
+# (signed int view dtype, missing-as-int, fill-as-int) per supported float width.
+_FLOAT_SENTINELS = {
+    np.dtype(np.float16): (
+        np.int16,
+        constants.FLOAT16_MISSING.view(np.int16),
+        constants.FLOAT16_FILL.view(np.int16),
+    ),
+    np.dtype(np.float64): (
+        np.int64,
+        constants.FLOAT64_MISSING.view(np.int64),
+        constants.FLOAT64_FILL.view(np.int64),
+    ),
+}
+
+
+def to_vcf_float32(arr: np.ndarray) -> np.ndarray:
+    """Return ``arr`` as canonical VCF float32.
+
+    float32 input is returned unchanged. float16/float64 input is cast to
+    float32 with the width-generalised missing / end-of-vector sentinels
+    relabelled to the float32 sentinels, so downstream code sees a single
+    canonical representation.
+    """
+    if arr.dtype == np.float32:
+        return arr
+    int_dtype, missing_int, fill_int = _FLOAT_SENTINELS[arr.dtype]
+    src = np.ascontiguousarray(arr)
+    int_view = src.view(int_dtype)
+    missing_mask = int_view == missing_int
+    fill_mask = int_view == fill_int
+    # The sentinels are signalling NaNs; casting them raises the FP "invalid"
+    # flag. The cast values at those positions are discarded below, so ignore it.
+    with np.errstate(invalid="ignore"):
+        out = src.astype(np.float32)
+    out[missing_mask] = constants.FLOAT32_MISSING
+    out[fill_mask] = constants.FLOAT32_FILL
+    return out
+
+
 def missing(arr: np.ndarray) -> np.ndarray:
     """Return a boolean array indicating which values are missing sentinels."""
     if arr.dtype.kind == "i":

@@ -1,15 +1,12 @@
-"""Characterisation tests for non-float32 floating-point input fields.
+"""Round-trip tests for half- and double-precision float input fields.
 
-vcztools assumes float32 for every floating-point field, but the
-assumption is enforced inconsistently across the API surfaces. These
-tests pin down what *currently* happens when an input VCZ carries a
-half-precision (``<f2``) or double-precision (``<f8``) float field,
-across ``view``, ``query`` and ``VczReader`` filtering.
-
-They document the status quo as a regression baseline for the
-eventual half-precision support work; the assertions here describe
-present behaviour and are expected to be revised deliberately when
-that support lands.
+vcztools converts every floating-point field to canonical float32 at the
+read boundary (``utils.to_vcf_float32``), relabelling the width-generalised
+missing / end-of-vector sentinels to the float32 sentinels. These tests show
+that float16 and float64 input round-trips correctly through ``view``,
+``query`` and ``VczReader`` filtering, including ragged columns padded with
+the fill sentinel, and that the output is identical to an equivalent float32
+store.
 """
 
 import io
@@ -17,7 +14,7 @@ import io
 import numpy as np
 import pytest
 
-from vcztools import bcftools_filter
+from vcztools import bcftools_filter, constants
 from vcztools.query import QueryFormatter
 from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import write_vcf
@@ -26,120 +23,114 @@ from .vcz_builder import make_vcz
 
 NON_FLOAT32_DTYPES = [np.float16, np.float64]
 
+# (missing, fill) sentinel pair for each supported float width.
+SENTINELS = {
+    np.float16: (constants.FLOAT16_MISSING, constants.FLOAT16_FILL),
+    np.float32: (constants.FLOAT32_MISSING, constants.FLOAT32_FILL),
+    np.float64: (constants.FLOAT64_MISSING, constants.FLOAT64_FILL),
+}
 
-def _base_kwargs():
-    return dict(
+
+def _store(dtype, *, info=None, fmt=None, qual=None):
+    """Build an in-memory VCZ with a float field of the given dtype."""
+    kwargs = dict(
         variant_contig=[0, 0, 0],
         variant_position=[10, 20, 30],
         alleles=[["A", "C"], ["G", "T"], ["A", "T"]],
         num_samples=2,
         call_genotype=np.zeros((3, 2, 2), dtype=np.int8),
     )
-
-
-def _info_vcz(dtype):
-    kwargs = _base_kwargs()
-    kwargs["info_fields"] = {"DP": np.array([1.5, 2.5, 3.5], dtype=dtype)}
+    if info is not None:
+        kwargs["info_fields"] = {"DP": np.asarray(info, dtype=dtype)}
+    if fmt is not None:
+        kwargs["call_fields"] = {"AB": np.asarray(fmt, dtype=dtype)}
+    if qual is not None:
+        kwargs["variant_quality"] = np.asarray(qual, dtype=dtype)
     return make_vcz(**kwargs)
 
 
-def _format_vcz(dtype):
-    kwargs = _base_kwargs()
-    values = np.array([[1.5, 2.5], [3.5, 4.5], [5.5, 6.5]], dtype=dtype)
-    kwargs["call_fields"] = {"AB": values}
-    return make_vcz(**kwargs)
+def _view(group):
+    out = io.StringIO()
+    write_vcf(VczReader(group), out, no_version=True)
+    return out.getvalue()
 
 
-def _qual_vcz(dtype):
-    kwargs = _base_kwargs()
-    kwargs["variant_quality"] = np.array([1.5, 2.5, 3.5], dtype=dtype)
-    return make_vcz(**kwargs)
+def _rows(group):
+    return [line for line in _view(group).splitlines() if not line.startswith("#")]
+
+
+def _query(group, query_format):
+    reader = VczReader(group)
+    formatter = QueryFormatter(query_format, reader)
+    return "".join(formatter.format_variant(v) for v in reader.variants())
 
 
 class TestViewNonFloat32:
-    """``view`` (write_vcf) currently rejects non-float32 floats.
-
-    INFO/FORMAT fields are caught in the Python encoder type mapping
-    (vcf_writer._array_to_vcf_type), QUAL in the C dtype check.
-    """
+    """``view`` now encodes non-float32 float fields correctly."""
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
-    def test_info_field_rejected(self, dtype):
-        reader = VczReader(_info_vcz(dtype))
-        with pytest.raises(ValueError, match="Unsupported dtype"):
-            write_vcf(reader, io.StringIO(), no_version=True)
+    def test_info_field(self, dtype):
+        group = _store(dtype, info=[1.5, 2.5, 3.5])
+        info_values = [row.split("\t")[7] for row in _rows(group)]
+        assert info_values == ["DP=1.5", "DP=2.5", "DP=3.5"]
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
-    def test_format_field_rejected(self, dtype):
-        reader = VczReader(_format_vcz(dtype))
-        with pytest.raises(ValueError, match="Unsupported dtype"):
-            write_vcf(reader, io.StringIO(), no_version=True)
+    def test_format_field(self, dtype):
+        group = _store(dtype, fmt=[[1.5, 2.5], [3.5, 4.5], [5.5, 6.5]])
+        # The sample column is "GT:AB"; take the AB sub-field.
+        first_sample = [row.split("\t")[9].split(":")[1] for row in _rows(group)]
+        assert first_sample == ["1.5", "3.5", "5.5"]
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
-    def test_qual_rejected(self, dtype):
-        reader = VczReader(_qual_vcz(dtype))
-        with pytest.raises(ValueError, match="Wrong dtype for qual"):
-            write_vcf(reader, io.StringIO(), no_version=True)
+    def test_qual_field(self, dtype):
+        group = _store(dtype, qual=[10.0, 20.0, 30.0])
+        qual_values = [row.split("\t")[5] for row in _rows(group)]
+        assert qual_values == ["10", "20", "30"]
 
 
 class TestQueryNonFloat32:
-    """``query`` formats floats in Python.
-
-    Scalar-per-variant access (INFO, QUAL) routes through
-    ``utils.missing``, whose ``view(np.int32)`` fails on a 0-d
-    non-float32 value. The FORMAT sample-loop path does not hit that
-    check and currently produces output.
-    """
+    """``query`` now formats non-float32 float fields without error."""
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
     def test_info_field_query(self, dtype):
-        reader = VczReader(_info_vcz(dtype))
-        formatter = QueryFormatter("%INFO/DP\n", reader)
-        with pytest.raises(ValueError, match="Changing the dtype of a 0d array"):
-            "".join(formatter.format_variant(v) for v in reader.variants())
+        group = _store(dtype, info=[1.5, 2.5, 3.5])
+        assert _query(group, "%INFO/DP\n") == "1.5\n2.5\n3.5\n"
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
     def test_format_field_query(self, dtype):
-        reader = VczReader(_format_vcz(dtype))
-        formatter = QueryFormatter("[%AB ]\n", reader)
-        result = "".join(formatter.format_variant(v) for v in reader.variants())
-        assert result == "1.5 2.5 \n3.5 4.5 \n5.5 6.5 \n"
+        group = _store(dtype, fmt=[[1.5, 2.5], [3.5, 4.5], [5.5, 6.5]])
+        assert _query(group, "[%AB ]\n") == "1.5 2.5 \n3.5 4.5 \n5.5 6.5 \n"
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
     def test_qual_query(self, dtype):
-        reader = VczReader(_qual_vcz(dtype))
-        formatter = QueryFormatter("%QUAL\n", reader)
-        with pytest.raises(ValueError, match="Changing the dtype of a 0d array"):
-            "".join(formatter.format_variant(v) for v in reader.variants())
+        group = _store(dtype, qual=[10.0, 20.0, 30.0])
+        assert _query(group, "%QUAL\n") == "10\n20\n30\n"
 
 
 class TestFilterNonFloat32:
-    """``VczReader`` filtering is the tolerant path.
-
-    ``bcftools_filter._missing_mask`` uses ``np.isnan`` and comparisons
-    use native numpy, so filtering on a non-float32 float field
-    currently works correctly for both dtypes.
-    """
+    """Filtering operates on the converted float32 data."""
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
     def test_info_filter_comparison(self, dtype):
-        data = {"variant_DP": np.array([0.2, 1.5, 3.5], dtype=dtype)}
-        fee = bcftools_filter.BcftoolsFilter(field_names=set(data), include="DP>0.5")
+        data = {"variant_DP": np.array([0.5, 1.5, 3.5], dtype=dtype)}
+        fee = bcftools_filter.BcftoolsFilter(field_names=set(data), include="DP>1.0")
         result = fee.evaluate(data)
         np.testing.assert_array_equal(result, [False, True, True])
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
-    def test_missing_detection(self, dtype):
-        # A NaN element registers as missing via np.isnan and is
-        # excluded from an inclusion filter regardless of float width.
-        data = {"variant_DP": np.array([0.2, 1.5, np.nan], dtype=dtype)}
+    def test_missing_and_fill_excluded(self, dtype):
+        # Both the missing and the fill sentinel are NaN, so an inclusion
+        # filter excludes them regardless of float width.
+        missing, fill = SENTINELS[dtype]
+        data = {"variant_DP": np.array([1.5, missing, fill], dtype=dtype)}
         fee = bcftools_filter.BcftoolsFilter(field_names=set(data), include="DP>0.0")
         result = fee.evaluate(data)
-        np.testing.assert_array_equal(result, [True, True, False])
+        np.testing.assert_array_equal(result, [True, False, False])
 
     @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
     def test_filter_end_to_end(self, dtype):
-        reader = VczReader(_info_vcz(dtype))
+        group = _store(dtype, info=[1.5, 2.5, 3.5])
+        reader = VczReader(group)
         field_names = reader.field_names | reader.virtual_field_names
         fee = bcftools_filter.BcftoolsFilter(field_names=field_names, include="DP>2.0")
         reader.set_variant_filter(fee)
@@ -148,3 +139,73 @@ class TestFilterNonFloat32:
         for chunk in reader.variant_chunks(fields=["variant_position"]):
             positions.extend(chunk["variant_position"].tolist())
         assert positions == [20, 30]
+
+
+class TestRaggedColumn:
+    """A multi-valued float field padded with the fill sentinel.
+
+    Row 0 is full ``[1.5, 2.5]``; row 1 has a trailing fill (one value);
+    row 2 is missing then fill (no values).
+    """
+
+    def _ragged_store(self, dtype):
+        missing, fill = SENTINELS[dtype]
+        af = np.array(
+            [[1.5, 2.5], [3.5, fill], [missing, fill]],
+            dtype=dtype,
+        )
+        return make_vcz(
+            variant_contig=[0, 0, 0],
+            variant_position=[10, 20, 30],
+            alleles=[["A", "C"], ["G", "T"], ["A", "T"]],
+            num_samples=1,
+            call_genotype=np.zeros((3, 1, 2), dtype=np.int8),
+            info_fields={"AF": af},
+        )
+
+    @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
+    def test_view_drops_fill_and_renders_missing(self, dtype):
+        group = self._ragged_store(dtype)
+        info_values = [row.split("\t")[7] for row in _rows(group)]
+        # Trailing fill truncates the vector; an all-missing row renders ".".
+        assert info_values == ["AF=1.5,2.5", "AF=3.5", "."]
+
+
+class TestFloat32Parity:
+    """float16 / float64 input produces output identical to float32.
+
+    Values are exactly representable in float16, so all three widths are
+    bit-identical after conversion and the rendered text matches exactly.
+    """
+
+    @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
+    def test_view_parity(self, dtype):
+        kwargs = dict(
+            info=[0.5, 1.5, 2.5],
+            fmt=[[0.5, 1.5], [2.5, 0.5], [1.5, 2.5]],
+            qual=[0.5, 1.5, 2.5],
+        )
+        assert _view(_store(dtype, **kwargs)) == _view(_store(np.float32, **kwargs))
+
+    @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
+    def test_query_parity(self, dtype):
+        kwargs = dict(info=[0.5, 1.5, 2.5], qual=[0.5, 1.5, 2.5])
+        query_format = "%POS %QUAL %INFO/DP\n"
+        expected = _query(_store(np.float32, **kwargs), query_format)
+        assert _query(_store(dtype, **kwargs), query_format) == expected
+
+    @pytest.mark.parametrize("dtype", NON_FLOAT32_DTYPES)
+    def test_ragged_view_parity(self, dtype):
+        def store(dt):
+            missing, fill = SENTINELS[dt]
+            af = np.array([[0.5, 1.5], [2.5, fill], [missing, fill]], dtype=dt)
+            return make_vcz(
+                variant_contig=[0, 0, 0],
+                variant_position=[10, 20, 30],
+                alleles=[["A", "C"], ["G", "T"], ["A", "T"]],
+                num_samples=1,
+                call_genotype=np.zeros((3, 1, 2), dtype=np.int8),
+                info_fields={"AF": af},
+            )
+
+        assert _view(store(dtype)) == _view(store(np.float32))

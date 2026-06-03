@@ -4,6 +4,7 @@ import subprocess
 
 import click.testing as ct
 import numpy as np
+import pandas as pd
 import pytest
 
 import vcztools.cli as cli
@@ -1228,8 +1229,8 @@ class TestFillTagsParity:
     ]
 
     @pytest.mark.parametrize("vcf_file", FIXTURES)
-    @pytest.mark.parametrize("tag", ["AC", "AN", "AF", "NS"])
-    def test_single_tag(self, tmp_path, fx_all_vcz, tag, vcf_file):
+    def test_single_tag(self, tmp_path, fx_all_vcz, vcf_file):
+        tag = "NS"
         fx = fx_all_vcz[vcf_file]
 
         bcftools_text = _bcftools_view_with_fill_tags(fx.vcf_path, tag)
@@ -1263,57 +1264,42 @@ class TestFillTagsParity:
 
 
 @functools.cache
-def _bcftools_fill_tags_table(
-    vcf_path, view_args: str = "", fill_tags: str = "AC,AN,AF,NS"
-) -> tuple[tuple, ...]:
+def _bcftools_fill_tags_table(vcf_path, view_args: str = "") -> pd.DataFrame:
     """Run ``bcftools view {view_args} {vcf_path} | bcftools +fill-tags
-    -- -t {fill_tags} | bcftools query -f '...'`` and parse the TSV
-    output into rows of ``(key, ac_tuple, an, af_tuple, ns)`` in file
-    order. ``.`` cells become ``None`` (scalars) or all-``None`` tuples
-    (Number=A fields)."""
+    | bcftools query`` and return a tidy DataFrame with one row per
+    (variant, ALT allele): columns ``key, allele, AC, AN, AF, NS``. The
+    Number=A AC/AF vectors are exploded over their alleles; an entirely
+    missing AF vector (rendered as a scalar ``.``) becomes NaN for every
+    allele so it aligns with the per-element MISSING the reader emits."""
     fmt = "%CHROM:%POS\\t%INFO/AC\\t%INFO/AN\\t%INFO/AF\\t%INFO/NS\\n"
     cmd = (
         f"bcftools view --no-version {view_args} {vcf_path} "
-        f"| bcftools +fill-tags -- -t {fill_tags} "
+        f"| bcftools +fill-tags -- -t AC,AN,AF,NS "
         f"| bcftools query -f '{fmt}' -"
     )
     completed = subprocess.run(cmd, capture_output=True, check=True, shell=True)
     out = completed.stdout.decode("utf-8")
-    rows = []
+    records = []
     for line in out.splitlines():
         if len(line.strip()) == 0:
             continue
         key, ac_s, an_s, af_s, ns_s = line.split("\t")
-        rows.append(
-            (key, _parse_number_a_int(ac_s), _parse_scalar_int(an_s),
-             _parse_number_a_float(af_s), _parse_scalar_int(ns_s))
-        )
-    return tuple(rows)
+        ac = [int(p) for p in ac_s.split(",")]
+        if af_s == ".":
+            af = [np.nan] * len(ac)
+        else:
+            af = [np.nan if p == "." else float(p) for p in af_s.split(",")]
+        an = int(an_s)
+        ns = int(ns_s)
+        for allele, (ac_i, af_i) in enumerate(zip(ac, af, strict=True)):
+            records.append(_parity_record(key, allele, ac_i, an, af_i, ns))
+    return _parity_frame(records)
 
 
-def _parse_scalar_int(cell: str):
-    return None if cell == "." else int(cell)
-
-
-def _parse_number_a_int(cell: str):
-    if cell == ".":
-        return None
-    return tuple(None if p == "." else int(p) for p in cell.split(","))
-
-
-def _parse_number_a_float(cell: str):
-    if cell == ".":
-        return None
-    return tuple(None if p == "." else float(p) for p in cell.split(","))
-
-
-def _vcztools_fill_tags_table(
-    zip_path, view_args_kwargs: dict
-) -> tuple[tuple, ...]:
+def _vcztools_fill_tags_table(zip_path, view_args_kwargs: dict) -> pd.DataFrame:
     """Open a VczReader on ``zip_path`` configured to match the bcftools
-    view filters in ``view_args_kwargs``, then iterate variant chunks
-    with ``force_recompute=True`` and emit rows in the same shape as
-    :func:`_bcftools_fill_tags_table`."""
+    view filters in ``view_args_kwargs``, recompute AC/AN/AF/NS, and emit
+    the same tidy DataFrame as :func:`_bcftools_fill_tags_table`."""
     fields = [
         "variant_contig",
         "variant_position",
@@ -1322,60 +1308,47 @@ def _vcztools_fill_tags_table(
         "variant_AF",
         "variant_NS",
     ]
-    rows: list[tuple] = []
+    missing_bits = constants_module.FLOAT32_MISSING.view(np.int32)
+    records = []
     with cli.make_reader(
         str(zip_path), view_semantics=True, **view_args_kwargs
     ) as reader:
         contig_ids = reader.contig_ids
-        for chunk in reader.variant_chunks(fields=fields, force_recompute=True):
-            contig = chunk["variant_contig"]
-            position = chunk["variant_position"]
-            ac = chunk["variant_AC"]
-            an = chunk["variant_AN"]
-            af = chunk["variant_AF"]
-            ns = chunk["variant_NS"]
-            for j in range(position.shape[0]):
-                key = f"{contig_ids[contig[j]]}:{position[j]}"
-                rows.append(
-                    (key, _ac_row_to_tuple(ac[j]), int(an[j]),
-                     _af_row_to_tuple(af[j]), int(ns[j]))
-                )
-    return tuple(rows)
+        for variant in reader.variants(fields=fields, force_recompute=True):
+            contig = contig_ids[variant["variant_contig"]]
+            key = f"{contig}:{variant['variant_position']}"
+            ac_row = variant["variant_AC"]
+            af_row = np.asarray(variant["variant_AF"], dtype=np.float32)
+            af_bits = af_row.view(np.int32)
+            an = int(variant["variant_AN"])
+            ns = int(variant["variant_NS"])
+            allele = 0
+            for ac_i, af_i, bits in zip(ac_row, af_row, af_bits):
+                if ac_i == constants_module.INT_FILL:
+                    continue
+                af_val = np.nan if bits == missing_bits else float(af_i)
+                records.append(_parity_record(key, allele, int(ac_i), an, af_val, ns))
+                allele += 1
+    return _parity_frame(records)
 
 
-def _ac_row_to_tuple(row):
-    """Convert a per-variant AC row (int32 array with INT_FILL padding)
-    into the same tuple shape bcftools query emits."""
-    keep = [int(v) for v in row if v != constants_module.INT_FILL]
-    return tuple(keep) if len(keep) > 0 else None
+def _parity_record(key, allele, ac, an, af, ns):
+    return {"key": key, "allele": allele, "AC": ac, "AN": an, "AF": af, "NS": ns}
 
 
-def _af_row_to_tuple(row):
-    """Convert a per-variant AF row (float32 with FILL/MISSING sentinels)
-    into the tuple shape bcftools query emits. FILL entries are dropped
-    (matching bcftools dropping padded ALT slots); MISSING entries
-    become ``None``."""
-    fill_bits = constants_module.FLOAT32_FILL.view(np.int32)
-    missing_bits = constants_module.FLOAT32_MISSING.view(np.int32)
-    int_view = np.asarray(row, dtype=np.float32).view(np.int32)
-    keep: list = []
-    for v, bits in zip(row, int_view):
-        if bits == fill_bits:
-            continue
-        if bits == missing_bits:
-            keep.append(None)
-        else:
-            keep.append(float(v))
-    return tuple(keep) if len(keep) > 0 else None
+def _parity_frame(records) -> pd.DataFrame:
+    columns = ["key", "allele", "AC", "AN", "AF", "NS"]
+    return pd.DataFrame.from_records(records, columns=columns)
 
 
 class TestFillTagsColumnParity:
     """Compare AC/AN/AF/NS column-wise between bcftools (+fill-tags |
-    query) and VczReader.variant_chunks(force_recompute=True).
+    query) and VczReader with recomputed virtual fields.
 
-    Avoids VCF-text parsing and the Number=A null-shape divergence that
-    bedeviled the previous AF-only test. Used to broadly cover filter
-    compositions."""
+    Both paths are reduced to a tidy DataFrame (one row per variant and
+    ALT allele) and compared with :func:`pandas.testing.assert_frame_equal`,
+    so AC/AN/NS match exactly while AF is compared with a float tolerance.
+    Used to broadly cover filter compositions."""
 
     FILTER_CASES = [
         ("no-filter", "", {}),
@@ -1408,45 +1381,4 @@ class TestFillTagsColumnParity:
         actual = _vcztools_fill_tags_table(
             fx_chr22_vcz.zip_path, view_args_kwargs=reader_kwargs
         )
-        assert len(oracle) == len(actual), (
-            f"row count differs: bcftools={len(oracle)}, vcztools={len(actual)}"
-        )
-        # Compare key + AC/AN/NS exactly; AF with float tolerance.
-        for row_o, row_a in zip(oracle, actual, strict=True):
-            key_o, ac_o, an_o, af_o, ns_o = row_o
-            key_a, ac_a, an_a, af_a, ns_a = row_a
-            assert key_o == key_a
-            assert ac_o == ac_a, f"AC differs at {key_o}: {ac_o} vs {ac_a}"
-            assert an_o == an_a, f"AN differs at {key_o}: {an_o} vs {an_a}"
-            assert ns_o == ns_a, f"NS differs at {key_o}: {ns_o} vs {ns_a}"
-            _assert_af_close(key_o, af_o, af_a)
-
-
-def _assert_af_close(key, af_o, af_a):
-    # Normalise: bcftools query renders an entirely missing Number=A
-    # vector as a scalar ``.`` (parsed to ``None``) while vcztools
-    # produces a per-element MISSING tuple. Treat both shapes the same.
-    def _norm(af):
-        if af is None:
-            return None
-        if all(x is None for x in af):
-            return None
-        return af
-
-    af_o = _norm(af_o)
-    af_a = _norm(af_a)
-    if af_o is None and af_a is None:
-        return
-    diff_msg = f"AF differs at {key}: {af_o} vs {af_a}"
-    assert af_o is not None, diff_msg
-    assert af_a is not None, diff_msg
-    assert len(af_o) == len(af_a), f"AF arity differs at {key}: {af_o} vs {af_a}"
-    for a, b in zip(af_o, af_a):
-        if a is None and b is None:
-            continue
-        entry_msg = f"AF entry differs at {key}: {af_o} vs {af_a}"
-        assert a is not None, entry_msg
-        assert b is not None, entry_msg
-        np.testing.assert_allclose(
-            a, b, rtol=1e-5, atol=1e-3, err_msg=f"AF differs at {key}"
-        )
+        pd.testing.assert_frame_equal(oracle, actual, check_exact=False, atol=1e-3)

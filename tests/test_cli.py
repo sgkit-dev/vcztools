@@ -111,6 +111,71 @@ def test_drop_genotypes_rejects_sample_scope_filter(fx_vcz_path):
         )
 
 
+class TestExportFilterSemantics:
+    """``view-plink`` / ``view-bgen`` evaluate ``-i/-e`` filters over the
+    selected sample subset (native VczReader semantics), whereas
+    ``view`` / ``query`` follow bcftools and filter on the file's stored
+    INFO. This difference is a fixed contract (no flag); these tests pin
+    both the reader wiring and the observable effect."""
+
+    def test_make_reader_defaults_to_native(self, fx_vcz_path):
+        # Native subset-first is the default; bcftools semantics are
+        # explicitly opt-in (only ``view`` / ``query`` request them).
+        with cli.make_reader(fx_vcz_path) as reader:
+            assert reader._bcftools_semantics is False
+        with cli.make_reader(fx_vcz_path, bcftools_semantics=True) as reader:
+            assert reader._bcftools_semantics is True
+
+    def test_export_commands_build_native_reader(self, fx_vcz_path):
+        for opts in (cli.ViewPlinkOptions(), cli.ViewBgenOptions()):
+            with opts.make_reader(fx_vcz_path) as reader:
+                assert reader._bcftools_semantics is False
+
+    def test_view_and_query_opt_into_bcftools(self, fx_vcz_path):
+        # 20:1234567 has stored INFO/AC=1,1; NA00003 is ./. there, so its
+        # subset-recomputed AC is 0. ``view`` and ``query`` keep it under
+        # ``-i 'INFO/AC>0'`` because they filter on the stored INFO — the
+        # commands opt into bcftools semantics.
+        view_out, _ = run_vcztools(
+            f"view --no-version -s NA00003 -i 'INFO/AC>0' {fx_vcz_path}"
+        )
+        view_positions = [
+            line.split("\t")[1]
+            for line in view_out.splitlines()
+            if len(line) > 0 and not line.startswith("#")
+        ]
+        assert view_positions == ["1234567"]
+        query_out, _ = run_vcztools(
+            f"query -s NA00003 -f '%POS\\n' -i 'INFO/AC>0' {fx_vcz_path}"
+        )
+        assert query_out.split() == ["1234567"]
+
+    def test_native_filter_reflects_subset(self, fx_vcz_path):
+        # 20:1234567 has stored INFO/AC=1,1 but NA00003 is ./. there, so
+        # its subset-recomputed AC is 0. Native (export) semantics drop
+        # it under ``-i 'AC>0'`` and keep variants polymorphic in the
+        # subset; bcftools keeps it on the stored AC and drops the
+        # subset-polymorphic variants (whose stored AC is missing).
+        def positions(*, bcftools_semantics):
+            reader = cli.make_reader(
+                fx_vcz_path,
+                samples="NA00003",
+                include="AC>0",
+                bcftools_semantics=bcftools_semantics,
+            )
+            with reader:
+                out = []
+                for chunk in reader.variant_chunks(fields=["variant_position"]):
+                    out.extend(int(p) for p in chunk["variant_position"])
+            return out
+
+        bcftools_positions = positions(bcftools_semantics=True)
+        native_positions = positions(bcftools_semantics=False)
+        assert 1234567 in bcftools_positions
+        assert 1234567 not in native_positions
+        assert set(bcftools_positions) != set(native_positions)
+
+
 class TestFillTagsCli:
     """Parse-time UX for ``vcztools view --fill-tags``.
 

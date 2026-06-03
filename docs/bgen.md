@@ -144,6 +144,24 @@ set; their probability bytes are zeroed (the BGEN spec says these
 bytes should be ignored when the missing flag is set, but zeroing
 keeps the output deterministic).
 
+(sec-bgen-subset-filtering)=
+## Filtering over the sample subset
+
+`-i`/`-e` expression filters that reference sample-derived INFO fields
+(`AC`, `AN`, `AF`, `NS`) are evaluated **over the selected samples**. With
+a `-s`/`-S` subset, those values are recomputed for that subset rather
+than read from the file's stored (full-cohort) INFO, so
+`view-bgen -s cohort.txt -i 'AC>0'` keeps the variants polymorphic *in
+your cohort*.
+
+This is deliberately **different from `vcztools view` and `vcztools
+query`**, which follow bcftools and evaluate `-i/-e` against the original
+record's stored INFO. A BGEN fileset feeds an association analysis on the
+exported cohort, so filters should reflect that cohort, not the source
+dataset; it is also cheaper on large datasets, since only the selected
+samples are read. The allele-based filters (`-m`/`-M`/`-v`/`-V`) remain
+record-level.
+
 ## Compression level
 
 `view-bgen` zlib-compresses each variant's genotype-probability block

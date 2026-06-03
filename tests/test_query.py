@@ -12,30 +12,9 @@ from vcztools.query import (
     QueryFormatParser,
     QueryFormatter,
     _format_sample_loop_tag,
-    list_samples,
     write_query,
 )
 from vcztools.retrieval import VczReader
-
-
-def test_list_samples(fx_sample_vcz):
-    expected_output = "NA00001\nNA00002\nNA00003\n"
-    reader = VczReader(fx_sample_vcz.group)
-    with StringIO() as output:
-        list_samples(reader, output)
-        assert output.getvalue() == expected_output
-
-
-def test_list_samples__missing(fx_sample_vcz):
-    mutated = vcz_builder.copy_vcz(fx_sample_vcz.group)
-    # delete sample NA00002 at index 1
-    mutated["sample_id"][1] = ""
-
-    reader = VczReader(mutated)
-    expected_output = "NA00001\nNA00003\n"
-    with StringIO() as output:
-        list_samples(reader, output)
-        assert output.getvalue() == expected_output
 
 
 class TestQueryFormatParser:

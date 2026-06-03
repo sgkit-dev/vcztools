@@ -7,12 +7,6 @@ import pyparsing as pp
 from vcztools import utils
 
 
-def list_samples(reader, output):
-    sample_ids = reader.raw_sample_ids
-    # don't show missing samples
-    print("\n".join(sample_ids[sample_ids != ""]), file=output)
-
-
 def _format_vector(value):
     """Render a 1-D fill-padded numeric vector as a list of strings.
 

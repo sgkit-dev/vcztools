@@ -1089,7 +1089,7 @@ vcz_compute_ac_an(size_t num_variants, size_t num_samples, size_t ploidy,
     for (j = 0; j < num_variants; j++) {
         na_j = num_alleles[j];
         if (na_j < 1) {
-            ret = VCZ_ERR_INVALID_GENOTYPE;
+            ret = VCZ_ERR_INVALID_NUM_ALLELES;
             goto out;
         }
         num_alt_j = (size_t) na_j - 1;

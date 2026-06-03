@@ -966,7 +966,7 @@ test_encode_plink_all_zeros(void)
 }
 
 static void
-test_compute_ac_an_basic(void)
+test_compute_ac_an_ploidy2(void)
 {
     /* Diploid storage with mixed ploidy realised via VCZ_INT_FILL in the
      * trailing slot of haploid samples. The per-variant num_alleles
@@ -1032,7 +1032,7 @@ static void
 test_compute_ac_an_an_only(void)
 {
     /* AN-only mode: max_num_alt=0, ac_out is untouched. Same realistic
-     * mixed-ploidy genotypes as test_compute_ac_an_basic. */
+     * mixed-ploidy genotypes as test_compute_ac_an_ploidy2. */
     const size_t num_variants = 5;
     const size_t num_samples = 3;
     const size_t ploidy = 2;
@@ -1175,6 +1175,30 @@ test_compute_ac_an_invalid_genotype(void)
     ret = vcz_compute_ac_an(
         1, num_samples, ploidy, max_num_alt, num_alleles_1, gt_ref_only, ac_buf, an_buf);
     CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_INVALID_GENOTYPE);
+}
+
+static void
+test_compute_ac_an_invalid_num_alleles(void)
+{
+    /* num_alleles[j] < 1 is rejected with VCZ_ERR_INVALID_NUM_ALLELES,
+     * distinct from the out-of-range genotype error. */
+    const size_t num_samples = 1;
+    const size_t ploidy = 2;
+    const size_t max_num_alt = 2;
+    int32_t num_alleles_zero[] = { 0 };
+    int32_t num_alleles_negative[] = { -1 };
+    int8_t genotypes[] = { 0, 0 };
+    int32_t ac_buf[2];
+    int32_t an_buf[1];
+    int ret;
+
+    ret = vcz_compute_ac_an(1, num_samples, ploidy, max_num_alt, num_alleles_zero,
+        genotypes, ac_buf, an_buf);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_INVALID_NUM_ALLELES);
+
+    ret = vcz_compute_ac_an(1, num_samples, ploidy, max_num_alt, num_alleles_negative,
+        genotypes, ac_buf, an_buf);
+    CU_ASSERT_EQUAL_FATAL(ret, VCZ_ERR_INVALID_NUM_ALLELES);
 }
 
 static void
@@ -2339,11 +2363,13 @@ main(int argc, char **argv)
         { "test_encode_plink_single_genotype", test_encode_plink_single_genotype },
         { "test_encode_plink_example", test_encode_plink_example },
         { "test_encode_plink_all_zeros", test_encode_plink_all_zeros },
-        { "test_compute_ac_an_basic", test_compute_ac_an_basic },
+        { "test_compute_ac_an_ploidy2", test_compute_ac_an_ploidy2 },
         { "test_compute_ac_an_an_only", test_compute_ac_an_an_only },
         { "test_compute_ac_an_ploidy1", test_compute_ac_an_ploidy1 },
         { "test_compute_ac_an_ploidy3", test_compute_ac_an_ploidy3 },
         { "test_compute_ac_an_invalid_genotype", test_compute_ac_an_invalid_genotype },
+        { "test_compute_ac_an_invalid_num_alleles",
+            test_compute_ac_an_invalid_num_alleles },
         { "test_compute_ac_an_zero_variants", test_compute_ac_an_zero_variants },
         { "test_bgen_geno_blocks_single_sample_diploid_unphased",
             test_bgen_geno_blocks_single_sample_diploid_unphased },

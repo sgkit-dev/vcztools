@@ -736,7 +736,7 @@ class TestComputeAcAn:
         )
 
     def test_example(self):
-        # Mirrors the C-level test_compute_ac_an_basic CUnit test.
+        # Mirrors the C-level test_compute_ac_an_ploidy2 CUnit test.
         G = np.array(
             [
                 [[0, 0], [0, 1], [1, 1]],
@@ -802,10 +802,11 @@ class TestComputeAcAn:
         with pytest.raises(ValueError, match="outside accepted range"):
             _vcztools.compute_ac_an(G, num_alleles, self._ac(1, 1), self._an(1))
 
-    def test_num_alleles_zero_raises(self):
+    @pytest.mark.parametrize("num_alleles_value", [0, -1])
+    def test_num_alleles_below_one_raises(self, num_alleles_value):
         G = np.array([[[0, 0]]], dtype=np.int8)
-        num_alleles = np.array([0], dtype=np.int32)
-        with pytest.raises(ValueError, match="outside accepted range"):
+        num_alleles = np.array([num_alleles_value], dtype=np.int32)
+        with pytest.raises(ValueError, match="num_alleles values must be >= 1"):
             _vcztools.compute_ac_an(G, num_alleles, self._ac(1, 0), self._an(1))
 
 

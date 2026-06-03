@@ -40,6 +40,7 @@
 #define VCZ_ERR_BUFFER_OVERFLOW       (-101)
 #define VCZ_ERR_VARIANT_OUT_OF_BOUNDS (-102)
 #define VCZ_ERR_INVALID_GENOTYPE      (-103)
+#define VCZ_ERR_INVALID_NUM_ALLELES   (-104)
 
 /* Built-in-limitations */
 #define VCZ_ERR_FIELD_NAME_TOO_LONG           (-201)
@@ -131,7 +132,8 @@ int vcz_encode_plink(
  * holding VCZ_INT_MISSING (-1) or VCZ_INT_FILL (-2) are excluded from
  * both AC and AN. Values v with 0 < v < num_alleles[j] increment
  * ac_out[j*max_num_alt + (v-1)]. Any value outside the accepted range
- * causes VCZ_ERR_INVALID_GENOTYPE to be returned. AC cells beyond
+ * causes VCZ_ERR_INVALID_GENOTYPE to be returned; num_alleles[j] < 1
+ * causes VCZ_ERR_INVALID_NUM_ALLELES. AC cells beyond
  * num_alleles[j]-1 within each row are filled with VCZ_INT_FILL.
  * max_num_alt is the trailing dimension of ac_out; pass 0 to compute
  * AN only (ac_out is then untouched). */

@@ -1002,6 +1002,10 @@ vcztools_compute_ac_an(PyObject *self, PyObject *args)
             PyExc_ValueError, "genotype value outside accepted range [-2, num_alleles)");
         goto out;
     }
+    if (kernel_ret == VCZ_ERR_INVALID_NUM_ALLELES) {
+        PyErr_SetString(PyExc_ValueError, "num_alleles values must be >= 1");
+        goto out;
+    }
     if (kernel_ret != 0) {
         PyErr_Format(
             PyExc_RuntimeError, "vcz_compute_ac_an failed with code %d", kernel_ret);

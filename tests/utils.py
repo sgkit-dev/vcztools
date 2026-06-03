@@ -53,8 +53,9 @@ def make_reader(
         )
         reader.set_variants(variant_chunk_plan)
 
-    if view_semantics:
-        reader.set_filter_samples(reader.non_null_sample_indices)
+    # Mirror the CLI: readers follow bcftools filter / INFO semantics,
+    # with the full pre-subset sample axis only under view semantics.
+    reader.set_bcftools_semantics(full_sample_filter=view_semantics)
 
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(

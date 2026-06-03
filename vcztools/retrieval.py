@@ -679,11 +679,11 @@ class VczReader:
       or a sorted 1-D index array). Re-callable; replaces.
     - :meth:`set_variant_filter` — per-variant filter predicate (or
       ``None`` to clear). Re-callable; replaces.
-    - :meth:`set_filter_samples` — sample axis a sample-scope filter
-      evaluates over.
+    - :meth:`set_bcftools_semantics` — opt into bcftools filter / INFO
+      evaluation semantics (see the method docstring).
 
-    :meth:`set_samples` and :meth:`set_filter_samples` are one-shot —
-    a second call raises ``RuntimeError``. ``set_samples`` also
+    :meth:`set_samples` and :meth:`set_bcftools_semantics` are one-shot
+    — a second call raises ``RuntimeError``. ``set_samples`` also
     refuses to run when ``samples_selection`` has already been
     resolved by reading the corresponding property during default
     iteration.
@@ -742,7 +742,8 @@ class VczReader:
         self._variant_chunk_plan = None
         self._samples_selection = None
         self._sample_ids = None
-        self._filter_samples = None
+        self._bcftools_semantics = False
+        self._full_sample_filter = False
         self.variant_filter = None
         # Concurrent ``variant_chunks()`` calls may both miss and both
         # write a static field here — last writer wins; both observers
@@ -839,6 +840,11 @@ class VczReader:
         ``samples_selection`` / ``sample_ids`` / ``sample_chunk_plan``).
         See :func:`vcztools.samples.resolve_sample_selection` for
         the bcftools-style name-to-index translation the CLI uses.
+
+        Selecting a proper subset makes sample-dependent virtual fields
+        (``AC``/``AN``/``AF``/``NS`` …) recompute to reflect the subset
+        on the next iteration, unless :meth:`set_bcftools_semantics` is
+        in effect. See :meth:`variant_chunks`.
         """
         if self._samples_selection is not None:
             raise RuntimeError("samples already configured")
@@ -911,13 +917,12 @@ class VczReader:
 
         ``variant_filter`` is any object implementing the
         :class:`~vcztools.variant_filter.VariantFilter` protocol, or
-        ``None`` to clear a previously-set filter. The sample axis a
-        sample-scope filter evaluates over is controlled separately
-        via :meth:`set_filter_samples`; the default axis is the user's
-        sample selection (``bcftools query`` FMT-scope post-subset
-        semantics). Call :meth:`set_filter_samples` with
-        :attr:`non_null_sample_indices` for ``bcftools view`` pre-subset
-        semantics.
+        ``None`` to clear a previously-set filter. By default a
+        sample-scope filter evaluates over the user's sample selection
+        (``bcftools query`` FMT-scope post-subset semantics). Call
+        :meth:`set_bcftools_semantics` with ``full_sample_filter=True``
+        for ``bcftools view`` pre-subset semantics, where the filter
+        evaluates over the full (pre-subset) sample axis.
 
         May be called multiple times; each call replaces the prior
         filter. A ``variant_chunks()`` generator already iterating is
@@ -971,35 +976,39 @@ class VczReader:
         self.set_variant_filter(None)
         self.set_variants(plan)
 
-    def set_filter_samples(self, filter_samples) -> None:
-        """Configure the sample axis that a sample-scope variant filter
-        evaluates over.
+    def set_bcftools_semantics(self, *, full_sample_filter: bool = False) -> None:
+        """Opt into bcftools filter / INFO evaluation semantics.
 
-        Accepts a list or 1-D integer ndarray of sample indexes. Must
-        be **sorted ascending, unique, and in range**
-        ``[0, num_samples)``. Out-of-range, unsorted, or duplicate
-        indexes raise ``ValueError``. Raises ``RuntimeError`` if
-        already configured.
+        By default the reader is *subset-first*: once :meth:`set_samples`
+        selects a sample subset, variant filters evaluate over that
+        subset and a virtual field (``AC``/``AN``/``AF``/``NS`` …)
+        resolves the same way wherever it is used, so a filter on the
+        field and its emitted value always agree.
 
-        When not called, the filter axis defaults to
-        :attr:`samples_selection`. For ``bcftools view`` pre-subset
-        semantics, pass :attr:`non_null_sample_indices`.
+        bcftools instead evaluates ``-i/-e`` filters against the file's
+        stored ``INFO`` values (a virtual field is computed for a filter
+        only when there is no stored counterpart), and recomputes
+        ``INFO`` output only as named by :meth:`variant_chunks`'
+        ``force_recompute``. Both ``bcftools view`` and ``query`` filter
+        on the stored ``INFO``; they differ only in the sample axis a
+        sample-scope (FORMAT) filter sees, set by ``full_sample_filter``:
+        ``False`` (default, ``bcftools query``) uses the user's subset;
+        ``True`` (``bcftools view``) evaluates over the full (pre-subset)
+        non-null sample set, then subsets for output.
+
+        One-shot: a second call raises ``RuntimeError``.
         """
-        if self._filter_samples is not None:
-            raise RuntimeError("filter_samples already configured")
-        self._filter_samples = self._normalize_sample_indexes(
-            filter_samples, label="filter_samples", sorted_unique=True
-        )
-        logger.debug(f"set_filter_samples: {self._filter_samples.size} samples")
+        if self._bcftools_semantics:
+            raise RuntimeError("bcftools semantics already configured")
+        self._bcftools_semantics = True
+        self._full_sample_filter = full_sample_filter
+        logger.debug(f"set_bcftools_semantics: full_sample_filter={full_sample_filter}")
 
-    def _normalize_sample_indexes(
-        self, value, *, label: str, sorted_unique: bool = False
-    ) -> np.ndarray:
+    def _normalize_sample_indexes(self, value, *, label: str) -> np.ndarray:
         """Validate and convert a sample-index input to a 1-D int64 ndarray.
 
         Checks input type (via :func:`_validate_samples_input`) and that
-        every index is in ``[0, num_samples)``. When ``sorted_unique=True``,
-        also requires strictly ascending order. ``label`` is interpolated
+        every index is in ``[0, num_samples)``. ``label`` is interpolated
         into error messages.
         """
         _validate_samples_input(value)
@@ -1014,20 +1023,18 @@ class VczReader:
                 raise ValueError(
                     f"{label} index out of range: must be in [0, {raw_size})"
                 )
-            if sorted_unique and np.any(np.diff(arr) <= 0):
-                raise ValueError(f"{label} must be sorted ascending and unique")
         return arr
 
     @property
     def filter_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
-        """Chunk plan for reading the filter sample axis. When
-        :meth:`set_filter_samples` has not been called this is the
-        same as :attr:`sample_chunk_plan`; otherwise it is built
-        fresh from the configured filter samples."""
-        if self._filter_samples is None:
+        """Chunk plan for reading the filter sample axis. This matches
+        :attr:`sample_chunk_plan` unless :meth:`set_bcftools_semantics`
+        enabled ``full_sample_filter``, in which case it is built from
+        the full (pre-subset) non-null sample set."""
+        if not self._full_sample_filter:
             return self.sample_chunk_plan
         return samples_mod.build_chunk_plan(
-            self._filter_samples,
+            self.non_null_sample_indices,
             samples_chunk_size=self.samples_chunk_size,
         )
 
@@ -1238,14 +1245,23 @@ class VczReader:
         iterates the full plan. ``start >= len(variant_chunk_plan)``
         yields no chunks. Negative ``start`` raises ``ValueError``.
 
-        ``force_recompute`` controls how virtual fields (see
-        :attr:`virtual_field_names`) resolve when a same-named stored
-        array also exists. ``False`` (default): if the field is in the
-        store, return the stored value; otherwise compute. ``True``:
-        every requested field that is virtual is recomputed, ignoring
-        any stored value. Iterable of field names: only the listed
-        virtual fields are recomputed. Virtual fields that don't have
-        a stored counterpart are always computed regardless.
+        ``force_recompute`` forces recomputation of virtual fields (see
+        :attr:`virtual_field_names`) that have a same-named stored array.
+        ``True`` recomputes every requested virtual field; an iterable
+        scopes it to the named fields; ``False`` (default) forces none.
+        A virtual field with no stored counterpart is always computed.
+
+        In the default (subset-first) mode a virtual field is also
+        recomputed — even with ``force_recompute=False`` — when a sample
+        subset is active and the field is sample-dependent (``AC``,
+        ``AN``, ``AF``, ``NS``, ``N_MISSING``, ``F_MISSING``), so its
+        value reflects the subset rather than the stale full-file
+        value. Filter and output resolve a field identically, so a
+        filter on the field and its emitted value always agree. There is
+        no "stored value verbatim under a subset" in this mode; use
+        :meth:`set_bcftools_semantics` for that, where the filter reads
+        the stored ``INFO`` and only ``force_recompute`` drives output
+        recompute.
 
         The per-chunk flow:
 
@@ -1318,21 +1334,21 @@ class VczReader:
         filter_fields = frozenset(
             variant_filter.referenced_fields if variant_filter is not None else ()
         )
-        if self._filter_samples is None:
-            # Default: filter axis IS the subset axis. Covers non-empty
-            # subsets, the no-subset default, and ``--drop-genotypes``
-            # (empty subset collapses to an empty plan — no reads,
-            # zero-column call_* output via
+        if not self._full_sample_filter:
+            # Filter axis IS the subset axis. Covers non-empty subsets,
+            # the no-subset default, and ``--drop-genotypes`` (empty
+            # subset collapses to an empty plan — no reads, zero-column
+            # call_* output via
             # CachedLogicalVariantsChunk._empty_call_array).
             sample_chunk_plan = self.sample_chunk_plan
             output_columns = None
         else:
-            # "bcftools view" mode: filter axis differs from subset. Read
-            # on the filter axis; remap columns to produce the subset
-            # output. Assumes ``samples_selection`` ⊆ ``filter_samples``.
+            # "bcftools view" mode: filter axis is the full (pre-subset)
+            # non-null sample set. Read on that axis; remap columns to
+            # produce the subset output.
             sample_chunk_plan = self.filter_sample_chunk_plan
             output_columns = np.searchsorted(
-                self._filter_samples, self.samples_selection
+                self.non_null_sample_indices, self.samples_selection
             )
 
         # Split referenced fields into static (read once on the reader)
@@ -1341,35 +1357,61 @@ class VczReader:
         # Zarr-backed split; they are emitted directly from per-chunk
         # plan state.
         #
-        # Virtual fields go through the registry. Filter and output
-        # paths resolve them with different rules, matching bcftools:
+        # Virtual fields go through the registry. How a field resolves
+        # (stored array vs registry compute) depends on the mode.
         #
-        # * Filter context: always read the stored array when it
-        #   exists; only fall back to the registry when there is no
-        #   stored counterpart. This preserves bcftools' rule that
-        #   ``-i INFO/AC>10`` evaluates against the file's INFO column,
-        #   unaffected by whatever recompute the user has requested.
-        # * Output context: read the stored array unless
-        #   ``force_recompute`` names the field, in which case the
-        #   registry's compute wins. ``force_recompute=True`` covers
-        #   every available virtual; an iterable scopes it to a set.
+        # Default (subset-first) mode: one rule for filter and output,
+        # so a filter on a field and its emitted value always agree. A
+        # virtual field is computed when it has no stored counterpart,
+        # when ``force_recompute`` names it, or when a sample subset is
+        # active and the field is sample-dependent (its value reflects
+        # the genotypes, so the stored full-file value would be stale).
+        # Otherwise the stored array is used.
+        #
+        # bcftools mode: the two paths diverge, matching bcftools. The
+        # filter always reads the stored array when it exists (both
+        # ``view`` and ``query`` evaluate ``-i INFO/AC>10`` against the
+        # file's INFO column, unaffected by recompute); output reads the
+        # stored array unless ``force_recompute`` names the field.
         force_set = self._resolve_force_recompute(force_recompute)
+        subset_active = self.samples_selection.size > 0 and not np.array_equal(
+            self.samples_selection, self.non_null_sample_indices
+        )
 
-        def _is_virtual_for_output(name):
+        def _sample_dependent(name):
+            return "call_genotype" in self._virtual_fields[name].deps
+
+        def _is_virtual_default(name):
+            if name not in self._virtual_fields:
+                return False
+            if name not in self.root:
+                return True
+            if name in force_set:
+                return True
+            return subset_active and _sample_dependent(name)
+
+        def _is_virtual_bcftools_output(name):
             if name not in self._virtual_fields:
                 return False
             if name not in self.root:
                 return True
             return name in force_set
 
-        def _is_virtual_for_filter(name):
+        def _is_virtual_bcftools_filter(name):
             return name in self._virtual_fields and name not in self.root
 
+        if self._bcftools_semantics:
+            is_virtual_output = _is_virtual_bcftools_output
+            is_virtual_filter = _is_virtual_bcftools_filter
+        else:
+            is_virtual_output = _is_virtual_default
+            is_virtual_filter = _is_virtual_default
+
         virtual_query_fields = frozenset(
-            f for f in query_fields if _is_virtual_for_output(f)
+            f for f in query_fields if is_virtual_output(f)
         )
         virtual_filter_fields = frozenset(
-            f for f in filter_fields if _is_virtual_for_filter(f)
+            f for f in filter_fields if is_virtual_filter(f)
         )
 
         def _expand_virtual_deps(names, predicate):
@@ -1394,11 +1436,11 @@ class VczReader:
                 [
                     *real_filter_fields,
                     *_expand_virtual_deps(
-                        list(virtual_filter_fields), _is_virtual_for_filter
+                        list(virtual_filter_fields), is_virtual_filter
                     ),
                     *real_query_fields,
                     *_expand_virtual_deps(
-                        list(virtual_query_fields), _is_virtual_for_output
+                        list(virtual_query_fields), is_virtual_output
                     ),
                 ]
             )
@@ -1486,9 +1528,12 @@ class VczReader:
                 # functions may publish sibling values into it (e.g.
                 # the AC kernel pass also yields AN) so a later request
                 # for the sibling short-circuits. Virtual fields are
-                # computed on the output (subset) sample axis whether
-                # they appear in a filter expression or in the INFO
-                # column, matching bcftools' post-subset semantics.
+                # computed on the output (subset) sample axis. When the
+                # filter axis is the subset axis output_view is
+                # filter_view, so a filter and the INFO column see the
+                # same value; with full_sample_filter the non-virtual
+                # filter fields read the full pre-subset axis via
+                # filter_view.
                 virtual_cache: dict = {}
 
                 def _virtual_value(name, view_fn, cache):

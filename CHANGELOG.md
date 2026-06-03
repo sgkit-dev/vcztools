@@ -54,9 +54,25 @@ Features:
   `generate_fam`, `generate_sample`, `write_bgen_samples`, and
   `write_bgen_index` helpers; `write_plink`'s `write_bim`/`write_fam`
   boolean kwargs are renamed to `bim`/`fam`.
+- `VczReader` now has a simple default field-resolution model
+  (programmatic use): a virtual field (`AC`/`AN`/`AF`/`NS`,
+  `N_MISSING`, `F_MISSING`, `N_ALT`) resolves the same way in a filter
+  and in the output, so `-i 'AC>1'` and the emitted `INFO/AC` always
+  agree. A sample subset makes the sample-dependent virtual fields
+  recompute to reflect the subset (the stored full-file value would be
+  stale). The bcftools CLI semantics — filters evaluate against the
+  stored `INFO`, and `INFO` output is recomputed only on request — are
+  opt-in via the new `VczReader.set_bcftools_semantics()`; the `view`
+  and `query` CLI commands enable it, so CLI output is unchanged.
 
 Breaking changes:
 
+- `VczReader.set_filter_samples()` is removed. The only behaviour it
+  was used for — bcftools `view`'s pre-subset sample-scope filter axis
+  — is now reached via `set_bcftools_semantics(full_sample_filter=True)`.
+  Direct `VczReader` callers that filtered or read virtual fields under
+  a sample subset get the new default model described above unless they
+  call `set_bcftools_semantics()`.
 - `view-bgen` and `view-plink`: the `--out PREFIX` flag has been
   replaced by `-o/--output STEM`. The stem is now taken **verbatim**
   rather than going through `pathlib.with_suffix`, so `-o sample.bgen`

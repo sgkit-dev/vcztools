@@ -12,6 +12,7 @@ from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     open_file_like,
+    to_vcf_float32,
 )
 
 from . import _vcztools
@@ -207,7 +208,7 @@ class VcfWriter:
         else:
             id = np.array(["."] * num_variants, dtype="S")
         if "variant_quality" in chunk_data:
-            qual = chunk_data["variant_quality"]
+            qual = to_vcf_float32(chunk_data["variant_quality"])
         else:
             qual = np.full(num_variants, FLOAT32_MISSING, dtype=np.float32)
 
@@ -283,6 +284,8 @@ class VcfWriter:
         for name, zarray in info_fields.items():
             if zarray.dtype.kind in ("O", "U", "T"):
                 zarray = _as_fixed_length_string(zarray)
+            elif zarray.dtype.kind == "f":
+                zarray = to_vcf_float32(zarray)
             if len(zarray.shape) == 1:
                 zarray = zarray.reshape((num_variants, 1))
             zarray = np.ascontiguousarray(zarray)
@@ -292,6 +295,8 @@ class VcfWriter:
             for name, zarray in format_fields.items():
                 if zarray.dtype.kind in ("O", "U", "T"):
                     zarray = _as_fixed_length_string(zarray)
+                elif zarray.dtype.kind == "f":
+                    zarray = to_vcf_float32(zarray)
                 if len(zarray.shape) == 2:
                     zarray = zarray.reshape((num_variants, num_samples, 1))
                 zarray = np.ascontiguousarray(zarray)
@@ -343,8 +348,6 @@ def write_vcf(
     :class:`VcfWriter`; see that class for details on the per-write
     state, parallel encoding, and the resource lifecycle.
     """
-    # The C VCF encoder is float32-only; cast non-float32 float fields.
-    reader.set_cast_float32()
     with VcfWriter(
         reader,
         output,

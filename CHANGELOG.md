@@ -72,6 +72,7 @@ Features:
   stored INFO) and suits the export-to-analysis workflow — filters reflect
   the analysis cohort, and only the selected samples are read. See the
   PLINK / BGEN output documentation pages.
+- Add support for float16 and float64 data stored in Zarr (#413, #414).
 
 Breaking changes:
 

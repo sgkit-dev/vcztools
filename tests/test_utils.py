@@ -569,6 +569,34 @@ def test_as_fixed_length_unicode(dtype):
             np.array([False, False, True, True, False, False]),
         ),
         (
+            np.array(
+                [
+                    0.0,
+                    1.0,
+                    constants.FLOAT16_MISSING,
+                    constants.FLOAT16_MISSING,
+                    constants.FLOAT16_FILL,
+                    np.nan,
+                ],
+                np.float16,
+            ),
+            np.array([False, False, True, True, False, False]),
+        ),
+        (
+            np.array(
+                [
+                    0.0,
+                    1.0,
+                    constants.FLOAT64_MISSING,
+                    constants.FLOAT64_MISSING,
+                    constants.FLOAT64_FILL,
+                    np.nan,
+                ],
+                np.float64,
+            ),
+            np.array([False, False, True, True, False, False]),
+        ),
+        (
             np.array(["a", "b", STR_MISSING, STR_MISSING, STR_FILL, " "]),
             np.array([False, False, True, True, False, False]),
         ),

@@ -711,6 +711,14 @@ def _as_fixed_length_unicode(arr: np.ndarray) -> np.ndarray:
         return arr.astype(f"U{_max_len(arr)}")
 
 
+# (signed int view dtype, missing-as-int) per supported float width.
+_FLOAT_MISSING = {
+    np.dtype(np.float16): (np.int16, constants.FLOAT16_MISSING.view(np.int16)),
+    np.dtype(np.float32): (np.int32, constants.FLOAT32_MISSING_AS_INT32),
+    np.dtype(np.float64): (np.int64, constants.FLOAT64_MISSING.view(np.int64)),
+}
+
+
 # (signed int view dtype, missing-as-int, fill-as-int) per supported float width.
 _FLOAT_SENTINELS = {
     np.dtype(np.float16): (
@@ -755,7 +763,8 @@ def missing(arr: np.ndarray) -> np.ndarray:
     if arr.dtype.kind == "i":
         return arr == constants.INT_MISSING
     elif arr.dtype.kind == "f":
-        return arr.view(np.int32) == constants.FLOAT32_MISSING_AS_INT32
+        int_dtype, missing_int = _FLOAT_MISSING[arr.dtype]
+        return arr.view(int_dtype) == missing_int
     elif arr.dtype.kind in ("O", "U", "T"):
         return arr == constants.STR_MISSING
     elif arr.dtype.kind == "b":

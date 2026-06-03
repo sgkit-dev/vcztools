@@ -63,7 +63,15 @@ Features:
   stale). The bcftools CLI semantics — filters evaluate against the
   stored `INFO`, and `INFO` output is recomputed only on request — are
   opt-in via the new `VczReader.set_bcftools_semantics()`; the `view`
-  and `query` CLI commands enable it, so CLI output is unchanged.
+  and `query` CLI commands enable it, so their output is unchanged.
+- `vcztools view-plink` and `view-bgen` evaluate `-i/-e` filters over the
+  selected sample subset (native `VczReader` semantics): with a `-s`/`-S`
+  subset, `AC`/`AN`/`AF`/`NS` in a filter expression are recomputed for
+  that subset instead of read from the file's stored (full-cohort) INFO.
+  This differs from `view`/`query` (which follow bcftools and filter on
+  stored INFO) and suits the export-to-analysis workflow — filters reflect
+  the analysis cohort, and only the selected samples are read. See the
+  PLINK / BGEN output documentation pages.
 
 Breaking changes:
 

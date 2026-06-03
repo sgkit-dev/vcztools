@@ -546,6 +546,7 @@ def make_reader(
     min_alleles=None,
     max_alleles=None,
     view_semantics=False,
+    bcftools_semantics=False,
     force_samples=False,
     drop_genotypes=False,
     backend_storage=None,
@@ -661,10 +662,15 @@ def make_reader(
         )
         reader.set_variants(variant_chunk_plan)
 
-    # Every CLI-built reader follows bcftools filter / INFO semantics
-    # (filters read the stored INFO). ``view`` additionally evaluates
-    # sample-scope filters over the full pre-subset sample axis.
-    reader.set_bcftools_semantics(full_sample_filter=view_semantics)
+    # Native subset-first semantics are the default (filters evaluate
+    # over the selected sample subset). ``view`` and ``query`` opt into
+    # bcftools filter / INFO semantics (filters read the stored INFO) by
+    # passing bcftools_semantics=True; ``view`` additionally sets
+    # full_sample_filter so sample-scope filters use the full pre-subset
+    # sample axis. The export commands (view-plink / view-bgen) keep the
+    # native default.
+    if bcftools_semantics:
+        reader.set_bcftools_semantics(full_sample_filter=view_semantics)
 
     if variant_filter is not None:
         reader.set_variant_filter(variant_filter)
@@ -893,12 +899,17 @@ class ViewPlinkOptions:
 
     def make_reader(self, path: str) -> retrieval.VczReader:
         """Open ``path`` as a :class:`VczReader` configured with this
-        bundle's Selection / Zarr store / Reader options."""
+        bundle's Selection / Zarr store / Reader options.
+
+        Uses native subset-first semantics (``bcftools_semantics=False``):
+        ``-i/-e`` filters evaluate over the selected sample subset, unlike
+        ``view`` / ``query``. See the command help for the rationale."""
         return make_reader_from_groups(
             path,
             selection=self.selection,
             zarr_store=self.zarr_store,
             reader=self.reader,
+            bcftools_semantics=False,
         )
 
 
@@ -1060,12 +1071,17 @@ class ViewBgenOptions:
 
     def make_reader(self, path: str) -> retrieval.VczReader:
         """Open ``path`` as a :class:`VczReader` configured with this
-        bundle's Selection / Zarr store / Reader options."""
+        bundle's Selection / Zarr store / Reader options.
+
+        Uses native subset-first semantics (``bcftools_semantics=False``):
+        ``-i/-e`` filters evaluate over the selected sample subset, unlike
+        ``view`` / ``query``. See the command help for the rationale."""
         return make_reader_from_groups(
             path,
             selection=self.selection,
             zarr_store=self.zarr_store,
             reader=self.reader,
+            bcftools_semantics=False,
         )
 
 
@@ -1076,6 +1092,7 @@ def make_reader_from_groups(
     zarr_store: ZarrStoreOptions | None = None,
     reader: ReaderOptions | None = None,
     view_semantics: bool = False,
+    bcftools_semantics: bool = False,
     drop_genotypes: bool = False,
 ) -> retrieval.VczReader:
     """Construct a :class:`VczReader` from the category-aligned option
@@ -1090,6 +1107,7 @@ def make_reader_from_groups(
     return make_reader(
         path,
         view_semantics=view_semantics,
+        bcftools_semantics=bcftools_semantics,
         drop_genotypes=drop_genotypes,
         **dataclasses.asdict(selection),
         **dataclasses.asdict(zarr_store),
@@ -1226,6 +1244,7 @@ def query(
         selection=selection,
         zarr_store=zarr_store,
         reader=reader_opts,
+        bcftools_semantics=True,
     )
     with reader, handle_broken_pipe(output):
         query_module.write_query(
@@ -1348,6 +1367,7 @@ def view(
         zarr_store=zarr_store,
         reader=reader_opts,
         view_semantics=True,
+        bcftools_semantics=True,
         drop_genotypes=drop_genotypes,
     )
     with reader, handle_broken_pipe(output):
@@ -1385,10 +1405,18 @@ def view_plink(path, output, **kwargs):
 
     A1=ALT, A2=REF (plink 2's convention); the .bed payload is
     byte-identical to ``plink2 --vcf X --make-bed`` for biallelic
-    variants. Sample/region/filter selection mirrors bcftools view
-    (-s/-S/-r/-R/-t/-T/-i/-e/-v/-V/-m/-M). Multi-allelic variants
-    are rejected by default; pass ``-M 2`` (or ``--max-alleles 2``)
-    to skip them, matching ``plink2 --vcf X --max-alleles 2 --make-bed``.
+    variants. Sample/region selection mirrors bcftools view
+    (-s/-S/-r/-R/-t/-T/-v/-V/-m/-M). Multi-allelic variants are
+    rejected by default; pass ``-M 2`` (or ``--max-alleles 2``) to
+    skip them, matching ``plink2 --vcf X --max-alleles 2 --make-bed``.
+
+    Unlike ``vcztools view`` / ``query``, ``-i/-e`` filters are
+    evaluated over the *selected* samples: with a ``-s``/``-S`` subset,
+    AC/AN/AF/NS in a filter expression are recomputed for that subset
+    rather than read from the file's stored (full-cohort) INFO. This
+    matches how a PLINK fileset is used downstream — filtered over the
+    analysis cohort, not the source cohort. See the "PLINK 1 binary
+    output" documentation page.
 
     See the "PLINK 1 binary output" documentation page for the full
     reference, including how to read this output with plink 1.9
@@ -1472,10 +1500,17 @@ def view_bgen(
     exactly at 8-bit). Phase is propagated per-variant from
     ``call_genotype_phased`` if present; pass ``--unphased`` to force
     every variant unphased (required for qctool's ``-snp-stats``).
-    Sample/region/filter selection mirrors bcftools view
-    (-s/-S/-r/-R/-t/-T/-i/-e/-v/-V/-m/-M). Multi-allelic variants are
+    Sample/region selection mirrors bcftools view
+    (-s/-S/-r/-R/-t/-T/-v/-V/-m/-M). Multi-allelic variants are
     rejected by default; pass ``-M 2`` (or ``--max-alleles 2``) to skip
     them.
+
+    Unlike ``vcztools view`` / ``query``, ``-i/-e`` filters are
+    evaluated over the *selected* samples: with a ``-s``/``-S`` subset,
+    AC/AN/AF/NS in a filter expression are recomputed for that subset
+    rather than read from the file's stored (full-cohort) INFO, matching
+    how a BGEN fileset is used downstream (filtered over the analysis
+    cohort, not the source cohort).
 
     See the "BGEN output" documentation page for the full reference,
     including downstream-tool compatibility (REGENIE, SAIGE,

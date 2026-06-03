@@ -1233,7 +1233,7 @@ def query(
             storage_options=zarr_store.storage_options,
         )
         with retrieval.VczReader(root) as reader, handle_broken_pipe(output):
-            query_module.list_samples(reader, output)
+            print("\n".join(reader.sample_ids), file=output)
         return
 
     if format is None:

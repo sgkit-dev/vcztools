@@ -256,6 +256,8 @@ def write_query(
     if "\\n" not in query_format and not disable_automatic_newline:
         query_format = query_format + "\\n"
 
+    # Float formatting goes through utils.missing, which needs float32.
+    reader.set_cast_float32()
     formatter = QueryFormatter(query_format, reader)
 
     for variant in reader.variants():

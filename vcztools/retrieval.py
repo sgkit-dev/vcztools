@@ -284,6 +284,7 @@ class StreamReader:
         readahead_bytes: int,
         executor: cf.ThreadPoolExecutor,
         stream_chunk_size: int,
+        cast_float32: bool = False,
     ):
         self.root = root
         self._stream_plan = stream_plan
@@ -292,6 +293,7 @@ class StreamReader:
         self._executor = executor
         self._readahead_bytes = readahead_bytes
         self._stream_chunk_size = stream_chunk_size
+        self._cast_float32 = cast_float32
         self._field_specs = _make_field_specs(root, read_fields, stream_chunk_size)
         # block_key -> (Future, size_estimate).
         self._live: dict[tuple, tuple[cf.Future, int]] = {}
@@ -445,6 +447,7 @@ class StreamReader:
                     output_columns=self._output_columns,
                     blocks=blocks,
                     stream_chunk_size=self._stream_chunk_size,
+                    cast_float32=self._cast_float32,
                 )
                 current_keys = {rec.block_key for rec in records}
                 if sc_idx + 1 < len(self._stream_plan):
@@ -514,6 +517,7 @@ class CachedLogicalVariantsChunk:
         output_columns: np.ndarray | None,
         blocks: dict[tuple, np.ndarray],
         stream_chunk_size: int,
+        cast_float32: bool = False,
     ):
         self.root = root
         self.variant_chunk = variant_chunk
@@ -521,6 +525,7 @@ class CachedLogicalVariantsChunk:
         self._output_columns = output_columns
         self._blocks = blocks
         self._stream_chunk_size = stream_chunk_size
+        self._cast_float32 = cast_float32
         # Assembled read-axis arrays keyed by field.
         self._views: dict[str, np.ndarray] = {}
 
@@ -566,7 +571,7 @@ class CachedLogicalVariantsChunk:
         # a copy so each chunk's StringDType array has its own arena.
         if result.dtype.kind == "T" and not result.flags.owndata:
             result = result.copy()
-        if result.dtype.kind == "f" and result.dtype != np.float32:
+        if self._cast_float32 and result.dtype.kind == "f":
             result = utils.to_vcf_float32(result)
         return result
 
@@ -746,6 +751,7 @@ class VczReader:
         self._sample_ids = None
         self._bcftools_semantics = False
         self._full_sample_filter = False
+        self._cast_float32 = False
         self.variant_filter = None
         # Concurrent ``variant_chunks()`` calls may both miss and both
         # write a static field here — last writer wins; both observers
@@ -766,6 +772,15 @@ class VczReader:
     def __exit__(self, exc_type, exc_value, traceback):
         self._executor.shutdown(wait=True)
         return False
+
+    def set_cast_float32(self, enabled: bool = True) -> None:
+        """Cast float fields to canonical float32 at materialisation.
+
+        The VCF text encoders require float32; other clients reading via
+        :meth:`variant_chunks` / :meth:`variants` get stored float widths
+        unchanged (disabled by default). See :func:`vcztools.utils.to_vcf_float32`.
+        """
+        self._cast_float32 = enabled
 
     def _load_static_field(self, name: str) -> np.ndarray:
         """Read a static (no variants axis) field once and cache it on
@@ -1494,6 +1509,7 @@ class VczReader:
             readahead_bytes=readahead_bytes,
             executor=self._executor,
             stream_chunk_size=stream_chunk_size,
+            cast_float32=self._cast_float32,
         )
         chunks_visited = 0
         chunks_yielded = 0

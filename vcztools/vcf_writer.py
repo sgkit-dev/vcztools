@@ -343,6 +343,8 @@ def write_vcf(
     :class:`VcfWriter`; see that class for details on the per-write
     state, parallel encoding, and the resource lifecycle.
     """
+    # The C VCF encoder is float32-only; cast non-float32 float fields.
+    reader.set_cast_float32()
     with VcfWriter(
         reader,
         output,

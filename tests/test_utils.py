@@ -28,11 +28,13 @@ from vcztools.utils import (
     _as_fixed_length_string,
     _as_fixed_length_unicode,
     array_memory_bytes,
-    missing,
+    is_fill,
+    is_missing,
     normalise_local_selection,
     open_zarr,
     search,
     to_vcf_float32,
+    trim_fill,
     vcf_name_to_vcz_names,
 )
 
@@ -607,12 +609,108 @@ def test_as_fixed_length_unicode(dtype):
     ],
 )
 def test_missing(arr, expected_missing):
-    assert_array_equal(missing(arr), expected_missing)
+    assert_array_equal(is_missing(arr), expected_missing)
 
 
 def test_missing__failure():
     with pytest.raises(ValueError, match="unrecognised dtype"):
-        missing(np.array([1, 2], dtype=np.complex64))
+        is_missing(np.array([1, 2], dtype=np.complex64))
+
+
+class TestIsFill:
+    """``is_fill`` flags end-of-vector sentinels across dtypes; flag
+    (boolean) fields have no fill so the mask is all-False."""
+
+    @pytest.mark.parametrize(
+        ("arr", "expected_fill"),
+        [
+            (
+                np.array([0, 1, INT_FILL, INT_MISSING, INT_FILL, 2], np.int32),
+                np.array([False, False, True, False, True, False]),
+            ),
+            (
+                np.array(
+                    [0.0, 1.0, FLOAT32_FILL, FLOAT32_MISSING, FLOAT32_FILL, np.nan],
+                    np.float32,
+                ),
+                np.array([False, False, True, False, True, False]),
+            ),
+            (
+                np.array(
+                    [
+                        0.0,
+                        constants.FLOAT16_FILL,
+                        constants.FLOAT16_MISSING,
+                        constants.FLOAT16_FILL,
+                    ],
+                    np.float16,
+                ),
+                np.array([False, True, False, True]),
+            ),
+            (
+                np.array(
+                    [
+                        0.0,
+                        constants.FLOAT64_FILL,
+                        constants.FLOAT64_MISSING,
+                        constants.FLOAT64_FILL,
+                    ],
+                    np.float64,
+                ),
+                np.array([False, True, False, True]),
+            ),
+            (
+                np.array(["a", STR_FILL, STR_MISSING, STR_FILL]),
+                np.array([False, True, False, True]),
+            ),
+            (
+                np.array([True, False, True, False]),
+                np.array([False, False, False, False]),
+            ),
+        ],
+    )
+    def test_is_fill(self, arr, expected_fill):
+        assert_array_equal(is_fill(arr), expected_fill)
+
+    def test_unrecognised_dtype(self):
+        with pytest.raises(ValueError, match="unrecognised dtype"):
+            is_fill(np.array([1, 2], dtype=np.complex64))
+
+
+class TestTrimFill:
+    """``trim_fill`` drops trailing fill from a 1-D array, keeping
+    interior values; an all-fill array trims to empty."""
+
+    @pytest.mark.parametrize(
+        ("arr", "expected"),
+        [
+            (np.array([1, 2, INT_FILL, INT_FILL], np.int32), [1, 2]),
+            (np.array([1, INT_FILL, 2], np.int32), [1, INT_FILL, 2]),
+            (np.array([1, 2, 3], np.int32), [1, 2, 3]),
+            (np.array([INT_FILL, INT_FILL], np.int32), []),
+            (np.array([1, INT_MISSING, INT_FILL], np.int32), [1, INT_MISSING]),
+        ],
+    )
+    def test_trim_int(self, arr, expected):
+        assert_array_equal(trim_fill(arr), np.array(expected, np.int32))
+
+    @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64])
+    def test_trim_float(self, dtype):
+        fill = {
+            np.float16: constants.FLOAT16_FILL,
+            np.float32: FLOAT32_FILL,
+            np.float64: constants.FLOAT64_FILL,
+        }[dtype]
+        arr = np.array([1.5, 2.5, fill, fill], dtype=dtype)
+        assert_array_equal(trim_fill(arr), np.array([1.5, 2.5], dtype=dtype))
+
+    def test_trim_string(self):
+        arr = np.array(["a", "b", STR_FILL, STR_FILL])
+        assert_array_equal(trim_fill(arr), np.array(["a", "b"]))
+
+    def test_trim_all_fill_is_empty(self):
+        arr = np.array([INT_FILL, INT_FILL], np.int32)
+        assert trim_fill(arr).size == 0
 
 
 class TestToVcfFloat32:

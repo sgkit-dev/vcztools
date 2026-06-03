@@ -91,7 +91,7 @@ UNSUPPORTED_CALCULATED_VARIABLES = frozenset({"N_SAMPLES", "MAC", "MAF", "ILEN"}
 
 
 def _missing_mask(value):
-    # Unlike ``utils.missing`` we also mask INT_FILL (trailing padding in
+    # Unlike ``utils.is_missing`` we also mask INT_FILL (trailing padding in
     # Number=A arrays) and use np.isnan for floats so that -value still
     # registers as missing (the bit-pattern check would miss sign-flipped NaN).
     if value.dtype.kind == "i":

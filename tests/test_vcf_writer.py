@@ -717,6 +717,69 @@ class TestDtypeMatrix:
         write_vcf(reader, out, no_version=True)
         return out.getvalue()
 
+    def _rows(self, group):
+        view = self._view(VczReader(group))
+        return [line for line in view.splitlines() if not line.startswith("#")]
+
+    @staticmethod
+    def _info_value(row, key):
+        """Return the INFO value for ``key`` in a row, ``True`` for a valueless
+        flag, or ``None`` when the key is absent."""
+        for entry in row.split("\t")[7].split(";"):
+            if entry == key:
+                return True
+            if entry.startswith(f"{key}="):
+                return entry[len(key) + 1 :]
+        return None
+
+    @staticmethod
+    def _format_values(row, key):
+        """Return the per-sample values for FORMAT ``key`` in a row."""
+        columns = row.split("\t")
+        index = columns[8].split(":").index(key)
+        return [sample.split(":")[index] for sample in columns[9:]]
+
+    def test_info_int_ragged_text(self, fx_dtype_matrix):
+        # Ragged real-count cycles 3,2,1,0; trailing fill is trimmed and a
+        # zero-length row drops the INFO key entirely.
+        rows = self._rows(fx_dtype_matrix)
+        values = [self._info_value(row, "IAR") for row in rows]
+        assert values == ["0,1,2", "3,4", "6", None, "12,13,14", "15,16", "18", None]
+
+    def test_info_float_ragged_text(self, fx_dtype_matrix):
+        rows = self._rows(fx_dtype_matrix)
+        values = [self._info_value(row, "FAR") for row in rows]
+        expected = [
+            "0.5,1.5,2.5", "3.5,4.5", "6.5", None,
+            "12.5,13.5,14.5", "15.5,16.5", "18.5", None,
+        ]
+        assert values == expected
+
+    def test_info_flag_text(self, fx_dtype_matrix):
+        # Flag present on even variants (valueless), absent otherwise.
+        rows = self._rows(fx_dtype_matrix)
+        values = [self._info_value(row, "FLG") for row in rows]
+        assert values == [True, None, True, None, True, None, True, None]
+
+    def test_info_character_and_bytes_text(self, fx_dtype_matrix):
+        rows = self._rows(fx_dtype_matrix)
+        chars = [self._info_value(row, "CHR") for row in rows]
+        assert chars == ["A", "C", "G", "T", "N", "A", "C", "G"]
+        bytes_ = [self._info_value(row, "BYT") for row in rows]
+        assert bytes_ == ["b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7"]
+
+    def test_format_int_scalar_text(self, fx_dtype_matrix):
+        # FORMAT int8 scalar value is i*3 + s; the last sample of the last
+        # variant is the missing sentinel and renders ".".
+        rows = self._rows(fx_dtype_matrix)
+        values = [self._format_values(row, "IAS") for row in rows]
+        expected = [
+            ["0", "1", "2"], ["3", "4", "5"], ["6", "7", "8"], ["9", "10", "11"],
+            ["12", "13", "14"], ["15", "16", "17"], ["18", "19", "20"],
+            ["21", "22", "."],
+        ]
+        assert values == expected
+
     def test_sample_subset_parity(self, fx_dtype_matrix, fx_dtype_matrix_reference):
         samples = ["sample_2", "sample_0"]
         native = self._view(make_reader(fx_dtype_matrix, samples=samples))

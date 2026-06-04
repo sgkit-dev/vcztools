@@ -442,13 +442,70 @@ def test_write_query__include_exclude(fx_sample_vcz):
 
 
 class TestDtypeMatrixQuery:
-    """Querying the dtype / shape matrix through a reordered sample subset
-    (a FORMAT loop) renders identically at every width."""
+    """Querying the dtype / shape matrix. The explicit cases pin the rendered
+    text for individual fields; the parity case checks a reordered sample
+    subset (a FORMAT loop) renders identically at every width."""
 
     @staticmethod
     def _query(reader, query_format):
         formatter = QueryFormatter(query_format, reader)
         return "".join(formatter.format_variant(v) for v in reader.variants())
+
+    def _query_group(self, group, query_format):
+        return self._query(VczReader(group), query_format)
+
+    def test_info_int_scalar(self, fx_dtype_matrix):
+        # int8 scalar: arange values 0..6 then the missing sentinel.
+        assert (
+            self._query_group(fx_dtype_matrix, "%IAS\n") == "0\n1\n2\n3\n4\n5\n6\n.\n"
+        )
+
+    def test_info_int_fixed(self, fx_dtype_matrix):
+        # int8 fixed Number=3: every row fully populated with i*3 + j.
+        expected = (
+            "0,1,2\n3,4,5\n6,7,8\n9,10,11\n12,13,14\n15,16,17\n18,19,20\n21,22,23\n"
+        )
+        assert self._query_group(fx_dtype_matrix, "%IAF\n") == expected
+
+    def test_info_int_ragged(self, fx_dtype_matrix):
+        # int8 ragged: real-count cycles 3,2,1,0; zero-length rows render ".".
+        expected = "0,1,2\n3,4\n6\n.\n12,13,14\n15,16\n18\n.\n"
+        assert self._query_group(fx_dtype_matrix, "%IAR\n") == expected
+
+    def test_info_float_scalar(self, fx_dtype_matrix):
+        # float16 scalar: half-integers, then missing.
+        expected = "0.5\n1.5\n2.5\n3.5\n4.5\n5.5\n6.5\n.\n"
+        assert self._query_group(fx_dtype_matrix, "%FAS\n") == expected
+
+    def test_info_float_ragged(self, fx_dtype_matrix):
+        expected = "0.5,1.5,2.5\n3.5,4.5\n6.5\n.\n12.5,13.5,14.5\n15.5,16.5\n18.5\n.\n"
+        assert self._query_group(fx_dtype_matrix, "%FAR\n") == expected
+
+    def test_info_string_scalar(self, fx_dtype_matrix):
+        expected = "v0\nv1\nv2\nv3\nv4\nv5\nv6\n.\n"
+        assert self._query_group(fx_dtype_matrix, "%SAS\n") == expected
+
+    def test_info_string_ragged(self, fx_dtype_matrix):
+        expected = (
+            "v0c0,v0c1,v0c2\nv1c0,v1c1\nv2c0\n.\nv4c0,v4c1,v4c2\nv5c0,v5c1\nv6c0\n.\n"
+        )
+        assert self._query_group(fx_dtype_matrix, "%SAR\n") == expected
+
+    def test_format_int_scalar(self, fx_dtype_matrix):
+        # FORMAT int8 scalar over all three samples; the last sample of the
+        # last variant is the missing sentinel.
+        expected = (
+            "0 1 2 \n3 4 5 \n6 7 8 \n9 10 11 \n"
+            "12 13 14 \n15 16 17 \n18 19 20 \n21 22 . \n"
+        )
+        assert self._query_group(fx_dtype_matrix, "[%IAS ]\n") == expected
+
+    def test_sample_subset_explicit(self, fx_dtype_matrix):
+        # Samples reordered to (2, 0): each row is "<i*3+2> <i*3+0>"; the last
+        # variant's sample 2 is the missing sentinel.
+        reader = make_reader(fx_dtype_matrix, samples=["sample_2", "sample_0"])
+        expected = "2 0 \n5 3 \n8 6 \n11 9 \n14 12 \n17 15 \n20 18 \n. 21 \n"
+        assert self._query(reader, "[%IAS ]\n") == expected
 
     def test_sample_subset_parity(self, fx_dtype_matrix, fx_dtype_matrix_reference):
         query_format = "%POS\t[%IAS %FAR %SAR ]\n"

@@ -1413,15 +1413,9 @@ def view_plink(path, output, **kwargs):
     Unlike ``vcztools view`` / ``query``, ``-i/-e`` filters are
     evaluated over the *selected* samples: with a ``-s``/``-S`` subset,
     AC/AN/AF/NS in a filter expression are recomputed for that subset
-    rather than read from the file's stored (full-cohort) INFO. This
-    matches how a PLINK fileset is used downstream — filtered over the
-    analysis cohort, not the source cohort. See the "PLINK 1 binary
-    output" documentation page.
+    rather than read from the file's stored (full-cohort) INFO.
 
-    See the "PLINK 1 binary output" documentation page for the full
-    reference, including how to read this output with plink 1.9
-    (``--keep-allele-order``), REGENIE, BOLT-LMM, and other
-    downstream tools.
+    See the "PLINK 1 output" documentation page for details.
     """
     opts = ViewPlinkOptions.from_click_kwargs(kwargs)
     opts.log.apply()
@@ -1488,33 +1482,24 @@ def view_bgen(
     **kwargs,
 ):
     """
-    Generate Oxford BGEN output from a VCZ dataset.
+    Generate BGEN output from a VCZ dataset.
 
-    Default: stream the .bgen payload to stdout (symmetric with `view`).
+    By default stream the .bgen payload to stdout (symmetric with `view`).
     With -o STEM, write foo.bgen + foo.bgen.bgi + foo.sample; sidecars
     are individually suppressible (--no-bgi, --no-sample-file).
 
-    Output profile: layout 2, zlib-compressed, 8 bits/probability,
-    biallelic, diploid, embedded sample IDs. Hard calls in
-    ``call_genotype`` are encoded as 1.0 probabilities (round-trips
-    exactly at 8-bit). Phase is propagated per-variant from
-    ``call_genotype_phased`` if present; pass ``--unphased`` to force
-    every variant unphased (required for qctool's ``-snp-stats``).
-    Sample/region selection mirrors bcftools view
-    (-s/-S/-r/-R/-t/-T/-v/-V/-m/-M). Multi-allelic variants are
-    rejected by default; pass ``-M 2`` (or ``--max-alleles 2``) to skip
-    them.
+    Phase is propagated per-variant from ``call_genotype_phased`` if present;
+    pass ``--unphased`` to force every variant unphased . Sample/region
+    selection mirrors bcftools view (-s/-S/-r/-R/-t/-T/-v/-V/-m/-M).
+    Multi-allelic variants are rejected by default; pass ``-M 2`` (or
+    ``--max-alleles 2``) to skip them.
 
     Unlike ``vcztools view`` / ``query``, ``-i/-e`` filters are
     evaluated over the *selected* samples: with a ``-s``/``-S`` subset,
     AC/AN/AF/NS in a filter expression are recomputed for that subset
-    rather than read from the file's stored (full-cohort) INFO, matching
-    how a BGEN fileset is used downstream (filtered over the analysis
-    cohort, not the source cohort).
+    rather than read from the file's stored (full-cohort) INFO.
 
-    See the "BGEN output" documentation page for the full reference,
-    including downstream-tool compatibility (REGENIE, SAIGE,
-    BOLT-LMM, BGENIE, qctool, PLINK 2) and sidecar conventions.
+    See the "BGEN output" documentation page for details.
     """
     opts = ViewBgenOptions.from_click_kwargs(kwargs)
     opts.log.apply()

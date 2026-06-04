@@ -31,7 +31,7 @@ for more information about the VCF Zarr format.
 
 `vcztools` supports reading from a local directory, a `.zip`
 archive, or a remote object store on S3, GCS, Azure or HTTP.
-Local stores is supported directly:
+Local stores are supported directly:
 
 ```bash
 vcztools view sample.vcz       # local directory

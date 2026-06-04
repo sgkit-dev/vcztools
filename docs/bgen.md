@@ -54,7 +54,8 @@ If the VCZ store has a `call_genotype_phased` field, each variant is
 emitted as phased iff every sample is phased for that variant. (BGEN
 has a single phase flag per variant; mixed-phase variants degrade
 silently to unphased and a warning is logged.) Stores without
-`call_genotype_phased` emit unphased.
+`call_genotype_phased` emit unphased. Use `--unphased` to force
+unphased output regardless of the `call_genotype_phased` field.
 
 ### Sidecars
 

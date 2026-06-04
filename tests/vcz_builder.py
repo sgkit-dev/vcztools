@@ -12,12 +12,15 @@ the subject of the test. Parity tests still need real fixtures under
 ``tests/data/vcf``.
 """
 
+import dataclasses
 import warnings
 
 import numpy as np
 import zarr
 import zarr.codecs
 import zarr.storage
+
+from vcztools import constants
 
 _NO_COMPRESSION = [zarr.codecs.BytesCodec()]
 
@@ -553,3 +556,422 @@ def copy_vcz(
     if ploidy is not None:
         kwargs["ploidy"] = ploidy
     return make_vcz(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Systematic dtype / shape matrix fixture.
+#
+# A single in-memory store carrying every dtype the encoder branches on
+# (each supported integer and float width, String, Character and Flag) in
+# every field shape (per-variant scalar, fixed inner dimension, and ragged
+# fill-padded), across both the INFO (``variant_*``) and FORMAT (``call_*``)
+# axes. Values are derived from ``arange`` so every cell is predictable, and
+# missing / end-of-vector sentinels are woven in at known positions so the
+# trimming and missing-rendering paths are exercised for every dtype.
+#
+# Numeric values are chosen to be exactly representable at every width
+# (integers and half-integers): a ``reference=True`` store collapses each
+# integer field to int32 and each float field to float32 but keeps the same
+# values, names and sentinel positions, so its output is byte-for-byte
+# identical to the native-width store. Tests assert that equality to prove
+# the narrow widths behave like the canonical ones.
+# ---------------------------------------------------------------------------
+
+_MATRIX_NUM_VARIANTS = 8
+_MATRIX_NUM_SAMPLES = 3
+_MATRIX_FIXED_WIDTH = 3
+_MATRIX_RAGGED_WIDTH = 3
+
+_MATRIX_INT_TOKENS = {"i1": np.int8, "i2": np.int16, "i4": np.int32}
+_MATRIX_FLOAT_TOKENS = {"f2": np.float16, "f4": np.float32, "f8": np.float64}
+_MATRIX_STRING_DTYPE = np.dtypes.StringDType()
+
+# Field IDs are restricted to ``[A-Z]+`` because the query grammar only
+# recognises uppercase tag names. Each (dtype, shape) gets a three-letter ID:
+# a two-letter dtype code plus a shape suffix (S=scalar, F=fixed, R=ragged).
+# The same ID names both the INFO (``variant_*``) and FORMAT (``call_*``)
+# array, mirroring how a real field such as DP appears on both axes; query
+# resolves the bare tag to FORMAT inside ``[]`` and INFO otherwise.
+_MATRIX_TOKEN_CODE = {
+    "i1": "IA",
+    "i2": "IB",
+    "i4": "IC",
+    "f2": "FA",
+    "f4": "FB",
+    "f8": "FC",
+}
+_MATRIX_STRING_CODE = "SA"
+
+# (suffix, shape_kind, vcf_number) for the three field shapes. A ragged
+# field's VCF Number is its stored width, since the writer derives Number
+# from shape[-1]; raggedness shows only as trimmed trailing fill on output.
+_MATRIX_SHAPE_SPECS = (
+    ("S", "scalar", 1),
+    ("F", "fixed", _MATRIX_FIXED_WIDTH),
+    ("R", "ragged", _MATRIX_RAGGED_WIDTH),
+)
+
+_MATRIX_FLOAT_SENTINELS = {
+    np.dtype(np.float16): (constants.FLOAT16_MISSING, constants.FLOAT16_FILL),
+    np.dtype(np.float32): (constants.FLOAT32_MISSING, constants.FLOAT32_FILL),
+    np.dtype(np.float64): (constants.FLOAT64_MISSING, constants.FLOAT64_FILL),
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class DtypeMatrixField:
+    """Description of one field in the dtype matrix (no values)."""
+
+    vcf_id: str
+    category: str  # "INFO" or "FORMAT"
+    array_name: str  # variant_<id> or call_<id>
+    dtype: np.dtype  # native (non-reference) stored dtype
+    shape_kind: str  # "scalar", "fixed" or "ragged"
+    vcf_type: str  # Integer / Float / String / Character / Flag
+    vcf_number: object  # int (0 for Flag)
+
+
+@dataclasses.dataclass(frozen=True)
+class DtypeMatrixData:
+    """The arrays backing a dtype-matrix store."""
+
+    num_variants: int
+    num_samples: int
+    variant_contig: np.ndarray
+    variant_position: np.ndarray
+    alleles: list
+    call_genotype: np.ndarray
+    info_fields: dict
+    call_fields: dict
+
+
+def _matrix_numeric_tokens():
+    return list(_MATRIX_INT_TOKENS) + list(_MATRIX_FLOAT_TOKENS)
+
+
+def _matrix_dtype(token, reference):
+    if token in _MATRIX_INT_TOKENS:
+        return np.int32 if reference else _MATRIX_INT_TOKENS[token]
+    return np.float32 if reference else _MATRIX_FLOAT_TOKENS[token]
+
+
+def _matrix_sentinels(dtype):
+    dtype = np.dtype(dtype)
+    if dtype.kind == "i":
+        return constants.INT_MISSING, constants.INT_FILL
+    return _MATRIX_FLOAT_SENTINELS[dtype]
+
+
+def _matrix_real(dtype, n):
+    # Floats get a half-integer offset so values stay fractional and are
+    # exactly representable at every width (float16 included).
+    if np.dtype(dtype).kind == "f":
+        return n + 0.5
+    return n
+
+
+def _matrix_ragged_count(index):
+    # Cycles RAGGED_WIDTH, RAGGED_WIDTH - 1, ..., 0 so every ragged field
+    # has full rows, partially filled rows and at least one zero-length
+    # (all-missing) row.
+    period = _MATRIX_RAGGED_WIDTH + 1
+    return _MATRIX_RAGGED_WIDTH - (index % period)
+
+
+def _matrix_info_scalar(dtype):
+    missing, _ = _matrix_sentinels(dtype)
+    values = np.empty(_MATRIX_NUM_VARIANTS, dtype=dtype)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        values[i] = _matrix_real(dtype, i)
+    values[_MATRIX_NUM_VARIANTS - 1] = missing
+    return values
+
+
+def _matrix_info_fixed(dtype):
+    width = _MATRIX_FIXED_WIDTH
+    values = np.empty((_MATRIX_NUM_VARIANTS, width), dtype=dtype)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for j in range(width):
+            values[i, j] = _matrix_real(dtype, i * width + j)
+    return values
+
+
+def _matrix_info_ragged(dtype):
+    missing, fill = _matrix_sentinels(dtype)
+    width = _MATRIX_RAGGED_WIDTH
+    values = np.full((_MATRIX_NUM_VARIANTS, width), fill, dtype=dtype)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        count = _matrix_ragged_count(i)
+        if count == 0:
+            values[i, 0] = missing
+        else:
+            for j in range(count):
+                values[i, j] = _matrix_real(dtype, i * width + j)
+    return values
+
+
+def _matrix_format_scalar(dtype):
+    missing, _ = _matrix_sentinels(dtype)
+    num_samples = _MATRIX_NUM_SAMPLES
+    values = np.empty((_MATRIX_NUM_VARIANTS, num_samples), dtype=dtype)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for s in range(num_samples):
+            values[i, s] = _matrix_real(dtype, i * num_samples + s)
+    values[_MATRIX_NUM_VARIANTS - 1, num_samples - 1] = missing
+    return values
+
+
+def _matrix_format_fixed(dtype):
+    num_samples = _MATRIX_NUM_SAMPLES
+    width = _MATRIX_FIXED_WIDTH
+    values = np.empty((_MATRIX_NUM_VARIANTS, num_samples, width), dtype=dtype)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for s in range(num_samples):
+            for j in range(width):
+                values[i, s, j] = _matrix_real(dtype, (i * num_samples + s) * width + j)
+    return values
+
+
+def _matrix_format_ragged(dtype):
+    missing, fill = _matrix_sentinels(dtype)
+    num_samples = _MATRIX_NUM_SAMPLES
+    width = _MATRIX_RAGGED_WIDTH
+    values = np.full((_MATRIX_NUM_VARIANTS, num_samples, width), fill, dtype=dtype)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for s in range(num_samples):
+            count = _matrix_ragged_count(i + s)
+            if count == 0:
+                values[i, s, 0] = missing
+            else:
+                for j in range(count):
+                    base = (i * num_samples + s) * width + j
+                    values[i, s, j] = _matrix_real(dtype, base)
+    return values
+
+
+def _matrix_info_str_scalar():
+    values = np.empty(_MATRIX_NUM_VARIANTS, dtype=_MATRIX_STRING_DTYPE)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        values[i] = f"v{i}"
+    values[_MATRIX_NUM_VARIANTS - 1] = constants.STR_MISSING
+    return values
+
+
+def _matrix_info_str_fixed():
+    width = _MATRIX_FIXED_WIDTH
+    values = np.empty((_MATRIX_NUM_VARIANTS, width), dtype=_MATRIX_STRING_DTYPE)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for j in range(width):
+            values[i, j] = f"v{i}c{j}"
+    return values
+
+
+def _matrix_info_str_ragged():
+    width = _MATRIX_RAGGED_WIDTH
+    values = np.full(
+        (_MATRIX_NUM_VARIANTS, width), constants.STR_FILL, dtype=_MATRIX_STRING_DTYPE
+    )
+    for i in range(_MATRIX_NUM_VARIANTS):
+        count = _matrix_ragged_count(i)
+        if count == 0:
+            values[i, 0] = constants.STR_MISSING
+        else:
+            for j in range(count):
+                values[i, j] = f"v{i}c{j}"
+    return values
+
+
+def _matrix_format_str_scalar():
+    num_samples = _MATRIX_NUM_SAMPLES
+    values = np.empty((_MATRIX_NUM_VARIANTS, num_samples), dtype=_MATRIX_STRING_DTYPE)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for s in range(num_samples):
+            values[i, s] = f"s{i}_{s}"
+    values[_MATRIX_NUM_VARIANTS - 1, num_samples - 1] = constants.STR_MISSING
+    return values
+
+
+def _matrix_format_str_fixed():
+    num_samples = _MATRIX_NUM_SAMPLES
+    width = _MATRIX_FIXED_WIDTH
+    values = np.empty(
+        (_MATRIX_NUM_VARIANTS, num_samples, width), dtype=_MATRIX_STRING_DTYPE
+    )
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for s in range(num_samples):
+            for j in range(width):
+                values[i, s, j] = f"s{i}_{s}c{j}"
+    return values
+
+
+def _matrix_format_str_ragged():
+    num_samples = _MATRIX_NUM_SAMPLES
+    width = _MATRIX_RAGGED_WIDTH
+    values = np.full(
+        (_MATRIX_NUM_VARIANTS, num_samples, width),
+        constants.STR_FILL,
+        dtype=_MATRIX_STRING_DTYPE,
+    )
+    for i in range(_MATRIX_NUM_VARIANTS):
+        for s in range(num_samples):
+            count = _matrix_ragged_count(i + s)
+            if count == 0:
+                values[i, s, 0] = constants.STR_MISSING
+            else:
+                for j in range(count):
+                    values[i, s, j] = f"s{i}_{s}c{j}"
+    return values
+
+
+def _matrix_info_bytes_scalar():
+    values = np.empty(_MATRIX_NUM_VARIANTS, dtype="S4")
+    for i in range(_MATRIX_NUM_VARIANTS):
+        values[i] = f"b{i}"
+    return values
+
+
+def _matrix_info_char():
+    letters = "ACGTNACG"
+    values = np.empty(_MATRIX_NUM_VARIANTS, dtype="<U1")
+    for i in range(_MATRIX_NUM_VARIANTS):
+        values[i] = letters[i]
+    return values
+
+
+def _matrix_info_flag():
+    values = np.zeros(_MATRIX_NUM_VARIANTS, dtype=bool)
+    for i in range(_MATRIX_NUM_VARIANTS):
+        values[i] = i % 2 == 0
+    return values
+
+
+def dtype_matrix_arrays(reference=False):
+    """Return the arrays backing the dtype-matrix store as a
+    :class:`DtypeMatrixData`.
+
+    With ``reference=True`` every integer field is built as int32 and every
+    float field as float32; all other arrays (string, character, flag and the
+    fixed schema) are unchanged. Tests use the reference store as the
+    width-collapsed oracle the native-width store must match.
+    """
+    info_fields = {}
+    call_fields = {}
+    for token in _matrix_numeric_tokens():
+        dtype = _matrix_dtype(token, reference)
+        code = _MATRIX_TOKEN_CODE[token]
+        info_fields[f"{code}S"] = _matrix_info_scalar(dtype)
+        info_fields[f"{code}F"] = _matrix_info_fixed(dtype)
+        info_fields[f"{code}R"] = _matrix_info_ragged(dtype)
+        call_fields[f"{code}S"] = _matrix_format_scalar(dtype)
+        call_fields[f"{code}F"] = _matrix_format_fixed(dtype)
+        call_fields[f"{code}R"] = _matrix_format_ragged(dtype)
+
+    code = _MATRIX_STRING_CODE
+    info_fields[f"{code}S"] = _matrix_info_str_scalar()
+    info_fields[f"{code}F"] = _matrix_info_str_fixed()
+    info_fields[f"{code}R"] = _matrix_info_str_ragged()
+    call_fields[f"{code}S"] = _matrix_format_str_scalar()
+    call_fields[f"{code}F"] = _matrix_format_str_fixed()
+    call_fields[f"{code}R"] = _matrix_format_str_ragged()
+
+    info_fields["BYT"] = _matrix_info_bytes_scalar()
+    info_fields["CHR"] = _matrix_info_char()
+    info_fields["FLG"] = _matrix_info_flag()
+
+    num_variants = _MATRIX_NUM_VARIANTS
+    num_samples = _MATRIX_NUM_SAMPLES
+    variant_contig = np.zeros(num_variants, dtype=np.int32)
+    variant_position = (np.arange(num_variants, dtype=np.int32) + 1) * 10
+    alleles = [["A", "C"] for _ in range(num_variants)]
+    call_genotype = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
+    return DtypeMatrixData(
+        num_variants=num_variants,
+        num_samples=num_samples,
+        variant_contig=variant_contig,
+        variant_position=variant_position,
+        alleles=alleles,
+        call_genotype=call_genotype,
+        info_fields=info_fields,
+        call_fields=call_fields,
+    )
+
+
+def _matrix_axis_pair(code, suffix, dtype, shape_kind, vcf_type, number):
+    vcf_id = f"{code}{suffix}"
+    info = DtypeMatrixField(
+        vcf_id, "INFO", f"variant_{vcf_id}", dtype, shape_kind, vcf_type, number
+    )
+    call = DtypeMatrixField(
+        vcf_id, "FORMAT", f"call_{vcf_id}", dtype, shape_kind, vcf_type, number
+    )
+    return info, call
+
+
+def dtype_matrix_fields():
+    """Return the :class:`DtypeMatrixField` manifest in store order.
+
+    Numeric and StringDType fields appear twice — once as INFO and once as
+    FORMAT under the same ``vcf_id`` — while the bytes, character and flag
+    fields are INFO only.
+    """
+    fields = []
+    for token in _matrix_numeric_tokens():
+        dtype = np.dtype(_matrix_dtype(token, reference=False))
+        vcf_type = "Integer" if dtype.kind == "i" else "Float"
+        code = _MATRIX_TOKEN_CODE[token]
+        for suffix, shape_kind, number in _MATRIX_SHAPE_SPECS:
+            info, call = _matrix_axis_pair(
+                code, suffix, dtype, shape_kind, vcf_type, number
+            )
+            fields.append(info)
+            fields.append(call)
+
+    str_dtype = np.dtype(_MATRIX_STRING_DTYPE)
+    for suffix, shape_kind, number in _MATRIX_SHAPE_SPECS:
+        info, call = _matrix_axis_pair(
+            _MATRIX_STRING_CODE, suffix, str_dtype, shape_kind, "String", number
+        )
+        fields.append(info)
+        fields.append(call)
+
+    fields.append(
+        DtypeMatrixField(
+            "BYT", "INFO", "variant_BYT", np.dtype("S4"), "scalar", "String", 1
+        )
+    )
+    fields.append(
+        DtypeMatrixField(
+            "CHR", "INFO", "variant_CHR", np.dtype("<U1"), "scalar", "Character", 1
+        )
+    )
+    fields.append(
+        DtypeMatrixField(
+            "FLG", "INFO", "variant_FLG", np.dtype(bool), "scalar", "Flag", 0
+        )
+    )
+    return fields
+
+
+def make_dtype_matrix(
+    *, reference=False, variants_chunk_size=3, samples_chunk_size=2, **kwargs
+):
+    """Build the systematic dtype / shape matrix store in memory.
+
+    See :func:`dtype_matrix_arrays` for the value scheme and the meaning of
+    ``reference``. The default chunk sizes split both axes into multiple
+    chunks so chunk-boundary handling is exercised; pass ``**kwargs`` through
+    to :func:`make_vcz` to override chunking or other options.
+    """
+    data = dtype_matrix_arrays(reference=reference)
+    return make_vcz(
+        variant_contig=data.variant_contig,
+        variant_position=data.variant_position,
+        alleles=data.alleles,
+        num_samples=data.num_samples,
+        call_genotype=data.call_genotype,
+        info_fields=data.info_fields,
+        call_fields=data.call_fields,
+        variants_chunk_size=variants_chunk_size,
+        samples_chunk_size=samples_chunk_size,
+        **kwargs,
+    )

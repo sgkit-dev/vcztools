@@ -91,7 +91,7 @@ def _compute_ns(deps, cache):
 
 def _compute_n_alt(deps, cache):
     alt = np.asarray(deps["variant_allele"])[:, 1:]
-    return (alt != "").sum(axis=1).astype(np.int32)
+    return (alt != "").sum(axis=1).astype(np.int64)
 
 
 def _compute_n_missing(deps, cache):

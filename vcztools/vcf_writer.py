@@ -13,6 +13,7 @@ from vcztools.utils import (
     _as_fixed_length_unicode,
     open_file_like,
     to_vcf_float32,
+    to_vcf_int32,
 )
 
 from . import _vcztools
@@ -193,8 +194,7 @@ class VcfWriter:
         info_fields = {}
         num_samples = len(samples_selection)
 
-        # TODO check we don't truncate silently by doing this
-        pos = chunk_data["variant_position"].astype(np.int32)
+        pos = to_vcf_int32(chunk_data["variant_position"], "POS")
         num_variants = len(pos)
         if num_variants == 0:
             return
@@ -286,6 +286,8 @@ class VcfWriter:
                 zarray = _as_fixed_length_string(zarray)
             elif zarray.dtype.kind == "f":
                 zarray = to_vcf_float32(zarray)
+            elif zarray.dtype.kind == "i" and zarray.dtype.itemsize > 4:
+                zarray = to_vcf_int32(zarray, f"INFO/{name}")
             if len(zarray.shape) == 1:
                 zarray = zarray.reshape((num_variants, 1))
             zarray = np.ascontiguousarray(zarray)
@@ -297,6 +299,8 @@ class VcfWriter:
                     zarray = _as_fixed_length_string(zarray)
                 elif zarray.dtype.kind == "f":
                     zarray = to_vcf_float32(zarray)
+                elif zarray.dtype.kind == "i" and zarray.dtype.itemsize > 4:
+                    zarray = to_vcf_int32(zarray, f"FORMAT/{name}")
                 if len(zarray.shape) == 2:
                     zarray = zarray.reshape((num_variants, num_samples, 1))
                 zarray = np.ascontiguousarray(zarray)

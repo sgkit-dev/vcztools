@@ -1,31 +1,31 @@
 (sec-plink)=
-# PLINK 1 binary output
+# PLINK 1 output
 
 The {ref}`vcztools view-plink<cmd-vcztools-view-plink>` command writes a
-PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`) from a VCZ store. The on-disk layout is the
-one PLINK 1, 1.9 and 2 all read; the `.bed` payload is byte-identical
-to `plink2 --vcf X --make-bed` for biallelic variants.
+PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`) from a VCZ store.
+For biallelic variants, The output `.bed` is identical to
+`plink2 --vcf X --make-bed`.
 
 ```bash
 vcztools view-plink sample.vcz -o sample
 # produces sample.bed, sample.bim, sample.fam
 ```
 
-The `-o` value is a stem taken **verbatim** — `-o sample` produces
-`sample.bed`/`sample.bim`/`sample.fam`; `-o sample.bed` would produce
-`sample.bed.bed` etc. Unlike {ref}`view-bgen<sec-bgen>`, `view-plink` does not stream
-to stdout: the PLINK triplet isn't a single output stream, so `-o` is
-required.
+The `-o` value (required) is a stem taken **verbatim**: `-o sample` produces
+`sample.bed`/`sample.bim`/`sample.fam`.
 
 The `.bim` and `.fam` sidecars are written by default; pass `--no-bim`
-or `--no-fam` to suppress one of them. (`.bed` alone isn't a valid
-PLINK fileset, so these toggles exist mostly for niche pipelines that
-generate the sidecars separately.)
+or `--no-fam` to suppress.
 
 Sample, region and filter selection mirrors
 {ref}`vcztools view<cmd-vcztools-view>`
 (`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`); the per-flag reference is
 in {ref}`sec-cli-ref`.
+
+:::{note}
+Note that the filtering semantics differs slightly from ``vcztools view``:
+see {ref}`sec-plink-subset-filtering` for details.
+:::
 
 ## A1/A2 convention
 
@@ -38,36 +38,17 @@ with `--keep-allele-order` (or `--real-ref-alleles`); the on-disk
 bytes are unchanged, but plink 1.9's outputs (e.g. `--freq`,
 `--assoc`) reflect the reordered labelling.
 
-## Reading `view-plink` output with downstream tools
-
-| Tool | Works as-is? | Notes |
-| --- | --- | --- |
-| plink 2 | yes | reads A2 as REF natively; no flags needed |
-| plink 1.9 | with `--keep-allele-order` | otherwise silently relabels A1/A2 on load and any frequency-derived statistic flips sign relative to a plink 2 run on the same file |
-| REGENIE | yes | default expects A1 = non-reference (`--ref-first` opts the other way) |
-| BOLT-LMM | yes | ALLELE1 is the effect allele; the manual's "usually the minor allele" remark is descriptive, not normative |
-| GCTA | yes | per-variant standardisation is invariant to allele labelling |
-| KING | yes | allele-frequency-free by construction |
-| flashpca | yes | PCA standardisation is allele-symmetric; cross-cohort projection is more stable under REF/ALT than minor-allele |
-| ADMIXTURE | yes | the likelihood is symmetric in allele labels |
-
 ## Multi-allelic variants
 
 Multi-allelic variants are rejected by default, mirroring `plink2
 --make-bed` (which errors with "cannot contain multiallelic
-variants"). Two ways to handle them:
+variants"). These must be skipped using ``--max-alleles 2``:
 
-- **Skip** with `--max-alleles 2`:
-
-  ```bash
-  vcztools view-plink sample.vcz -o sample --max-alleles 2
-  ```
-
-  Drops every variant whose record lists more than two alleles. The
-  filter is record-driven — see {ref}`sec-plink-allele-list-driven`.
-
-- **Split** before conversion with ``bcftools norm``.
-  Each ALT allele becomes its own biallelic record.
+```bash
+vcztools view-plink sample.vcz -o sample --max-alleles 2
+```
+This drops every variant whose record lists more than two alleles. The
+filter is record-driven — see {ref}`sec-plink-allele-list-driven`.
 
 ## Monomorphic variants
 
@@ -140,9 +121,6 @@ vcztools writes `.bim` chromosome names to match plink 2's
   is not 2.
 - **Whitespace in sample IDs.** Rejected with a clear error
   message — the `.fam` format is whitespace-separated.
-- **Family ID (FID).** Always written as `0`, matching `plink2
-  --vcf X --make-bed` defaults. plink 2's `--double-id` /
-  `--id-delim` are not mirrored.
 
 ## See also
 

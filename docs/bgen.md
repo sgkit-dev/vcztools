@@ -35,6 +35,11 @@ Sample, region and filter selection mirrors
 (`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`/`-v`/`-V`/`-m`/`-M`); the
 per-flag reference is in {ref}`sec-cli-ref`.
 
+:::{note}
+Note that the filtering semantics differs slightly from ``vcztools view``:
+see {ref}`sec-plink-subset-filtering` for details.
+:::
+
 ## Sample-ID embedding
 
 By default the BGEN header carries sample IDs (the `SAMPLE_IDS_PRESENT`

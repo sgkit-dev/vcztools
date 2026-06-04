@@ -19,6 +19,28 @@ vcztools <args>
 ```
 and will always work.
 
+## Optional dependencies
+
+Reading from some remote storage backends requires extra packages. The
+`obstore` and `icechunk` backends are install extras:
+
+```bash
+python3 -m pip install vcztools[obstore]
+python3 -m pip install vcztools[icechunk]
+```
+
+The `fsspec` backend ships with the default install, but the driver for each
+cloud protocol is a separate package which must be installed separately:
+
+```bash
+python3 -m pip install s3fs    # S3
+python3 -m pip install gcsfs   # Google Cloud Storage
+python3 -m pip install adlfs   # Azure
+```
+
+See {ref}`sec-storage-backends` for which backend and package to use for a
+given store.
+
 ## Shell completion
 
 To enable shell completion for a particular session in Bash do:

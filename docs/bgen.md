@@ -34,19 +34,21 @@ Note that the filtering semantics differs slightly from ``vcztools view``:
 see {ref}`sec-bgen-subset-filtering` for details.
 :::
 
-## Sample-ID embedding
+## Format details
+
+### Sample-ID embedding
 
 By default the BGEN header carries sample IDs (the `SAMPLE_IDS_PRESENT`
 flag is set), so the `.bgen` is self-describing. Pass `--no-header-samples`
 to clear the flag and omit the sample-ID block.
 
-## Hard calls and probabilities
+### Hard calls and probabilities
 
 BGEN's native data type is genotype probabilities.
 `view-bgen` currently encodes the hard calls in `call_genotype` as
 1.0 probability on the called genotype and 0.0 elsewhere.
 
-## Phasing
+### Phasing
 
 If the VCZ store has a `call_genotype_phased` field, each variant is
 emitted as phased iff every sample is phased for that variant. (BGEN
@@ -54,7 +56,7 @@ has a single phase flag per variant; mixed-phase variants degrade
 silently to unphased and a warning is logged.) Stores without
 `call_genotype_phased` emit unphased.
 
-## Sidecars
+### Sidecars
 
 With `-o STEM`, `view-bgen` writes the `.bgen` payload plus, by default,
 two sidecar files:
@@ -74,7 +76,7 @@ identifiers must not appear in the binary).
 Streaming mode (no `-o`) writes only the `.bgen` payload to stdout;
 sidecar flags have no effect.
 
-## Multi-allelic variants
+### Multi-allelic variants
 
 Multi-allelic variants are rejected by default, and must be
 filtered out:
@@ -83,7 +85,7 @@ filtered out:
 vcztools view-bgen sample.vcz -o sample --max-alleles 2
 ```
 
-## Ploidy
+### Ploidy
 
 `view-bgen` supports both haploid and diploid input, plus mixed
 ploidy where some samples are haploid and some are diploid for the
@@ -101,7 +103,7 @@ on each `(a, b)` pair in `call_genotype`:
 The per-variant header `Pmin` / `Pmax` reflect the actual range of
 sample ploidies in each variant.
 
-## Missingness
+### Missingness
 
 A sample is treated as missing for a variant if any of its diploid
 alleles is `-1`, or if its haploid allele is `-1`.
@@ -109,7 +111,7 @@ Missing samples have the BGEN ploidy/missing byte's high bit
 set and their probability bytes are zeroed.
 
 (sec-bgen-subset-filtering)=
-## Filtering over the sample subset
+### Filtering over the sample subset
 
 `-i`/`-e` expression filters that reference sample-derived INFO fields
 (`AC`, `AN`, `AF`, `NS`) are evaluated **over the selected samples**. With
@@ -128,7 +130,7 @@ dataset; it is also cheaper on large datasets, since only the selected
 samples are read. The allele-based filters (`-m`/`-M`/`-v`/`-V`) remain
 record-level.
 
-## Compression level
+### Compression level
 
 Per the format specification, `view-bgen`
 zlib-compresses each variant's genotype-probability block
@@ -156,78 +158,46 @@ level 1.
 - **Whitespace in sample IDs.** Rejected with a clear error message —
   the `.sample` format is whitespace-separated.
 
-## Fixed-size random-access encoding
+## Fixed-size encoding
 
-For applications that need to address arbitrary regions of the encoded
-`.bgen` byte stream without iterating from the start — FUSE
-filesystems, HTTP range serving, and similar — vcztools also exposes
-a Python-only `BgenEncoder` class, the sibling of `plink.BedEncoder`:
+Pass `--fixed-variant-size` to write a BGEN in which every variant block is
+exactly the same number of bytes wide. The mapping from a byte offset to a
+variant index is then O(1).
 
-```python
-from vcztools import bgen, retrieval
-
-reader = retrieval.VczReader("sample.vcz")
-with bgen.BgenEncoder(reader) as enc:
-    print(enc.bgen_size, enc.bytes_per_variant)
-    # POSIX-read semantics: enc.read(off, size) returns bytes
-    chunk = enc.read(0, 4096)
+```bash
+vcztools view-bgen sample.vcz -o sample --fixed-variant-size
 ```
 
-`BgenEncoder` requires uniform ploidy across the store. The encoder
-auto-detects haploid vs diploid from `reader.call_genotype.shape[2]`
-(1 or 2); a mixed-ploidy store (a `-2` sentinel under declared
-diploid) raises `NotImplementedError` lazily on read with a message
-pointing users at `write_bgen` (the variable-size streaming encoder).
+The mode requires **uniform ploidy** across the store (every sample haploid,
+or every sample diploid) and **no genotype compression**. Three options tune the
+per-variant layout:
 
-Every per-variant block is exactly `bytes_per_variant` bytes wide, so
-`byte offset → variant index` is O(1):
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `--total-string-length` | 64 | combined byte budget for the five BGEN string slots (varid, rsid, chrom, allele1, allele2) per variant |
+| `--pad-byte` | `.` | single ASCII character filling the padding slot beyond its leading `.` |
+| `--variant-id-field` | `rsid` | which slot carries the zarr `variant_id`; the other becomes the padding slot |
+
+### Properties
+
+Each variant block is exactly:
 
 ```
 bytes_per_variant = 28 + total_string_length + zlib_stored_size(geno_size)
-
-geno_size = 10 + (uniform_ploidy + 1) * num_samples
+geno_size         = 10 + (ploidy + 1) * num_samples
 ```
 
-For haploid stores `geno_size = 10 + 2 * num_samples`; for diploid
-`geno_size = 10 + 3 * num_samples`.
+so `geno_size = 10 + 2 * num_samples` for haploid stores and
+`10 + 3 * num_samples` for diploid. The genotype block is stored at zlib
+level 0 (no DEFLATE), making its length a deterministic function of the sample
+count rather than the data.
 
-The five BGEN string fields (varid, rsid, chrom, allele1, allele2) share
-a single `total_string_length` budget per variant. Four of them — chrom,
-allele1, allele2, and whichever of varid/rsid is selected by
-`variant_id_field` — are emitted at their actual UTF-8 byte lengths.
-The fifth slot is the **padding field**: its content is
-`b"." + pad_byte * (slack - 1)`, where `slack` is whatever's left of
-`total_string_length` after the other four. The genotype block is
-emitted as zlib **level 0** (stored, no DEFLATE) so its compressed
-length is a deterministic function of the uncompressed length.
-
-Defaults target biobank biallelic SNP-array data:
-
-| Argument | Default | Notes |
-| --- | --- | --- |
-| `total_string_length` | 64 | combined byte budget for all five string fields per variant |
-| `pad_byte` | `b"."` | single-byte pad written into the padding field after the leading `"."` |
-| `variant_id_field` | `"rsid"` | BGEN slot that carries the zarr `variant_id`; the other slot is the padding field |
-| `encode_threads` | 4 | thread pool size for parallel encode |
-| `encode_block_bytes` | 10 MiB | input target per sub-block |
-
-If a variant's content sums past `total_string_length - 1` (the padding
-field can't even fit its leading `"."`), `read()` raises `ValueError`
-naming the variant index and the configured `total_string_length`.
-Stores with longer rsIDs / alleles opt in by passing a larger
-`total_string_length`.
-
-The output `.bgen` is larger than `view-bgen`'s zlib-compressed
-output — it runs no real compression on genotype data and reserves
-`total_string_length` bytes per variant for strings — but the byte
-stream is addressable and bytes-per-variant is fully known up front. The encoder serves the `.bgen` stream only; `write_sample()`
-remains the path for the `.sample` sidecar, and a `.bgi` index (if
-needed) can be built from the deterministic offsets
-(`header_size + i * bytes_per_variant`) without iterating the encoder.
-
-Unlike `write_bgen`, the encoder does not auto-materialise a configured
-`set_variant_filter` — it raises `NotImplementedError` at construction.
-Apply the filter externally or use `set_variants` first.
+Of the five string fields, four — chrom, allele1, allele2, and whichever of
+varid/rsid carries `variant_id` — are written at their actual UTF-8 lengths;
+the fifth (padding) slot absorbs the remaining budget as a leading `.` followed
+by `--pad-byte` filler. If a variant's strings exceed `total_string_length - 1`,
+the command fails with an error naming that variant. Use a larger
+`--total-string-length` for stores with longer rsIDs or alleles.
 
 ## See also
 

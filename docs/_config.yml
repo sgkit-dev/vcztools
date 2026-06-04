@@ -20,6 +20,8 @@ html:
       </p>
 
 sphinx:
+  local_extensions:
+    sphinx_click_groups: _ext
   extra_extensions:
     - sphinx_click.ext
     - sphinx.ext.todo

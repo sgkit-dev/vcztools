@@ -8,7 +8,6 @@
 % sphinx-click generates.
 % Based on: https://github.com/skypilot-org/skypilot/pull/2834
 
-## bcftools-compatible commands
 
 ```{eval-rst}
 .. _cmd-vcztools-view:
@@ -25,11 +24,7 @@
 .. click:: vcztools.cli:index
    :prog: vcztools index
    :nested: full
-```
 
-## Format exporters
-
-```{eval-rst}
 .. _cmd-vcztools-view-plink:
 .. click:: vcztools.cli:view_plink
    :prog: vcztools view-plink

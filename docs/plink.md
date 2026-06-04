@@ -27,7 +27,9 @@ Note that the filtering semantics differs slightly from ``vcztools view``:
 see {ref}`sec-plink-subset-filtering` for details.
 :::
 
-## A1/A2 convention
+## Format details
+
+### A1/A2 convention
 
 vcztools follows **plink 2**: A1 = ALT, A2 = REF. This is the
 modern convention expected by tools like REGENIE.
@@ -38,7 +40,7 @@ with `--keep-allele-order` (or `--real-ref-alleles`); the on-disk
 bytes are unchanged, but plink 1.9's outputs (e.g. `--freq`,
 `--assoc`) reflect the reordered labelling.
 
-## Multi-allelic variants
+### Multi-allelic variants
 
 Multi-allelic variants are rejected by default, mirroring `plink2
 --make-bed` (which errors with "cannot contain multiallelic
@@ -50,14 +52,14 @@ vcztools view-plink sample.vcz -o sample --max-alleles 2
 This drops every variant whose record lists more than two alleles. The
 filter is record-driven — see {ref}`sec-plink-allele-list-driven`.
 
-## Monomorphic variants
+### Monomorphic variants
 
 Single-allele (monomorphic) sites emit `A1 = "."` in the `.bim`
 (plink 2's missing-allele encoding), and every genotype bit in the
 `.bed` is set to MISSING.
 
 (sec-plink-allele-list-driven)=
-## Allele-list-driven semantics
+### Allele-list-driven semantics
 
 A1/A2 labelling and the `--max-alleles` filter come from the variant
 record's allele list, not from genotypes observed in the kept-sample
@@ -74,7 +76,7 @@ This matches `plink2 --make-bed --keep`, which applies record-level
 filters before sample projection.
 
 (sec-plink-subset-filtering)=
-## Filtering over the sample subset
+### Filtering over the sample subset
 
 `-i`/`-e` expression filters that reference sample-derived INFO fields
 (`AC`, `AN`, `AF`, `NS`) are evaluated **over the selected samples**. With
@@ -98,7 +100,7 @@ datasets — only the selected samples are read.
 Note this applies to *expression* filters. The allele-based filters
 (`-m`/`-M`/`-v`/`-V`) remain record-level, as described above.
 
-## Chromosome-name normalisation
+### Chromosome-name normalisation
 
 vcztools writes `.bim` chromosome names to match plink 2's
 `--make-bed` normalisation:

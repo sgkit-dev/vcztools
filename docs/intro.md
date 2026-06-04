@@ -1,4 +1,4 @@
-# vcztools
+# Introduction
 
 `vcztools` is a partial reimplementation of
 [bcftools](https://samtools.github.io/bcftools/bcftools.html) for
@@ -20,12 +20,34 @@ non-bcftools format exporters for common downstream tools:
 - {ref}`view-bgen<cmd-vcztools-view-bgen>` — Oxford BGEN
   (`.bgen`/`.sample`/`.bgen.bgi`); see {ref}`sec-bgen`.
 
-To create VCZ files from VCF, see the
+To create VCZ files from VCF and other formats, see the
 [bio2zarr](https://sgkit-dev.github.io/bio2zarr/) project.
 
 Please see the [GigaScience paper](https://doi.org/10.1093/gigascience/giaf049)
 and the [specification repo](https://github.com/sgkit-dev/vcf-zarr-spec/)
 for more information about the VCF Zarr format.
+
+## Reading local and remote data
+
+`vcztools` supports reading from a local directory, a `.zip`
+archive, or a remote object store on S3, GCS, Azure or HTTP.
+Local stores is supported directly:
+
+```bash
+vcztools view sample.vcz       # local directory
+vcztools view sample.vcz.zip   # local .zip archive
+```
+
+Remote URLs are read by selecting a storage backend with `--backend-storage`:
+
+```bash
+vcztools view --backend-storage fsspec s3://bucket/sample.vcz
+```
+
+Four backends are available — `local` (the default), `fsspec`, `obstore` and
+`icechunk`. See {ref}`sec-storage-backends` for how to choose between them and
+the per-backend connection options, and {ref}`sec-installation` for the
+additional packages required.
 
 ## Development status
 

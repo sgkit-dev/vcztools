@@ -795,7 +795,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
     ) -> None:
         prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
         phase_counts.append(prep.mixed_phase_count)
-        position = np.ascontiguousarray(prep.position, dtype=np.int32)
+        position = np.ascontiguousarray(utils.to_vcf_int32(prep.position, "POS"))
         # The C kernel reads each S-dtype row as a (N, item_size) uint8
         # buffer and computes the actual byte length per variant via
         # an internal NUL-bound scan. Pre-viewing here keeps the C

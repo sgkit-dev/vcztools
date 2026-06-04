@@ -3002,3 +3002,23 @@ class TestBgenChunkSliceLevel0Kernel:
         with br.open_bgen(path, verbose=False) as bg:
             assert bg.nvariants == 5
             assert bg.nsamples == 3
+
+
+class TestBgenInt64Position:
+    """The fixed-size encoder stores positions in a 32-bit field, so an
+    out-of-range 64-bit position raises rather than silently truncating."""
+
+    def test_position_overflow_raises(self, tmp_path):
+        big = int(np.iinfo(np.int32).max) + 1
+        reader = _build_reader(
+            num_variants=1,
+            variant_position=[big],
+            position_dtype=np.int64,
+        )
+        with pytest.raises(ValueError, match="POS"):
+            bgen.write_bgen(
+                reader,
+                tmp_path / "out.bgen",
+                fixed_variant_size=True,
+                compression_level=0,
+            )

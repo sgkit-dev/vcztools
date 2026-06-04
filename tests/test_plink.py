@@ -1696,3 +1696,18 @@ class TestBedEncoderWithSetVariants:
             chunk = enc.read(off, 7)
             off += len(chunk)
         assert counter["n"] == 1
+
+
+class TestBimInt64Position:
+    """The .bim is a text format, so a 64-bit base-pair position round-trips
+    without truncation."""
+
+    def test_large_position_round_trips(self):
+        big = 5_000_000_000  # > 2**31
+        reader = _build_reader(
+            num_variants=1,
+            variant_position=[big],
+            position_dtype=np.int64,
+        )
+        bim = _parse_bim(_bim_string(reader))
+        assert bim["Pos"].tolist() == [big]

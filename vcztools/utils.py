@@ -766,6 +766,27 @@ def to_vcf_float32(arr: np.ndarray) -> np.ndarray:
     return out
 
 
+def to_vcf_int32(arr: np.ndarray, name: str) -> np.ndarray:
+    """Return ``arr`` as int32 for the VCF encoder, which only supports 1-, 2-
+    and 4-byte integers.
+
+    Narrower or equal widths are cast straight to int32. Wider widths (int64)
+    are range-checked first: if any value falls outside the int32 range a
+    ``ValueError`` naming ``name`` is raised. The missing / end-of-vector
+    sentinels (-1 / -2) are within range and cast unchanged.
+    """
+    if arr.dtype.itemsize > 4 and arr.size > 0:
+        info = np.iinfo(np.int32)
+        low = int(arr.min())
+        high = int(arr.max())
+        if low < info.min or high > info.max:
+            raise ValueError(
+                f"{name}: integer values [{low}, {high}] fall outside the "
+                f"32-bit range supported by VCF output"
+            )
+    return arr.astype(np.int32, copy=False)
+
+
 def is_missing(arr: np.ndarray) -> np.ndarray:
     """Return a boolean array indicating which values are missing sentinels."""
     if arr.dtype.kind == "i":

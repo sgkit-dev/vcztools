@@ -26,6 +26,7 @@ from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import _generate_header, write_vcf
 
 from . import vcz_builder
+from .utils import make_reader
 
 _FIELDS = vcz_builder.dtype_matrix_fields()
 _NUMERIC_INFO_SCALAR_FIELDS = [
@@ -43,7 +44,7 @@ _PARITY_INFO_FIELDS = [
     for field in _FIELDS
     if field.category == "INFO"
     and field.vcf_type in ("Integer", "Float", "String")
-    and field.vcf_id.startswith(("IA", "IB", "IC", "FA", "FB", "FC", "SA"))
+    and field.vcf_id.startswith(("IA", "IB", "IC", "ID", "FA", "FB", "FC", "SA"))
 ]
 
 
@@ -227,3 +228,93 @@ class TestFilter:
         for chunk in reader.variant_chunks(fields=["variant_position"]):
             positions.extend(chunk["variant_position"].tolist())
         return positions
+
+
+class TestInt64:
+    """int64 fields read, filter and query at native width; the VCF text
+    encoder casts them to int32 and raises a clear error when a value does
+    not fit. The dtype matrix already covers in-range int64 via the ID
+    fields; these cases pin the large-value and overflow behaviour the matrix
+    cannot (its values all fit in int32)."""
+
+    _BIG = 5_000_000_000  # > 2**31, requires int64
+
+    @staticmethod
+    def _info_store(values, *, position_dtype=None, positions=None):
+        values = np.asarray(values, dtype=np.int64)
+        num_variants = len(values)
+        if positions is None:
+            positions = [(i + 1) * 10 for i in range(num_variants)]
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * num_variants,
+            variant_position=positions,
+            alleles=[["A", "C"]] * num_variants,
+            num_samples=1,
+            call_genotype=np.zeros((num_variants, 1, 2), dtype=np.int8),
+            info_fields={"BIG": values},
+            position_dtype=position_dtype,
+        )
+
+    def test_view_info_overflow_raises(self):
+        group = self._info_store([np.iinfo(np.int32).max + 1])
+        with pytest.raises(ValueError, match="INFO/BIG"):
+            _view(group)
+
+    def test_view_info_in_range_casts(self):
+        # In-range int64 values render exactly like int32.
+        group = self._info_store([5, 6, 7])
+        values = [_info_dict(row)["BIG"] for row in _rows(group)]
+        assert values == ["5", "6", "7"]
+
+    def test_query_large_value(self):
+        # query never reaches the int32 encoder, so the full int64 value shows.
+        group = self._info_store([self._BIG, 1, 2])
+        reader = VczReader(group)
+        formatter = QueryFormatter("%BIG\n", reader)
+        result = "".join(formatter.format_variant(v) for v in reader.variants())
+        assert result == f"{self._BIG}\n1\n2\n"
+
+    def test_filter_large_value(self):
+        # Filtering compares at int64 width; only the big-value variant passes.
+        group = self._info_store([self._BIG, 1, 2])
+        reader = VczReader(group)
+        field_names = reader.field_names | reader.virtual_field_names
+        fee = bcftools_filter.BcftoolsFilter(
+            field_names=field_names, include=f"INFO/BIG>{self._BIG - 1}"
+        )
+        reader.set_variant_filter(fee)
+        reader.materialise_variant_filter()
+        positions = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            positions.extend(chunk["variant_position"].tolist())
+        assert positions == [10]
+
+    def test_int64_position_preserved_and_queried(self):
+        positions = [self._BIG, self._BIG + 100]
+        group = self._info_store([1, 2], position_dtype=np.int64, positions=positions)
+        reader = VczReader(group)
+        chunk = next(reader.variant_chunks(fields=["variant_position"]))
+        assert chunk["variant_position"].dtype == np.int64
+
+        formatter = QueryFormatter("%POS\n", reader)
+        result = "".join(formatter.format_variant(v) for v in reader.variants())
+        assert result == f"{self._BIG}\n{self._BIG + 100}\n"
+
+    def test_int64_position_region_filter(self):
+        positions = [self._BIG, self._BIG + 100, self._BIG + 200]
+        group = self._info_store(
+            [1, 2, 3], position_dtype=np.int64, positions=positions
+        )
+        region = f"chr1:{self._BIG + 50}-{self._BIG + 150}"
+        reader = make_reader(group, regions=region)
+        selected = []
+        for chunk in reader.variant_chunks(fields=["variant_position"]):
+            selected.extend(chunk["variant_position"].tolist())
+        assert selected == [self._BIG + 100]
+
+    def test_view_int64_position_overflow_raises(self):
+        group = self._info_store(
+            [1], position_dtype=np.int64, positions=[np.iinfo(np.int32).max + 1]
+        )
+        with pytest.raises(ValueError, match="POS"):
+            _view(group)

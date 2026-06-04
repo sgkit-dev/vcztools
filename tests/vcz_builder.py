@@ -63,12 +63,18 @@ def _create_array(group, name, data, *, chunks, dimension_names):
     return arr
 
 
-def _compute_region_index(variant_contig, variant_position, variant_length, min_chunk):
+def _compute_region_index(
+    variant_contig, variant_position, variant_length, min_chunk, dtype=np.int32
+):
     """Compute the region index, with one row per logical (``min_chunk``-
     sized) chunk. ``min_chunk`` is the minimum variants-axis chunk
     size (driven by ``call_*`` fields); variant-only fields may have
     larger chunks but the region index always indexes at logical-
     chunk granularity.
+
+    ``dtype`` is the integer dtype of the resulting array; pass ``np.int64``
+    when positions exceed the int32 range so the position columns are not
+    truncated.
     """
     num_variants = variant_contig.shape[0]
     num_chunks = (num_variants + min_chunk - 1) // min_chunk
@@ -104,7 +110,7 @@ def _compute_region_index(variant_contig, variant_position, variant_length, min_
                 ]
             )
             span_start = span_stop
-    return np.array(rows, dtype=np.int32)
+    return np.array(rows, dtype=dtype)
 
 
 def make_vcz(
@@ -130,6 +136,7 @@ def make_vcz(
     variant_length=None,
     region_index=None,
     ploidy=2,
+    position_dtype=None,
 ):
     """
     Build an in-memory VCZ group and return it.
@@ -161,9 +168,14 @@ def make_vcz(
     ``variant_quality`` preserves a supplied floating-point dtype (so
     fixtures can build a non-float32 QUAL); non-float inputs default to
     float32.
+
+    ``position_dtype`` sets the integer dtype of ``variant_position`` and the
+    auto-computed ``region_index`` (default int32); pass ``np.int64`` to build a
+    store with 64-bit positions.
     """
+    pos_dtype = position_dtype if position_dtype is not None else np.int32
     variant_contig = np.asarray(variant_contig, dtype=np.int32)
-    variant_position = np.asarray(variant_position, dtype=np.int32)
+    variant_position = np.asarray(variant_position, dtype=pos_dtype)
     num_variants = variant_contig.shape[0]
     if variant_position.shape[0] != num_variants:
         raise ValueError("variant_contig and variant_position length mismatch")
@@ -218,10 +230,10 @@ def make_vcz(
 
     if region_index is None:
         region_index = _compute_region_index(
-            variant_contig, variant_position, variant_length, v_chunk
+            variant_contig, variant_position, variant_length, v_chunk, dtype=pos_dtype
         )
     else:
-        region_index = np.asarray(region_index, dtype=np.int32)
+        region_index = np.asarray(region_index, dtype=pos_dtype)
 
     store = zarr.storage.MemoryStore()
     # zarr emits warnings about unstable V3 specification for fixed-width
@@ -582,7 +594,7 @@ _MATRIX_NUM_SAMPLES = 3
 _MATRIX_FIXED_WIDTH = 3
 _MATRIX_RAGGED_WIDTH = 3
 
-_MATRIX_INT_TOKENS = {"i1": np.int8, "i2": np.int16, "i4": np.int32}
+_MATRIX_INT_TOKENS = {"i1": np.int8, "i2": np.int16, "i4": np.int32, "i8": np.int64}
 _MATRIX_FLOAT_TOKENS = {"f2": np.float16, "f4": np.float32, "f8": np.float64}
 _MATRIX_STRING_DTYPE = np.dtypes.StringDType()
 
@@ -596,6 +608,7 @@ _MATRIX_TOKEN_CODE = {
     "i1": "IA",
     "i2": "IB",
     "i4": "IC",
+    "i8": "ID",
     "f2": "FA",
     "f4": "FB",
     "f8": "FC",

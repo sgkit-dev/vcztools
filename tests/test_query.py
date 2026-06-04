@@ -439,3 +439,24 @@ def test_write_query__include_exclude(fx_sample_vcz):
             include=variant_site_filter,
             exclude=variant_site_filter,
         )
+
+
+class TestDtypeMatrixQuery:
+    """Querying the dtype / shape matrix through a reordered sample subset
+    (a FORMAT loop) renders identically at every width."""
+
+    @staticmethod
+    def _query(reader, query_format):
+        formatter = QueryFormatter(query_format, reader)
+        return "".join(formatter.format_variant(v) for v in reader.variants())
+
+    def test_sample_subset_parity(self, fx_dtype_matrix, fx_dtype_matrix_reference):
+        query_format = "%POS\t[%IAS %FAR %SAR ]\n"
+        samples = ["sample_2", "sample_0"]
+        native = self._query(
+            make_reader(fx_dtype_matrix, samples=samples), query_format
+        )
+        reference = self._query(
+            make_reader(fx_dtype_matrix_reference, samples=samples), query_format
+        )
+        assert native == reference

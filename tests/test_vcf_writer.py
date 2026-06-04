@@ -704,3 +704,29 @@ class TestParallelEncoding:
     def test_empty_chunk_with_executor(self):
         chunk = minimal_vcf_chunk(0, 2)
         assert chunk_to_vcf(chunk, encode_threads=4) == ""
+
+
+class TestDtypeMatrix:
+    """The full dtype / shape matrix renders identically at every width when
+    written through the sample-subset and region code paths (which the
+    dedicated module in ``test_dtype_matrix`` does not exercise)."""
+
+    @staticmethod
+    def _view(reader):
+        out = StringIO()
+        write_vcf(reader, out, no_version=True)
+        return out.getvalue()
+
+    def test_sample_subset_parity(self, fx_dtype_matrix, fx_dtype_matrix_reference):
+        samples = ["sample_2", "sample_0"]
+        native = self._view(make_reader(fx_dtype_matrix, samples=samples))
+        reference = self._view(
+            make_reader(fx_dtype_matrix_reference, samples=samples)
+        )
+        assert native == reference
+
+    def test_region_parity(self, fx_dtype_matrix, fx_dtype_matrix_reference):
+        regions = "chr1:30-60"
+        native = self._view(make_reader(fx_dtype_matrix, regions=regions))
+        reference = self._view(make_reader(fx_dtype_matrix_reference, regions=regions))
+        assert native == reference

@@ -28,6 +28,8 @@ import pytest
 import zarr
 import zarr.storage
 
+from . import vcz_builder
+
 _VCF_DIR = pathlib.Path(__file__).parent / "data" / "vcf"
 
 
@@ -121,6 +123,22 @@ def fx_chr20_annotations_vcz(tmp_path_factory) -> VczFixture:
         "1kg_2020_chr20_annotations.bcf",
         tmp_path_factory,
     )
+
+
+@pytest.fixture(scope="session")
+def fx_dtype_matrix() -> zarr.Group:
+    """In-memory store covering every supported dtype and field shape.
+
+    See :func:`tests.vcz_builder.make_dtype_matrix`. Read-only; tests that
+    mutate must copy via :func:`tests.vcz_builder.copy_vcz` first.
+    """
+    return vcz_builder.make_dtype_matrix()
+
+
+@pytest.fixture(scope="session")
+def fx_dtype_matrix_reference() -> zarr.Group:
+    """Width-collapsed (int32 / float32) oracle for :func:`fx_dtype_matrix`."""
+    return vcz_builder.make_dtype_matrix(reference=True)
 
 
 @pytest.fixture(scope="session")

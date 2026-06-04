@@ -1,16 +1,16 @@
 (sec-bgen)=
 # BGEN output
 
-The `vcztools view-bgen` command writes Oxford BGEN output from a VCZ
-store. Output profile: **layout 2, zlib-compressed, 8 bits per
+The {ref}`vcztools view-bgen<cmd-vcztools-view-bgen>` command writes Oxford
+BGEN output from a VCZ store. Output profile: **layout 2, zlib-compressed, 8 bits per
 probability, biallelic, embedded sample IDs**. Diploid, haploid (e.g.
 chrX in males, mitochondrial) and mixed-ploidy stores (mixed-sex chrX)
 are supported via per-sample ploidy bytes. This is the consumer
 lowest-common-denominator: REGENIE, SAIGE, BOLT-LMM, BGENIE, qctool,
 and PLINK 2 all accept it without further conversion.
 
-Default: stream the `.bgen` payload to stdout (mirroring `vcztools
-view`). Pass `-o STEM` to write files including the `.bgen.bgi` (bgenix
+Default: stream the `.bgen` payload to stdout (mirroring
+{ref}`vcztools view<cmd-vcztools-view>`). Pass `-o STEM` to write files including the `.bgen.bgi` (bgenix
 SQLite index) and `.sample` (Oxford text) sidecars, both on by default
 and individually suppressible.
 
@@ -30,7 +30,8 @@ The `-o` value is a stem taken **verbatim** — `-o sample` produces
 `sample.bgen`, `sample.bgen.bgi`, `sample.sample`; `-o sample.bgen`
 would produce `sample.bgen.bgen` etc.
 
-Sample, region and filter selection mirrors `vcztools view`
+Sample, region and filter selection mirrors
+{ref}`vcztools view<cmd-vcztools-view>`
 (`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`/`-v`/`-V`/`-m`/`-M`); the
 per-flag reference is in {ref}`sec-cli-ref`.
 
@@ -154,8 +155,10 @@ than read from the file's stored (full-cohort) INFO, so
 `view-bgen -s cohort.txt -i 'AC>0'` keeps the variants polymorphic *in
 your cohort*.
 
-This is deliberately **different from `vcztools view` and `vcztools
-query`**, which follow bcftools and evaluate `-i/-e` against the original
+This is deliberately **different from
+{ref}`vcztools view<cmd-vcztools-view>` and
+{ref}`vcztools query<cmd-vcztools-query>`**, which follow bcftools and
+evaluate `-i/-e` against the original
 record's stored INFO. A BGEN fileset feeds an association analysis on the
 exported cohort, so filters should reflect that cohort, not the source
 dataset; it is also cheaper on large datasets, since only the selected
@@ -304,6 +307,6 @@ Apply the filter externally or use `set_variants` first.
 
 ## See also
 
-- {ref}`sec-cli-ref` for the full `view-bgen` flag reference.
+- {ref}`The view-bgen flag reference<cmd-vcztools-view-bgen>`.
 - [BGEN format specification](https://www.chg.ox.ac.uk/~gav/bgen_format/spec/latest.html).
 - [bgenix index file format](https://enkre.net/cgi-bin/code/bgen/wiki/The%20bgenix%20index%20file%20format).

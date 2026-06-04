@@ -1,8 +1,8 @@
 (sec-plink)=
 # PLINK 1 binary output
 
-The `vcztools view-plink` command writes a PLINK 1 binary fileset
-(`.bed`/`.bim`/`.fam`) from a VCZ store. The on-disk layout is the
+The {ref}`vcztools view-plink<cmd-vcztools-view-plink>` command writes a
+PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`) from a VCZ store. The on-disk layout is the
 one PLINK 1, 1.9 and 2 all read; the `.bed` payload is byte-identical
 to `plink2 --vcf X --make-bed` for biallelic variants.
 
@@ -13,7 +13,7 @@ vcztools view-plink sample.vcz -o sample
 
 The `-o` value is a stem taken **verbatim** — `-o sample` produces
 `sample.bed`/`sample.bim`/`sample.fam`; `-o sample.bed` would produce
-`sample.bed.bed` etc. Unlike `view-bgen`, `view-plink` does not stream
+`sample.bed.bed` etc. Unlike {ref}`view-bgen<sec-bgen>`, `view-plink` does not stream
 to stdout: the PLINK triplet isn't a single output stream, so `-o` is
 required.
 
@@ -22,7 +22,8 @@ or `--no-fam` to suppress one of them. (`.bed` alone isn't a valid
 PLINK fileset, so these toggles exist mostly for niche pipelines that
 generate the sidecars separately.)
 
-Sample, region and filter selection mirrors `vcztools view`
+Sample, region and filter selection mirrors
+{ref}`vcztools view<cmd-vcztools-view>`
 (`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`); the per-flag reference is
 in {ref}`sec-cli-ref`.
 
@@ -103,8 +104,10 @@ polymorphic *in your cohort*, dropping sites whose ALT alleles are carried
 only by excluded samples — even where the source file's stored `INFO/AC`
 is non-zero.
 
-This is deliberately **different from `vcztools view` and `vcztools
-query`**, which follow bcftools and evaluate `-i/-e` against the original
+This is deliberately **different from
+{ref}`vcztools view<cmd-vcztools-view>` and
+{ref}`vcztools query<cmd-vcztools-query>`**, which follow bcftools and
+evaluate `-i/-e` against the original
 record's stored INFO (so the same `-i 'AC>0'` keeps a site on its stored
 full-cohort count). The rationale: a PLINK fileset is the input to an
 association analysis run on the exported cohort, so filters should reflect
@@ -143,7 +146,7 @@ vcztools writes `.bim` chromosome names to match plink 2's
 
 ## See also
 
-- {ref}`sec-cli-ref` for the full `view-plink` flag reference.
+- {ref}`The view-plink flag reference<cmd-vcztools-view-plink>`.
 - [PLINK 2 `.bim` format](https://www.cog-genomics.org/plink/2.0/formats#bim)
   and [`.bed` / `.fam`](https://www.cog-genomics.org/plink/2.0/formats)
   specifications.

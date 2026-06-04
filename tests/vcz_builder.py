@@ -13,6 +13,7 @@ the subject of the test. Parity tests still need real fixtures under
 """
 
 import dataclasses
+import functools
 import warnings
 
 import numpy as np
@@ -46,7 +47,13 @@ DEFAULT_VARIANT_CHUNK_MULTIPLIERS: dict[str, int] = {
 }
 
 
-def _create_array(group, name, data, *, chunks, dimension_names):
+def _create_array(group, name, data, *, chunks, dimension_names, endian=None):
+    extra = {}
+    # Byte order lives in the bytes codec, not the dtype. VLEN StringDType
+    # (kind "T") uses VLenUTF8Codec and has no byte order, so leave it on the
+    # zarr default.
+    if endian is not None and data.dtype.kind != "T":
+        extra["serializer"] = zarr.codecs.BytesCodec(endian=endian)
     arr = group.create_array(
         name=name,
         shape=data.shape,
@@ -55,6 +62,7 @@ def _create_array(group, name, data, *, chunks, dimension_names):
         dimension_names=dimension_names,
         compressors=None,
         filters=None,
+        **extra,
     )
     arr[...] = data
     # Mirror dimension names to the v2-style attr that vcztools.vcf_writer.dims
@@ -137,6 +145,7 @@ def make_vcz(
     region_index=None,
     ploidy=2,
     position_dtype=None,
+    endian=None,
 ):
     """
     Build an in-memory VCZ group and return it.
@@ -172,7 +181,12 @@ def make_vcz(
     ``position_dtype`` sets the integer dtype of ``variant_position`` and the
     auto-computed ``region_index`` (default int32); pass ``np.int64`` to build a
     store with 64-bit positions.
+
+    ``endian`` selects the bytes-codec byte order for every fixed-width array
+    (``"big"`` or ``"little"``); ``None`` uses zarr's default. VLEN string
+    arrays are unaffected (their codec has no byte order).
     """
+    create_array = functools.partial(_create_array, endian=endian)
     pos_dtype = position_dtype if position_dtype is not None else np.int32
     variant_contig = np.asarray(variant_contig, dtype=np.int32)
     variant_position = np.asarray(variant_position, dtype=pos_dtype)
@@ -258,21 +272,21 @@ def make_vcz(
             sample_id_arr = np.asarray(sample_id, dtype="<U64")
             if sample_id_arr.shape != (num_samples,):
                 raise ValueError("sample_id length must match num_samples")
-        _create_array(
+        create_array(
             root,
             "sample_id",
             sample_id_arr,
             chunks=(s_chunk,),
             dimension_names=("samples",),
         )
-        _create_array(
+        create_array(
             root,
             "contig_id",
             np.array(list(contigs), dtype="<U32"),
             chunks=(len(contigs),),
             dimension_names=("contigs",),
         )
-        _create_array(
+        create_array(
             root,
             "filter_id",
             np.array(list(filters), dtype="<U32"),
@@ -282,49 +296,49 @@ def make_vcz(
         if filter_descriptions is not None:
             if len(filter_descriptions) != len(filters):
                 raise ValueError("filter_descriptions length must match filters length")
-            _create_array(
+            create_array(
                 root,
                 "filter_description",
                 np.array(list(filter_descriptions), dtype="<U64"),
                 chunks=(len(filters),),
                 dimension_names=("filters",),
             )
-        _create_array(
+        create_array(
             root,
             "variant_contig",
             variant_contig,
             chunks=(_vc("variant_contig"),),
             dimension_names=("variants",),
         )
-        _create_array(
+        create_array(
             root,
             "variant_position",
             variant_position,
             chunks=(_vc("variant_position"),),
             dimension_names=("variants",),
         )
-        _create_array(
+        create_array(
             root,
             "variant_length",
             variant_length,
             chunks=(_vc("variant_length"),),
             dimension_names=("variants",),
         )
-        _create_array(
+        create_array(
             root,
             "variant_allele",
             allele_array,
             chunks=(_vc("variant_allele"), max_alleles),
             dimension_names=("variants", "alleles"),
         )
-        _create_array(
+        create_array(
             root,
             "variant_filter",
             variant_filter,
             chunks=(_vc("variant_filter"), len(filters)),
             dimension_names=("variants", "filters"),
         )
-        _create_array(
+        create_array(
             root,
             "region_index",
             region_index,
@@ -336,7 +350,7 @@ def make_vcz(
             # dtype inferred from input so tests can exercise rsids
             # longer than 16 characters; the production VCZ schema
             # uses whatever width bio2zarr emits for the source data.
-            _create_array(
+            create_array(
                 root,
                 "variant_id",
                 np.asarray(variant_id),
@@ -347,7 +361,7 @@ def make_vcz(
             variant_quality = np.asarray(variant_quality)
             if variant_quality.dtype.kind != "f":
                 variant_quality = variant_quality.astype(np.float32)
-            _create_array(
+            create_array(
                 root,
                 "variant_quality",
                 variant_quality,
@@ -357,7 +371,7 @@ def make_vcz(
 
         if num_samples > 0 and call_genotype is not None:
             call_genotype = np.asarray(call_genotype, dtype=np.int8)
-            _create_array(
+            create_array(
                 root,
                 "call_genotype",
                 call_genotype,
@@ -379,7 +393,7 @@ def make_vcz(
                         f"call_fields[{name!r}] must be 2- or 3-dimensional, "
                         f"got ndim={data.ndim}"
                     )
-                _create_array(
+                create_array(
                     root,
                     f"call_{name}",
                     data,
@@ -397,7 +411,7 @@ def make_vcz(
                 )
                 field_v = _vc(f"variant_{name}")
                 chunks = (field_v,) if data.ndim == 1 else (field_v, data.shape[1])
-                _create_array(
+                create_array(
                     root,
                     f"variant_{name}",
                     data,

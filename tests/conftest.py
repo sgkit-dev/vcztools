@@ -142,6 +142,16 @@ def fx_dtype_matrix_reference() -> zarr.Group:
 
 
 @pytest.fixture(scope="session")
+def fx_dtype_matrix_big_endian() -> zarr.Group:
+    """Big-endian-serialized twin of :func:`fx_dtype_matrix`.
+
+    Every fixed-width array is stored with a big-endian bytes codec; VLEN
+    string arrays keep the byte-order-neutral default. Read-only.
+    """
+    return vcz_builder.make_dtype_matrix(endian="big")
+
+
+@pytest.fixture(scope="session")
 def fx_all_vcz(
     fx_sample_vcz,
     fx_sample_split_alleles_vcz,

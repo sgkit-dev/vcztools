@@ -46,6 +46,17 @@ _PARITY_INFO_FIELDS = [
     and field.vcf_type in ("Integer", "Float", "String")
     and field.vcf_id.startswith(("IA", "IB", "IC", "ID", "FA", "FB", "FC", "SA"))
 ]
+# Every fixed-width field (everything that is not a VLEN StringDType, kind "T").
+_FIXED_WIDTH_FIELDS = [field for field in _FIELDS if field.dtype.kind != "T"]
+# Fixed-width numeric fields wider than one byte: their bytes codec records an
+# explicit byte order, so a big-endian build is observable in the metadata.
+_MULTIBYTE_NUMERIC_FIELDS = [
+    field
+    for field in _FIELDS
+    if field.dtype.kind in ("i", "f") and field.dtype.itemsize > 1
+]
+# Variable-length string fields use the byte-order-neutral VLenUTF8 codec.
+_STRING_FIELDS = [field for field in _FIELDS if field.dtype.kind == "T"]
 
 
 def _view(group):
@@ -318,3 +329,61 @@ class TestInt64:
         )
         with pytest.raises(ValueError, match="POS"):
             _view(group)
+
+
+class TestEndianParity:
+    """A store whose fixed-width arrays are serialized big-endian reads back
+    identically to the native (default-endian) store across every supported
+    dtype. Byte order is a property of the zarr bytes codec, not the dtype, and
+    the codec normalizes to native byte order on decode, so the reader and the
+    encoder always see native-order arrays regardless of the on-disk order."""
+
+    @staticmethod
+    def _codecs(array):
+        return array.metadata.to_dict()["codecs"]
+
+    @staticmethod
+    def _readback(group, field):
+        reader = VczReader(group)
+        chunks = list(reader.variant_chunks(fields=[field.array_name]))
+        return np.concatenate([chunk[field.array_name] for chunk in chunks], axis=0)
+
+    @pytest.mark.parametrize(
+        "field", _MULTIBYTE_NUMERIC_FIELDS, ids=lambda f: f"{f.category}/{f.vcf_id}"
+    )
+    def test_numeric_fields_stored_big_endian(self, fx_dtype_matrix_big_endian, field):
+        # Guard against a vacuous parity test: the store really is big-endian.
+        codecs = self._codecs(fx_dtype_matrix_big_endian[field.array_name])
+        assert {"name": "bytes", "configuration": {"endian": "big"}} in codecs
+
+    @pytest.mark.parametrize(
+        "field", _STRING_FIELDS, ids=lambda f: f"{f.category}/{f.vcf_id}"
+    )
+    def test_string_fields_keep_vlen_codec(self, fx_dtype_matrix_big_endian, field):
+        # VLEN strings have no byte order, so they stay on the VLenUTF8 codec.
+        codecs = self._codecs(fx_dtype_matrix_big_endian[field.array_name])
+        assert all(codec["name"] != "bytes" for codec in codecs)
+
+    def test_full_view_parity(self, fx_dtype_matrix, fx_dtype_matrix_big_endian):
+        assert _view(fx_dtype_matrix_big_endian) == _view(fx_dtype_matrix)
+
+    def test_full_query_parity(self, fx_dtype_matrix, fx_dtype_matrix_big_endian):
+        info_tags = [f"%{field.vcf_id}" for field in _PARITY_INFO_FIELDS]
+        format_tags = [f"[%{field.vcf_id} ]" for field in _PARITY_INFO_FIELDS]
+        query_format = "\t".join(["%POS", *info_tags, *format_tags]) + "\n"
+        assert _query(fx_dtype_matrix_big_endian, query_format) == _query(
+            fx_dtype_matrix, query_format
+        )
+
+    @pytest.mark.parametrize(
+        "field", _FIXED_WIDTH_FIELDS, ids=lambda f: f"{f.category}/{f.vcf_id}"
+    )
+    def test_readback_native_byteorder(
+        self, fx_dtype_matrix, fx_dtype_matrix_big_endian, field
+    ):
+        native = self._readback(fx_dtype_matrix, field)
+        big = self._readback(fx_dtype_matrix_big_endian, field)
+        # The reader yields native byte order, and the decoded bytes match the
+        # default-endian store despite the big-endian on-disk serialization.
+        assert big.dtype.isnative
+        assert big.tobytes() == native.tobytes()

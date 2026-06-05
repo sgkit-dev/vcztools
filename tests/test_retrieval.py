@@ -617,7 +617,7 @@ class TestVczReaderArraysReadOnly:
         ("contigs", False),
         ("filters", False),
         ("raw_sample_ids", False),
-        ("non_null_sample_indices", False),
+        ("_non_null_sample_indices", False),
         ("sample_ids", False),
         ("samples_selection", False),
         ("contig_lengths", True),
@@ -3909,10 +3909,9 @@ class TestRepr:
 
     def test_null_samples_count(self):
         reader = VczReader(self._null_sample_vcz())
-        expected = reader.num_samples - len(reader.non_null_sample_indices)
-        assert expected == 2
-        assert f"null_samples={expected}" in repr(reader)
-        assert f"<td>{expected}</td>" in reader._repr_html_()
+        assert reader.num_null_samples == 2
+        assert "null_samples=2" in repr(reader)
+        assert "<td>2</td>" in reader._repr_html_()
 
     def test_no_null_samples_omitted_from_repr(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)

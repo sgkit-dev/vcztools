@@ -10,7 +10,7 @@ example-driven introduction to opening datasets and iterating variants, and
 .. autofunction:: vcztools.open_zarr
 
 .. autoclass:: vcztools.VczReader
-   :members: sample_ids, raw_sample_ids, non_null_sample_indices,
+   :members: sample_ids, raw_sample_ids,
              contig_ids, num_variants, num_samples,
              field_names, virtual_field_names, set_samples,
              set_sample_indexes, set_variants,

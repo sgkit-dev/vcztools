@@ -1439,6 +1439,27 @@ class TestVczReaderSamples:
         with pytest.raises(ValueError, match="sample index out of range"):
             reader.set_samples([-1])
 
+    @staticmethod
+    def _masked_vcz():
+        return vcz_builder.make_vcz(
+            variant_contig=[0],
+            variant_position=[1],
+            alleles=[("A", "T")],
+            num_samples=3,
+            sample_id=np.array(["s0", "", "s2"]),
+            call_genotype=np.zeros((1, 3, 2), dtype=np.int8),
+        )
+
+    def test_samples_null_index_raises(self):
+        reader = VczReader(self._masked_vcz())
+        with pytest.raises(ValueError, match="null sample"):
+            reader.set_samples([0, 1])
+
+    def test_samples_non_null_index_after_null_allowed(self):
+        reader = VczReader(self._masked_vcz())
+        reader.set_samples([2, 0])
+        nt.assert_array_equal(reader.sample_ids, ["s2", "s0"])
+
     def test_samples_empty_list(self, fx_sample_vcz):
         # Post-resolve, an empty list means "no samples" (e.g. all
         # requested names were dropped by ignore_missing_samples).

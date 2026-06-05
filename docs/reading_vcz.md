@@ -187,9 +187,18 @@ chunk = next(reader.variant_chunks(fields=["call_genotype"]))
 print("call_genotype sample columns:", chunk["call_genotype"].shape[1])
 ```
 
-`set_samples` indexes are positions in the raw `sample_id` array, so build
-index-based selections from `non_null_sample_indices` rather than a bare
-`range` — selecting a null index would put an empty string in `sample_ids`:
+`set_samples` indexes are positions in the raw `sample_id` array, and selecting
+a null index raises a `ValueError`:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+try:
+    reader.set_samples([1])  # index 1 is the null sample
+except ValueError as exc:
+    print(exc)
+```
+
+Build index-based selections from `non_null_sample_indices` to avoid them:
 
 ```{code-cell} ipython3
 reader = vcztools.VczReader(root)

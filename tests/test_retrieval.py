@@ -14,6 +14,7 @@ from vcztools import constants, utils
 from vcztools import regions as regions_mod
 from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
+from vcztools import virtual_fields as virtual_fields_mod
 from vcztools.bcftools_filter import BcftoolsFilter
 from vcztools.retrieval import CachedLogicalVariantsChunk, VczReader
 
@@ -443,7 +444,7 @@ class TestVariantChunksReadOnly:
         writable[0] = 0
 
     def test_variant_index_only_read_only(self):
-        # Pseudo-field requested alone: ``real_query_fields`` is empty,
+        # Virtual field requested alone: ``real_query_fields`` is empty,
         # ``_absolute_variant_indexes`` is the only producer. The
         # emitted array must still be marked read-only at the yield
         # site even though no Zarr-backed field went through
@@ -464,7 +465,7 @@ class TestVariantChunksReadOnly:
         )
 
     def test_variant_index_after_filter_selection_read_only(self):
-        # When a variant filter drops rows the per-chunk pseudo-field
+        # When a variant filter drops rows the per-chunk variant_index
         # array is fancy-indexed with the surviving-rows mask
         # (``value = value[variants_selection]``) before yield. That
         # post-selection result is a fresh owning array, and it must
@@ -2454,7 +2455,7 @@ class TestMaterialiseVariantFilter:
 
 
 class TestAbsoluteVariantIndexes:
-    """``retrieval._absolute_variant_indexes`` maps a
+    """``virtual_fields._absolute_variant_indexes`` maps a
     :class:`~vcztools.utils.ChunkRead` to the global variant indexes
     it contributes. Three branches by ``ChunkRead.selection`` shape:
     ``None`` (full chunk, length from ``num_selected``), ``slice``
@@ -2463,47 +2464,47 @@ class TestAbsoluteVariantIndexes:
 
     def test_selection_none_full_chunk_at_origin(self):
         entry = utils.ChunkRead(index=0, num_selected=4, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [0, 1, 2, 3])
         assert out.dtype == np.int64
 
     def test_selection_none_offset_by_chunk_index(self):
         # index=3, chunk_size=4 → offset 12 over a full chunk.
         entry = utils.ChunkRead(index=3, num_selected=4, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [12, 13, 14, 15])
 
     def test_selection_none_partial_last_chunk(self):
         # Partial last chunk: num_selected < chunk_size. Length must
         # come from num_selected, not chunk_size.
         entry = utils.ChunkRead(index=2, num_selected=2, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [8, 9])
 
     def test_selection_slice_full_chunk(self):
         entry = utils.ChunkRead(index=1, num_selected=3, selection=slice(0, 3))
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=3)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=3)
         nt.assert_array_equal(out, [3, 4, 5])
         assert out.dtype == np.int64
 
     def test_selection_slice_partial(self):
         # slice(1, 3) inside chunk index 4 with chunk_size 4 → [17, 18].
         entry = utils.ChunkRead(index=4, num_selected=2, selection=slice(1, 3))
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [17, 18])
 
     def test_selection_slice_open_ended(self):
         # slice(2, None) is normalised against chunk_size by sel.indices,
         # producing [2, chunk_size).
         entry = utils.ChunkRead(index=0, num_selected=2, selection=slice(2, None))
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [2, 3])
 
     def test_selection_ndarray(self):
         # Non-contiguous local indexes inside chunk index 2 (offset 6).
         sel = np.array([0, 2, 3], dtype=np.int64)
         entry = utils.ChunkRead(index=2, num_selected=3, selection=sel)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=3)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=3)
         nt.assert_array_equal(out, [6, 8, 9])
         assert out.dtype == np.int64
 
@@ -2511,14 +2512,14 @@ class TestAbsoluteVariantIndexes:
         # Helper coerces to int64 even when the input dtype is narrower.
         sel = np.array([0, 2], dtype=np.int32)
         entry = utils.ChunkRead(index=1, num_selected=2, selection=sel)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         nt.assert_array_equal(out, [4, 6])
         assert out.dtype == np.int64
 
     def test_selection_ndarray_empty(self):
         sel = np.array([], dtype=np.int64)
         entry = utils.ChunkRead(index=5, num_selected=0, selection=sel)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         assert out.shape == (0,)
         assert out.dtype == np.int64
 
@@ -2526,15 +2527,16 @@ class TestAbsoluteVariantIndexes:
         # num_selected=0 with selection=None: empty result, no offset
         # added (np.arange(0) is empty so chunk_offset never broadcasts).
         entry = utils.ChunkRead(index=7, num_selected=0, selection=None)
-        out = retrieval_mod._absolute_variant_indexes(entry, chunk_size=4)
+        out = virtual_fields_mod._absolute_variant_indexes(entry, chunk_size=4)
         assert out.shape == (0,)
         assert out.dtype == np.int64
 
 
-class TestVariantIndexPseudoField:
+class TestVariantIndexVirtualField:
     """``VczReader.variant_chunks(fields=["variant_index"])`` emits the
     global (store-wide) variant index of each surviving variant in
-    each chunk, without reading any variants-axis array. Used by
+    each chunk, without reading any variants-axis array. ``variant_index``
+    is a virtual field (see :attr:`VczReader.virtual_field_names`). Used by
     ``materialise_variant_filter`` to build a chunk plan from a
     filter; available to any caller that needs to round-trip the
     selection back to global indexes."""
@@ -2550,6 +2552,28 @@ class TestVariantIndexPseudoField:
             info_fields={"DP": np.arange(num_variants, dtype=np.int32) * 10},
             variants_chunk_size=variants_chunk_size,
         )
+
+    def test_in_virtual_field_names(self):
+        # variant_index has no store deps, so it is available on every
+        # store as a virtual field.
+        reader = VczReader(self._make())
+        assert "variant_index" in reader.virtual_field_names
+
+    def test_field_info_synthesised(self):
+        # As a registry virtual field, variant_index gets FieldInfo from
+        # its registry entry rather than raising KeyError.
+        reader = VczReader(self._make(num_variants=10))
+        info = reader.get_field_info("variant_index")
+        assert info.dtype == np.int64
+        assert info.dims == ("variants",)
+        assert info.shape == (10,)
+
+    def test_not_auto_emitted(self):
+        # Default-emit (fields=None) covers stored variant_*/call_* only;
+        # variant_index is never stored, so it is not auto-discovered.
+        reader = VczReader(self._make())
+        chunk = next(iter(reader.variant_chunks()))
+        assert "variant_index" not in chunk
 
     def test_default_plan_yields_full_axis(self):
         # No selection, no filter: concatenated indexes cover [0, N).
@@ -2591,7 +2615,7 @@ class TestVariantIndexPseudoField:
 
     def test_slice_selection_is_handled(self):
         # A single contiguous range becomes a slice selection on the
-        # ChunkRead; the pseudo-field must produce the same global
+        # ChunkRead; variant_index must produce the same global
         # indexes.
         reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
         reader.set_variants(np.array([3, 4], dtype=np.int64))
@@ -2607,8 +2631,8 @@ class TestVariantIndexPseudoField:
 
     def test_ndarray_selection_is_handled(self):
         # Non-contiguous local indexes within a chunk keep the
-        # selection as an ndarray (no collapse to slice). The
-        # pseudo-field must use the ndarray branch of the helper.
+        # selection as an ndarray (no collapse to slice). variant_index
+        # must use the ndarray branch of the helper.
         reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
         reader.set_variants(np.array([0, 2, 4, 6, 7], dtype=np.int64))
         plan = reader.variant_chunk_plan

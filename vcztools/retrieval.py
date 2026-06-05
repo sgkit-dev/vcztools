@@ -107,31 +107,6 @@ class FieldInfo:
     attrs: dict
 
 
-# Query-only pseudo-fields recognised by :meth:`VczReader.variant_chunks`.
-# Each is emitted from per-chunk plan state, never from a Zarr array.
-_PSEUDO_QUERY_FIELDS = frozenset({"variant_index"})
-
-
-def _absolute_variant_indexes(entry: utils.ChunkRead, chunk_size: int) -> np.ndarray:
-    """Global variant indexes contributed by ``entry``.
-
-    Maps each variant the chunk read selects to its store-wide variant
-    index. ``chunk_size`` is the unit ``entry.index`` is measured in —
-    ``min_chunk`` for canonical plan entries, ``stream_chunk_size`` for
-    stream-plan entries. Used to materialise the ``variant_index``
-    pseudo-field in :meth:`VczReader.variant_chunks`.
-    """
-    chunk_offset = entry.index * chunk_size
-    sel = entry.selection
-    if sel is None:
-        local = np.arange(entry.num_selected, dtype=np.int64)
-    elif isinstance(sel, slice):
-        local = np.arange(*sel.indices(chunk_size), dtype=np.int64)
-    else:
-        local = np.asarray(sel, dtype=np.int64)
-    return chunk_offset + local
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class FieldSpec:
     """Per-query, per-field constants for stream-reader block derivation.
@@ -676,6 +651,23 @@ class VczReader:
 
     Use as a context manager (``with VczReader(root) as reader:``) so
     the reader's resources are released deterministically on exit.
+
+    Virtual fields
+    --------------
+    Besides stored arrays, these computed variant-axis fields may be
+    named in :meth:`variant_chunks` ``fields`` or in a filter expression.
+    Availability depends on the store; see :attr:`virtual_field_names`.
+    They are addressable by name but never auto-emitted when ``fields``
+    is ``None``.
+
+    ``variant_index``     Global (store-wide) 0-based index of the variant.
+    ``variant_AC``        Allele count in genotypes.
+    ``variant_AN``        Total number of alleles in called genotypes.
+    ``variant_AF``        Allele frequency.
+    ``variant_NS``        Number of samples with data.
+    ``variant_N_ALT``     Number of non-empty ALT alleles.
+    ``variant_N_MISSING`` Number of samples with all-missing genotypes.
+    ``variant_F_MISSING`` Fraction of samples with all-missing genotypes.
 
     Parameters
     ----------
@@ -1229,11 +1221,10 @@ class VczReader:
         ``start < 0`` and ``fields == []`` are reported on the call
         itself rather than on the first ``next()``.
 
-        The reserved name ``"variant_index"`` may be passed in
-        ``fields`` as a pseudo-field. It does not correspond to a stored
-        array; instead the yielded per-chunk array holds the global
-        (store-wide) variant index of each surviving variant in that
-        chunk, dtype ``int64``. Pseudo-fields are not auto-discovered
+        Virtual fields (see :attr:`virtual_field_names`) may be named in
+        ``fields`` alongside stored arrays. ``"variant_index"`` is one:
+        its per-chunk array holds the global (store-wide) ``int64`` index
+        of each surviving variant. Virtual fields are not auto-emitted
         when ``fields`` is ``None``.
         """
         if start < 0:
@@ -1284,13 +1275,13 @@ class VczReader:
             )
 
         # Split referenced fields into static (read once on the reader)
-        # and dynamic (prefetched per stream chunk). Pseudo-fields
-        # (e.g. ``variant_index``) are query-only and never enter the
-        # Zarr-backed split; they are emitted directly from per-chunk
-        # plan state.
+        # and dynamic (prefetched per stream chunk).
         #
-        # Virtual fields go through the registry. How a field resolves
-        # (stored array vs registry compute) depends on the mode.
+        # Virtual fields go through the registry and never enter the
+        # Zarr-backed split when computed; they are produced per chunk
+        # from their dependencies (or, for ``variant_index``, from the
+        # chunk's plan state). How a field resolves (stored array vs
+        # registry compute) depends on the mode.
         #
         # Default (subset-first) mode: one rule for filter and output,
         # so a filter on a field and its emitted value always agree. A
@@ -1355,11 +1346,7 @@ class VczReader:
                     out.append(n)
             return out
 
-        real_query_fields = [
-            f
-            for f in query_fields
-            if f not in _PSEUDO_QUERY_FIELDS and f not in virtual_query_fields
-        ]
+        real_query_fields = [f for f in query_fields if f not in virtual_query_fields]
         real_filter_fields = [
             f for f in filter_fields if f not in virtual_filter_fields
         ]
@@ -1467,13 +1454,16 @@ class VczReader:
                 # filter fields read the full pre-subset axis via
                 # filter_view.
                 virtual_cache: dict = {}
+                chunk_context = virtual_fields_mod.ChunkContext(
+                    chunk.variant_chunk, stream_chunk_size
+                )
 
-                def _virtual_value(name, view_fn, cache):
+                def _virtual_value(name, view_fn, cache, context):
                     if name in cache:
                         return cache[name]
                     vf = self._virtual_fields[name]
                     deps = {dep: view_fn(dep) for dep in vf.deps}
-                    value = vf.compute(deps, cache)
+                    value = vf.compute(deps, cache, context)
                     cache[name] = value
                     return value
 
@@ -1484,7 +1474,7 @@ class VczReader:
                             filter_data[f] = referenced_static_fields[f]
                         elif f in virtual_filter_fields:
                             filter_data[f] = _virtual_value(
-                                f, chunk.output_view, virtual_cache
+                                f, chunk.output_view, virtual_cache, chunk_context
                             )
                         else:
                             filter_data[f] = chunk.filter_view(f)
@@ -1522,12 +1512,10 @@ class VczReader:
                     if field in referenced_static_fields:
                         chunk_data[field] = referenced_static_fields[field]
                         continue
-                    if field == "variant_index":
-                        value = _absolute_variant_indexes(
-                            chunk.variant_chunk, stream_chunk_size
+                    if field in virtual_query_fields:
+                        value = _virtual_value(
+                            field, chunk.output_view, virtual_cache, chunk_context
                         )
-                    elif field in virtual_query_fields:
-                        value = _virtual_value(field, chunk.output_view, virtual_cache)
                     else:
                         value = chunk.output_view(field)
                     if variants_selection is not None:

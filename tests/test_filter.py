@@ -3,6 +3,7 @@ import numpy.testing as nt
 import pyparsing as pp
 import pytest
 
+from tests import utils
 from vcztools import bcftools_filter as filter_mod
 from vcztools import constants
 from vcztools import virtual_fields as virtual_fields_mod
@@ -259,13 +260,13 @@ class TestFilterExpressionSample:
         root = fx_sample_vcz.group
         data = {field: root[field][:] for field in root.keys()}
         filter_expr = filter_mod.BcftoolsFilter(
-            field_names=set(root), include=expression
+            utils.FilterReader(set(root)), include=expression
         )
         result = filter_expr.evaluate(data)
         nt.assert_array_equal(result, expected_result)
 
         filter_expr = filter_mod.BcftoolsFilter(
-            field_names=set(root), exclude=expression
+            utils.FilterReader(set(root)), exclude=expression
         )
         result = filter_expr.evaluate(data)
         nt.assert_array_equal(result, np.logical_not(expected_result))
@@ -291,7 +292,9 @@ class TestFilterExpression:
         ],
     )
     def test_evaluate(self, expression, data, expected):
-        fee = filter_mod.BcftoolsFilter(field_names=data.keys(), include=expression)
+        fee = filter_mod.BcftoolsFilter(
+            utils.FilterReader(data.keys()), include=expression
+        )
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -323,7 +326,7 @@ class TestFilterExpression:
             ],
             "filter_id": ["PASS", "A", "B", "C"],
         }
-        fee = filter_mod.BcftoolsFilter(include=expression)
+        fee = filter_mod.BcftoolsFilter(utils.FilterReader(()), include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -353,7 +356,7 @@ class TestFilterExpression:
                 ["A", "T", "G", "C"],
             ],
         }
-        fee = filter_mod.BcftoolsFilter(include=expression)
+        fee = filter_mod.BcftoolsFilter(utils.FilterReader(()), include=expression)
         result = fee.evaluate(numpify_values(data))
         nt.assert_array_equal(result, expected)
 
@@ -380,7 +383,7 @@ class TestFilterExpression:
             ],
         }
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_ALT", "variant_allele"}, include=expression
+            utils.FilterReader({"variant_N_ALT", "variant_allele"}), include=expression
         )
         evaluated = _materialise_virtuals(numpify_values(data), ["variant_N_ALT"])
         result = fee.evaluate(evaluated)
@@ -388,7 +391,7 @@ class TestFilterExpression:
 
     def test_n_alt_referenced_fields(self):
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_ALT"}, include="N_ALT >= 2"
+            utils.FilterReader({"variant_N_ALT"}), include="N_ALT >= 2"
         )
         assert fee.referenced_fields == {"variant_N_ALT"}
         assert fee.scope == "variant"
@@ -431,7 +434,8 @@ class TestFilterExpression:
     )
     def test_evaluate_n_missing(self, expression, expected):
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_MISSING", "call_genotype"}, include=expression
+            utils.FilterReader({"variant_N_MISSING", "call_genotype"}),
+            include=expression,
         )
         data = _materialise_virtuals(
             numpify_values(self._MISSING_GT_DATA), ["variant_N_MISSING"]
@@ -452,7 +456,8 @@ class TestFilterExpression:
     )
     def test_evaluate_f_missing(self, expression, expected):
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_F_MISSING", "call_genotype"}, include=expression
+            utils.FilterReader({"variant_F_MISSING", "call_genotype"}),
+            include=expression,
         )
         data = _materialise_virtuals(
             numpify_values(self._MISSING_GT_DATA), ["variant_F_MISSING"]
@@ -481,7 +486,7 @@ class TestFilterExpression:
             "variant_position": np.array([1, 2, 3]),
         }
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_MISSING", "variant_allele"},
+            utils.FilterReader({"variant_N_MISSING", "variant_allele"}),
             include='N_MISSING > 0 && TYPE~"snp"',
         )
         data = _materialise_virtuals(data, ["variant_N_MISSING"])
@@ -492,25 +497,27 @@ class TestFilterExpression:
         # is responsible for materialising the value from ``call_genotype``
         # before evaluate runs.
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_MISSING"}, include="N_MISSING == 0"
+            utils.FilterReader({"variant_N_MISSING"}), include="N_MISSING == 0"
         )
         assert fee.referenced_fields == {"variant_N_MISSING"}
         assert fee.scope == "variant"
 
     def test_f_missing_referenced_fields(self):
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_F_MISSING"}, include="F_MISSING < 0.5"
+            utils.FilterReader({"variant_F_MISSING"}), include="F_MISSING < 0.5"
         )
         assert fee.referenced_fields == {"variant_F_MISSING"}
         assert fee.scope == "variant"
 
     def test_combined_missing_referenced_fields(self):
         fee = filter_mod.BcftoolsFilter(
-            field_names={
-                "variant_DP",
-                "variant_N_MISSING",
-                "variant_F_MISSING",
-            },
+            utils.FilterReader(
+                {
+                    "variant_DP",
+                    "variant_N_MISSING",
+                    "variant_F_MISSING",
+                }
+            ),
             include="N_MISSING == 0 && F_MISSING < 0.05 && INFO/DP > 10",
         )
         assert fee.referenced_fields == {
@@ -526,7 +533,7 @@ class TestFilterExpression:
         # rejects the expression rather than silently passing all rows.
         with pytest.raises(ValueError, match=f'the tag "{tag}" is not defined'):
             filter_mod.BcftoolsFilter(
-                field_names={"variant_position"}, include=f"{tag} == 0"
+                utils.FilterReader({"variant_position"}), include=f"{tag} == 0"
             )
 
     def test_evaluate_n_missing_with_fill_only(self):
@@ -549,7 +556,7 @@ class TestFilterExpression:
             "variant_position": np.array([1, 2]),
         }
         fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_MISSING", "call_genotype"},
+            utils.FilterReader({"variant_N_MISSING", "call_genotype"}),
             include="N_MISSING == 2",
         )
         data = _materialise_virtuals(data, ["variant_N_MISSING"])
@@ -566,7 +573,7 @@ class TestFilterExpression:
     )
     def test_referenced_fields(self, expr, expected):
         fe = filter_mod.BcftoolsFilter(
-            field_names={f"variant_{x}" for x in "abcd"}, include=expr
+            utils.FilterReader({f"variant_{x}" for x in "abcd"}), include=expr
         )
         assert fe.referenced_fields == expected
 
@@ -584,7 +591,7 @@ class TestFilterExpression:
     )
     def test_repr(self, expr, expected):
         fe = filter_mod.BcftoolsFilter(
-            field_names={"variant_a", "variant_b"}, include=expr
+            utils.FilterReader({"variant_a", "variant_b"}), include=expr
         )
         assert repr(fe.parse_result[0]) == expected
 
@@ -777,11 +784,11 @@ class TestBcftoolsParser:
 class TestAPIErrors:
     def test_include_and_exclude(self):
         with pytest.raises(ValueError, match="Cannot handle both an include "):
-            filter_mod.BcftoolsFilter(include="x", exclude="y")
+            filter_mod.BcftoolsFilter(utils.FilterReader(()), include="x", exclude="y")
 
     def test_undefined_filter_name(self):
         flt = filter_mod.BcftoolsFilter(
-            field_names={"filter_id", "variant_filter"},
+            utils.FilterReader({"filter_id", "variant_filter"}),
             include='FILTER="NOPE"',
         )
         data = {

@@ -59,13 +59,20 @@ def make_reader(
 
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names | reader.virtual_field_names,
-            include=include,
-            exclude=exclude,
+            reader, include=include, exclude=exclude
         )
         reader.set_variant_filter(variant_filter)
 
     return reader
+
+
+class FilterReader:
+    """Minimal stand-in for a VczReader exposing only the field-name
+    resolution surface BcftoolsFilter needs at construction."""
+
+    def __init__(self, field_names):
+        self.field_names = frozenset(field_names)
+        self.virtual_field_names = frozenset()
 
 
 def load_dataset(

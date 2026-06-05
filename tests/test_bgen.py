@@ -1156,9 +1156,7 @@ class TestWriteBgenEndToEnd:
         # still-configured filter raises before any sidecar is written.
         reader = _build_reader(num_variants=3, num_samples=2)
         reader.set_variant_filter(
-            bcftools_filter.BcftoolsFilter(
-                field_names={"variant_N_ALT"}, include="N_ALT <= 1"
-            )
+            bcftools_filter.BcftoolsFilter(reader, include="N_ALT <= 1")
         )
         bgen_path = tmp_path / "out.bgen"
         sample_path = tmp_path / "out.sample"
@@ -2546,9 +2544,7 @@ class TestBgenEncoderLifecycle:
     def test_constructor_rejects_variant_filter(self):
         reader = _build_reader(num_variants=3, num_samples=3)
         reader.set_variant_filter(
-            bcftools_filter.BcftoolsFilter(
-                field_names={"variant_N_ALT"}, include="N_ALT <= 1"
-            )
+            bcftools_filter.BcftoolsFilter(reader, include="N_ALT <= 1")
         )
         with pytest.raises(
             NotImplementedError, match="does not support a configured variant filter"

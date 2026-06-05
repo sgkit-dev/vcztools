@@ -472,9 +472,7 @@ class TestVariantChunksReadOnly:
         # also be flagged read-only.
         root = self._make_vcz()
         reader = VczReader(root)
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS>=105")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS>=105"))
         emitted = []
         for chunk in reader.variant_chunks(fields=["variant_index"]):
             idx = chunk["variant_index"]
@@ -530,9 +528,7 @@ class TestVariantChunksReadOnly:
         # result must still be read-only.
         root = self._make_sample_scope_vcz()
         reader = VczReader(root)
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>=4")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="FMT/DP>=4"))
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         # DP[v, s] = v + s; DP>=4 drops v=0, v=1 (no sample passes);
         # v=2..5 each contribute one row.
@@ -593,9 +589,7 @@ class TestVariantChunksReadOnly:
         # change that always emits the key.
         root = self._make_sample_scope_vcz()
         reader = VczReader(root)
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS>=103")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS>=103"))
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         assert len(chunks) > 0
         for chunk in chunks:
@@ -1791,7 +1785,7 @@ class TestVariantChunksFilterPlusSamples:
         reader.set_samples([1, 2])
         reader.set_variants(regions_mod.build_chunk_plan(reader, regions="20:1230236-"))
         reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>3"),
+            BcftoolsFilter(reader, include="FMT/DP>3"),
         )
         chunks = list(reader.variant_chunks(fields=["variant_position", "call_DP"]))
         chunk = chunks[0]
@@ -1811,7 +1805,7 @@ class TestVariantChunksFilterPlusSamples:
             if view_semantics:
                 reader.set_bcftools_semantics(full_sample_filter=True)
             reader.set_variant_filter(
-                BcftoolsFilter(field_names=reader.field_names, include="FMT/DP>3"),
+                BcftoolsFilter(reader, include="FMT/DP>3"),
             )
             return reader
 
@@ -1833,7 +1827,7 @@ class TestVariantChunksFilterPlusSamples:
             if view_semantics:
                 reader.set_bcftools_semantics(full_sample_filter=True)
             reader.set_variant_filter(
-                BcftoolsFilter(field_names=reader.field_names, include="POS > 1000000"),
+                BcftoolsFilter(reader, include="POS > 1000000"),
             )
             return reader
 
@@ -2119,10 +2113,8 @@ class TestVczReaderMissingSamplesMultiChunk:
 
     def test_default_masking_sample_scope_filter_ignores_masked(self):
         root = self._vcz()
-        variant_filter = BcftoolsFilter(
-            field_names=frozenset(root.keys()), include="FMT/GQ > 50"
-        )
         reader = VczReader(root)
+        variant_filter = BcftoolsFilter(reader, include="FMT/GQ > 50")
         reader.set_variant_filter(variant_filter)
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         positions = np.concatenate([c["variant_position"] for c in chunks])
@@ -2311,12 +2303,8 @@ class TestSettersReplace:
 
     def test_set_variant_filter_replaces(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS<0")
-        )
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS>0")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS<0"))
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS>0"))
         n = sum(
             len(chunk["variant_position"])
             for chunk in reader.variant_chunks(fields=["variant_position"])
@@ -2325,9 +2313,7 @@ class TestSettersReplace:
 
     def test_set_variant_filter_none_clears(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS<0")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS<0"))
         reader.set_variant_filter(None)
         assert reader.variant_filter is None
         n = sum(
@@ -2345,16 +2331,12 @@ class TestSettersReplace:
             variants_chunk_size=2,
         )
         reader = VczReader(root)
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS<102")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS<102"))
         gen = reader.variant_chunks(fields=["variant_position"])
         first = next(gen)
         # Swap to a permissive filter mid-iteration; the in-flight
         # generator should keep using the snapshot taken at start.
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS>=0")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS>=0"))
         rest = [chunk["variant_position"].tolist() for chunk in gen]
         gen.close()
         # The snapshot filter (POS<102) keeps the first chunk in full
@@ -2389,18 +2371,14 @@ class TestMaterialiseVariantFilter:
 
     def test_filter_is_cleared(self):
         reader = VczReader(self._build())
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>=20")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>=20"))
         reader.materialise_variant_filter()
         assert reader.variant_filter is None
 
     def test_surviving_indexes_match_independent_eval(self):
         # DP = [0, 10, 20, 30, 40]; include "DP>=20" keeps indexes 2,3,4.
         reader = VczReader(self._build())
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>=20")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>=20"))
         reader.materialise_variant_filter()
         positions = []
         for chunk in reader.variant_chunks(fields=["variant_position"]):
@@ -2409,9 +2387,7 @@ class TestMaterialiseVariantFilter:
 
     def test_filter_excludes_all(self):
         reader = VczReader(self._build())
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>1000")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>1000"))
         reader.materialise_variant_filter()
         assert reader.variant_filter is None
         assert len(reader.variant_chunk_plan) == 0
@@ -2422,9 +2398,7 @@ class TestMaterialiseVariantFilter:
         # set_variants; of those, DP>=30 keeps only index 3.
         reader = VczReader(self._build())
         reader.set_variants(np.array([1, 3], dtype=np.int64))
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>=30")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>=30"))
         reader.materialise_variant_filter()
         positions = []
         for chunk in reader.variant_chunks(fields=["variant_position"]):
@@ -2650,9 +2624,7 @@ class TestVariantIndexVirtualField:
         # DP = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]; include "DP>=40"
         # keeps indexes 4..9.
         reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>=40")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>=40"))
         emitted = np.concatenate(
             [
                 chunk["variant_index"]
@@ -2665,9 +2637,7 @@ class TestVariantIndexVirtualField:
         # When a whole chunk is filtered out, no entry is yielded for
         # it (variant_chunks already skips empty chunks).
         reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>=70")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>=70"))
         per_chunk = [
             chunk["variant_index"]
             for chunk in reader.variant_chunks(fields=["variant_index"])
@@ -2680,9 +2650,7 @@ class TestVariantIndexVirtualField:
         # Mixing variant_index with a Zarr-backed variants-axis field
         # yields aligned arrays (same length per chunk).
         reader = VczReader(self._make(num_variants=10, variants_chunk_size=3))
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="DP>=40")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="DP>=40"))
         for chunk in reader.variant_chunks(
             fields=["variant_index", "variant_position"]
         ):
@@ -2759,9 +2727,7 @@ class TestVariantCountsPerChunk:
         # POS = 100..109; filter POS<105 → indexes 0..4 survive
         # (chunk 0 full, chunk 1 first variant only).
         reader = VczReader(self._make(num_variants=10, variants_chunk_size=4))
-        reader.set_variant_filter(
-            BcftoolsFilter(field_names=reader.field_names, include="POS<105")
-        )
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS<105"))
         reader.materialise_variant_filter()
         nt.assert_array_equal(reader.variant_counts_per_chunk(), np.array([4, 1]))
 
@@ -3650,10 +3616,7 @@ class TestVirtualFields:
         # field uniformly.
         root = _make_virtual_field_vcz()
         reader = VczReader(root)
-        bf = BcftoolsFilter(
-            field_names=reader.field_names | reader.virtual_field_names,
-            include="AC>1",
-        )
+        bf = BcftoolsFilter(reader, include="AC>1")
         reader.set_variant_filter(bf)
         chunks = list(reader.variant_chunks(fields=["variant_position"]))
         nt.assert_array_equal(
@@ -3674,10 +3637,7 @@ class TestVirtualFields:
             ("variants", "alt_alleles"),
         )
         reader = VczReader(root)
-        bf = BcftoolsFilter(
-            field_names=reader.field_names | reader.virtual_field_names,
-            include="AC>1",
-        )
+        bf = BcftoolsFilter(reader, include="AC>1")
         reader.set_variant_filter(bf)
         chunks = list(
             reader.variant_chunks(
@@ -3750,10 +3710,7 @@ class TestVirtualFields:
         )
         reader = VczReader(root)
         reader.set_bcftools_semantics()
-        bf = BcftoolsFilter(
-            field_names=reader.field_names | reader.virtual_field_names,
-            include="AC>1",
-        )
+        bf = BcftoolsFilter(reader, include="AC>1")
         reader.set_variant_filter(bf)
         chunks = list(
             reader.variant_chunks(

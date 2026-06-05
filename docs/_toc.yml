@@ -8,6 +8,8 @@ parts:
   - caption: Command line
     chapters:
       - file: bcftools_emulation
+      - file: plink_conversion
+      - file: bgen_conversion
       - file: cli_ref
   - caption: File formats
     chapters:

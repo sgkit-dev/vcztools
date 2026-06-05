@@ -19,9 +19,11 @@ In addition to the bcftools-shaped commands, `vcztools` ships
 non-bcftools format exporters for common downstream tools:
 
 - {ref}`view-plink<cmd-vcztools-view-plink>` — PLINK 1 binary
-  (`.bed`/`.bim`/`.fam`); see {ref}`sec-plink`.
+  (`.bed`/`.bim`/`.fam`); see {ref}`sec-plink` and the
+  {ref}`conversion walkthrough<sec-plink-conversion>`.
 - {ref}`view-bgen<cmd-vcztools-view-bgen>` — Oxford BGEN
-  (`.bgen`/`.sample`/`.bgen.bgi`); see {ref}`sec-bgen`.
+  (`.bgen`/`.sample`/`.bgen.bgi`); see {ref}`sec-bgen` and the
+  {ref}`conversion walkthrough<sec-bgen-conversion>`.
 
 To create VCZ files from VCF and other formats, see the
 [bio2zarr](https://sgkit-dev.github.io/bio2zarr/) project.

@@ -323,7 +323,7 @@ class TestWriteFam:
 
     def test_sample_subset_reflected_in_fam(self):
         reader = _build_reader(num_samples=4, sample_id=["s0", "s1", "s2", "s3"])
-        reader.set_samples([2, 0])
+        reader.set_sample_indexes([2, 0])
         df = _parse_fam(_fam_string(reader))
         assert list(df["IID"]) == ["s2", "s0"]
         assert list(df["FID"]) == ["s2", "s0"]
@@ -572,7 +572,7 @@ class TestWritePlinkEndToEnd:
             sample_id=["s0", "s1", "s2", "s3"],
             call_genotype=genotypes,
         )
-        reader.set_samples([3, 0])  # MISSING then HOM_A2
+        reader.set_sample_indexes([3, 0])  # MISSING then HOM_A2
         out = tmp_path / "p"
         plink.write_plink(reader, out)
         fam = _parse_fam(out.with_suffix(".fam").read_text())
@@ -1432,7 +1432,7 @@ class TestBedEncoderParallelEncoding:
         assert executor._shutdown is True
 
     def test_sample_subset_parallel_equivalence(self, tmp_path):
-        # set_samples([3, 0]) yields a fancy-indexed (non-contiguous)
+        # set_sample_indexes([3, 0]) yields a fancy-indexed (non-contiguous)
         # call_genotype; the parallel path must produce the same bytes
         # as the synchronous path. Use the oracle built from a reader
         # carrying the same selection so the BED is what plink would
@@ -1446,7 +1446,7 @@ class TestBedEncoderParallelEncoding:
             call_genotype=gt,
             variants_chunk_size=4,
         )
-        reader_oracle.set_samples([3, 0])
+        reader_oracle.set_sample_indexes([3, 0])
         out_path = tmp_path / "p"
         plink.write_plink(reader_oracle, out_path)
         bed_oracle = out_path.with_suffix(".bed").read_bytes()
@@ -1458,7 +1458,7 @@ class TestBedEncoderParallelEncoding:
             call_genotype=gt,
             variants_chunk_size=4,
         )
-        reader_serial.set_samples([3, 0])
+        reader_serial.set_sample_indexes([3, 0])
         reader_parallel = _build_reader(
             num_variants=16,
             num_samples=4,
@@ -1466,7 +1466,7 @@ class TestBedEncoderParallelEncoding:
             call_genotype=gt,
             variants_chunk_size=4,
         )
-        reader_parallel.set_samples([3, 0])
+        reader_parallel.set_sample_indexes([3, 0])
         # 2 samples * 2 bytes = 4 input bytes per row; encode_block_bytes=8
         # ⇒ 2 variants per sub-block, multiple sub-blocks per chunk.
         with plink.BedEncoder(reader_serial, encode_threads=1) as enc1:

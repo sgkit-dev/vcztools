@@ -15,10 +15,20 @@ import humanfriendly
 from . import bcftools_filter, bgen, plink, provenance, retrieval, vcf_writer
 from . import query as query_module
 from . import regions as regions_mod
-from . import samples as samples_mod
 from . import stats as stats_module
 from . import variant_filter as variant_filter_mod
 from .utils import open_zarr
+
+
+def _read_samples_file(path: str) -> list[str]:
+    """Read a samples file (one sample ID per line) into a list.
+
+    Blank lines are ignored. The file is decoded as UTF-8 regardless of
+    the platform locale, matching the VCF 4.3 spec's encoding for
+    sample IDs.
+    """
+    with open(path, encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
 
 
 @contextlib.contextmanager
@@ -589,7 +599,7 @@ def make_reader(
         if samples_file.startswith("^"):
             samples_complement = True
             samples_file = samples_file[1:]
-        samples = samples_mod.read_samples_file(samples_file)
+        samples = _read_samples_file(samples_file)
     elif samples is not None:
         if samples.startswith("^"):
             samples_complement = True
@@ -630,13 +640,12 @@ def make_reader(
             )
         reader.set_samples([])
     elif samples is not None:
-        samples = samples_mod.resolve_sample_selection(
+        reader.set_samples(
             samples,
-            reader.raw_sample_ids,
             complement=samples_complement,
             ignore_missing_samples=force_samples,
         )
-        if samples is not None and len(samples) == 0:
+        if len(reader.sample_ids) == 0:
             raise ValueError(
                 "Empty sample set is not supported. The bcftools semantics "
                 "for this corner case (AC/AN recomputed over the full "
@@ -645,7 +654,6 @@ def make_reader(
                 "If you need this feature, please open an issue at "
                 "https://github.com/sgkit-dev/vcztools/issues."
             )
-        reader.set_samples(samples)
 
     if regions is not None or targets is not None:
         variant_chunk_plan = regions_mod.build_chunk_plan(

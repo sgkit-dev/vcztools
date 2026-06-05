@@ -214,12 +214,21 @@ print(genotype)
 
 ## Selecting samples and variants
 
-Call {meth}`~vcztools.VczReader.set_samples` with integer indexes *before*
-iterating to restrict the sample selection:
+Call {meth}`~vcztools.VczReader.set_samples` with sample IDs *before* iterating
+to restrict the sample selection. The output follows the order you request:
 
 ```{code-cell} ipython3
 reader = vcztools.VczReader(root)
-reader.set_samples([0, 2])
+reader.set_samples(["NA00003", "NA00001"])
+print("selected samples:", reader.sample_ids)
+```
+
+Pass `complement=True` to select every sample *except* those named, or
+`ignore_missing_samples=True` to warn-and-drop unknown names instead of raising:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+reader.set_samples(["NA00002"], complement=True)
 print("selected samples:", reader.sample_ids)
 ```
 
@@ -264,13 +273,17 @@ chunk = next(reader.variant_chunks(fields=["call_genotype"]))
 print("call_genotype sample columns:", chunk["call_genotype"].shape[1])
 ```
 
-`set_samples` indexes are positions in the raw `sample_id` array, and selecting
-a null index raises a `ValueError`:
+Null samples have no `sample_id`, so {meth}`~vcztools.VczReader.set_samples`
+cannot name one — null slots are simply unreachable by ID.
+
+For the lower-level case where you select by raw integer index, use
+{meth}`~vcztools.VczReader.set_sample_indexes`. Indexes are positions in the raw
+`sample_id` array, and selecting a null index raises a `ValueError`:
 
 ```{code-cell} ipython3
 reader = vcztools.VczReader(root)
 try:
-    reader.set_samples([1])  # index 1 is the null sample
+    reader.set_sample_indexes([1])  # index 1 is the null sample
 except ValueError as exc:
     print(exc)
 ```
@@ -279,7 +292,7 @@ Build index-based selections from `non_null_sample_indices` to avoid them:
 
 ```{code-cell} ipython3
 reader = vcztools.VczReader(root)
-reader.set_samples(reader.non_null_sample_indices[[0, 1]])
+reader.set_sample_indexes(reader.non_null_sample_indices[[0, 1]])
 print("selected samples:", reader.sample_ids)
 ```
 

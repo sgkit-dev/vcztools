@@ -30,7 +30,6 @@ import time
 import numpy as np
 
 from vcztools import regions as regions_mod
-from vcztools import samples as samples_mod
 from vcztools import utils
 from vcztools import variant_filter as variant_filter_mod
 from vcztools import virtual_fields as virtual_fields_mod
@@ -89,6 +88,126 @@ DEFAULT_READAHEAD_WORKERS = 32
 def _read_block(arr, block_index: tuple) -> np.ndarray:
     """Fetch one Zarr block by block-index tuple."""
     return arr.blocks[block_index]
+
+
+@dataclasses.dataclass
+class SampleChunkPlan:
+    """Plan for reading a subset of sample chunks.
+
+    ``chunk_reads`` lists the sample chunks to read, each with a
+    per-chunk local selection (``selection=None`` means "full chunk").
+    ``permutation`` reorders the concatenation of the per-chunk
+    subsets into the caller's requested sample order; ``None`` means
+    the concatenation is already in the caller's order.
+    """
+
+    chunk_reads: list[utils.ChunkRead]
+    permutation: np.ndarray | None = None
+
+
+def build_sample_chunk_plan(
+    samples_selection: np.ndarray,
+    samples_chunk_size: int,
+) -> SampleChunkPlan:
+    """Translate a global sample selection into a sample-chunk read plan.
+
+    Buckets global sample indexes into chunks, pre-subsets per chunk,
+    and computes an optional permutation that restores the caller's
+    input order after chunk-sorted concatenation. ``permutation is
+    None`` when the caller's order already matches the chunk-sorted
+    concatenation (the fast path).
+    """
+    samples_selection = np.asarray(samples_selection, dtype=np.int64)
+    chunk_of_each = samples_selection // samples_chunk_size
+    sort_idx = np.argsort(chunk_of_each, kind="stable")
+    sorted_samples = samples_selection[sort_idx]
+    sorted_chunks = chunk_of_each[sort_idx]
+    chunk_indexes, counts = np.unique(sorted_chunks, return_counts=True)
+
+    chunk_reads = []
+    offset = 0
+    for ci, count in zip(chunk_indexes, counts):
+        local_sel = (
+            sorted_samples[offset : offset + count] - int(ci) * samples_chunk_size
+        )
+        chunk_reads.append(
+            utils.ChunkRead(
+                index=int(ci),
+                num_selected=int(count),
+                selection=utils.normalise_local_selection(
+                    local_sel, samples_chunk_size
+                ),
+            )
+        )
+        offset += count
+
+    permutation = np.argsort(sort_idx)
+    if np.array_equal(permutation, np.arange(len(permutation))):
+        permutation = None
+    return SampleChunkPlan(chunk_reads=chunk_reads, permutation=permutation)
+
+
+def _resolve_sample_names(
+    sample_ids: list[str],
+    raw_sample_ids: np.ndarray,
+    *,
+    complement: bool = False,
+    ignore_missing_samples: bool = False,
+) -> np.ndarray:
+    """Resolve a bcftools-style sample-name selection into integer indexes.
+
+    Translates the names in ``sample_ids`` into indexes into
+    ``raw_sample_ids``. Without ``complement`` the result follows the
+    caller's input order; with ``complement`` it returns every non-null
+    sample NOT named, in ``raw_sample_ids`` order.
+
+    Unknown names either raise ``ValueError`` or are dropped with a
+    warning (``ignore_missing_samples=True``). Duplicates in the
+    non-complement case raise; in the complement case they are
+    deduped silently (matches ``bcftools view -s ^foo,foo``). Null
+    (empty-string) entries in ``raw_sample_ids`` are never returned.
+    """
+    if isinstance(sample_ids, str):
+        raise TypeError(
+            "sample_ids must be a sequence of sample names, not a single string"
+        )
+    non_null_select = raw_sample_ids != ""
+
+    sample_ids = np.asarray(sample_ids, dtype=np.dtypes.StringDType())
+    unknown_samples = np.setdiff1d(sample_ids, raw_sample_ids)
+    if len(unknown_samples) > 0:
+        if ignore_missing_samples:
+            logger.warning(
+                "subset called for sample(s) not in header: "
+                f"{','.join(unknown_samples)}."
+            )
+            sample_ids = np.delete(
+                sample_ids, utils.search(sample_ids, unknown_samples)
+            )
+        else:
+            raise ValueError(
+                "subset called for sample(s) not in header: "
+                f"{','.join(unknown_samples)}. "
+                'Use "--force-samples" to ignore this error.'
+            )
+
+    if not complement:
+        unique_ids, counts = np.unique(sample_ids, return_counts=True)
+        duplicates = unique_ids[counts > 1]
+        if duplicates.size > 0:
+            raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
+        # Drop empty-string requests — they would otherwise map to a
+        # null header position, and those are never returned.
+        sample_ids = sample_ids[sample_ids != ""]
+        # Match raw_sample_ids' dtype so searchsorted is a safe cast.
+        # Every remaining sample_id is a known entry in raw_sample_ids
+        # (per the unknown-check above), so this can't truncate.
+        return utils.search(raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype))
+
+    select = non_null_select & ~np.isin(
+        raw_sample_ids, sample_ids.astype(raw_sample_ids.dtype)
+    )
+    return np.flatnonzero(select)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -273,7 +392,7 @@ class StreamReader:
         self,
         root,
         stream_plan: list[utils.ChunkRead],
-        sample_chunk_plan: "samples_mod.SampleChunkPlan",
+        sample_chunk_plan: "SampleChunkPlan",
         output_columns: np.ndarray | None,
         read_fields,
         *,
@@ -506,7 +625,7 @@ class CachedLogicalVariantsChunk:
         root,
         variant_chunk: utils.ChunkRead,
         *,
-        sample_chunk_plan: samples_mod.SampleChunkPlan,
+        sample_chunk_plan: SampleChunkPlan,
         output_columns: np.ndarray | None,
         blocks: dict[tuple, np.ndarray],
         stream_chunk_size: int,
@@ -627,34 +746,30 @@ def _get_filter_ids(root):
 
 
 def _validate_samples_input(value) -> None:
-    """Reject samples inputs that are not ``None`` or an integer
+    """Reject sample-index inputs that are not ``None`` or an integer
     sequence.
 
-    String IDs are rejected with a pointer at
-    :func:`vcztools.samples.resolve_sample_selection`, which translates
-    bcftools-style name arguments into the integer indexes this
-    constructor expects.
+    String IDs are rejected with a pointer at :meth:`VczReader.set_samples`,
+    which selects by sample ID instead of raw index.
     """
     if value is None:
         return
     if isinstance(value, np.ndarray):
         if not np.issubdtype(value.dtype, np.integer):
             raise TypeError(
-                "samples must be a sequence of integer indexes or None; "
-                "use vcztools.samples.resolve_sample_selection to translate "
-                "sample names into indexes"
+                "sample indexes must be a sequence of integers or None; "
+                "use set_samples() to select by sample ID"
             )
         return
     if isinstance(value, list):
         if len(value) > 0 and not isinstance(value[0], int | np.integer):
             raise TypeError(
-                "samples must be a sequence of integer indexes or None; "
-                "use vcztools.samples.resolve_sample_selection to translate "
-                "sample names into indexes"
+                "sample indexes must be a sequence of integers or None; "
+                "use set_samples() to select by sample ID"
             )
         return
     raise TypeError(
-        f"samples must be a sequence of integer indexes or None; "
+        f"sample indexes must be a sequence of integers or None; "
         f"got {type(value).__name__}"
     )
 
@@ -895,7 +1010,7 @@ class VczReader:
         raw_sample_ids = self.raw_sample_ids
         self._samples_selection = _freeze(np.flatnonzero(raw_sample_ids != ""))
         self._sample_ids = _freeze(raw_sample_ids[self._samples_selection])
-        self._sample_chunk_plan = samples_mod.build_chunk_plan(
+        self._sample_chunk_plan = build_sample_chunk_plan(
             self._samples_selection,
             samples_chunk_size=self.samples_chunk_size,
         )
@@ -934,28 +1049,59 @@ class VczReader:
             )
         return self._variant_chunk_plan
 
-    def set_samples(self, samples) -> None:
-        """Configure the sample selection.
+    def set_samples(
+        self, sample_ids, *, complement=False, ignore_missing_samples=False
+    ) -> None:
+        """Configure the sample selection by sample ID.
 
-        Accepts a list or ndarray of integer indexes into the VCZ
-        ``sample_id`` array, in the order the caller wants. An empty
-        sequence is valid and means "no samples in output". Out-of-range
-        indexes raise ``ValueError``, as does any index referring to a
-        null sample (``sample_id == ""``); build index selections from
+        ``sample_ids`` is a sequence of sample names, in the order the
+        caller wants them in the output. An empty sequence is valid and
+        means "no samples in output". With ``complement=True`` the
+        selection is every non-null sample *except* those named, in
+        header order.
+
+        Unknown names raise ``ValueError`` unless
+        ``ignore_missing_samples=True``, in which case they are dropped
+        with a warning. Duplicate names raise (non-complement) or are
+        deduped (complement). Null (``sample_id == ""``) samples are
+        never selected. Not calling :meth:`set_samples` (or
+        :meth:`set_sample_indexes`) selects every non-null sample.
+
+        Must be called before iterating; raises ``RuntimeError`` if the
+        selection is already configured. Selecting a proper subset makes
+        sample-dependent virtual fields (``AC``/``AN``/``AF``/``NS`` …)
+        recompute to reflect the subset on the next iteration. See
+        :meth:`variant_chunks`.
+        """
+        samples_selection = _resolve_sample_names(
+            sample_ids,
+            self.raw_sample_ids,
+            complement=complement,
+            ignore_missing_samples=ignore_missing_samples,
+        )
+        self.set_sample_indexes(samples_selection)
+
+    def set_sample_indexes(self, sample_indexes) -> None:
+        """Configure the sample selection by raw integer index.
+
+        The lower-level counterpart of :meth:`set_samples`: accepts a
+        list or ndarray of integer indexes into the VCZ ``sample_id``
+        array, in the order the caller wants. An empty sequence is valid
+        and means "no samples in output". Out-of-range indexes raise
+        ``ValueError``, as does any index referring to a null sample
+        (``sample_id == ""``); build index selections from
         :attr:`non_null_sample_indices` to avoid them. Duplicates are
         permitted. Must be called before iterating; raises
         ``RuntimeError`` if the selection is already configured.
-
-        Selecting a proper subset makes sample-dependent virtual fields
-        (``AC``/``AN``/``AF``/``NS`` …) recompute to reflect the subset
-        on the next iteration. See :meth:`variant_chunks`.
         """
         if self._samples_selection is not None:
             raise RuntimeError("samples already configured")
-        samples_selection = self._normalize_sample_indexes(samples, label="sample")
+        samples_selection = self._normalize_sample_indexes(
+            sample_indexes, label="sample"
+        )
         self._samples_selection = _freeze(samples_selection)
         self._sample_ids = _freeze(self.raw_sample_ids[samples_selection])
-        self._sample_chunk_plan = samples_mod.build_chunk_plan(
+        self._sample_chunk_plan = build_sample_chunk_plan(
             samples_selection,
             samples_chunk_size=self.samples_chunk_size,
         )
@@ -1132,14 +1278,14 @@ class VczReader:
         return arr
 
     @property
-    def filter_sample_chunk_plan(self) -> samples_mod.SampleChunkPlan:
+    def filter_sample_chunk_plan(self) -> SampleChunkPlan:
         """Chunk plan for reading the filter sample axis. This matches
         :attr:`sample_chunk_plan` unless :meth:`set_bcftools_semantics`
         enabled ``full_sample_filter``, in which case it is built from
         the full (pre-subset) non-null sample set."""
         if not self._full_sample_filter:
             return self.sample_chunk_plan
-        return samples_mod.build_chunk_plan(
+        return build_sample_chunk_plan(
             self.non_null_sample_indices,
             samples_chunk_size=self.samples_chunk_size,
         )

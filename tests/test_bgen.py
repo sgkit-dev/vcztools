@@ -159,7 +159,7 @@ class TestWriteSample:
 
     def test_sample_subset_round_trips(self):
         reader = _build_reader(num_samples=4)
-        reader.set_samples([0, 2])
+        reader.set_sample_indexes([0, 2])
         text = _sample_string(reader)
         lines = text.splitlines()
         assert lines[2] == "sample_0 sample_0 0"
@@ -1540,7 +1540,7 @@ class TestBgenRoundTripViaBgenReader:
 
     def test_sample_subset(self, write_to_bgen):
         reader = _build_reader(num_variants=2, num_samples=4)
-        reader.set_samples([0, 2])
+        reader.set_sample_indexes([0, 2])
         path = write_to_bgen(reader)
         with br.open_bgen(path, verbose=False) as bg:
             nt.assert_array_equal(bg.samples, ["sample_0", "sample_2"])
@@ -2637,7 +2637,7 @@ class TestBgenEncoderWithSetVariants:
     def test_sample_subset_reflected_in_output(self, tmp_path):
         gt = _varied_genotypes(num_variants=3, num_samples=6)
         reader = _build_reader(num_variants=3, num_samples=6, call_genotype=gt)
-        reader.set_samples(np.array([0, 2, 4], dtype=np.int64))
+        reader.set_sample_indexes(np.array([0, 2, 4], dtype=np.int64))
         with bgen.BgenEncoder(reader) as enc:
             assert enc.num_samples == 3
             buf = _drain(enc)

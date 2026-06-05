@@ -13,7 +13,6 @@ from tests.utils import make_reader, to_vcz_icechunk
 from vcztools import constants, utils
 from vcztools import regions as regions_mod
 from vcztools import retrieval as retrieval_mod
-from vcztools import samples as samples_mod
 from vcztools import virtual_fields as virtual_fields_mod
 from vcztools.bcftools_filter import BcftoolsFilter
 from vcztools.retrieval import CachedLogicalVariantsChunk, FieldInfo, VczReader
@@ -656,14 +655,14 @@ class TestVczReaderArraysReadOnly:
         assert reader.raw_sample_ids is reader.raw_sample_ids
 
     def test_set_samples_does_not_freeze_caller_input(self, fx_sample_vcz):
-        # ``set_samples`` must own its internal copy: freezing
+        # ``set_sample_indexes`` must own its internal copy: freezing
         # ``samples_selection`` for the reader's cache must not silently
         # lock the caller's input array. Regression guard for the
         # ``np.array`` (copy) vs. ``np.asarray`` (view) choice in
         # ``_normalize_sample_indexes``.
         reader = VczReader(fx_sample_vcz.group)
         caller_input = np.array([0, 2], dtype=np.int64)
-        reader.set_samples(caller_input)
+        reader.set_sample_indexes(caller_input)
         assert not reader.samples_selection.flags.writeable
         # Caller's original input is still writeable.
         assert caller_input.flags.writeable
@@ -708,7 +707,7 @@ def _make_stream_reader(
     samples_chunk_size = int(root["sample_id"].chunks[0])
     raw_sample_ids = root["sample_id"][:]
     samples_selection = np.flatnonzero(raw_sample_ids != "")
-    sample_chunk_plan = samples_mod.build_chunk_plan(
+    sample_chunk_plan = retrieval_mod.build_sample_chunk_plan(
         samples_selection, samples_chunk_size=samples_chunk_size
     )
     min_chunk = utils.compute_min_variants_chunk_size(root)
@@ -904,7 +903,7 @@ class TestStreamReaderDeriveBlocks:
         if samples_selection is None:
             non_null = np.flatnonzero(root["sample_id"][:] != "")
             samples_selection = non_null
-        plan = samples_mod.build_chunk_plan(
+        plan = retrieval_mod.build_sample_chunk_plan(
             samples_selection, samples_chunk_size=samples_chunk_size
         )
         executor = cf.ThreadPoolExecutor(max_workers=2)
@@ -1043,7 +1042,7 @@ class TestStreamReader:
             reader = _DepthTrackingStreamReader(
                 root,
                 [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
-                samples_mod.build_chunk_plan(
+                retrieval_mod.build_sample_chunk_plan(
                     np.arange(2, dtype=np.int64), samples_chunk_size=2
                 ),
                 None,
@@ -1065,7 +1064,7 @@ class TestStreamReader:
             reader = _DepthTrackingStreamReader(
                 root,
                 [utils.ChunkRead(index=i, num_selected=3) for i in range(4)],
-                samples_mod.build_chunk_plan(
+                retrieval_mod.build_sample_chunk_plan(
                     np.arange(2, dtype=np.int64), samples_chunk_size=2
                 ),
                 None,
@@ -1391,53 +1390,90 @@ class TestVczReaderRegions:
 
 
 class TestVczReaderSamples:
-    """Cover VczReader sample input: default, integer-index list, error cases."""
+    """Cover VczReader sample input: default, by-name, by-index, errors."""
 
     def test_samples_default_selects_all(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00002", "NA00003"])
 
-    def test_samples_list(self, fx_sample_vcz):
+    def test_samples_by_name(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples([0, 2])
+        reader.set_samples(["NA00001", "NA00003"])
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
         nt.assert_array_equal(reader.samples_selection, [0, 2])
 
-    def test_samples_preserves_input_order(self, fx_sample_vcz):
+    def test_samples_by_name_preserves_input_order(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples([2, 0])
+        reader.set_samples(["NA00003", "NA00001"])
         nt.assert_array_equal(reader.sample_ids, ["NA00003", "NA00001"])
         nt.assert_array_equal(reader.samples_selection, [2, 0])
 
-    def test_samples_rejects_string_input(self, fx_sample_vcz):
+    def test_samples_complement(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        with pytest.raises(TypeError, match="integer indexes"):
-            reader.set_samples(["NA00001"])
-
-    def test_samples_rejects_string_scalar(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        with pytest.raises(TypeError, match="integer indexes"):
-            reader.set_samples("NA00001")
-
-    def test_samples_rejects_non_integer_numpy_array(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        with pytest.raises(TypeError, match="integer indexes"):
-            reader.set_samples(np.array([0.0, 2.0]))
-
-    def test_samples_accepts_numpy_int_array(self, fx_sample_vcz):
-        reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples(np.array([0, 2], dtype=np.int64))
+        reader.set_samples(["NA00002"], complement=True)
         nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
 
-    def test_samples_out_of_range_raises(self, fx_sample_vcz):
+    def test_samples_unknown_name_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        with pytest.raises(ValueError, match="sample index out of range"):
-            reader.set_samples([0, 99])
+        with pytest.raises(ValueError, match="not in header: UNKNOWN"):
+            reader.set_samples(["NA00001", "UNKNOWN"])
 
-    def test_samples_negative_raises(self, fx_sample_vcz):
+    def test_samples_ignore_missing_drops_unknown(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples(["NA00001", "UNKNOWN"], ignore_missing_samples=True)
+        nt.assert_array_equal(reader.sample_ids, ["NA00001"])
+
+    def test_samples_rejects_bare_string(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(TypeError, match="sequence of sample names"):
+            reader.set_samples("NA00001")
+
+    def test_samples_by_name_empty_list(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples([])
+        nt.assert_array_equal(reader.sample_ids, [])
+
+    def test_sample_indexes_list(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_sample_indexes([0, 2])
+        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
+        nt.assert_array_equal(reader.samples_selection, [0, 2])
+
+    def test_sample_indexes_preserves_input_order(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_sample_indexes([2, 0])
+        nt.assert_array_equal(reader.sample_ids, ["NA00003", "NA00001"])
+        nt.assert_array_equal(reader.samples_selection, [2, 0])
+
+    def test_sample_indexes_rejects_string_input(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(TypeError, match="sample indexes"):
+            reader.set_sample_indexes(["NA00001"])
+
+    def test_sample_indexes_rejects_string_scalar(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(TypeError, match="sample indexes"):
+            reader.set_sample_indexes("NA00001")
+
+    def test_sample_indexes_rejects_non_integer_numpy_array(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(TypeError, match="sample indexes"):
+            reader.set_sample_indexes(np.array([0.0, 2.0]))
+
+    def test_sample_indexes_accepts_numpy_int_array(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_sample_indexes(np.array([0, 2], dtype=np.int64))
+        nt.assert_array_equal(reader.sample_ids, ["NA00001", "NA00003"])
+
+    def test_sample_indexes_out_of_range_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
         with pytest.raises(ValueError, match="sample index out of range"):
-            reader.set_samples([-1])
+            reader.set_sample_indexes([0, 99])
+
+    def test_sample_indexes_negative_raises(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="sample index out of range"):
+            reader.set_sample_indexes([-1])
 
     @staticmethod
     def _masked_vcz():
@@ -1450,21 +1486,26 @@ class TestVczReaderSamples:
             call_genotype=np.zeros((1, 3, 2), dtype=np.int8),
         )
 
-    def test_samples_null_index_raises(self):
+    def test_sample_indexes_null_index_raises(self):
         reader = VczReader(self._masked_vcz())
         with pytest.raises(ValueError, match="null sample"):
-            reader.set_samples([0, 1])
+            reader.set_sample_indexes([0, 1])
 
-    def test_samples_non_null_index_after_null_allowed(self):
+    def test_sample_indexes_non_null_index_after_null_allowed(self):
         reader = VczReader(self._masked_vcz())
-        reader.set_samples([2, 0])
+        reader.set_sample_indexes([2, 0])
         nt.assert_array_equal(reader.sample_ids, ["s2", "s0"])
 
-    def test_samples_empty_list(self, fx_sample_vcz):
-        # Post-resolve, an empty list means "no samples" (e.g. all
-        # requested names were dropped by ignore_missing_samples).
+    def test_samples_null_name_not_selectable(self):
+        # Null samples have an empty-string ID, which the name resolver
+        # drops — there is no name that selects a null sample.
+        reader = VczReader(self._masked_vcz())
+        reader.set_samples(["s0", "s2"])
+        nt.assert_array_equal(reader.sample_ids, ["s0", "s2"])
+
+    def test_sample_indexes_empty_list(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples([])
+        reader.set_sample_indexes([])
         nt.assert_array_equal(reader.sample_ids, [])
         assert reader.sample_chunk_plan.chunk_reads == []
         assert reader.sample_chunk_plan.permutation is None
@@ -1511,7 +1552,7 @@ class TestVczReaderSampleChunks:
         # cover the full chunk → selection collapses to None to skip
         # a no-op fancy-index gather in CachedVariantChunk.
         reader = VczReader(self._vcz())
-        reader.set_samples([2, 3])
+        reader.set_sample_indexes([2, 3])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [1]
         assert plan.chunk_reads[0].selection is None
@@ -1522,7 +1563,7 @@ class TestVczReaderSampleChunks:
     def test_multi_chunk_selection(self):
         # s1 is in chunk 0; s4 is in chunk 2; chunk 1 is skipped.
         reader = VczReader(self._vcz())
-        reader.set_samples([1, 4])
+        reader.set_sample_indexes([1, 4])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [0, 2]
         assert plan.permutation is None
@@ -1534,7 +1575,7 @@ class TestVczReaderSampleChunks:
         # reversed — the output must follow the input list via the
         # plan's permutation.
         reader = VczReader(self._vcz())
-        reader.set_samples([4, 1])
+        reader.set_sample_indexes([4, 1])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [0, 2]
         nt.assert_array_equal(plan.permutation, [1, 0])
@@ -1546,7 +1587,7 @@ class TestVczReaderSampleChunks:
         # alone in the final chunk; the contiguous local index
         # collapses to slice(0, 1) (basic indexing → view).
         reader = VczReader(self._vcz(num_samples=5, samples_chunk_size=2))
-        reader.set_samples([4])
+        reader.set_sample_indexes([4])
         plan = reader.sample_chunk_plan
         assert self._plan_chunk_indexes(plan) == [2]
         assert plan.chunk_reads[0].selection == slice(0, 1)
@@ -1581,7 +1622,7 @@ class TestVczReaderSampleChunks:
         # sample chunk plan — no chunks to read, no sample columns
         # in output.
         reader = VczReader(self._vcz())
-        reader.set_samples([])
+        reader.set_sample_indexes([])
         assert reader.sample_chunk_plan.chunk_reads == []
         assert reader.sample_chunk_plan.permutation is None
 
@@ -1621,10 +1662,10 @@ def _make_cached_chunk(
     if samples_selection is None:
         samples_selection = non_null_indices
     samples_selection = np.asarray(samples_selection, dtype=np.int64)
-    subset_plan = samples_mod.build_chunk_plan(
+    subset_plan = retrieval_mod.build_sample_chunk_plan(
         samples_selection, samples_chunk_size=samples_chunk_size
     )
-    non_null_plan = samples_mod.build_chunk_plan(
+    non_null_plan = retrieval_mod.build_sample_chunk_plan(
         non_null_indices, samples_chunk_size=samples_chunk_size
     )
     if view_semantics:
@@ -1803,7 +1844,7 @@ class TestVariantChunksFilterPlusSamples:
         # Position 1234567 (where NA00001 but not NA00002/NA00003
         # matched FMT/DP>3) is DROPPED.
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples([1, 2])
+        reader.set_sample_indexes([1, 2])
         reader.set_variants(regions_mod.build_chunk_plan(reader, regions="20:1230236-"))
         reader.set_variant_filter(
             BcftoolsFilter(reader, include="FMT/DP>3"),
@@ -1844,7 +1885,7 @@ class TestVariantChunksFilterPlusSamples:
 
         def build(view_semantics):
             reader = VczReader(root)
-            reader.set_samples([0])
+            reader.set_sample_indexes([0])
             if view_semantics:
                 reader.set_bcftools_semantics(full_sample_filter=True)
             reader.set_variant_filter(
@@ -2002,7 +2043,7 @@ class TestVczReaderMissingSamplesMultiChunk:
     def test_subset_spanning_many_chunks_with_missing(self):
         reader = VczReader(self._vcz())
         subset = [0, 10, 20, 37, 49]
-        reader.set_samples(subset)
+        reader.set_sample_indexes(subset)
         plan = reader.sample_chunk_plan
         assert self._plan_indexes(plan) == [0, 2, 4, 7, 9]
         assert plan.permutation is None
@@ -2026,7 +2067,7 @@ class TestVczReaderMissingSamplesMultiChunk:
     def test_subset_with_user_order_permutation(self):
         reader = VczReader(self._vcz())
         subset = [49, 37, 20, 10, 0]
-        reader.set_samples(subset)
+        reader.set_sample_indexes(subset)
         plan = reader.sample_chunk_plan
         assert self._plan_indexes(plan) == [0, 2, 4, 7, 9]
         nt.assert_array_equal(plan.permutation, [4, 3, 2, 1, 0])
@@ -2039,7 +2080,7 @@ class TestVczReaderMissingSamplesMultiChunk:
     def test_subset_inside_partial_chunk(self):
         reader = VczReader(self._vcz())
         subset = [5, 9]
-        reader.set_samples(subset)
+        reader.set_sample_indexes(subset)
         plan = reader.sample_chunk_plan
         assert self._plan_indexes(plan) == [1]
         nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 4])
@@ -2213,7 +2254,7 @@ class TestEmptyCallArray:
         )
 
     def _empty_plan_chunk(self, root, *, variant_chunk_idx, selection):
-        empty_plan = samples_mod.SampleChunkPlan(chunk_reads=[], permutation=None)
+        empty_plan = retrieval_mod.SampleChunkPlan(chunk_reads=[], permutation=None)
         chunk_size = int(root["variant_position"].chunks[0])
         num_variants = int(root["variant_position"].shape[0])
         if selection is None:
@@ -2297,9 +2338,9 @@ class TestSettersOneShot:
 
     def test_set_samples_twice_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples([0])
+        reader.set_sample_indexes([0])
         with pytest.raises(RuntimeError, match="samples already configured"):
-            reader.set_samples([1])
+            reader.set_sample_indexes([1])
 
     def test_set_bcftools_semantics_twice_raises(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
@@ -3227,7 +3268,7 @@ class TestLogging:
     def test_debug_setters(self, fx_sample_vcz, caplog):
         with caplog.at_level(logging.DEBUG, logger="vcztools.retrieval"):
             reader = VczReader(fx_sample_vcz.group)
-            reader.set_samples([0, 1])
+            reader.set_sample_indexes([0, 1])
         assert "VczReader init:" in caplog.text
         assert "set_samples:" in caplog.text
 
@@ -3728,7 +3769,7 @@ class TestVirtualFields:
             root, "variant_AN", np.zeros(5, dtype=np.int32), ("variants",)
         )
         reader = VczReader(root)
-        reader.set_samples([0, 1])
+        reader.set_sample_indexes([0, 1])
         chunk = next(reader.variant_chunks(fields=["variant_AC", "variant_AN"]))
         nt.assert_array_equal(chunk["variant_AC"], _SUBSET01_AC)
         nt.assert_array_equal(chunk["variant_AN"], _SUBSET01_AN)
@@ -3741,7 +3782,7 @@ class TestVirtualFields:
             root, "variant_N_ALT", np.full(5, 99, dtype=np.int64), ("variants",)
         )
         reader = VczReader(root)
-        reader.set_samples([0, 1])
+        reader.set_sample_indexes([0, 1])
         chunk = next(reader.variant_chunks(fields=["variant_N_ALT"]))
         nt.assert_array_equal(chunk["variant_N_ALT"], np.full(5, 99))
 
@@ -3756,7 +3797,7 @@ class TestVirtualFields:
             ("variants", "alt_alleles"),
         )
         reader = VczReader(root)
-        reader.set_samples([])
+        reader.set_sample_indexes([])
         chunk = next(reader.variant_chunks(fields=["variant_AC"]))
         nt.assert_array_equal(chunk["variant_AC"], np.full((5, 2), 7))
 
@@ -3887,7 +3928,7 @@ class TestRepr:
 
     def test_sample_selection_reflected(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
-        reader.set_samples([0, 1])
+        reader.set_sample_indexes([0, 1])
         assert "samples_selected=2" in repr(reader)
         assert f"2 of {reader.num_samples} selected" in reader._repr_html_()
 
@@ -3921,3 +3962,461 @@ class TestRepr:
         html_text = reader._repr_html_()
         assert "bcftools semantics" in html_text
         assert "full_sample_filter=True" in html_text
+
+
+RESOLVE_ALL_SAMPLES = np.array(["NA00001", "NA00002", "NA00003"])
+
+
+class TestResolveSampleNames:
+    """``_resolve_sample_names``: turn sample names (with optional
+    complement / ignore-missing) into the integer-index array that the
+    reader consumes."""
+
+    def test_single_sample(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["NA00002"], RESOLVE_ALL_SAMPLES), [1]
+        )
+
+    def test_subset_in_input_order(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00003", "NA00001"], RESOLVE_ALL_SAMPLES
+            ),
+            [2, 0],
+        )
+
+    def test_full_list(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00001", "NA00002", "NA00003"], RESOLVE_ALL_SAMPLES
+            ),
+            [0, 1, 2],
+        )
+
+    def test_empty_list(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names([], RESOLVE_ALL_SAMPLES), []
+        )
+
+    def test_bare_string_raises(self):
+        with pytest.raises(TypeError, match="sequence of sample names"):
+            retrieval_mod._resolve_sample_names("NA00001", RESOLVE_ALL_SAMPLES)
+
+    def test_empty_string_element_raises(self):
+        with pytest.raises(ValueError, match=r"sample\(s\) not in header: "):
+            retrieval_mod._resolve_sample_names([""], RESOLVE_ALL_SAMPLES)
+
+    def test_complement_excludes_one(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00002"], RESOLVE_ALL_SAMPLES, complement=True
+            ),
+            [0, 2],
+        )
+
+    def test_complement_excludes_multiple(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00001", "NA00003"], RESOLVE_ALL_SAMPLES, complement=True
+            ),
+            [1],
+        )
+
+    def test_complement_exclude_all_returns_empty(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00001", "NA00002", "NA00003"],
+                RESOLVE_ALL_SAMPLES,
+                complement=True,
+            ),
+            [],
+        )
+
+    def test_complement_empty_list_returns_all(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                [], RESOLVE_ALL_SAMPLES, complement=True
+            ),
+            [0, 1, 2],
+        )
+
+    def test_complement_output_follows_header_order(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00003", "NA00002"], RESOLVE_ALL_SAMPLES, complement=True
+            ),
+            [0],
+        )
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00002", "NA00003"], RESOLVE_ALL_SAMPLES, complement=True
+            ),
+            [0],
+        )
+
+    def test_duplicates_raise_without_complement(self):
+        with pytest.raises(ValueError, match=r'Duplicate sample name "NA00001"'):
+            retrieval_mod._resolve_sample_names(
+                ["NA00001", "NA00001"], RESOLVE_ALL_SAMPLES
+            )
+
+    def test_duplicates_collapsed_under_complement(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00002", "NA00002"], RESOLVE_ALL_SAMPLES, complement=True
+            ),
+            [0, 2],
+        )
+
+    def test_many_duplicates_collapsed_under_complement(self):
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00002", "NA00002", "NA00002"],
+                RESOLVE_ALL_SAMPLES,
+                complement=True,
+            ),
+            [0, 2],
+        )
+
+    def test_unknown_raises(self):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"subset called for sample\(s\) not in header: UNKNOWN\. "
+                r'Use "--force-samples" to ignore this error\.'
+            ),
+        ):
+            retrieval_mod._resolve_sample_names(
+                ["NA00001", "UNKNOWN"], RESOLVE_ALL_SAMPLES
+            )
+
+    def test_message_lists_every_unknown(self):
+        with pytest.raises(ValueError, match="UNKNOWN1") as excinfo:
+            retrieval_mod._resolve_sample_names(
+                ["UNKNOWN1", "UNKNOWN2", "NA00001"], RESOLVE_ALL_SAMPLES
+            )
+        assert "UNKNOWN2" in str(excinfo.value)
+
+    def test_ignore_missing_drops_unknowns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
+            result = retrieval_mod._resolve_sample_names(
+                ["NA00001", "UNKNOWN", "NA00003"],
+                RESOLVE_ALL_SAMPLES,
+                ignore_missing_samples=True,
+            )
+        nt.assert_array_equal(result, [0, 2])
+        assert "UNKNOWN" in caplog.text
+
+    def test_ignore_missing_all_unknown(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
+            result = retrieval_mod._resolve_sample_names(
+                ["UNKNOWN1", "UNKNOWN2"],
+                RESOLVE_ALL_SAMPLES,
+                ignore_missing_samples=True,
+            )
+        nt.assert_array_equal(result, [])
+
+    def test_duplicates_raise_even_with_ignore_missing(self):
+        # Duplicates are a hard error regardless of force-samples.
+        with pytest.raises(ValueError, match=r'Duplicate sample name "NA00001"'):
+            retrieval_mod._resolve_sample_names(
+                ["NA00001", "NA00001", "UNKNOWN"],
+                RESOLVE_ALL_SAMPLES,
+                ignore_missing_samples=True,
+            )
+
+    def test_empty_string_element_with_ignore_missing(self):
+        # bcftools -s '' --force-samples → no samples.
+        result = retrieval_mod._resolve_sample_names(
+            [""], RESOLVE_ALL_SAMPLES, ignore_missing_samples=True
+        )
+        nt.assert_array_equal(result, [])
+
+    def test_complement_with_masked_header(self):
+        # Masked "" entries never appear in the complement output.
+        raw_sample_ids = np.array(["NA00001", "", "NA00003"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["NA00001"], raw_sample_ids, complement=True
+            ),
+            [2],
+        )
+
+    def test_explicit_list_with_masked_header(self):
+        raw_sample_ids = np.array(["NA00001", "", "NA00003"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["NA00003"], raw_sample_ids), [2]
+        )
+
+
+class TestResolveSampleNamesEdgeCases:
+    """Probe handling of unusual-but-valid sample IDs.
+
+    bcftools (htslib) treats sample IDs on the ``#CHROM`` line as opaque
+    byte strings. The VCF 4.3 spec constrains them only via the field
+    structure of the line: tabs, newlines and carriage returns are
+    forbidden because they delimit fields and records; every other
+    character is legal.
+
+    Valid in bcftools 1.19 (confirmed empirically):
+      - ASCII letters, digits, and most punctuation.
+      - Dots, dashes, underscores, forward and back slashes.
+      - Embedded spaces (``"a b"``).
+      - Embedded commas (``"a,b"``) — preserved on the ``#CHROM`` line
+        by ``bcftools view``, but cannot be targeted by ``-s`` because
+        the CLI splits that argument on commas. Same constraint applies
+        to vcztools' CLI; the resolver itself treats the comma as an
+        opaque character.
+      - Numeric-only names (``"123"``, ``"0"``).
+      - Unicode / non-ASCII (accented letters, CJK glyphs).
+      - Very long names (no practical limit observed).
+      - Case-sensitive (``"x"`` and ``"X"`` are distinct).
+
+    Invalid:
+      - Tab, newline, carriage return (break VCF structure).
+      - Empty string ``""`` (silently dropped from header parse by
+        bcftools; rejected as a ``-s`` target — see
+        ``test_empty_string_element_raises`` above).
+      - Duplicates in the header (htslib errors at parse time).
+    """
+
+    def test_embedded_space(self):
+        raw_sample_ids = np.array(["a b", "c d", "e f"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["a b"], raw_sample_ids), [0]
+        )
+
+    def test_embedded_comma(self):
+        # Commas are valid in the VCF file (bcftools view preserves them
+        # byte-for-byte on #CHROM) but break CLI -s splitting. At the
+        # resolver layer the comma is just another character.
+        raw_sample_ids = np.array(["a,b", "c,d", "plain"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["a,b"], raw_sample_ids), [0]
+        )
+
+    def test_dots_and_dashes(self):
+        raw_sample_ids = np.array(["sample.1", "sample-1", "sample_1"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["sample.1", "sample-1"], raw_sample_ids
+            ),
+            [0, 1],
+        )
+
+    def test_slashes(self):
+        raw_sample_ids = np.array(["s/1", "s\\2", "s|3"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["s\\2"], raw_sample_ids), [1]
+        )
+
+    def test_numeric_only(self):
+        raw_sample_ids = np.array(["0", "1", "123"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["123", "0"], raw_sample_ids), [2, 0]
+        )
+
+    def test_single_character(self):
+        raw_sample_ids = np.array(["A", "B", "C"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["B"], raw_sample_ids), [1]
+        )
+
+    def test_unicode_accents(self):
+        raw_sample_ids = np.array(["sampléé", "sample", "café"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["sampléé", "café"], raw_sample_ids),
+            [0, 2],
+        )
+
+    def test_unicode_cjk(self):
+        raw_sample_ids = np.array(["sample_中文", "sample_日本", "sample"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["sample_日本"], raw_sample_ids), [1]
+        )
+
+    def test_very_long_names(self):
+        long_name = "x" * 300
+        raw_sample_ids = np.array(["short", long_name, "other"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names([long_name], raw_sample_ids), [1]
+        )
+
+    def test_case_sensitive(self):
+        raw_sample_ids = np.array(["X", "Y", "Z"])
+        with pytest.raises(
+            ValueError, match=r"subset called for sample\(s\) not in header: x"
+        ):
+            retrieval_mod._resolve_sample_names(["x"], raw_sample_ids)
+
+    def test_complement_with_unicode(self):
+        raw_sample_ids = np.array(["sampléé", "sample_中文", "ascii"])
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(
+                ["sampléé"], raw_sample_ids, complement=True
+            ),
+            [1, 2],
+        )
+
+    def test_duplicate_detection_with_unicode(self):
+        raw_sample_ids = np.array(["sampléé", "café"])
+        with pytest.raises(ValueError, match=r'Duplicate sample name "sampléé"'):
+            retrieval_mod._resolve_sample_names(["sampléé", "sampléé"], raw_sample_ids)
+
+    def test_ignore_missing_with_unicode_unknown(self, caplog):
+        raw_sample_ids = np.array(["sampléé", "café"])
+        with caplog.at_level(logging.WARNING, logger="vcztools.retrieval"):
+            result = retrieval_mod._resolve_sample_names(
+                ["sampléé", "日本"],
+                raw_sample_ids,
+                ignore_missing_samples=True,
+            )
+        nt.assert_array_equal(result, [0])
+        assert "日本" in caplog.text
+
+    def test_accepts_numpy_string_dtype(self):
+        raw_sample_ids = np.array(
+            ["NA00001", "NA00002", "NA00003"], dtype=np.dtypes.StringDType()
+        )
+        nt.assert_array_equal(
+            retrieval_mod._resolve_sample_names(["NA00002"], raw_sample_ids), [1]
+        )
+
+
+class TestBuildSampleChunkPlan:
+    """Translate a global sample selection into a sample-chunk read plan."""
+
+    @staticmethod
+    def _chunk_indexes(plan):
+        return [cr.index for cr in plan.chunk_reads]
+
+    def test_single_sample_middle_chunk(self):
+        # num_samples=10, chunks of 3: [0-2][3-5][6-8][9]. Sample 4 is in chunk 1.
+        # A single contiguous index collapses to slice(start, stop) so the
+        # downstream block read uses basic indexing instead of a gather.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([4]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [1]
+        assert plan.chunk_reads[0].selection == slice(1, 2)
+        assert plan.permutation is None
+
+    def test_samples_spanning_two_chunks_with_gap(self):
+        # Samples 1 and 7 sit in chunks 0 and 2; chunk 1 is skipped.
+        # Sorted input → no permutation needed.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([1, 7]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [0, 2]
+        assert plan.chunk_reads[0].selection == slice(1, 2)
+        assert plan.chunk_reads[1].selection == slice(1, 2)
+        assert plan.permutation is None
+
+    def test_partial_final_chunk(self):
+        # num_samples=10, chunk size 3 → last chunk starts at 9.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([9]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [3]
+        assert plan.chunk_reads[0].selection == slice(0, 1)
+        assert plan.permutation is None
+
+    def test_preserves_user_order(self):
+        # selection order [7, 1] must round-trip through the plan.
+        # Chunks 0 (sample 1) and 2 (sample 7); concat in chunk order
+        # gives [sample_1, sample_7]. Permutation [1, 0] flips back.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([7, 1]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [0, 2]
+        assert plan.chunk_reads[0].selection == slice(1, 2)
+        assert plan.chunk_reads[1].selection == slice(1, 2)
+        nt.assert_array_equal(plan.permutation, [1, 0])
+
+    def test_within_chunk_user_order_uses_no_permutation(self):
+        # Reversed samples that live in the same chunk: per-chunk
+        # selection captures the order, permutation stays None.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([2, 0]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [2, 0])
+        assert plan.permutation is None
+
+    def test_chunk_size_one(self):
+        # Each sample is its own chunk. selection=None signals
+        # "emit the full chunk" — the gather optimisation skips the
+        # no-op fancy index.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([0, 3, 5]), samples_chunk_size=1
+        )
+        assert self._chunk_indexes(plan) == [0, 3, 5]
+        for cr in plan.chunk_reads:
+            assert cr.selection is None
+        assert plan.permutation is None
+
+    def test_single_chunk_covers_all_samples(self):
+        # samples_chunk_size >= num_samples → one chunk.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([0, 2]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 2])
+        assert plan.permutation is None
+
+    def test_empty_selection(self):
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([], dtype=np.int64), samples_chunk_size=3
+        )
+        assert plan.chunk_reads == []
+        assert plan.permutation is None
+
+    def test_full_chunk_in_order_collapses_to_none(self):
+        # When a per-chunk selection covers every column in order,
+        # build_sample_chunk_plan emits selection=None instead of arange(N).
+        # This avoids a no-op fancy-index gather in CachedVariantChunk.
+        # 20 samples, chunks of 10: chunks 0 and 1 each get every column.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.arange(20), samples_chunk_size=10
+        )
+        assert self._chunk_indexes(plan) == [0, 1]
+        for cr in plan.chunk_reads:
+            assert cr.selection is None
+        assert plan.permutation is None
+
+    def test_partial_chunk_collapses_to_slice(self):
+        # 15 samples requested out of 20, chunks of 10: chunk 0 is full
+        # (→ None); chunk 1 has a contiguous prefix → slice(0, 5).
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.arange(15), samples_chunk_size=10
+        )
+        assert self._chunk_indexes(plan) == [0, 1]
+        assert plan.chunk_reads[0].selection is None
+        assert plan.chunk_reads[1].selection == slice(0, 5)
+        assert plan.permutation is None
+
+    def test_non_contiguous_selection_keeps_fancy_index(self):
+        # Selection with a gap can't be a slice → falls back to ndarray.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([0, 2, 4]), samples_chunk_size=10
+        )
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [0, 2, 4])
+
+    def test_within_chunk_reverse_keeps_fancy_index(self):
+        # [2, 0] is contiguous as a set but not in order — keep ndarray
+        # so the gather emits the user's order.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([2, 0]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [2, 0])
+
+    def test_duplicate_samples_preserved(self):
+        # Duplicate global indices are passed through as duplicate local indices.
+        plan = retrieval_mod.build_sample_chunk_plan(
+            np.array([1, 1]), samples_chunk_size=3
+        )
+        assert self._chunk_indexes(plan) == [0]
+        nt.assert_array_equal(plan.chunk_reads[0].selection, [1, 1])
+        assert plan.permutation is None

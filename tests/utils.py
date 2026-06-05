@@ -11,7 +11,6 @@ import zarr
 
 from vcztools import bcftools_filter, retrieval
 from vcztools import regions as regions_mod
-from vcztools import samples as samples_mod
 
 
 def make_reader(
@@ -29,20 +28,20 @@ def make_reader(
     :class:`BcftoolsFilter` from ``include``/``exclude`` strings and a
     variant-chunk plan from ``regions``/``targets`` inputs.
 
-    ``root`` must be an opened :class:`zarr.Group`. ``samples`` may be
-    a ``list[str]`` of sample names (resolved to indexes via
-    :func:`vcztools.samples.resolve_sample_selection`) or already an
-    integer-index list. ``regions`` / ``targets`` accept the same
-    shapes as :func:`vcztools.regions.build_chunk_plan`.
+    ``root`` must be an opened :class:`zarr.Group`. ``samples`` may be a
+    ``list[str]`` of sample names (selected via
+    :meth:`~vcztools.VczReader.set_samples`) or an integer-index list
+    (via :meth:`~vcztools.VczReader.set_sample_indexes`). ``regions`` /
+    ``targets`` accept the same shapes as
+    :func:`vcztools.regions.build_chunk_plan`.
     """
     reader = retrieval.VczReader(root)
 
     if samples is not None:
         if len(samples) > 0 and isinstance(samples[0], str):
-            samples = samples_mod.resolve_sample_selection(
-                samples, reader.raw_sample_ids
-            )
-        reader.set_samples(samples)
+            reader.set_samples(samples)
+        else:
+            reader.set_sample_indexes(samples)
 
     if regions is not None or targets is not None:
         variant_chunk_plan = regions_mod.build_chunk_plan(

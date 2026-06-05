@@ -57,7 +57,7 @@ def test_search(a, v, expected_ind):
 class TestChunkRead:
     """Axis-agnostic chunk-read descriptor used by both the variants
     plan (:mod:`vcztools.regions`) and the samples plan
-    (:mod:`vcztools.samples`)."""
+    (:mod:`vcztools.retrieval`)."""
 
     def test_defaults(self):
         cr = utils.ChunkRead(index=3, num_selected=5)

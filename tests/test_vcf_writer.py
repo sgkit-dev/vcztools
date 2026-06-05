@@ -7,7 +7,6 @@ import pytest
 from numpy.testing import assert_array_equal
 
 from vcztools.retrieval import VczReader
-from vcztools.samples import resolve_sample_selection
 from vcztools.utils import open_zarr
 from vcztools.vcf_writer import VcfWriter, write_vcf
 
@@ -363,14 +362,12 @@ def test_write_vcf__samples(
         samples_complement = True
         samples = samples[1:]
     samples = samples.split(",")
-    resolved = resolve_sample_selection(
+    reader = VczReader(fx_sample_vcz.group)
+    reader.set_samples(
         samples,
-        fx_sample_vcz.group["sample_id"][:],
         complement=samples_complement,
         ignore_missing_samples=ignore_missing_samples,
     )
-    reader = VczReader(fx_sample_vcz.group)
-    reader.set_samples(resolved)
     write_vcf(reader, output)
 
     v = VCF(output)
@@ -391,8 +388,9 @@ def test_write_vcf__samples(
 
 
 def test_write_vcf__non_existent_sample(fx_sample_vcz):
-    # The bcftools-style error message comes from resolve_sample_selection,
-    # which is what the CLI calls before handing the list to VczReader.
+    # The bcftools-style error message comes from set_samples resolving an
+    # unknown sample name.
+    reader = VczReader(fx_sample_vcz.group)
     with pytest.raises(
         ValueError,
         match=re.escape(
@@ -400,9 +398,7 @@ def test_write_vcf__non_existent_sample(fx_sample_vcz):
             'Use "--force-samples" to ignore this error.'
         ),
     ):
-        resolve_sample_selection(
-            ["NO_SAMPLE"], fx_sample_vcz.group["sample_id"][:]
-        )
+        reader.set_samples(["NO_SAMPLE"])
 
 
 def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
@@ -793,3 +789,41 @@ class TestDtypeMatrix:
         native = self._view(make_reader(fx_dtype_matrix, regions=regions))
         reference = self._view(make_reader(fx_dtype_matrix_reference, regions=regions))
         assert native == reference
+
+
+class TestRoundTripEdgeCaseSamples:
+    """Confirm edge-case sample IDs survive zarr → VCF → parse end-to-end.
+
+    Covers the categories enumerated in
+    ``TestResolveSampleNamesEdgeCases`` in one shot, to confirm the
+    writer path (``#CHROM`` line emission) preserves them byte-for-byte
+    and a real VCF parser can read them back.
+    """
+
+    def test_writer_preserves_edge_case_ids(self, tmp_path):
+        cyvcf2 = pytest.importorskip("cyvcf2")
+        sample_ids = [
+            "a b",
+            "a,b",
+            "sample.1",
+            "sample-1",
+            "123",
+            "sampléé",
+            "sample_中文",
+            "X",
+        ]
+        num_samples = len(sample_ids)
+        root = make_vcz(
+            variant_contig=[0],
+            variant_position=[1],
+            alleles=[["A", "T"]],
+            num_samples=num_samples,
+            sample_id=sample_ids,
+            call_genotype=np.zeros((1, num_samples, 2), dtype=np.int8),
+        )
+        reader = VczReader(root)
+        output_path = tmp_path / "out.vcf"
+        write_vcf(reader, output_path, no_version=True)
+
+        v = cyvcf2.VCF(output_path)
+        assert v.samples == sample_ids

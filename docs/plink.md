@@ -1,5 +1,5 @@
 (sec-plink)=
-# PLINK 1 output
+# PLINK 1
 
 The {ref}`vcztools view-plink<cmd-vcztools-view-plink>` command writes a
 PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`) from a VCZ store.

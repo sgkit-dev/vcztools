@@ -1,5 +1,5 @@
 (sec-bgen)=
-# BGEN output
+# BGEN
 
 The {ref}`vcztools view-bgen<cmd-vcztools-view-bgen>` command writes
 BGEN output from a VCZ store.

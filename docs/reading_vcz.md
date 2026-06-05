@@ -261,7 +261,6 @@ reader = vcztools.VczReader(root)
 
 print("num_samples (raw, counts nulls):", reader.num_samples)
 print("raw_sample_ids:", reader.raw_sample_ids)
-print("non_null_sample_indices:", reader.non_null_sample_indices)
 print("sample_ids (nulls hidden):", reader.sample_ids)
 ```
 
@@ -286,14 +285,6 @@ try:
     reader.set_sample_indexes([1])  # index 1 is the null sample
 except ValueError as exc:
     print(exc)
-```
-
-Build index-based selections from `non_null_sample_indices` to avoid them:
-
-```{code-cell} ipython3
-reader = vcztools.VczReader(root)
-reader.set_sample_indexes(reader.non_null_sample_indices[[0, 1]])
-print("selected samples:", reader.sample_ids)
 ```
 
 ## Filtering

@@ -617,7 +617,7 @@ class TestVczReaderArraysReadOnly:
         ("contigs", False),
         ("filters", False),
         ("raw_sample_ids", False),
-        ("_non_null_sample_indices", False),
+        ("_non_null_sample_indexes", False),
         ("sample_ids", False),
         ("samples_selection", False),
         ("contig_lengths", True),

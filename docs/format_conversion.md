@@ -4,9 +4,11 @@
 `vcztools` can convert a VCZ dataset into the PLINK 1 binary fileset and the
 Oxford BGEN format from Python. The same conversions are available on the
 command line as {ref}`view-plink<cmd-vcztools-view-plink>` and
-{ref}`view-bgen<cmd-vcztools-view-bgen>`; the {ref}`sec-plink` and
-{ref}`sec-bgen` pages describe the format semantics (allele conventions,
-missingness, multi-allelic handling) in detail. This page covers the Python
+{ref}`view-bgen<cmd-vcztools-view-bgen>`; the
+{ref}`PLINK 1 file format page<sec-plink>` and
+{ref}`BGEN file format page<sec-bgen>` describe the format semantics (allele
+conventions, missingness, multi-allelic handling) in detail. This page covers
+the Python
 entry points — see the {ref}`sec-python-api` for full signatures.
 
 All writers take a configured {class}`vcztools.VczReader`, so any sample or

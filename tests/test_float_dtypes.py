@@ -20,6 +20,7 @@ from vcztools.query import QueryFormatter
 from vcztools.retrieval import VczReader
 from vcztools.vcf_writer import write_vcf
 
+from . import utils
 from .vcz_builder import make_vcz
 
 FLOAT_DTYPES = [np.float16, np.float32, np.float64]
@@ -115,7 +116,9 @@ class TestFilterFloat:
     @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
     def test_info_filter_comparison(self, dtype):
         data = {"variant_DP": np.array([0.5, 1.5, 3.5], dtype=dtype)}
-        fee = bcftools_filter.BcftoolsFilter(field_names=set(data), include="DP>1.0")
+        fee = bcftools_filter.BcftoolsFilter(
+            utils.FilterReader(set(data)), include="DP>1.0"
+        )
         result = fee.evaluate(data)
         np.testing.assert_array_equal(result, [False, True, True])
 
@@ -125,7 +128,9 @@ class TestFilterFloat:
         # filter excludes them regardless of float width.
         missing, fill = SENTINELS[dtype]
         data = {"variant_DP": np.array([1.5, missing, fill], dtype=dtype)}
-        fee = bcftools_filter.BcftoolsFilter(field_names=set(data), include="DP>0.0")
+        fee = bcftools_filter.BcftoolsFilter(
+            utils.FilterReader(set(data)), include="DP>0.0"
+        )
         result = fee.evaluate(data)
         np.testing.assert_array_equal(result, [True, False, False])
 
@@ -133,8 +138,7 @@ class TestFilterFloat:
     def test_filter_end_to_end(self, dtype):
         group = _store(dtype, info=[1.5, 2.5, 3.5])
         reader = VczReader(group)
-        field_names = reader.field_names | reader.virtual_field_names
-        fee = bcftools_filter.BcftoolsFilter(field_names=field_names, include="DP>2.0")
+        fee = bcftools_filter.BcftoolsFilter(reader, include="DP>2.0")
         reader.set_variant_filter(fee)
         reader.materialise_variant_filter()
         positions = []

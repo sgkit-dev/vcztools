@@ -607,23 +607,17 @@ def make_reader(
         readahead_bytes=readahead_bytes,
     )
 
-    # Filter expressions may reference virtual fields (e.g. ``N_MISSING``)
-    # alongside stored ones; the union is the parser's full resolution
-    # surface.
-    filter_field_names = reader.field_names | reader.virtual_field_names
     variant_filter = None
     if include is not None or exclude is not None:
         variant_filter = bcftools_filter.BcftoolsFilter(
-            field_names=filter_field_names, include=include, exclude=exclude
+            reader, include=include, exclude=exclude
         )
 
     view_expr = _build_view_filter_expression(
         types, exclude_types, min_alleles, max_alleles
     )
     if view_expr is not None:
-        synthetic_filter = bcftools_filter.BcftoolsFilter(
-            field_names=filter_field_names, include=view_expr
-        )
+        synthetic_filter = bcftools_filter.BcftoolsFilter(reader, include=view_expr)
         variant_filter = variant_filter_mod.compose(variant_filter, synthetic_filter)
 
     if drop_genotypes:

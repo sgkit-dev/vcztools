@@ -229,10 +229,7 @@ class TestFilter:
     @staticmethod
     def _filtered_positions(group, expression):
         reader = VczReader(group)
-        field_names = reader.field_names | reader.virtual_field_names
-        fee = bcftools_filter.BcftoolsFilter(
-            field_names=field_names, include=expression
-        )
+        fee = bcftools_filter.BcftoolsFilter(reader, include=expression)
         reader.set_variant_filter(fee)
         reader.materialise_variant_filter()
         positions = []
@@ -289,9 +286,8 @@ class TestInt64:
         # Filtering compares at int64 width; only the big-value variant passes.
         group = self._info_store([self._BIG, 1, 2])
         reader = VczReader(group)
-        field_names = reader.field_names | reader.virtual_field_names
         fee = bcftools_filter.BcftoolsFilter(
-            field_names=field_names, include=f"INFO/BIG>{self._BIG - 1}"
+            reader, include=f"INFO/BIG>{self._BIG - 1}"
         )
         reader.set_variant_filter(fee)
         reader.materialise_variant_filter()

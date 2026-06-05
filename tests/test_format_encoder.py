@@ -215,9 +215,7 @@ class TestConstructorValidation:
     def test_variant_filter_rejected(self):
         reader = _build_reader()
         reader.set_variant_filter(
-            bcftools_filter.BcftoolsFilter(
-                field_names={"variant_N_ALT"}, include="N_ALT <= 1"
-            )
+            bcftools_filter.BcftoolsFilter(reader, include="N_ALT <= 1")
         )
         with pytest.raises(NotImplementedError, match="_FakeEncoder"):
             _FakeEncoder(reader)

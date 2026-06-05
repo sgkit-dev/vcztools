@@ -412,9 +412,7 @@ class TestWriteBim:
             call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
             info_fields={"DP": np.array([1, 2], dtype=np.int32)},
         )
-        vf = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include="DP>100"
-        )
+        vf = bcftools_filter.BcftoolsFilter(reader, include="DP>100")
         reader.set_variant_filter(vf)
         assert _bim_string(reader) == ""
 
@@ -630,9 +628,7 @@ class TestWritePlinkEndToEnd:
             info_fields={"DP": np.array([10, 5, 30, 5, 50], dtype=np.int32)},
             variants_chunk_size=2,
         )
-        vf = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include="DP>=10"
-        )
+        vf = bcftools_filter.BcftoolsFilter(reader, include="DP>=10")
         reader.set_variant_filter(vf)
         reader.materialise_variant_filter()
         out = tmp_path / "p"
@@ -652,9 +648,7 @@ class TestWritePlinkEndToEnd:
             call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
             info_fields={"DP": np.array([10, 20], dtype=np.int32)},
         )
-        vf = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include="DP>=10"
-        )
+        vf = bcftools_filter.BcftoolsFilter(reader, include="DP>=10")
         reader.set_variant_filter(vf)
         out = tmp_path / "p"
         with pytest.raises(
@@ -678,9 +672,7 @@ class TestWritePlinkEndToEnd:
             call_genotype=np.zeros((num_variants, num_samples, 2), dtype=np.int8),
             info_fields={"DP": np.array([1, 2, 3], dtype=np.int32)},
         )
-        vf = bcftools_filter.BcftoolsFilter(
-            field_names=reader.field_names, include="DP>100"
-        )
+        vf = bcftools_filter.BcftoolsFilter(reader, include="DP>100")
         reader.set_variant_filter(vf)
         reader.materialise_variant_filter()
         out = tmp_path / "p"
@@ -1693,9 +1685,7 @@ class TestBedEncoderWithSetVariants:
     def test_set_variant_filter_is_rejected(self):
         reader = _build_reader(num_variants=5, num_samples=3)
         reader.set_variant_filter(
-            bcftools_filter.BcftoolsFilter(
-                field_names={"variant_N_ALT"}, include="N_ALT <= 1"
-            )
+            bcftools_filter.BcftoolsFilter(reader, include="N_ALT <= 1")
         )
         with pytest.raises(
             NotImplementedError, match="does not support a configured variant filter"

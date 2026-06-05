@@ -681,14 +681,15 @@ class BcftoolsFilter:
     may be non-``None``. When neither is set the filter is a no-op;
     callers should skip the filter in that case rather than evaluate it.
 
-    The ``field_names`` argument is the set of VCZ array names in the
-    target store, used by the parser to resolve bare VCF names like
-    ``DP`` to their VCZ equivalents (``call_DP`` vs ``variant_DP``).
+    The first argument is the target :class:`~vcztools.VczReader`. Its
+    ``field_names`` and ``virtual_field_names`` form the resolution
+    surface the parser uses to map bare VCF names like ``DP`` to their
+    VCZ equivalents (``call_DP`` vs ``variant_DP``). Both expression
+    parsing and field-name resolution happen at instantiation time.
     """
 
-    def __init__(self, *, field_names=None, include=None, exclude=None):
-        if field_names is None:
-            field_names = set()
+    def __init__(self, reader, *, include=None, exclude=None):
+        field_names = reader.field_names | reader.virtual_field_names
         self.parse_result = None
         self.referenced_fields = set()
         self.scope = "variant"

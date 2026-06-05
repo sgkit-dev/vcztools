@@ -59,8 +59,9 @@ latter takes any `VariantFilter`, such as a `BcftoolsFilter` built from a
 bcftools `-i`/`-e` expression. `write_plink` and `write_bgen` are the one-shot
 writers that turn a reader into a complete PLINK 1 fileset or BGEN file. For
 finer control, `BedEncoder` and `BgenEncoder` expose the `.bed` / `.bgen` byte
-streams directly, and the `write_bim` / `write_fam` / `write_bgi` /
-`write_sample` functions emit the individual sidecar files.
+streams directly; both share the `FormatEncoder` random-access read/write API.
+The `write_bim` / `write_fam` / `write_bgi` / `write_sample` functions emit the
+individual sidecar files.
 
 ```{eval-rst}
 
@@ -85,8 +86,16 @@ streams directly, and the `write_bim` / `write_fam` / `write_bgi` /
 .. autofunction:: vcztools.write_plink
 .. autofunction:: vcztools.write_bgen
 
+.. autoclass:: vcztools.FormatEncoder
+   :members:
+
 .. autoclass:: vcztools.BedEncoder
+   :members:
+   :show-inheritance:
+
 .. autoclass:: vcztools.BgenEncoder
+   :members:
+   :show-inheritance:
 
 .. autofunction:: vcztools.write_bim
 .. autofunction:: vcztools.write_fam

@@ -970,7 +970,7 @@ def _build_fmt_fields_filtered(root, ctx):
     ``(variants_chunk, num_samples)`` pass mask."""
     reader = _fmt_fields_reader(root)
     vf = bcftools_filter.BcftoolsFilter(
-        field_names=reader.field_names,
+        reader,
         include="FMT/GQ >= 0 && FMT/GQ <= 100 && FMT/DP >= 0 && FMT/DP <= 101",
     )
     reader.set_variant_filter(vf)
@@ -1021,9 +1021,7 @@ def _build_region_variant_position(root, ctx):
 
 def _build_filter_info_dp_gt_80(root, ctx):
     reader = retrieval.VczReader(root)
-    vf = bcftools_filter.BcftoolsFilter(
-        field_names=reader.field_names, include="INFO/DP>80"
-    )
+    vf = bcftools_filter.BcftoolsFilter(reader, include="INFO/DP>80")
     reader.set_variant_filter(vf)
     return reader
 
@@ -1036,9 +1034,7 @@ def _build_filter_info_dp_gt_80_genotypes(root, ctx):
     reader = retrieval.VczReader(root)
     take = min(1000, reader.num_samples)
     reader.set_sample_indexes(np.arange(take))
-    vf = bcftools_filter.BcftoolsFilter(
-        field_names=reader.field_names, include="INFO/DP>80"
-    )
+    vf = bcftools_filter.BcftoolsFilter(reader, include="INFO/DP>80")
     reader.set_variant_filter(vf)
     return reader
 
@@ -1049,14 +1045,12 @@ def _build_region_filter_format_gq_gt_50(root, ctx):
     region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(reader, regions=region)
     reader.set_variants(plan)
-    vf = bcftools_filter.BcftoolsFilter(
-        field_names=reader.field_names, include="FMT/GQ>50"
-    )
+    vf = bcftools_filter.BcftoolsFilter(reader, include="FMT/GQ>50")
     reader.set_variant_filter(vf)
     # Force the filter to evaluate against every sample's GQ, even though
     # we'll never emit them — this exercises the "full GQ scan, region
     # only" path (bcftools-view pre-subset semantics).
-    reader.set_filter_samples(reader.non_null_sample_indices)
+    reader.set_bcftools_semantics(full_sample_filter=True)
     return reader
 
 
@@ -1264,9 +1258,7 @@ def _set_first_chunks_with_max_alleles_2(reader, num_chunks):
     chunk_size = reader.variants_chunk_size
     plan_length = min(take_chunks * chunk_size, reader.num_variants)
     reader.set_variants(vcz_utils.ChunkRead.simple_plan(plan_length, chunk_size))
-    vf = bcftools_filter.BcftoolsFilter(
-        field_names=reader.field_names, include="N_ALT <= 1"
-    )
+    vf = bcftools_filter.BcftoolsFilter(reader, include="N_ALT <= 1")
     reader.set_variant_filter(vf)
 
 

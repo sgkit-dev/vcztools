@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vcztools"
-description = "Implementation of bcftools for VCF Zarr"
+description = "bcftools-compatible querying and format conversion for VCF Zarr"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [

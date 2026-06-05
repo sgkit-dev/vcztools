@@ -1,7 +1,8 @@
 # Introduction
 
-`vcztools` is a partial reimplementation of
-[bcftools](https://samtools.github.io/bcftools/bcftools.html) for
+`vcztools` provides
+[bcftools](https://samtools.github.io/bcftools/bcftools.html)-compatible
+querying and format conversion for
 [VCF Zarr](https://github.com/sgkit-dev/vcf-zarr-spec/).
 
 It aims to be a drop-in replacement for a subset of bcftools functionality.

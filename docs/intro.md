@@ -8,7 +8,7 @@ querying and format conversion for
 It aims to be a drop-in replacement for a subset of bcftools functionality.
 Currently supported are the {ref}`view<cmd-vcztools-view>`,
 {ref}`query<cmd-vcztools-query>` and {ref}`index<cmd-vcztools-index>` `-s/-n`
-commands.
+commands; see {ref}`sec-bcftools-emulation` for worked examples.
 We aim for 100% compatibility — if you notice a difference between the
 output of vcztools and bcftools please
 [open an issue](https://github.com/sgkit-dev/vcztools/issues).

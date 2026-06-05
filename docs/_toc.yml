@@ -7,6 +7,7 @@ parts:
       - file: storage_backends
   - caption: Command line
     chapters:
+      - file: bcftools_emulation
       - file: cli_ref
   - caption: File formats
     chapters:

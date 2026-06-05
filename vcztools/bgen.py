@@ -535,9 +535,10 @@ def _detect_variant_phase(phased_array_for_variant):
 class BgenEncoder(format_encoder.FormatEncoder):
     """Random-access, fixed-size BGEN byte-stream encoder over a VCZ store.
 
-    Thin :class:`~vcztools.format_encoder.FormatEncoder` subclass: the
+    Thin :class:`~vcztools.FormatEncoder` subclass: the
     base class supplies the chunk-resident state machine, POSIX-style
-    :meth:`read`, iterator restart/advance arbitration, thread-pool
+    :meth:`~vcztools.FormatEncoder.read`, iterator restart/advance
+    arbitration, thread-pool
     lifecycle, and prefix (BGEN header) serving. ``BgenEncoder`` plugs
     in the layout-2 header bytes and the per-chunk fixed-size variant
     encoding.
@@ -546,7 +547,8 @@ class BgenEncoder(format_encoder.FormatEncoder):
     flag set to ``ZLIB``. Every variant block uses zlib **level 0**
     (stored, no DEFLATE) so the compressed payload size is a deterministic
     function of the uncompressed genotype block size — the variant block
-    is therefore exactly :attr:`bytes_per_variant` bytes wide and
+    is therefore exactly :attr:`~vcztools.FormatEncoder.bytes_per_variant`
+    bytes wide and
     ``byte offset → variant index`` is O(1):
 
         bytes_per_variant
@@ -726,13 +728,13 @@ class BgenEncoder(format_encoder.FormatEncoder):
     @property
     def header_size(self) -> int:
         """BGEN header byte length (alias of
-        :attr:`~vcztools.format_encoder.FormatEncoder.prefix_size`)."""
+        :attr:`~vcztools.FormatEncoder.prefix_size`)."""
         return self.prefix_size
 
     @property
     def bgen_size(self) -> int:
         """Total ``.bgen`` size in bytes (alias of
-        :attr:`~vcztools.format_encoder.FormatEncoder.total_size`)."""
+        :attr:`~vcztools.FormatEncoder.total_size`)."""
         return self.total_size
 
     @property

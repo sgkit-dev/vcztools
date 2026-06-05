@@ -224,12 +224,12 @@ def _stream_bed_to_file(reader, bed_path):
 class BedEncoder(format_encoder.FormatEncoder):
     """PLINK 1 ``.bed`` byte-stream encoder over a VCZ store.
 
-    Thin :class:`~vcztools.format_encoder.FormatEncoder` subclass: the
-    base class supplies the chunk-resident state machine, POSIX-style
-    :meth:`read`, iterator restart/advance arbitration, thread-pool
-    lifecycle, and prefix (magic) serving. ``BedEncoder`` plugs in
-    PLINK 1's 3-byte magic prefix and the C-kernel encode of one
-    variant chunk.
+    Thin :class:`~vcztools.FormatEncoder` subclass: the base class
+    supplies the chunk-resident state machine, POSIX-style
+    :meth:`~vcztools.FormatEncoder.read`, iterator restart/advance
+    arbitration, thread-pool lifecycle, and prefix (magic) serving.
+    ``BedEncoder`` plugs in PLINK 1's 3-byte magic prefix and the
+    C-kernel encode of one variant chunk.
 
     Scope is the ``.bed`` stream only. For the companion ``.bim`` and
     ``.fam`` files, use :func:`write_bim` and :func:`write_fam`
@@ -239,11 +239,12 @@ class BedEncoder(format_encoder.FormatEncoder):
     :meth:`~vcztools.VczReader.set_variants` configured on
     the reader before construction. With ``set_variants``, the encoded
     ``.bed`` covers exactly the selected variants in chunk-plan order;
-    :attr:`bed_size` and :attr:`num_variants` reflect the selection.
+    :attr:`bed_size` and :attr:`~vcztools.FormatEncoder.num_variants`
+    reflect the selection.
 
     Biallelic checking is performed lazily as chunks are decoded;
-    multi-allelic variants raise ``ValueError`` during :meth:`read`,
-    not at construction.
+    multi-allelic variants raise ``ValueError`` during
+    :meth:`~vcztools.FormatEncoder.read`, not at construction.
 
     :meth:`~vcztools.VczReader.set_variant_filter` is not
     yet supported and raises ``NotImplementedError`` at construction;
@@ -286,7 +287,7 @@ class BedEncoder(format_encoder.FormatEncoder):
     @property
     def bed_size(self) -> int:
         """Total ``.bed`` size in bytes (alias of
-        :attr:`~vcztools.format_encoder.FormatEncoder.total_size`)."""
+        :attr:`~vcztools.FormatEncoder.total_size`)."""
         return self.total_size
 
     def _encode_chunk(self, chunk: dict) -> bytes:

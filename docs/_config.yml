@@ -35,22 +35,11 @@ sphinx:
       python: ["https://docs.python.org/3/", null]
       zarr: ["https://zarr.readthedocs.io/en/stable/", null]
       numpy: ["https://numpy.org/doc/stable/", null]
-    # The encoder/writer docstrings (BedEncoder, BgenEncoder, write_bgen,
-    # write_plink) cross-reference internal members — the FormatEncoder
-    # base class, private helpers, and reader methods the minimal
-    # autoclass directives don't render. These are not part of the
-    # documented public API, so the nitpicky build is told not to
-    # resolve them. ``nitpick_ignore_regex`` (not ``nitpick_ignore``) is
-    # required: the YAML list entries arrive as lists, which Sphinx's
-    # tuple-equality ``nitpick_ignore`` check never matches, whereas the
-    # regex form unpacks and matches each entry.
+    # The write_bgen function docstring references two internal helpers
+    # that are not part of the documented public API. ``nitpick_ignore_regex``
+    # (not ``nitpick_ignore``) is required: the YAML list entries arrive as
+    # lists, which Sphinx's tuple-equality ``nitpick_ignore`` check never
+    # matches, whereas the regex form unpacks and matches each entry.
     nitpick_ignore_regex:
-      - ["py:class", 'vcztools\.format_encoder\.FormatEncoder']
       - ["py:func", '_prepare_chunk']
       - ["py:func", 'vcztools\.utils\.open_file_like']
-      - ["py:meth", 'read']
-      - ["py:attr", 'bed_size']
-      - ["py:attr", 'bytes_per_variant']
-      - ["py:attr", 'num_variants']
-      - ["py:attr", 'variant_offsets']
-      - ["py:attr", 'BgenEncoder\.variant_offsets']

@@ -13,6 +13,7 @@ class TestPublicAPI:
         "BedEncoder",
         "BgenEncoder",
         "FieldInfo",
+        "FormatEncoder",
         "GroupedCommand",
         "VariantFilter",
         "VczReader",

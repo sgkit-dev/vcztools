@@ -66,15 +66,21 @@ class _EncodedChunk:
 
 
 class FormatEncoder(abc.ABC):
-    """Abstract base class for fixed-size streaming VCZ encoders.
+    """Fixed-size, random-access byte-stream encoder over a VCZ store.
 
-    See module docstring for the shared contract and subclass authoring
-    guidelines. The only mandatory hook is :meth:`_encode_chunk`.
+    Abstract base of :class:`~vcztools.BedEncoder` and
+    :class:`~vcztools.BgenEncoder`; not instantiated directly. Provides
+    the shared streaming API — POSIX-style :meth:`read`, bulk
+    :meth:`write_to`, and the size properties — while each subclass
+    supplies the format-specific encoding of a single variant chunk.
 
-    Subclasses may override :attr:`_default_encode_block_bytes` to pick
-    a format-specific default sub-block size (peak encoder rates differ
-    by format — plink benefits from smaller blocks that fit in L2,
-    bgen's zlib-bound encode is insensitive).
+    Construction is I/O-free; bytes are produced lazily as they are
+    read. A single encoder is **not** thread-safe, but multiple encoders
+    may share one :class:`~vcztools.VczReader`, each running an
+    independent variant-chunk iteration. Use as a context manager
+    (``with BedEncoder(reader) as enc:``) so the encoder's iterator and
+    thread pool are torn down on exit; :meth:`close` does the same and
+    does not close the underlying reader.
     """
 
     _default_encode_block_bytes: ClassVar[int] = 10 * 1024 * 1024
@@ -186,26 +192,31 @@ class FormatEncoder(abc.ABC):
 
     @property
     def num_variants(self) -> int:
+        """Number of variants in the encoded stream, after any selection."""
         self._check_open()
         return self._num_variants
 
     @property
     def num_samples(self) -> int:
+        """Number of samples in the encoded stream."""
         self._check_open()
         return self._num_samples
 
     @property
     def bytes_per_variant(self) -> int:
+        """Encoded byte length of a single variant block."""
         self._check_open()
         return self._bytes_per_variant
 
     @property
     def prefix_size(self) -> int:
+        """Byte length of the format prefix/header before the variant blocks."""
         self._check_open()
         return self._prefix_size
 
     @property
     def total_size(self) -> int:
+        """Total length of the encoded byte stream, in bytes."""
         self._check_open()
         return self._total_size
 
@@ -268,9 +279,8 @@ class FormatEncoder(abc.ABC):
 
         Validation and EOF semantics match :meth:`read`: ``off`` and
         ``size`` must be non-negative; ``size`` is clamped to the end
-        of the stream; reads past EOF write nothing. Reads are
-        issued in blocks of :attr:`_encode_block_bytes` (the same
-        granularity the parallel encode fan-out uses to split work).
+        of the stream; reads past EOF write nothing. The stream is read
+        and written in fixed-size blocks.
         """
         if off is None:
             off = 0
@@ -428,8 +438,8 @@ class FormatEncoder(abc.ABC):
 
     def close(self) -> None:
         """Tear down the active chunk iterator, shut down the encode
-        thread pool, drop iterator state, and invoke :meth:`_close_hook`.
-        Does not close the underlying reader. Idempotent."""
+        thread pool, and drop iterator state. Does not close the
+        underlying reader. Idempotent."""
         if self._closed:
             return
         self._closed = True

@@ -804,9 +804,11 @@ class VczReader:
         Accepts a list or ndarray of integer indexes into the VCZ
         ``sample_id`` array, in the order the caller wants. An empty
         sequence is valid and means "no samples in output". Out-of-range
-        indexes raise ``ValueError``; duplicates are permitted. Must be
-        called before iterating; raises ``RuntimeError`` if the selection
-        is already configured.
+        indexes raise ``ValueError``, as does any index referring to a
+        null sample (``sample_id == ""``); build index selections from
+        :attr:`non_null_sample_indices` to avoid them. Duplicates are
+        permitted. Must be called before iterating; raises
+        ``RuntimeError`` if the selection is already configured.
 
         Selecting a proper subset makes sample-dependent virtual fields
         (``AC``/``AN``/``AF``/``NS`` …) recompute to reflect the subset
@@ -967,9 +969,10 @@ class VczReader:
     def _normalize_sample_indexes(self, value, *, label: str) -> np.ndarray:
         """Validate and convert a sample-index input to a 1-D int64 ndarray.
 
-        Checks input type (via :func:`_validate_samples_input`) and that
-        every index is in ``[0, num_samples)``. ``label`` is interpolated
-        into error messages.
+        Checks input type (via :func:`_validate_samples_input`), that
+        every index is in ``[0, num_samples)``, and that none of them
+        refers to a null sample (``sample_id == ""``). ``label`` is
+        interpolated into error messages.
         """
         _validate_samples_input(value)
         # ``np.array`` (not ``asarray``): always produce an owned copy so
@@ -982,6 +985,13 @@ class VczReader:
             if lo < 0 or hi >= raw_size:
                 raise ValueError(
                     f"{label} index out of range: must be in [0, {raw_size})"
+                )
+            null_selected = self.raw_sample_ids[arr] == ""
+            if null_selected.any():
+                null_indexes = sorted(set(arr[null_selected].tolist()))
+                raise ValueError(
+                    f"{label} index refers to a null sample "
+                    f"(sample_id == ''): {null_indexes}"
                 )
         return arr
 

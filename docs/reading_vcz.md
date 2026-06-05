@@ -13,7 +13,8 @@ kernelspec:
 
 This page is a worked introduction to reading VCF Zarr (VCZ) datasets from
 Python. Every code cell below runs against a small example dataset,
-`data/sample.vcz.zip` (9 variants across 3 samples), shipped with these docs.
+`data/sample.vcz.zip` (9 variants across 3 samples, plus a null sample at index
+1 used to illustrate masking; see {ref}`sec-null-samples`).
 For exact signatures of everything used here, see the {ref}`sec-python-api`.
 
 ## Opening a dataset
@@ -77,6 +78,10 @@ reader = vcztools.VczReader(root)
 print("sample_ids:", reader.sample_ids)
 print("contig_ids:", reader.contig_ids)
 ```
+
+`sample_ids` lists only the real samples, so it is shorter than `num_samples`
+(printed above), which counts every slot in the store including null samples;
+see {ref}`sec-null-samples`.
 
 `field_names` lists the arrays stored in the dataset, while
 `virtual_field_names` lists fields computed on demand (allele counts and
@@ -152,6 +157,44 @@ reader.set_variants(np.array([0, 1, 2]))
 positions = [row["variant_position"]
              for row in reader.variants(fields=["variant_position"])]
 print("positions:", positions)
+```
+
+(sec-null-samples)=
+## Null samples
+
+Some VCZ datasets contain *null* (masked) samples: slots whose `sample_id` is
+the empty string `""`. They must never be read, filtered on, or output. The
+example dataset has one at index 1. The reader hides them automatically —
+`sample_ids` and every iterated `call_*` array exclude null samples, and
+sample-dependent virtual fields (`AC`/`AN`/`AF`/`NS`) ignore them.
+
+The raw picture is available alongside the filtered view:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+
+print("num_samples (raw, counts nulls):", reader.num_samples)
+print("raw_sample_ids:", reader.raw_sample_ids)
+print("non_null_sample_indices:", reader.non_null_sample_indices)
+print("sample_ids (nulls hidden):", reader.sample_ids)
+```
+
+Iterating drops the null sample's columns, so `call_*` arrays have one column
+per *real* sample:
+
+```{code-cell} ipython3
+chunk = next(reader.variant_chunks(fields=["call_genotype"]))
+print("call_genotype sample columns:", chunk["call_genotype"].shape[1])
+```
+
+`set_samples` indexes are positions in the raw `sample_id` array, so build
+index-based selections from `non_null_sample_indices` rather than a bare
+`range` — selecting a null index would put an empty string in `sample_ids`:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+reader.set_samples(reader.non_null_sample_indices[[0, 1]])
+print("selected samples:", reader.sample_ids)
 ```
 
 ## Filtering

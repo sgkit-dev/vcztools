@@ -919,7 +919,7 @@ def _build_first_samples_chunk(root, ctx):
     bandwidth on an intact sample chunk."""
     reader = retrieval.VczReader(root)
     take = min(reader.samples_chunk_size, reader.num_samples)
-    reader.set_samples(np.arange(take))
+    reader.set_sample_indexes(np.arange(take))
     return reader
 
 
@@ -937,7 +937,7 @@ def _fmt_fields_reader(root):
     is linear in chunk count."""
     reader = retrieval.VczReader(root)
     take_samples = min(reader.samples_chunk_size, reader.num_samples)
-    reader.set_samples(np.arange(take_samples))
+    reader.set_sample_indexes(np.arange(take_samples))
 
     num_variant_chunks = math.ceil(reader.num_variants / reader.variants_chunk_size)
     take_chunks = min(FMT_FIELDS_VARIANT_CHUNKS_COUNT, num_variant_chunks)
@@ -980,13 +980,13 @@ def _build_fmt_fields_filtered(root, ctx):
 def _build_first_samples_chunk_slice(root, ctx):
     """Same coverage as :func:`_build_first_samples_chunk` but drops
     the last sample of the chunk, routing the selection through
-    ``samples.build_chunk_plan``'s ``slice(0, N-1)`` path. Throughput
-    is expected within measurement noise of the full-chunk baseline;
-    a regression would mean the Phase 0.5 slice optimisation is
-    carrying a cost we haven't noticed."""
+    ``retrieval.build_sample_chunk_plan``'s ``slice(0, N-1)`` path.
+    Throughput is expected within measurement noise of the full-chunk
+    baseline; a regression would mean the Phase 0.5 slice optimisation
+    is carrying a cost we haven't noticed."""
     reader = retrieval.VczReader(root)
     take = min(reader.samples_chunk_size, reader.num_samples)
-    reader.set_samples(np.arange(take - 1))
+    reader.set_sample_indexes(np.arange(take - 1))
     return reader
 
 
@@ -1035,7 +1035,7 @@ def _build_filter_info_dp_gt_80_genotypes(root, ctx):
     opted out of."""
     reader = retrieval.VczReader(root)
     take = min(1000, reader.num_samples)
-    reader.set_samples(np.arange(take))
+    reader.set_sample_indexes(np.arange(take))
     vf = bcftools_filter.BcftoolsFilter(
         field_names=reader.field_names, include="INFO/DP>80"
     )
@@ -1063,7 +1063,7 @@ def _build_region_filter_format_gq_gt_50(root, ctx):
 def _build_region_and_sample_subset(root, ctx):
     reader = retrieval.VczReader(root)
     take = max(1, reader.num_samples // 100)
-    reader.set_samples(np.arange(take))
+    reader.set_sample_indexes(np.arange(take))
     contig, start, end = ctx.region_spec
     region = f"{contig}:{start}-{end}"
     plan = regions_mod.build_chunk_plan(reader, regions=region)

@@ -93,7 +93,7 @@ class ChunkRead:
 
     Axis-agnostic: used for both the variants axis (by
     :mod:`vcztools.regions`) and the samples axis (by
-    :mod:`vcztools.samples`). ``selection=None`` means "emit the full
+    :mod:`vcztools.retrieval`). ``selection=None`` means "emit the full
     chunk, no slicing". ``selection`` may be a ``slice`` for a
     contiguous range (basic indexing returns a view), or an ndarray of
     local indices for arbitrary fancy-index gather/permutation.

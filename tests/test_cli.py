@@ -1774,3 +1774,36 @@ class TestReadaheadOptions:
         )
         assert result.exit_code != 0
         assert "garbage" in result.stderr
+
+
+class TestReadSamplesFile:
+    def test_basic(self):
+        assert cli._read_samples_file("tests/data/txt/samples.txt") == [
+            "NA00001",
+            "NA00003",
+        ]
+
+    def test_ignores_blank_lines(self, tmp_path):
+        f = tmp_path / "samples.txt"
+        f.write_text("NA00001\n\nNA00003\n\n")
+        assert cli._read_samples_file(str(f)) == ["NA00001", "NA00003"]
+
+    def test_strips_whitespace(self, tmp_path):
+        f = tmp_path / "samples.txt"
+        f.write_text("  NA00001\nNA00003  \n")
+        assert cli._read_samples_file(str(f)) == ["NA00001", "NA00003"]
+
+    def test_preserves_unicode_and_embedded_spaces(self, tmp_path):
+        # strip() only touches leading/trailing whitespace, so internal
+        # spaces survive. UTF-8 is the default open() encoding.
+        f = tmp_path / "samples.txt"
+        f.write_text("sampléé\na b\nsample_中文\n", encoding="utf-8")
+        assert cli._read_samples_file(str(f)) == ["sampléé", "a b", "sample_中文"]
+
+    def test_preserves_embedded_commas(self, tmp_path):
+        # The samples-file reader is line-oriented (no comma splitting),
+        # so "a,b" on a line survives as a single ID — unlike the CLI's
+        # -s argument, which does split on commas.
+        f = tmp_path / "samples.txt"
+        f.write_text("a,b\nc,d,e\nplain\n")
+        assert cli._read_samples_file(str(f)) == ["a,b", "c,d,e", "plain"]

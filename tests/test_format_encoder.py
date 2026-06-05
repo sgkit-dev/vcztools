@@ -1236,7 +1236,7 @@ class TestReaderPassthrough:
 
     def test_set_samples_reflected_in_num_samples(self):
         reader = _build_reader(num_variants=4, num_samples=5)
-        reader.set_samples([0, 2])
+        reader.set_sample_indexes([0, 2])
         enc = _FakeEncoder(reader)
         assert enc.num_samples == 2
         enc.close()

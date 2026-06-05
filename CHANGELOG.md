@@ -38,7 +38,9 @@ Data types:
 Python API:
 
 - Add a public Python API, documented under {ref}`sec-python-api`:
-  - `VczReader` for variant data access.
+  - `VczReader` for variant data access, with sample selection by ID via
+    `set_samples(sample_ids, complement=, ignore_missing_samples=)` (or by
+    raw index via `set_sample_indexes`).
   - One-shot writers `write_plink` / `write_bgen` and streaming
     `BedEncoder` / `BgenEncoder` byte encoders.
   - Sidecar writers `write_bim` / `write_fam` / `write_sample` /

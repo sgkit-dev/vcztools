@@ -12,7 +12,8 @@ example-driven introduction to opening datasets and iterating variants, and
 .. autoclass:: vcztools.VczReader
    :members: sample_ids, raw_sample_ids, non_null_sample_indices,
              contig_ids, num_variants, num_samples,
-             field_names, virtual_field_names, set_samples, set_variants,
+             field_names, virtual_field_names, set_samples,
+             set_sample_indexes, set_variants,
              set_variant_filter, materialise_variant_filter,
              get_field_info, variant_chunks, variants
    :member-order: bysource

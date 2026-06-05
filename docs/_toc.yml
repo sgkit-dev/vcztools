@@ -1,9 +1,17 @@
 format: jb-book
 root: intro
-chapters:
-- file: installation
-- file: storage_backends
-- file: cli_ref
-- file: plink
-- file: bgen
-- file: python_api
+parts:
+  - caption: Getting started
+    chapters:
+      - file: installation
+      - file: storage_backends
+  - caption: Command line
+    chapters:
+      - file: cli_ref
+      - file: plink
+      - file: bgen
+  - caption: Python API
+    chapters:
+      - file: reading_vcz
+      - file: format_conversion
+      - file: api_reference

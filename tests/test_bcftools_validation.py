@@ -201,12 +201,6 @@ def _bcftools_missing_table(vcf_path) -> tuple[tuple[str, int, float], ...]:
             "view --no-version -i 'N_MISSING == 0 && POS > 100000'",
             "sample.vcf.gz",
         ),
-        # Annotations-only file has no call_genotype: N_MISSING falls
-        # back to 0 for every variant, matching bcftools.
-        (
-            "view --no-version -i 'N_MISSING == 0'",
-            "1kg_2020_chr20_annotations.bcf",
-        ),
         # AC / AN / AF used in filter expressions. Stored INFO/AC is
         # mostly missing in sample.vcf.gz, so the no-subset cases use
         # AC>=1 to keep at least the AC=[1,1] row alive. The -s cases

@@ -15,10 +15,7 @@ or in a ``bcftools_filter`` expression. Resolution at chunk time:
 
 The registry is the single source of truth for what's computable; the
 reader consults it once at construction to drop any entry whose deps
-aren't satisfied by the current store (with an optional ``degenerate``
-form taking over when the primary's deps are absent — used for
-``N_MISSING`` / ``F_MISSING`` on annotations-only stores that lack
-``call_genotype``).
+aren't satisfied by the current store.
 
 Compute functions take ``(deps, cache, context)``:
 
@@ -50,7 +47,6 @@ class VirtualField:
     description: str
     shape_from: str
     compute: Callable
-    degenerate: "VirtualField | None" = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -148,14 +144,6 @@ def _compute_f_missing(deps, cache, context):
     return _count_missing_gt(gt).astype(np.float64) / n_samples
 
 
-def _compute_n_missing_zero(deps, cache, context):
-    return np.zeros(deps["variant_position"].shape[0], dtype=np.int64)
-
-
-def _compute_f_missing_zero(deps, cache, context):
-    return np.zeros(deps["variant_position"].shape[0], dtype=np.float64)
-
-
 REGISTRY: dict[str, VirtualField] = {
     "variant_index": VirtualField(
         name="variant_index",
@@ -221,15 +209,6 @@ REGISTRY: dict[str, VirtualField] = {
         description="Number of samples with all-missing genotypes",
         shape_from="variant_position",
         compute=_compute_n_missing,
-        degenerate=VirtualField(
-            name="variant_N_MISSING",
-            deps=("variant_position",),
-            dtype=np.dtype(np.int64),
-            dims=("variants",),
-            description="Number of samples with all-missing genotypes",
-            shape_from="variant_position",
-            compute=_compute_n_missing_zero,
-        ),
     ),
     "variant_F_MISSING": VirtualField(
         name="variant_F_MISSING",
@@ -239,15 +218,6 @@ REGISTRY: dict[str, VirtualField] = {
         description="Fraction of samples with all-missing genotypes",
         shape_from="variant_position",
         compute=_compute_f_missing,
-        degenerate=VirtualField(
-            name="variant_F_MISSING",
-            deps=("variant_position",),
-            dtype=np.dtype(np.float64),
-            dims=("variants",),
-            description="Fraction of samples with all-missing genotypes",
-            shape_from="variant_position",
-            compute=_compute_f_missing_zero,
-        ),
     ),
 }
 
@@ -256,15 +226,11 @@ def resolve_for_root(root) -> dict[str, VirtualField]:
     """Return the subset of :data:`REGISTRY` whose dependencies are
     satisfied by ``root``.
 
-    An entry is included with its primary form if every dep in
-    :attr:`VirtualField.deps` is present in ``root``; otherwise with
-    its ``degenerate`` form if that form's deps are present; otherwise
-    dropped.
+    An entry is included if every dep in :attr:`VirtualField.deps` is
+    present in ``root``; otherwise it is dropped.
     """
     resolved: dict[str, VirtualField] = {}
     for name, vf in REGISTRY.items():
         if all(d in root for d in vf.deps):
             resolved[name] = vf
-        elif vf.degenerate is not None and all(d in root for d in vf.degenerate.deps):
-            resolved[name] = vf.degenerate
     return resolved

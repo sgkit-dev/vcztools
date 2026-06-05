@@ -16,7 +16,7 @@ from vcztools import retrieval as retrieval_mod
 from vcztools import samples as samples_mod
 from vcztools import virtual_fields as virtual_fields_mod
 from vcztools.bcftools_filter import BcftoolsFilter
-from vcztools.retrieval import CachedLogicalVariantsChunk, VczReader
+from vcztools.retrieval import CachedLogicalVariantsChunk, FieldInfo, VczReader
 
 
 def test_variant_chunks(fx_sample_vcz):
@@ -2976,6 +2976,49 @@ class TestGetFieldInfo:
         first = reader.get_field_info("variant_position")
         second = reader.get_field_info("variant_position")
         assert first is second
+
+
+class TestFieldInfoRepr:
+    """``FieldInfo._repr_html_`` renders a single field's dtype, shape,
+    dims and attributes as an HTML table."""
+
+    def test_html_reports_core_metadata(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        info = reader.get_field_info("call_DP")
+        html_text = info._repr_html_()
+        assert "<table" in html_text
+        assert "FieldInfo: call_DP" in html_text
+        assert str(info.dtype) in html_text
+        assert str(info.shape) in html_text
+        assert ", ".join(info.dims) in html_text
+
+    def test_html_renders_description_attr(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        info = reader.get_field_info("call_DP")
+        assert info.attrs["description"] == "Read Depth"
+        html_text = info._repr_html_()
+        assert "description" in html_text
+        assert "Read Depth" in html_text
+
+    def test_html_omits_array_dimensions_attr(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        info = reader.get_field_info("call_DP")
+        # The stored attr duplicates the dims row, so it is not displayed.
+        assert "_ARRAY_DIMENSIONS" in info.attrs
+        html_text = info._repr_html_()
+        assert "_ARRAY_DIMENSIONS" not in html_text
+
+    def test_html_escapes_attr_values(self):
+        info = FieldInfo(
+            name="call_genotype",
+            dtype=np.dtype("int8"),
+            shape=(3, 2),
+            dims=("variants", "samples"),
+            attrs={"description": "a < b & c"},
+        )
+        html_text = info._repr_html_()
+        assert "a &lt; b &amp; c" in html_text
+        assert "a < b & c" not in html_text
 
 
 class TestResolveQueryFieldsAutoDiscover:

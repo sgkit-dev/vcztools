@@ -109,10 +109,8 @@ print("virtual fields:", sorted(reader.virtual_field_names))
 snapshot describing a single field's dtype, shape, dimensions and attributes:
 
 ```{code-cell} ipython3
-info = reader.get_field_info("call_genotype")
-print("dtype:", info.dtype)
-print("shape:", info.shape)
-print("dims: ", info.dims)
+info = reader.get_field_info("call_DP")
+info
 ```
 
 ## Iterating variants

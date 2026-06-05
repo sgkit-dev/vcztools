@@ -51,8 +51,46 @@ root = vcztools.open_zarr(store)
 
 ## API reference
 
+`vcztools.VczReader` is the reader entry point over an opened VCZ dataset;
+its `variant_chunks` and `variants` methods iterate the selected variant data
+at chunk and row granularity. Selection and filtering are configured before
+iterating with `set_samples`, `set_variants`, and `set_variant_filter` — the
+latter takes any `VariantFilter`, such as a `BcftoolsFilter` built from a
+bcftools `-i`/`-e` expression. `write_plink` and `write_bgen` are the one-shot
+writers that turn a reader into a complete PLINK 1 fileset or BGEN file. For
+finer control, `BedEncoder` and `BgenEncoder` expose the `.bed` / `.bgen` byte
+streams directly, and the `write_bim` / `write_fam` / `write_bgi` /
+`write_sample` functions emit the individual sidecar files.
+
 ```{eval-rst}
 
 .. autofunction:: vcztools.open_zarr
+
+.. autoclass:: vcztools.VczReader
+   :members: sample_ids, contig_ids, num_variants, num_samples,
+             field_names, virtual_field_names, set_samples, set_variants,
+             set_variant_filter, materialise_variant_filter,
+             get_field_info, variant_chunks, variants
+   :member-order: bysource
+
+.. autoclass:: vcztools.FieldInfo
+   :members:
+
+.. autoclass:: vcztools.VariantFilter
+   :members:
+   :undoc-members:
+
+.. autoclass:: vcztools.BcftoolsFilter
+
+.. autofunction:: vcztools.write_plink
+.. autofunction:: vcztools.write_bgen
+
+.. autoclass:: vcztools.BedEncoder
+.. autoclass:: vcztools.BgenEncoder
+
+.. autofunction:: vcztools.write_bim
+.. autofunction:: vcztools.write_fam
+.. autofunction:: vcztools.write_bgi
+.. autofunction:: vcztools.write_sample
 
 ```

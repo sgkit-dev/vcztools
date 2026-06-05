@@ -174,7 +174,7 @@ def write_plink(reader, output, *, bim: bool = True, fam: bool = True):
     ``fam`` toggle the matching sidecars.
 
     If a variant filter is configured on the reader, it is resolved
-    in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
+    in place via :meth:`~vcztools.VczReader.materialise_variant_filter`
     before encoding so that BIM rows and BED rows are guaranteed to
     align. Sample-scope filters are not supported in PLINK 1 binary
     output: the ``.bed`` format is fixed-width per variant, so
@@ -235,8 +235,8 @@ class BedEncoder(format_encoder.FormatEncoder):
     ``.fam`` files, use :func:`write_bim` and :func:`write_fam`
     directly.
 
-    Honours :meth:`~vcztools.retrieval.VczReader.set_samples` and
-    :meth:`~vcztools.retrieval.VczReader.set_variants` configured on
+    Honours :meth:`~vcztools.VczReader.set_samples` and
+    :meth:`~vcztools.VczReader.set_variants` configured on
     the reader before construction. With ``set_variants``, the encoded
     ``.bed`` covers exactly the selected variants in chunk-plan order;
     :attr:`bed_size` and :attr:`num_variants` reflect the selection.
@@ -245,7 +245,7 @@ class BedEncoder(format_encoder.FormatEncoder):
     multi-allelic variants raise ``ValueError`` during :meth:`read`,
     not at construction.
 
-    :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
+    :meth:`~vcztools.VczReader.set_variant_filter` is not
     yet supported and raises ``NotImplementedError`` at construction;
     apply predicate filters externally before passing the reader in.
 

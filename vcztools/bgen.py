@@ -589,7 +589,7 @@ class BgenEncoder(format_encoder.FormatEncoder):
     :func:`write_bgi`. The ``.sample`` sidecar is produced by
     :func:`write_sample`.
 
-    :meth:`~vcztools.retrieval.VczReader.set_variant_filter` is not
+    :meth:`~vcztools.VczReader.set_variant_filter` is not
     supported and raises ``NotImplementedError`` at construction;
     materialise the filter or use ``set_variants`` first. Unlike
     :func:`write_bgen`, the encoder is I/O-free in ``__init__``.
@@ -1341,7 +1341,7 @@ def write_bgen(
     streaming the BGEN payload.
 
     If a variant filter is configured on the reader, it is resolved
-    in place via :meth:`~vcztools.retrieval.VczReader.materialise_variant_filter`
+    in place via :meth:`~vcztools.VczReader.materialise_variant_filter`
     so that variant-block ordering and ``.bgi`` entries align with the
     BGEN payload.
 

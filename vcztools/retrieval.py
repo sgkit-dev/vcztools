@@ -666,36 +666,16 @@ def _validate_samples_input(value) -> None:
 class VczReader:
     """Central reader for VCZ (Zarr-based VCF) files.
 
-    Owns the zarr root and provides metadata properties and
-    variant iteration at both chunk and row granularity.
+    Owns the zarr root and provides metadata properties and variant
+    iteration at both chunk and row granularity, via
+    :meth:`variant_chunks` and :meth:`variants`.
 
-    The reader starts with no configured selection or filter — plan
-    state is lazy and is filled in to sensible defaults (every real
-    sample; every variant chunk) on first iteration. Callers
-    customize via the setters **before** iterating:
+    The reader starts with no configured selection — every real sample
+    and every variant is iterated by default. Call :meth:`set_samples`
+    to restrict the sample selection **before** iterating.
 
-    - :meth:`set_samples` — sample selection (integer indexes).
-    - :meth:`set_variants` — variant selection (``list[ChunkRead]``
-      or a sorted 1-D index array). Re-callable; replaces.
-    - :meth:`set_variant_filter` — per-variant filter predicate (or
-      ``None`` to clear). Re-callable; replaces.
-    - :meth:`set_bcftools_semantics` — opt into bcftools filter / INFO
-      evaluation semantics (see the method docstring).
-
-    :meth:`set_samples` and :meth:`set_bcftools_semantics` are one-shot
-    — a second call raises ``RuntimeError``. ``set_samples`` also
-    refuses to run when ``samples_selection`` has already been
-    resolved by reading the corresponding property during default
-    iteration.
-
-    The reader owns a single :class:`concurrent.futures.ThreadPoolExecutor`
-    that every :class:`StreamReader` it spawns submits work to.
     Use as a context manager (``with VczReader(root) as reader:``) so
-    the pool is torn down deterministically on exit. Multiple
-    stream readers (e.g. several :class:`vcztools.plink.BedEncoder`
-    instances driven concurrently against the same reader, or
-    repeated ``variant_chunks()`` calls) share the pool — submission
-    is thread-safe at the executor level.
+    the reader's resources are released deterministically on exit.
 
     Parameters
     ----------
@@ -706,14 +686,13 @@ class VczReader:
         constructing the reader.
     readahead_workers
         Worker count for the readahead thread pool. ``None``
-        (default) uses :data:`DEFAULT_READAHEAD_WORKERS` (``32``).
-        The pool is created at construction; this parameter has no
-        post-init knob.
+        (default) uses ``32``. The pool is created at construction;
+        this parameter has no post-init knob.
     readahead_bytes
         Cap, in bytes, on the cross-chunk readahead window. ``None``
-        (default) uses :data:`DEFAULT_READAHEAD_BYTES` (256 MiB).
-        ``0`` pins pipeline depth at 1 (one chunk prefetched ahead of
-        the consumer); the pipeline cannot go lower.
+        (default) uses 256 MiB. ``0`` pins pipeline depth at 1 (one
+        chunk prefetched ahead of the consumer); the pipeline cannot
+        go lower.
     """
 
     def __init__(
@@ -804,6 +783,7 @@ class VczReader:
 
     @property
     def sample_ids(self):
+        """Selected sample IDs as a numpy array, in selection order."""
         self._resolve_samples_if_needed()
         return self._sample_ids
 
@@ -831,20 +811,14 @@ class VczReader:
 
         Accepts a list or ndarray of integer indexes into the VCZ
         ``sample_id`` array, in the order the caller wants. An empty
-        sequence is valid and means "no samples in output" (used by
-        e.g. ``bcftools view --drop-genotypes``).
-
-        Out-of-range indexes raise ``ValueError``; duplicates are
-        permitted. Raises ``RuntimeError`` if already configured
-        (including if the default was already resolved by reading
-        ``samples_selection`` / ``sample_ids`` / ``sample_chunk_plan``).
-        See :func:`vcztools.samples.resolve_sample_selection` for
-        the bcftools-style name-to-index translation the CLI uses.
+        sequence is valid and means "no samples in output". Out-of-range
+        indexes raise ``ValueError``; duplicates are permitted. Must be
+        called before iterating; raises ``RuntimeError`` if the selection
+        is already configured.
 
         Selecting a proper subset makes sample-dependent virtual fields
         (``AC``/``AN``/``AF``/``NS`` …) recompute to reflect the subset
-        on the next iteration, unless :meth:`set_bcftools_semantics` is
-        in effect. See :meth:`variant_chunks`.
+        on the next iteration. See :meth:`variant_chunks`.
         """
         if self._samples_selection is not None:
             raise RuntimeError("samples already configured")
@@ -879,17 +853,13 @@ class VczReader:
     def set_variants(self, variants) -> None:
         """Configure the variant selection.
 
-        Accepts a list of :class:`~vcztools.utils.ChunkRead` (use
-        :func:`vcztools.regions.build_chunk_plan` to build one from
-        region/target strings and a root) or a sorted 1-D array of
-        global variant indexes (bucketed into a plan internally).
-        ``ChunkRead.index`` is in units of the minimum variants chunk
-        size — see :func:`vcztools.utils.compute_min_variants_chunk_size`
-        — which equals every variant-axis field's chunk size for stores
-        without scaled-up variant-only fields.
+        Accepts a sorted 1-D array of global variant indexes, which is
+        bucketed into a chunk plan internally. A pre-built chunk plan
+        (a ``list`` of ``ChunkRead``) may also be passed for callers
+        that already have one, e.g. from a region/target query.
 
         May be called multiple times; each call replaces the prior
-        selection. A ``variant_chunks()`` generator already iterating
+        selection. A :meth:`variant_chunks` generator already iterating
         is unaffected — it snapshots the plan at start.
         """
         if isinstance(variants, list):
@@ -916,16 +886,14 @@ class VczReader:
         """Configure (or clear) the variant filter.
 
         ``variant_filter`` is any object implementing the
-        :class:`~vcztools.variant_filter.VariantFilter` protocol, or
-        ``None`` to clear a previously-set filter. By default a
-        sample-scope filter evaluates over the user's sample selection
-        (``bcftools query`` FMT-scope post-subset semantics). Call
-        :meth:`set_bcftools_semantics` with ``full_sample_filter=True``
-        for ``bcftools view`` pre-subset semantics, where the filter
-        evaluates over the full (pre-subset) sample axis.
+        :class:`~vcztools.VariantFilter` protocol (e.g. a
+        :class:`~vcztools.BcftoolsFilter`), or ``None`` to clear a
+        previously-set filter. By default a sample-scope filter
+        evaluates over the user's sample selection (``bcftools query``
+        FMT-scope post-subset semantics).
 
         May be called multiple times; each call replaces the prior
-        filter. A ``variant_chunks()`` generator already iterating is
+        filter. A :meth:`variant_chunks` generator already iterating is
         unaffected — it snapshots the filter at start.
         """
         self.variant_filter = variant_filter
@@ -1040,12 +1008,7 @@ class VczReader:
 
     @functools.cached_property
     def contig_ids(self):
-        """Contig IDs as a numpy StringDType array.
-
-        Zarr stores may use fixed-width unicode or variable-length UTF-8;
-        coerce to the modern variable-length StringDType so downstream
-        callers get a uniform array type regardless of on-disk layout.
-        """
+        """Contig IDs as a numpy StringDType array."""
         return _freeze(
             np.array(self.root["contig_id"][:], dtype=np.dtypes.StringDType())
         )
@@ -1171,11 +1134,11 @@ class VczReader:
         """Names of virtual fields whose dependencies are satisfied by
         the current store.
 
-        A name appears here when its primary form's deps are present,
-        or — for ``variant_N_MISSING`` / ``variant_F_MISSING`` on
-        annotations-only stores — when the degenerate fallback's deps
-        are present. Used by ``BcftoolsFilter`` to resolve bare names
-        like ``N_MISSING`` and by the ``--fill-tags`` validator.
+        A name appears here when its primary form's dependencies are
+        present, or — for ``variant_N_MISSING`` / ``variant_F_MISSING``
+        on annotations-only stores — when the degenerate fallback's
+        dependencies are present. These names can be requested in the
+        ``fields`` argument of :meth:`variant_chunks`.
         """
         return frozenset(self._virtual_fields)
 
@@ -1237,69 +1200,38 @@ class VczReader:
         start: int = 0,
         force_recompute=False,
     ):
-        """Yield dict[str, np.ndarray] per variant chunk that passes the
-        current variants/samples/variant-filter selection.
+        """Yield ``dict[str, np.ndarray]`` per variant chunk that passes
+        the current sample and variant selection.
 
-        ``start`` is an offset into ``variant_chunk_plan``; iteration
-        begins at ``variant_chunk_plan[start]``. ``start=0`` (default)
-        iterates the full plan. ``start >= len(variant_chunk_plan)``
-        yields no chunks. Negative ``start`` raises ``ValueError``.
+        ``fields`` names the fields to read; ``None`` (default) emits
+        every stored field. A field's value spans the variants axis (and,
+        for FORMAT fields, the selected samples axis).
 
-        ``force_recompute`` forces recomputation of virtual fields (see
+        ``start`` is an offset into the sequence of variant chunks:
+        iteration begins at the ``start``-th chunk. ``start=0`` (default)
+        iterates every chunk; a ``start`` past the last chunk yields
+        nothing; negative ``start`` raises ``ValueError``.
+
+        ``force_recompute`` controls recomputation of virtual fields (see
         :attr:`virtual_field_names`) that have a same-named stored array.
         ``True`` recomputes every requested virtual field; an iterable
         scopes it to the named fields; ``False`` (default) forces none.
         A virtual field with no stored counterpart is always computed.
+        When a sample subset is active, a sample-dependent virtual field
+        (``AC``, ``AN``, ``AF``, ``NS``, ``N_MISSING``, ``F_MISSING``) is
+        recomputed to reflect the subset even with
+        ``force_recompute=False``, so a filter on the field and its
+        emitted value always agree.
 
-        In the default (subset-first) mode a virtual field is also
-        recomputed — even with ``force_recompute=False`` — when a sample
-        subset is active and the field is sample-dependent (``AC``,
-        ``AN``, ``AF``, ``NS``, ``N_MISSING``, ``F_MISSING``), so its
-        value reflects the subset rather than the stale full-file
-        value. Filter and output resolve a field identically, so a
-        filter on the field and its emitted value always agree. There is
-        no "stored value verbatim under a subset" in this mode; use
-        :meth:`set_bcftools_semantics` for that, where the filter reads
-        the stored ``INFO`` and only ``force_recompute`` drives output
-        recompute.
-
-        The per-chunk flow:
-
-        1. Rebucket the canonical (``min_chunk``-unit) variant chunk
-           plan into stream chunks sized by the GCD of the read fields'
-           chunk sizes (see
-           :func:`vcztools.utils.compute_stream_chunk_size` /
-           :func:`vcztools.utils.rebucket_to_stream_plan`). Iterate
-           ``stream_plan[start:]``; each entry's ``selection`` pre-
-           slices the chunk's variant axis.
-        2. Construct a :class:`CachedLogicalVariantsChunk` scoped to this stream
-           chunk over the prefetched, intra-sliced blocks.
-        3. Evaluate the filter against ``CachedLogicalVariantsChunk.filter_view``
-           for each referenced field. Collapse a 2-D sample-scope mask
-           into a 1-D variant selection (with the surviving rows kept
-           as ``sample_filter_pass`` on the subset axis).
-        4. Assemble output from ``CachedLogicalVariantsChunk.output_view`` for
-           each query field; apply the variant selection to variants-
-           axis fields.
-
-        ``start`` is interpreted in stream-chunk units after rebucketing,
-        so the offset semantics depend on the read-fields set passed in
-        the same call. For the historical single-chunk-size case
-        (all read fields share ``min_chunk``), stream chunks and
-        canonical chunks coincide and ``start`` matches its old meaning.
-
-        The returned iterator runs the chunk pipeline in a dedicated
-        background thread so that the consumer's per-chunk work and
-        the producer's per-chunk assembly overlap. Peak in-flight
-        memory grows by one extra chunk's worth of arrays for the
-        duration of iteration; ``close()`` the iterator promptly to
-        release it. Argument validation is eager: ``start < 0`` and
-        ``fields == []`` are detected on the call itself rather than
-        on the first ``next()``.
+        The returned iterator overlaps the consumer's per-chunk work with
+        the assembly of the next chunk; ``close()`` it promptly to
+        release the in-flight chunk. Argument validation is eager:
+        ``start < 0`` and ``fields == []`` are reported on the call
+        itself rather than on the first ``next()``.
 
         The reserved name ``"variant_index"`` may be passed in
-        ``fields`` as a pseudo-field. It does not correspond to a Zarr
-        array; instead the yielded per-chunk array contains the global
+        ``fields`` as a pseudo-field. It does not correspond to a stored
+        array; instead the yielded per-chunk array holds the global
         (store-wide) variant index of each surviving variant in that
         chunk, dtype ``int64``. Pseudo-fields are not auto-discovered
         when ``fields`` is ``None``.

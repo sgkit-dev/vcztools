@@ -674,13 +674,12 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
 
 class BcftoolsFilter:
     """Bcftools ``-i``/``-e`` expression compiled into a
-    :class:`~vcztools.variant_filter.VariantFilter`.
+    :class:`~vcztools.VariantFilter`.
 
     Accepts the same expression syntax as ``bcftools view -i`` /
     ``-e``. Mutually exclusive: only one of ``include`` or ``exclude``
-    may be non-``None``. When neither is set the filter is a no-op
-    (``parse_result is None``); callers should skip the filter in that
-    case rather than invoke :meth:`evaluate`.
+    may be non-``None``. When neither is set the filter is a no-op;
+    callers should skip the filter in that case rather than evaluate it.
 
     The ``field_names`` argument is the set of VCZ array names in the
     target store, used by the parser to resolve bare VCF names like

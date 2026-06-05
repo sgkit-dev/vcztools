@@ -9,16 +9,22 @@ class TestPublicAPI:
     """
 
     EXPECTED = [
+        "BcftoolsFilter",
         "BedEncoder",
         "BgenEncoder",
+        "FieldInfo",
         "GroupedCommand",
+        "VariantFilter",
+        "VczReader",
         "ViewBgenOptions",
         "ViewPlinkOptions",
         "__version__",
         "open_zarr",
+        "write_bgen",
         "write_bgi",
         "write_bim",
         "write_fam",
+        "write_plink",
         "write_sample",
     ]
 

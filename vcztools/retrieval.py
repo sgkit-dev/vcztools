@@ -107,6 +107,26 @@ class FieldInfo:
     dims: tuple[str, ...]
     attrs: dict
 
+    def _repr_html_(self):
+        rows = [
+            ("dtype", str(self.dtype)),
+            ("shape", str(self.shape)),
+            ("dims", ", ".join(self.dims)),
+        ]
+        for key, value in self.attrs.items():
+            # _ARRAY_DIMENSIONS duplicates the dims row above.
+            if key == "_ARRAY_DIMENSIONS":
+                continue
+            rows.append((str(key), str(value)))
+        cells = [
+            f"<tr><th style='text-align:left'>{html.escape(label)}</th>"
+            f"<td>{html.escape(value)}</td></tr>"
+            for label, value in rows
+        ]
+        table = f"<table>{''.join(cells)}</table>"
+        heading = html.escape(f"FieldInfo: {self.name}")
+        return f"<div><b>{heading}</b>{table}</div>"
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class FieldSpec:

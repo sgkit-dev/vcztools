@@ -173,14 +173,15 @@ def write_plink(reader, output, *, bim: bool = True, fam: bool = True):
     and ``foo.fam``. The ``.bed`` payload is always written; ``bim`` and
     ``fam`` toggle the matching sidecars.
 
-    If a variant filter is configured on the reader, it is resolved
-    in place via :meth:`~vcztools.VczReader.materialise_variant_filter`
-    before encoding so that BIM rows and BED rows are guaranteed to
-    align. Sample-scope filters are not supported in PLINK 1 binary
-    output: the ``.bed`` format is fixed-width per variant, so
-    per-sample filtering doesn't translate.
+    The reader's variant filter, if any, must already be resolved into a
+    fixed selection via
+    :meth:`~vcztools.VczReader.materialise_variant_filter`; a still-configured
+    filter raises ``NotImplementedError``. This keeps BIM rows and BED rows
+    aligned. Sample-scope filters are not supported in PLINK 1 binary output:
+    the ``.bed`` format is fixed-width per variant, so per-sample filtering
+    doesn't translate.
     """
-    reader.materialise_variant_filter()
+    format_encoder.check_variant_filter_materialised(reader, "write_plink")
     out_stem = str(output)
     bed_path = pathlib.Path(out_stem + ".bed")
     bim_path = pathlib.Path(out_stem + ".bim")

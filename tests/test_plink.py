@@ -634,6 +634,7 @@ class TestWritePlinkEndToEnd:
             field_names=reader.field_names, include="DP>=10"
         )
         reader.set_variant_filter(vf)
+        reader.materialise_variant_filter()
         out = tmp_path / "p"
         plink.write_plink(reader, out)
         bim = _parse_bim(out.with_suffix(".bim").read_text())
@@ -641,6 +642,27 @@ class TestWritePlinkEndToEnd:
         assert list(bim["Pos"]) == [100, 300, 500]
         bytes_per_variant = math.ceil(num_samples / 4)
         assert (len(bed) - 3) == bytes_per_variant * 3
+
+    def test_unmaterialised_filter_rejected(self, tmp_path):
+        # write_plink requires the filter to be resolved first; a
+        # still-configured filter raises before any sidecar is written.
+        reader = _build_reader(
+            num_variants=2,
+            num_samples=1,
+            call_genotype=np.zeros((2, 1, 2), dtype=np.int8),
+            info_fields={"DP": np.array([10, 20], dtype=np.int32)},
+        )
+        vf = bcftools_filter.BcftoolsFilter(
+            field_names=reader.field_names, include="DP>=10"
+        )
+        reader.set_variant_filter(vf)
+        out = tmp_path / "p"
+        with pytest.raises(
+            NotImplementedError, match="does not support a configured variant filter"
+        ):
+            plink.write_plink(reader, out)
+        assert not out.with_suffix(".fam").exists()
+        assert not out.with_suffix(".bim").exists()
 
     def test_filter_excludes_all(self, tmp_path):
         # No variants survive — BED gets only the magic header, BIM is
@@ -660,6 +682,7 @@ class TestWritePlinkEndToEnd:
             field_names=reader.field_names, include="DP>100"
         )
         reader.set_variant_filter(vf)
+        reader.materialise_variant_filter()
         out = tmp_path / "p"
         plink.write_plink(reader, out)
         assert out.with_suffix(".bed").read_bytes() == b"\x6c\x1b\x01"
@@ -1674,7 +1697,9 @@ class TestBedEncoderWithSetVariants:
                 field_names={"variant_N_ALT"}, include="N_ALT <= 1"
             )
         )
-        with pytest.raises(NotImplementedError, match="set_variant_filter"):
+        with pytest.raises(
+            NotImplementedError, match="does not support a configured variant filter"
+        ):
             plink.BedEncoder(reader)
 
     def test_restart_count_with_selection(self, tmp_path):

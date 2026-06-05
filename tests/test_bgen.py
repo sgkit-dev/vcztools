@@ -1151,6 +1151,23 @@ class TestWriteBgenEndToEnd:
         assert sample_path.exists()
         assert bgi_path.exists()
 
+    def test_unmaterialised_filter_rejected(self, tmp_path):
+        # write_bgen requires the filter to be resolved first; a
+        # still-configured filter raises before any sidecar is written.
+        reader = _build_reader(num_variants=3, num_samples=2)
+        reader.set_variant_filter(
+            bcftools_filter.BcftoolsFilter(
+                field_names={"variant_N_ALT"}, include="N_ALT <= 1"
+            )
+        )
+        bgen_path = tmp_path / "out.bgen"
+        sample_path = tmp_path / "out.sample"
+        with pytest.raises(
+            NotImplementedError, match="does not support a configured variant filter"
+        ):
+            bgen.write_bgen(reader, bgen_path, sample_path=sample_path)
+        assert not sample_path.exists()
+
     def test_sample_text_matches(self, tmp_path):
         reader = _build_reader(num_variants=1, num_samples=2)
         bgen_path = tmp_path / "x.bgen"
@@ -1264,9 +1281,7 @@ class TestCompressionLevel:
     def test_level_9_not_larger_than_level_0(self, tmp_path):
         # All-zero genotypes give a highly compressible payload, so the
         # difference between level 9 and level 0 dominates the per-variant
-        # framing overhead. write_bgen materialises the variant filter in
-        # place (bgen.py: ``materialise_variant_filter``), so each write
-        # gets its own freshly-built reader.
+        # framing overhead. Each write gets its own freshly-built reader.
         num_variants = 64
         num_samples = 32
         reader_kwargs = dict(
@@ -2535,7 +2550,9 @@ class TestBgenEncoderLifecycle:
                 field_names={"variant_N_ALT"}, include="N_ALT <= 1"
             )
         )
-        with pytest.raises(NotImplementedError, match="set_variant_filter"):
+        with pytest.raises(
+            NotImplementedError, match="does not support a configured variant filter"
+        ):
             bgen.BgenEncoder(reader)
 
     def test_constructor_validates_args(self):

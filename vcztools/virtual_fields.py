@@ -1,5 +1,7 @@
-"""Registry of *virtual* variant-axis fields — values derived from
-other store fields rather than read directly from Zarr.
+"""Registry of *virtual* variant-axis fields — values produced per chunk
+rather than read directly from Zarr. Most are derived from other store
+fields (e.g. ``variant_AC`` from genotypes); others are structural,
+derived from each variant's position in the store (``variant_index``).
 
 A virtual field looks identical to a stored field at the
 :class:`~vcztools.retrieval.VczReader` API: callers reference it by
@@ -18,7 +20,7 @@ form taking over when the primary's deps are absent — used for
 ``N_MISSING`` / ``F_MISSING`` on annotations-only stores that lack
 ``call_genotype``).
 
-Compute functions take ``(deps, cache)``:
+Compute functions take ``(deps, cache, context)``:
 
 - ``deps`` — dict keyed by real-field name; values are the chunk-local
   arrays already materialised by the dispatcher.
@@ -26,6 +28,9 @@ Compute functions take ``(deps, cache)``:
   may read sibling values from it (e.g. AF reusing AC/AN) or publish
   results back into it (AC's compute publishes AN as a side effect so
   the AN entry can short-circuit).
+- ``context`` — per-chunk :class:`ChunkContext` giving the chunk's plan
+  entry and chunk size. Used by structural fields like ``variant_index``
+  that derive from variant position; value fields ignore it.
 """
 
 import dataclasses
@@ -33,7 +38,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from vcztools import calculate, constants
+from vcztools import calculate, constants, utils
 
 
 @dataclasses.dataclass(frozen=True)
@@ -48,11 +53,48 @@ class VirtualField:
     degenerate: "VirtualField | None" = None
 
 
+@dataclasses.dataclass(frozen=True)
+class ChunkContext:
+    """Per-chunk plan state passed to :attr:`VirtualField.compute`.
+
+    Structural virtual fields (``variant_index``) derive their value
+    from where the chunk sits in the store rather than from any stored
+    field; this carries the chunk's plan entry and the chunk size its
+    index is measured in.
+    """
+
+    variant_chunk: utils.ChunkRead
+    chunk_size: int
+
+
+def _absolute_variant_indexes(entry: utils.ChunkRead, chunk_size: int) -> np.ndarray:
+    """Global variant indexes contributed by ``entry``.
+
+    Maps each variant the chunk read selects to its store-wide variant
+    index. ``chunk_size`` is the unit ``entry.index`` is measured in —
+    ``min_chunk`` for canonical plan entries, ``stream_chunk_size`` for
+    stream-plan entries.
+    """
+    chunk_offset = entry.index * chunk_size
+    sel = entry.selection
+    if sel is None:
+        local = np.arange(entry.num_selected, dtype=np.int64)
+    elif isinstance(sel, slice):
+        local = np.arange(*sel.indices(chunk_size), dtype=np.int64)
+    else:
+        local = np.asarray(sel, dtype=np.int64)
+    return chunk_offset + local
+
+
 def _count_missing_gt(gt: np.ndarray) -> np.ndarray:
     return np.sum(np.all(gt < 0, axis=-1), axis=1)
 
 
-def _compute_ac(deps, cache):
+def _compute_variant_index(deps, cache, context):
+    return _absolute_variant_indexes(context.variant_chunk, context.chunk_size)
+
+
+def _compute_ac(deps, cache, context):
     gt = deps["call_genotype"]
     alt = deps["variant_allele"][:, 1:]
     ac, an = calculate.compute_ac_an(gt, alt)
@@ -60,7 +102,7 @@ def _compute_ac(deps, cache):
     return ac
 
 
-def _compute_an(deps, cache):
+def _compute_an(deps, cache, context):
     cached = cache.get("variant_AN")
     if cached is not None:
         return cached
@@ -70,11 +112,11 @@ def _compute_an(deps, cache):
     return an
 
 
-def _compute_af(deps, cache):
+def _compute_af(deps, cache, context):
     ac = cache.get("variant_AC")
     an = cache.get("variant_AN")
     if ac is None:
-        ac = _compute_ac(deps, cache)
+        ac = _compute_ac(deps, cache, context)
     if an is None:
         an = cache["variant_AN"]
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -84,21 +126,21 @@ def _compute_af(deps, cache):
     return af
 
 
-def _compute_ns(deps, cache):
+def _compute_ns(deps, cache, context):
     gt = deps["call_genotype"]
     return np.sum(np.any(gt >= 0, axis=-1), axis=1).astype(np.int32)
 
 
-def _compute_n_alt(deps, cache):
+def _compute_n_alt(deps, cache, context):
     alt = np.asarray(deps["variant_allele"])[:, 1:]
     return (alt != "").sum(axis=1).astype(np.int64)
 
 
-def _compute_n_missing(deps, cache):
+def _compute_n_missing(deps, cache, context):
     return _count_missing_gt(np.asarray(deps["call_genotype"])).astype(np.int64)
 
 
-def _compute_f_missing(deps, cache):
+def _compute_f_missing(deps, cache, context):
     gt = np.asarray(deps["call_genotype"])
     n_samples = gt.shape[1]
     if n_samples == 0:
@@ -106,15 +148,24 @@ def _compute_f_missing(deps, cache):
     return _count_missing_gt(gt).astype(np.float64) / n_samples
 
 
-def _compute_n_missing_zero(deps, cache):
+def _compute_n_missing_zero(deps, cache, context):
     return np.zeros(deps["variant_position"].shape[0], dtype=np.int64)
 
 
-def _compute_f_missing_zero(deps, cache):
+def _compute_f_missing_zero(deps, cache, context):
     return np.zeros(deps["variant_position"].shape[0], dtype=np.float64)
 
 
 REGISTRY: dict[str, VirtualField] = {
+    "variant_index": VirtualField(
+        name="variant_index",
+        deps=(),
+        dtype=np.dtype(np.int64),
+        dims=("variants",),
+        description="Global (store-wide) 0-based index of the variant",
+        shape_from="variant_position",
+        compute=_compute_variant_index,
+    ),
     "variant_AC": VirtualField(
         name="variant_AC",
         deps=("call_genotype", "variant_allele"),

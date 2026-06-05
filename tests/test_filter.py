@@ -23,7 +23,9 @@ def _materialise_virtuals(data, names):
                 raise KeyError(f"deps for {name} not in test data")
             vf = vf.degenerate
         deps = {dep: np.asarray(data[dep]) for dep in vf.deps}
-        data[name] = vf.compute(deps, cache)
+        # These value-derived fields ignore the chunk context (only the
+        # structural variant_index field reads it).
+        data[name] = vf.compute(deps, cache, None)
     return data
 
 
@@ -461,7 +463,7 @@ class TestFilterExpression:
         nt.assert_array_equal(result, expected)
 
     def test_evaluate_n_missing_combined_with_other(self):
-        # Combination with TYPE checks that the N_MISSING pseudo-identifier
+        # Combination with TYPE checks that the N_MISSING virtual field
         # interoperates with other variant-scoped operators.
         data = {
             "call_genotype": np.array(

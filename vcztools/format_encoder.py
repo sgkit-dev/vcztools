@@ -54,6 +54,22 @@ import numpy as np
 from vcztools import retrieval, utils
 
 
+def check_variant_filter_materialised(reader, context_name):
+    """Raise if ``reader`` still has a variant filter configured.
+
+    The fixed-width output layer requires the filter to be resolved into a
+    concrete selection first; see
+    :meth:`~vcztools.VczReader.materialise_variant_filter`. ``context_name``
+    names the caller for the error message.
+    """
+    if reader.variant_filter is not None:
+        raise NotImplementedError(
+            f"{context_name} does not support a configured variant filter. "
+            "Resolve it first with VczReader.materialise_variant_filter(), "
+            "or use set_variants() to supply a fixed selection."
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class _EncodedChunk:
     """One chunk's encoded output bytes plus the byte offset at which
@@ -100,13 +116,7 @@ class FormatEncoder(abc.ABC):
         if encode_block_bytes is None:
             encode_block_bytes = self._default_encode_block_bytes
 
-        if reader.variant_filter is not None:
-            raise NotImplementedError(
-                f"{type(self).__name__} does not support readers with a "
-                "set_variant_filter() configured. Apply the filter "
-                "externally and pass the resulting reader, or use "
-                "set_variants() to materialise the surviving indices."
-            )
+        check_variant_filter_materialised(reader, type(self).__name__)
         if encode_threads < 1:
             raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
         if encode_block_bytes < 1:

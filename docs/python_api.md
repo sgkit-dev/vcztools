@@ -57,7 +57,10 @@ at chunk and row granularity. Selection and filtering are configured before
 iterating with `set_samples`, `set_variants`, and `set_variant_filter` — the
 latter takes any `VariantFilter`, such as a `BcftoolsFilter` built from a
 bcftools `-i`/`-e` expression. `write_plink` and `write_bgen` are the one-shot
-writers that turn a reader into a complete PLINK 1 fileset or BGEN file. For
+writers that turn a reader into a complete PLINK 1 fileset or BGEN file. These
+fixed-width writers (and the encoders below) require any variant filter to be
+resolved into a fixed selection first with `materialise_variant_filter`; a
+still-configured filter raises. For
 finer control, `BedEncoder` and `BgenEncoder` expose the `.bed` / `.bgen` byte
 streams directly; both share the `FormatEncoder` random-access read/write API.
 The `write_bim` / `write_fam` / `write_bgi` / `write_sample` functions emit the

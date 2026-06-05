@@ -1421,6 +1421,7 @@ def view_plink(path, output, **kwargs):
     opts.log.apply()
     reader = opts.make_reader(path)
     with reader:
+        reader.materialise_variant_filter()
         plink.write_plink(
             reader,
             output,
@@ -1523,6 +1524,7 @@ def view_bgen(
         pipe_context = contextlib.nullcontext()
     reader = opts.make_reader(path)
     with reader, pipe_context:
+        reader.materialise_variant_filter()
         bgen.write_bgen(
             reader,
             bgen_dest,

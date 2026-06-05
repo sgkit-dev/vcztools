@@ -1342,10 +1342,11 @@ def write_bgen(
     last using the variant-block byte offsets accumulated while
     streaming the BGEN payload.
 
-    If a variant filter is configured on the reader, it is resolved
-    in place via :meth:`~vcztools.VczReader.materialise_variant_filter`
-    so that variant-block ordering and ``.bgi`` entries align with the
-    BGEN payload.
+    The reader's variant filter, if any, must already be resolved into a
+    fixed selection via
+    :meth:`~vcztools.VczReader.materialise_variant_filter`; a still-configured
+    filter raises ``NotImplementedError``. This keeps variant-block ordering
+    and ``.bgi`` entries aligned with the BGEN payload.
 
     Variant scope: biallelic only (multi-allelic raises ``ValueError``).
     Genotype source: hard calls from ``call_genotype`` encoded as 1.0
@@ -1433,7 +1434,7 @@ def write_bgen(
     if compression_level is None:
         compression_level = 0 if fixed_variant_size else 1
 
-    reader.materialise_variant_filter()
+    format_encoder.check_variant_filter_materialised(reader, "write_bgen")
 
     if not embed_header_samples and sample_path is None:
         logger.warning(

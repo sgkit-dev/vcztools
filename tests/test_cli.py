@@ -681,9 +681,9 @@ class TestViewPlink:
     def test_sample_scope_filter_rejected(self, tmp_path, fx_vcz_path):
         # plink output is fixed-width per variant, so a sample-scope
         # ``-i 'FMT/...'`` filter has no per-cell channel to land in;
-        # the writer's ``materialise_variant_filter`` rejects it. This
-        # is independent of ``--max-alleles`` (the rejection lives in
-        # the reader, not the AND composition).
+        # the command's ``materialise_variant_filter`` call rejects it
+        # before encoding. This is independent of ``--max-alleles`` (the
+        # rejection lives in the reader, not the AND composition).
         out = tmp_path / "p"
         _, err = run_vcztools(
             f"view-plink {fx_vcz_path} --max-alleles 2 "

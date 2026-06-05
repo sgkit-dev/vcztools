@@ -23,6 +23,7 @@ been intra-sliced to the stream chunk's variant rows.
 import concurrent.futures as cf
 import dataclasses
 import functools
+import html
 import logging
 import time
 
@@ -735,6 +736,121 @@ class VczReader:
     def __exit__(self, exc_type, exc_value, traceback):
         self._executor.shutdown(wait=True)
         return False
+
+    @property
+    def num_null_samples(self) -> int:
+        """Number of null (``sample_id == ""``) entries in the store.
+
+        Null samples are never read, filtered on, or output; the count
+        is reported here so an interactive user can see they exist."""
+        return self.num_samples - len(self.non_null_sample_indices)
+
+    def __repr__(self):
+        parts = [
+            f"variants={self.num_variants}",
+            f"samples={self.num_samples}",
+            f"fields={len(self.field_names)}",
+        ]
+        if self.num_null_samples > 0:
+            parts.append(f"null_samples={self.num_null_samples}")
+        if self._samples_selection is not None:
+            parts.append(f"samples_selected={self._samples_selection.size}")
+        if self._variant_chunk_plan is not None:
+            num_selected = sum(cr.num_selected for cr in self._variant_chunk_plan)
+            parts.append(f"variants_selected={num_selected}")
+        if self.variant_filter is not None:
+            parts.append("filtered")
+        if self._bcftools_semantics:
+            parts.append("bcftools_semantics")
+        store = _one_line_repr(getattr(self.root, "store", None))
+        body = " ".join(parts)
+        return f"<VczReader {body} store={store}>"
+
+    def _repr_html_(self):
+        store = html.escape(_one_line_repr(getattr(self.root, "store", None)))
+        rows = [("Store", store)]
+        if self.source is not None:
+            rows.append(("Source", html.escape(str(self.source))))
+        rows.append(
+            ("Variants", f"{self.num_variants} (chunk {self.variants_chunk_size})")
+        )
+        rows.append(
+            ("Samples", f"{self.num_samples} (chunk {self.samples_chunk_size})")
+        )
+        rows.append(("Null samples", str(self.num_null_samples)))
+
+        if self._samples_selection is None:
+            sample_state = "all non-null (default)"
+        else:
+            num_selected_samples = self._samples_selection.size
+            sample_state = f"{num_selected_samples} of {self.num_samples} selected"
+        rows.append(("Sample selection", sample_state))
+
+        if self._variant_chunk_plan is None:
+            variant_state = "all (default)"
+        else:
+            num_chunks = len(self._variant_chunk_plan)
+            num_selected = sum(cr.num_selected for cr in self._variant_chunk_plan)
+            variant_state = f"{num_selected} variants in {num_chunks} chunks"
+        rows.append(("Variant selection", variant_state))
+
+        if self.variant_filter is None:
+            filter_state = "none"
+        else:
+            referenced = sorted(self.variant_filter.referenced_fields)
+            fields_text = ", ".join(referenced)
+            filter_state = html.escape(
+                f"{self.variant_filter.scope}-scope on {fields_text}"
+            )
+        rows.append(("Filter", filter_state))
+
+        if self._bcftools_semantics:
+            semantics = f"on (full_sample_filter={self._full_sample_filter})"
+            rows.append(("bcftools semantics", semantics))
+
+        rows.append(("Contigs", str(self.root["contig_id"].shape[0])))
+        if "filter_id" in self.field_names:
+            rows.append(("Filters", str(self.root["filter_id"].shape[0])))
+
+        if self.readahead_bytes is not None:
+            readahead_cap = self.readahead_bytes
+        else:
+            readahead_cap = DEFAULT_READAHEAD_BYTES
+        readahead = f"{self._readahead_workers} workers, {_fmt_bytes(readahead_cap)}"
+        rows.append(("Readahead", readahead))
+
+        num_stored = len(self.field_names)
+        num_virtual = len(self.virtual_field_names)
+        rows.append(("Fields", f"{num_stored} stored, {num_virtual} virtual"))
+
+        summary_cells = [
+            f"<tr><th style='text-align:left'>{label}</th><td>{value}</td></tr>"
+            for label, value in rows
+        ]
+        summary_table = f"<table>{''.join(summary_cells)}</table>"
+        fields_table = self._fields_table_html()
+        return f"<div><b>VczReader</b>{summary_table}{fields_table}</div>"
+
+    def _fields_table_html(self):
+        stored = sorted(self.field_names)
+        virtual_only = sorted(self.virtual_field_names - self.field_names)
+        labelled = [(name, name) for name in stored]
+        labelled += [(name, f"{name} (virtual)") for name in virtual_only]
+
+        header = "<tr><th>name</th><th>dtype</th><th>shape</th><th>dims</th></tr>"
+        body_cells = []
+        for name, label in labelled:
+            info = self.get_field_info(name)
+            name_text = html.escape(label)
+            dtype_text = html.escape(str(info.dtype))
+            shape_text = html.escape(str(info.shape))
+            dims_text = html.escape(", ".join(info.dims))
+            body_cells.append(
+                f"<tr><td>{name_text}</td><td>{dtype_text}</td>"
+                f"<td>{shape_text}</td><td>{dims_text}</td></tr>"
+            )
+        table = f"<table>{header}{''.join(body_cells)}</table>"
+        return f"<details><summary>Fields ({len(labelled)})</summary>{table}</details>"
 
     def _load_static_field(self, name: str) -> np.ndarray:
         """Read a static (no variants axis) field once and cache it on

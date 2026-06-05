@@ -3781,3 +3781,100 @@ class TestVirtualFields:
         reader = VczReader(root)
         chunk = next(reader.variant_chunks(fields=["variant_N_ALT"]))
         nt.assert_array_equal(chunk["variant_N_ALT"], [1, 2, 0])
+
+
+class TestRepr:
+    """``VczReader.__repr__`` and ``_repr_html_`` summarise the store and
+    the reader's configured state without doing work — in particular,
+    they must not resolve the default sample selection."""
+
+    @staticmethod
+    def _null_sample_vcz():
+        sample_ids = np.array(["s0", "", "s2", "s3", ""], dtype="<U16")
+        return vcz_builder.make_vcz(
+            variant_contig=[0] * 4,
+            variant_position=[100, 101, 102, 103],
+            alleles=[("A", "T")] * 4,
+            num_samples=5,
+            sample_id=sample_ids,
+            variants_chunk_size=2,
+        )
+
+    def test_repr_reports_dimensions(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        text = repr(reader)
+        assert "VczReader" in text
+        assert f"variants={reader.num_variants}" in text
+        assert f"samples={reader.num_samples}" in text
+
+    def test_repr_html_reports_store_and_fields(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        html_text = reader._repr_html_()
+        assert "<table" in html_text
+        assert str(reader.num_variants) in html_text
+        # A known stored field and a virtual-only field both appear;
+        # ``variant_index`` is always virtual (never stored).
+        assert "variant_position" in html_text
+        assert "variant_index (virtual)" in html_text
+
+    def test_repr_does_not_resolve_samples(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        repr(reader)
+        reader._repr_html_()
+        assert reader._samples_selection is None
+
+    def test_null_samples_count(self):
+        reader = VczReader(self._null_sample_vcz())
+        expected = reader.num_samples - len(reader.non_null_sample_indices)
+        assert expected == 2
+        assert f"null_samples={expected}" in repr(reader)
+        assert f"<td>{expected}</td>" in reader._repr_html_()
+
+    def test_no_null_samples_omitted_from_repr(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        assert reader.num_null_samples == 0
+        assert "null_samples" not in repr(reader)
+
+    def test_default_state_wording(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        html_text = reader._repr_html_()
+        assert "all non-null (default)" in html_text
+        assert "all (default)" in html_text
+        assert "none" in html_text
+
+    def test_sample_selection_reflected(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_samples([0, 1])
+        assert "samples_selected=2" in repr(reader)
+        assert f"2 of {reader.num_samples} selected" in reader._repr_html_()
+
+    def test_variant_selection_reflected(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variants(np.array([0, 1, 2], dtype=np.int64))
+        assert "variants_selected=3" in repr(reader)
+        assert "3 variants in" in reader._repr_html_()
+
+    def test_filter_reflected(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_variant_filter(BcftoolsFilter(reader, include="POS>0"))
+        assert "filtered" in repr(reader)
+        # The filter row shows the scope and canonical referenced fields.
+        html_text = reader._repr_html_()
+        assert "variant-scope on" in html_text
+        assert "variant_position" in html_text
+
+    def test_readahead_config_reflected(self, fx_sample_vcz):
+        reader = VczReader(
+            fx_sample_vcz.group, readahead_workers=4, readahead_bytes=1024
+        )
+        html_text = reader._repr_html_()
+        assert "4 workers" in html_text
+        assert "1.0 KiB" in html_text
+
+    def test_bcftools_semantics_reflected(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        reader.set_bcftools_semantics(full_sample_filter=True)
+        assert "bcftools_semantics" in repr(reader)
+        html_text = reader._repr_html_()
+        assert "bcftools semantics" in html_text
+        assert "full_sample_filter=True" in html_text

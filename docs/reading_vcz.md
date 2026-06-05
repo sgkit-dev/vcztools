@@ -67,6 +67,15 @@ with vcztools.VczReader(root) as reader:
     print(reader.num_samples, "samples")
 ```
 
+Displaying a reader in a notebook renders a summary of the store and the
+reader's current state — its dimensions, null-sample count, sample and variant
+selection, any configured filter, and the available fields:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+reader
+```
+
 The reader starts with every sample and every variant selected. The remaining
 sections each open a fresh reader so their selections stay independent.
 

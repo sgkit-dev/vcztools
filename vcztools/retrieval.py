@@ -1115,10 +1115,9 @@ class VczReader:
     @functools.cached_property
     def _virtual_fields(self) -> dict:
         """The subset of :data:`virtual_fields.REGISTRY` whose deps
-        are satisfied by this store (with degenerate fallbacks chosen
-        where the primary's deps are absent). Resolved lazily so the
-        constructor stays cheap and store-touching tests can introspect
-        the reader without paying for a metadata walk."""
+        are satisfied by this store. Resolved lazily so the constructor
+        stays cheap and store-touching tests can introspect the reader
+        without paying for a metadata walk."""
         return virtual_fields_mod.resolve_for_root(self.root)
 
     @functools.cached_property
@@ -1126,11 +1125,11 @@ class VczReader:
         """Names of virtual fields whose dependencies are satisfied by
         the current store.
 
-        A name appears here when its primary form's dependencies are
-        present, or — for ``variant_N_MISSING`` / ``variant_F_MISSING``
-        on annotations-only stores — when the degenerate fallback's
-        dependencies are present. These names can be requested in the
-        ``fields`` argument of :meth:`variant_chunks`.
+        A name appears here when every dependency of its registry entry
+        is present in the store; genotype-derived fields such as
+        ``variant_N_MISSING`` are therefore absent on annotations-only
+        stores that lack ``call_genotype``. These names can be requested
+        in the ``fields`` argument of :meth:`variant_chunks`.
         """
         return frozenset(self._virtual_fields)
 

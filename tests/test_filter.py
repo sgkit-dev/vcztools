@@ -19,9 +19,7 @@ def _materialise_virtuals(data, names):
     for name in names:
         vf = virtual_fields_mod.REGISTRY[name]
         if not all(d in data for d in vf.deps):
-            if vf.degenerate is None:
-                raise KeyError(f"deps for {name} not in test data")
-            vf = vf.degenerate
+            raise KeyError(f"deps for {name} not in test data")
         deps = {dep: np.asarray(data[dep]) for dep in vf.deps}
         # These value-derived fields ignore the chunk context (only the
         # structural variant_index field reads it).
@@ -491,8 +489,8 @@ class TestFilterExpression:
 
     def test_n_missing_referenced_fields(self):
         # The Identifier resolves to ``variant_N_MISSING``; the dispatcher
-        # is responsible for materialising the value (from ``call_genotype``
-        # or via the all-zero degenerate fallback) before evaluate runs.
+        # is responsible for materialising the value from ``call_genotype``
+        # before evaluate runs.
         fee = filter_mod.BcftoolsFilter(
             field_names={"variant_N_MISSING"}, include="N_MISSING == 0"
         )
@@ -521,29 +519,15 @@ class TestFilterExpression:
             "variant_DP",
         }
 
-    @pytest.mark.parametrize(
-        ("expression", "expected"),
-        [
-            ("N_MISSING == 0", [True, True, True]),
-            ("N_MISSING > 0", [False, False, False]),
-            ("F_MISSING == 0", [True, True, True]),
-            ("F_MISSING < 0.05", [True, True, True]),
-            ("F_MISSING > 0", [False, False, False]),
-        ],
-    )
-    def test_evaluate_missing_no_call_genotype(self, expression, expected):
-        # When the dataset has no call_genotype (e.g. annotations-only
-        # VCZ), N_MISSING / F_MISSING fall back to 0 for every variant.
-        # In this unit test the fallback values are precomputed via the
-        # registry's degenerate forms; production wires the same thing
-        # through ``VczReader.virtual_field_names``.
-        data = numpify_values({"variant_position": [10, 20, 30]})
-        data = _materialise_virtuals(data, ["variant_N_MISSING", "variant_F_MISSING"])
-        fee = filter_mod.BcftoolsFilter(
-            field_names={"variant_N_MISSING", "variant_F_MISSING"},
-            include=expression,
-        )
-        nt.assert_array_equal(fee.evaluate(data), expected)
+    @pytest.mark.parametrize("tag", ["N_MISSING", "F_MISSING"])
+    def test_missing_unavailable_without_call_genotype(self, tag):
+        # On a store with no call_genotype these are not virtual fields,
+        # so the field-name resolution surface omits them and the filter
+        # rejects the expression rather than silently passing all rows.
+        with pytest.raises(ValueError, match=f'the tag "{tag}" is not defined'):
+            filter_mod.BcftoolsFilter(
+                field_names={"variant_position"}, include=f"{tag} == 0"
+            )
 
     def test_evaluate_n_missing_with_fill_only(self):
         # Mixed-ploidy samples encode the unused ploidy slot as

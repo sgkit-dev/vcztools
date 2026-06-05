@@ -3565,22 +3565,21 @@ class TestVirtualFields:
         assert expected <= reader.virtual_field_names
 
     def test_virtual_field_names_omits_call_geno_dependent_without_gt(self):
-        # Annotations-only VCZ: only fields whose deps are present (or
-        # whose degenerate form is present) appear.
+        # Annotations-only VCZ: only fields whose deps are present appear.
         root = vcz_builder.make_vcz(
             variant_contig=[0] * 3,
             variant_position=[1, 2, 3],
             alleles=[("A", "T")] * 3,
         )
         reader = VczReader(root)
+        # Genotype-derived fields are unavailable without call_genotype.
         assert "variant_AC" not in reader.virtual_field_names
         assert "variant_AN" not in reader.virtual_field_names
         assert "variant_NS" not in reader.virtual_field_names
+        assert "variant_N_MISSING" not in reader.virtual_field_names
+        assert "variant_F_MISSING" not in reader.virtual_field_names
         # N_ALT needs only variant_allele.
         assert "variant_N_ALT" in reader.virtual_field_names
-        # N_MISSING / F_MISSING fall back to the all-zero degenerate.
-        assert "variant_N_MISSING" in reader.virtual_field_names
-        assert "variant_F_MISSING" in reader.virtual_field_names
 
     def test_get_field_info_ac(self):
         root = _make_virtual_field_vcz()

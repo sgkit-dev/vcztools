@@ -878,7 +878,7 @@ class VczReader:
 
         Null samples are never read, filtered on, or output; the count
         is reported here so an interactive user can see they exist."""
-        return self.num_samples - len(self._non_null_sample_indices)
+        return self.num_samples - len(self._non_null_sample_indexes)
 
     def __repr__(self):
         parts = [
@@ -1285,7 +1285,7 @@ class VczReader:
         if not self._full_sample_filter:
             return self.sample_chunk_plan
         return build_sample_chunk_plan(
-            self._non_null_sample_indices,
+            self._non_null_sample_indexes,
             samples_chunk_size=self.samples_chunk_size,
         )
 
@@ -1349,7 +1349,7 @@ class VczReader:
         return _freeze(self.root["sample_id"][:])
 
     @functools.cached_property
-    def _non_null_sample_indices(self) -> np.ndarray:
+    def _non_null_sample_indexes(self) -> np.ndarray:
         """Global indices of non-null samples in ``sample_id``. Sorted;
         empty if every entry is null."""
         return _freeze(np.flatnonzero(self.raw_sample_ids != ""))
@@ -1561,7 +1561,7 @@ class VczReader:
             # produce the subset output.
             sample_chunk_plan = self.filter_sample_chunk_plan
             output_columns = np.searchsorted(
-                self._non_null_sample_indices, self.samples_selection
+                self._non_null_sample_indexes, self.samples_selection
             )
 
         # Split referenced fields into static (read once on the reader)
@@ -1588,7 +1588,7 @@ class VczReader:
         # stored array unless ``force_recompute`` names the field.
         force_set = self._resolve_force_recompute(force_recompute)
         subset_active = self.samples_selection.size > 0 and not np.array_equal(
-            self.samples_selection, self._non_null_sample_indices
+            self.samples_selection, self._non_null_sample_indexes
         )
 
         def _sample_dependent(name):

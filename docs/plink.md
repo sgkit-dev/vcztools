@@ -1,31 +1,10 @@
 (sec-plink)=
 # PLINK 1
 
-The {ref}`vcztools view-plink<cmd-vcztools-view-plink>` command writes a
-PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`) from a VCZ store.
-For biallelic variants, The output `.bed` is identical to
-`plink2 --vcf X --make-bed`.
-
-```bash
-vcztools view-plink sample.vcz -o sample
-# produces sample.bed, sample.bim, sample.fam
-```
-
-The `-o` value (required) is a stem taken **verbatim**: `-o sample` produces
-`sample.bed`/`sample.bim`/`sample.fam`.
-
-The `.bim` and `.fam` sidecars are written by default; pass `--no-bim`
-or `--no-fam` to suppress.
-
-Sample, region and filter selection mirrors
-{ref}`vcztools view<cmd-vcztools-view>`
-(`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`); the per-flag reference is
-in {ref}`sec-cli-ref`.
-
-:::{note}
-Note that the filtering semantics differs slightly from ``vcztools view``:
-see {ref}`sec-plink-subset-filtering` for details.
-:::
+This page describes the structure and semantics of the PLINK 1 binary fileset
+produced by {ref}`vcztools view-plink<cmd-vcztools-view-plink>`. For a
+command-line walkthrough, see the
+{ref}`PLINK conversion<sec-plink-conversion>` page.
 
 ## Format details
 
@@ -74,31 +53,6 @@ subset. Two consequences:
 
 This matches `plink2 --make-bed --keep`, which applies record-level
 filters before sample projection.
-
-(sec-plink-subset-filtering)=
-### Filtering over the sample subset
-
-`-i`/`-e` expression filters that reference sample-derived INFO fields
-(`AC`, `AN`, `AF`, `NS`) are evaluated **over the selected samples**. With
-a `-s`/`-S` subset, those values are recomputed for that subset rather
-than read from the file's stored (full-cohort) INFO. So
-`view-plink -s cohort.txt -i 'AC>0'` keeps the variants that are
-polymorphic *in your cohort*, dropping sites whose ALT alleles are carried
-only by excluded samples — even where the source file's stored `INFO/AC`
-is non-zero.
-
-This is deliberately **different from
-{ref}`vcztools view<cmd-vcztools-view>` and
-{ref}`vcztools query<cmd-vcztools-query>`**, which follow bcftools and
-evaluate `-i/-e` against the original
-record's stored INFO (so the same `-i 'AC>0'` keeps a site on its stored
-full-cohort count). The rationale: a PLINK fileset is the input to an
-association analysis run on the exported cohort, so filters should reflect
-that cohort, not the source dataset. It is also the cheaper path on large
-datasets — only the selected samples are read.
-
-Note this applies to *expression* filters. The allele-based filters
-(`-m`/`-M`/`-v`/`-V`) remain record-level, as described above.
 
 ### Chromosome-name normalisation
 

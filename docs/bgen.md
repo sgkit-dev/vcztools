@@ -1,38 +1,9 @@
 (sec-bgen)=
 # BGEN
 
-The {ref}`vcztools view-bgen<cmd-vcztools-view-bgen>` command writes
-BGEN output from a VCZ store.
-By default, we stream the `.bgen` payload to stdout (mirroring
-{ref}`vcztools view<cmd-vcztools-view>`). Pass `-o STEM` to write files
-including the `.bgen.bgi` (bgenix
-SQLite index) and `.sample` (Oxford text) sidecars, both on by default
-and individually suppressible.
-
-```bash
-# Streaming: pipe straight into another tool, or redirect to a file.
-vcztools view-bgen sample.vcz > sample.bgen
-
-# File output with the full sidecar set.
-vcztools view-bgen sample.vcz -o sample
-# produces sample.bgen, sample.bgen.bgi, sample.sample
-
-# File output, .bgen only.
-vcztools view-bgen sample.vcz -o sample --no-bgi --no-sample-file
-```
-
-The `-o` value is a stem taken **verbatim**: `-o sample` produces
-`sample.bgen`, `sample.bgen.bgi`, `sample.sample`.
-
-Sample, region and filter selection mirrors
-{ref}`vcztools view<cmd-vcztools-view>`
-(`-s`/`-S`/`-r`/`-R`/`-t`/`-T`/`-i`/`-e`/`-v`/`-V`/`-m`/`-M`); the
-per-flag reference is in {ref}`sec-cli-ref`.
-
-:::{note}
-Note that the filtering semantics differs slightly from ``vcztools view``:
-see {ref}`sec-bgen-subset-filtering` for details.
-:::
+This page describes the BGEN output format produced by
+{ref}`vcztools view-bgen<cmd-vcztools-view-bgen>`. For a command-line
+walkthrough, see the {ref}`BGEN conversion<sec-bgen-conversion>` page.
 
 ## Format details
 
@@ -110,26 +81,6 @@ A sample is treated as missing for a variant if any of its diploid
 alleles is `-1`, or if its haploid allele is `-1`.
 Missing samples have the BGEN ploidy/missing byte's high bit
 set and their probability bytes are zeroed.
-
-(sec-bgen-subset-filtering)=
-### Filtering over the sample subset
-
-`-i`/`-e` expression filters that reference sample-derived INFO fields
-(`AC`, `AN`, `AF`, `NS`) are evaluated **over the selected samples**. With
-a `-s`/`-S` subset, those values are recomputed for that subset rather
-than read from the file's stored (full-cohort) INFO, so
-`view-bgen -s cohort.txt -i 'AC>0'` keeps the variants polymorphic *in
-your cohort*.
-
-This is deliberately **different from
-{ref}`vcztools view<cmd-vcztools-view>` and
-{ref}`vcztools query<cmd-vcztools-query>`**, which follow bcftools and
-evaluate `-i/-e` against the original
-record's stored INFO. A BGEN fileset feeds an association analysis on the
-exported cohort, so filters should reflect that cohort, not the source
-dataset; it is also cheaper on large datasets, since only the selected
-samples are read. The allele-based filters (`-m`/`-M`/`-v`/`-V`) remain
-record-level.
 
 ### Compression level
 

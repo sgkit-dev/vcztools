@@ -142,6 +142,76 @@ for chunk in reader.variant_chunks(fields=["variant_position", "call_genotype"])
           f"call_genotype shape {genotypes.shape}")
 ```
 
+(sec-missing-fill)=
+## Missing and fill values
+
+The arrays you get back are *raw*: they still contain the sentinel values VCZ
+uses to encode two distinct ideas, and you must interpret them yourself.
+
+- **Missing** — a value that is absent ("no data"). Detect it with
+  {func}`vcztools.is_missing`.
+- **Fill** (end-of-vector) — padding that makes a *ragged* field rectangular. A
+  VCF INFO or FORMAT field can hold a variable number of values per variant or
+  sample — for example one `AF` per ALT allele, so a biallelic site has one
+  value and a triallelic site has two. VCZ stores these in a fixed-width array
+  and pads the unused tail of each row with a fill sentinel. Detect it with
+  {func}`vcztools.is_fill`, or drop the trailing fill from a single 1-D vector
+  with {func}`vcztools.trim_fill`.
+
+The sentinels differ by dtype (`-1`/`-2` for integers, distinct
+not-a-number values for floats, `"."`/`""` for strings), so printing a raw
+array often can't tell the two apart by eye — the helpers can. The VCF and
+`query` output paths already trim fill and render missing as `.`; these helpers
+let you do the same when working with the arrays directly.
+
+`variant_AF` is ragged over ALT alleles. Trimming the fill and then marking the
+missing entries recovers the true per-variant vector:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+
+fields = ["variant_position", "variant_allele", "variant_AF"]
+for row in reader.variants(fields=fields):
+    af = row["variant_AF"]
+    trimmed = vcztools.trim_fill(af)
+    clean = [
+        "." if missing else round(float(value), 3)
+        for value, missing in zip(trimmed, vcztools.is_missing(trimmed))
+    ]
+    alleles = [a for a in row["variant_allele"] if a != ""]
+    print(f"POS {row['variant_position']:>7}  {'/'.join(alleles):8}  "
+          f"raw {af}  ->  AF {clean}")
+```
+
+Multiallelic sites (e.g. `A/G/T`) keep both allele frequencies, biallelic sites
+have their single value followed by one trimmed-away fill, and sites where `AF`
+is absent come back as missing (`.`).
+
+The same two sentinels appear in genotypes. Missing marks a no-call (`.` in
+VCF), while fill pads a call shorter than the array's ploidy — here one haploid
+call in a diploid field:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+
+missing_cells = 0
+fill_cells = 0
+fill_example = None
+for row in reader.variants(fields=["variant_position", "call_genotype"]):
+    genotype = row["call_genotype"]
+    missing_cells += int(vcztools.is_missing(genotype).sum())
+    fill = vcztools.is_fill(genotype)
+    fill_cells += int(fill.sum())
+    if fill.any() and fill_example is None:
+        fill_example = (row["variant_position"], genotype)
+
+print("missing (no-call) cells:", missing_cells)
+print("fill (ploidy-padding) cells:", fill_cells)
+position, genotype = fill_example
+print(f"POS {position} has a haploid call padded with fill (-2):")
+print(genotype)
+```
+
 ## Selecting samples and variants
 
 Call {meth}`~vcztools.VczReader.set_samples` with integer indexes *before*

@@ -5,7 +5,7 @@ from .format_encoder import FormatEncoder
 from .plink import BedEncoder, write_bim, write_fam, write_plink
 from .provenance import __version__
 from .retrieval import FieldInfo, VczReader
-from .utils import open_zarr
+from .utils import is_fill, is_missing, open_zarr, trim_fill
 from .variant_filter import VariantFilter
 
 __all__ = [
@@ -20,7 +20,10 @@ __all__ = [
     "ViewPlinkOptions",
     "VczReader",
     "__version__",
+    "is_fill",
+    "is_missing",
     "open_zarr",
+    "trim_fill",
     "write_bgen",
     "write_bgi",
     "write_bim",

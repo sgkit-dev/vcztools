@@ -20,6 +20,10 @@ example-driven introduction to opening datasets and iterating variants, and
 .. autoclass:: vcztools.FieldInfo
    :members:
 
+.. autofunction:: vcztools.is_missing
+.. autofunction:: vcztools.is_fill
+.. autofunction:: vcztools.trim_fill
+
 .. autoclass:: vcztools.VariantFilter
    :members:
    :undoc-members:

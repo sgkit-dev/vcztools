@@ -46,6 +46,8 @@ Python API:
   - Click option bundles (`ViewBgenOptions`, `ViewPlinkOptions`,
     `SelectionOptions`, `ZarrStoreOptions`, `ReaderOptions`, `LogOptions`)
     and `GroupedCommand` for downstream CLI reuse.
+  - Array-sentinel helpers `is_missing` / `is_fill` / `trim_fill` for
+    interpreting missing and end-of-vector (fill) values in iterated arrays.
 
 Platform and packaging:
 

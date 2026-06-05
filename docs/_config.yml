@@ -2,7 +2,7 @@ title: vcztools Documentation
 author: the sgkit developers
 
 execute:
-  execute_notebooks: "off"
+  execute_notebooks: "cache"
 
 repository:
   url: https://github.com/sgkit-dev/vcztools

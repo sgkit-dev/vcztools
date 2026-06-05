@@ -8,6 +8,9 @@ parts:
   - caption: Command line
     chapters:
       - file: cli_ref
+  - caption: File formats
+    chapters:
+      - file: vcf
       - file: plink
       - file: bgen
   - caption: Python API

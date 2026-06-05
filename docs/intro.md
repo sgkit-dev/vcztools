@@ -13,6 +13,8 @@ We aim for 100% compatibility — if you notice a difference between the
 output of vcztools and bcftools please
 [open an issue](https://github.com/sgkit-dev/vcztools/issues).
 
+The {ref}`view<cmd-vcztools-view>` command writes VCF; see {ref}`sec-vcf`.
+
 In addition to the bcftools-shaped commands, `vcztools` ships
 non-bcftools format exporters for common downstream tools:
 

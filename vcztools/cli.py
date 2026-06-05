@@ -1409,7 +1409,7 @@ def view_plink(path, output, **kwargs):
     AC/AN/AF/NS in a filter expression are recomputed for that subset
     rather than read from the file's stored (full-cohort) INFO.
 
-    See the "PLINK 1 output" documentation page for details.
+    See the "PLINK 1" documentation page for details.
     """
     opts = ViewPlinkOptions.from_click_kwargs(kwargs)
     opts.log.apply()
@@ -1494,7 +1494,7 @@ def view_bgen(
     AC/AN/AF/NS in a filter expression are recomputed for that subset
     rather than read from the file's stored (full-cohort) INFO.
 
-    See the "BGEN output" documentation page for details.
+    See the "BGEN" documentation page for details.
     """
     opts = ViewBgenOptions.from_click_kwargs(kwargs)
     opts.log.apply()

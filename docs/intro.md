@@ -2,10 +2,18 @@
 
 `vcztools` provides
 [bcftools](https://samtools.github.io/bcftools/bcftools.html)-compatible
-querying and format conversion for
-[VCF Zarr](https://github.com/sgkit-dev/vcf-zarr-spec/).
+querying and format conversion for VCF Zarr (VCZ).
+Please see the [GigaScience paper](https://doi.org/10.1093/gigascience/giaf049)
+and the [specification repo](https://github.com/sgkit-dev/vcf-zarr-spec/)
+for more information about the VCF Zarr format.
+To create VCZ files from VCF and other formats, see the
+[bio2zarr](https://sgkit-dev.github.io/bio2zarr/) project.
 
-It aims to be a drop-in replacement for a subset of bcftools functionality.
+Vcztools provides Python APIs to efficiently {ref}`read VCZ data
+<sec-reading-vcz>` from local files and
+remote {ref}`object stores <sec-storage-backends>` using
+bcftools-compatible region and variant filtering syntax.
+It aims to provide a drop-in replacement for a subset of bcftools functionality.
 Currently supported are the {ref}`view<cmd-vcztools-view>`,
 {ref}`query<cmd-vcztools-query>` and {ref}`index<cmd-vcztools-index>` `-s/-n`
 commands; see {ref}`sec-bcftools-emulation` for worked examples.
@@ -13,10 +21,8 @@ We aim for 100% compatibility — if you notice a difference between the
 output of vcztools and bcftools please
 [open an issue](https://github.com/sgkit-dev/vcztools/issues).
 
-The {ref}`view<cmd-vcztools-view>` command writes VCF; see {ref}`sec-vcf`.
-
-In addition to the bcftools-shaped commands, `vcztools` ships
-non-bcftools format exporters for common downstream tools:
+In addition to the bcftools-shaped commands, `vcztools`
+provides format exporters for common downstream tools:
 
 - {ref}`view-plink<cmd-vcztools-view-plink>` — PLINK 1 binary
   (`.bed`/`.bim`/`.fam`); see the {ref}`PLINK 1 file format page<sec-plink>` and
@@ -24,35 +30,6 @@ non-bcftools format exporters for common downstream tools:
 - {ref}`view-bgen<cmd-vcztools-view-bgen>` — Oxford BGEN
   (`.bgen`/`.sample`/`.bgen.bgi`); see the {ref}`BGEN file format page<sec-bgen>`
   and the {ref}`conversion walkthrough<sec-bgen-conversion>`.
-
-To create VCZ files from VCF and other formats, see the
-[bio2zarr](https://sgkit-dev.github.io/bio2zarr/) project.
-
-Please see the [GigaScience paper](https://doi.org/10.1093/gigascience/giaf049)
-and the [specification repo](https://github.com/sgkit-dev/vcf-zarr-spec/)
-for more information about the VCF Zarr format.
-
-## Reading local and remote data
-
-`vcztools` supports reading from a local directory, a `.zip`
-archive, or a remote object store on S3, GCS, Azure or HTTP.
-Local stores are supported directly:
-
-```bash
-vcztools view sample.vcz       # local directory
-vcztools view sample.vcz.zip   # local .zip archive
-```
-
-Remote URLs are read by selecting a storage backend with `--backend-storage`:
-
-```bash
-vcztools view --backend-storage fsspec s3://bucket/sample.vcz
-```
-
-Four backends are available — `local` (the default), `fsspec`, `obstore` and
-`icechunk`. See {ref}`sec-storage-backends` for how to choose between them and
-the per-backend connection options, and {ref}`sec-installation` for the
-additional packages required.
 
 ## Development status
 

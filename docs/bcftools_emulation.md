@@ -19,8 +19,7 @@ same output, with a VCZ store in place of a VCF/BCF file.
 
 Every command below is run against the example dataset
 `data/sample.vcz.zip` (9 variants across 3 samples; see {ref}`sec-reading-vcz`
-for its contents). The output shown is generated when the documentation is
-built. For the full flag list, see {ref}`sec-cli-ref`.
+for its contents). For the full flag list, see {ref}`sec-cli-ref`.
 
 ## Viewing records
 

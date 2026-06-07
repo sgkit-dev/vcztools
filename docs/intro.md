@@ -9,10 +9,12 @@ for more information about the VCF Zarr format.
 To create VCZ files from VCF and other formats, see the
 [bio2zarr](https://sgkit-dev.github.io/bio2zarr/) project.
 
-Vcztools provides Python APIs to efficiently {ref}`read VCZ data
+Vcztools provides a {ref}`Python API<sec-python-api>` to efficiently {ref}`read VCZ data
 <sec-reading-vcz>` from local files and
 remote {ref}`object stores <sec-storage-backends>` using
-bcftools-compatible region and variant filtering syntax.
+bcftools-compatible region and
+[variant filtering](https://samtools.github.io/bcftools/bcftools.html#expressions)
+syntax.
 It aims to provide a drop-in replacement for a subset of bcftools functionality.
 Currently supported are the {ref}`view<cmd-vcztools-view>`,
 {ref}`query<cmd-vcztools-query>` and {ref}`index<cmd-vcztools-index>` `-s/-n`

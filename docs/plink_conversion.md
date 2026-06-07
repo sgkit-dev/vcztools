@@ -12,9 +12,8 @@ kernelspec:
 # PLINK conversion
 
 {ref}`vcztools view-plink<cmd-vcztools-view-plink>` transcodes a VCZ store into a
-PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`). The format semantics — the
-A1=ALT/A2=REF convention, missingness, and chromosome-name normalisation — are
-described in the {ref}`PLINK 1 file format page<sec-plink>`; this page walks
+PLINK 1 binary fileset (`.bed`/`.bim`/`.fam`). The format semantics
+are described in the {ref}`PLINK 1 file format page<sec-plink>`; this page walks
 through the command itself.
 
 The examples run against the example dataset `data/sample.vcz.zip` (see

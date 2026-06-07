@@ -40,20 +40,16 @@ field altogether. Both forms are valid per the specification
 
 ## Other differences from bcftools
 
+- The output is plain text VCF; compressed or binary suffixes (`.gz`, `.bgz`,
+  `.bcf`) are rejected. Pipe through `bgzip` or `bcftools` if you need bgzipped VCF
+  or BCF.
 - **Floating-point precision.** Floats are rounded to a fixed three decimal
   places, with trailing zeros dropped (so `0.5` not `0.500`); bcftools formats
   with libc's `%g`. This is the most common source of textual differences — for
   example a stored `0.3333` is written as `0.333`.
-- **Field ordering.** `INFO` and `FORMAT` tags are emitted in sorted
-  (alphabetical) order for deterministic output, regardless of their declaration
-  order in the header; bcftools preserves declaration order. `GT`, when present,
-  is always the first `FORMAT` field, as the specification requires.
+- **Field ordering.** vcztools emits `INFO` and `FORMAT` tags in alphabetical
+  order (except for `GT`, which is always the first `FORMAT` field).
 
-## Uncompressed only
-
-The output is plain text VCF; compressed or binary suffixes (`.gz`, `.bgz`,
-`.bcf`) are rejected. Pipe through `bgzip` or `bcftools` if you need bgzipped VCF
-or BCF.
 
 ## See also
 

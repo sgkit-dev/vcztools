@@ -2,8 +2,8 @@
 # PLINK 1
 
 This page describes the structure and semantics of the PLINK 1 binary fileset
-produced by {ref}`vcztools view-plink<cmd-vcztools-view-plink>`. For a
-command-line walkthrough, see the
+produced by {ref}`vcztools view-plink<cmd-vcztools-view-plink>` and
+ {func}`vcztools.write_plink`. For a command-line walkthrough, see the
 {ref}`PLINK conversion<sec-plink-conversion>` page.
 
 ## Format details

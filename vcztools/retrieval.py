@@ -164,8 +164,9 @@ def _resolve_sample_names(
     Unknown names either raise ``ValueError`` or are dropped with a
     warning (``ignore_missing_samples=True``). Duplicates in the
     non-complement case raise; in the complement case they are
-    deduped silently (matches ``bcftools view -s ^foo,foo``). Null
-    (empty-string) entries in ``raw_sample_ids`` are never returned.
+    deduped silently (matches ``bcftools view -s ^foo,foo``). The
+    empty string is the reserved ID of a null sample, which is never
+    selectable, so requesting it raises ``ValueError``.
     """
     if isinstance(sample_ids, str):
         raise TypeError(
@@ -174,6 +175,11 @@ def _resolve_sample_names(
     non_null_select = raw_sample_ids != ""
 
     sample_ids = np.asarray(sample_ids, dtype=np.dtypes.StringDType())
+    if np.any(sample_ids == ""):
+        raise ValueError(
+            "The empty string is not a valid sample name: it is the "
+            "reserved ID of a null sample, which is never selectable."
+        )
     unknown_samples = np.setdiff1d(sample_ids, raw_sample_ids)
     if len(unknown_samples) > 0:
         if ignore_missing_samples:
@@ -196,9 +202,6 @@ def _resolve_sample_names(
         duplicates = unique_ids[counts > 1]
         if duplicates.size > 0:
             raise ValueError(f'Duplicate sample name "{duplicates[0]}".')
-        # Drop empty-string requests — they would otherwise map to a
-        # null header position, and those are never returned.
-        sample_ids = sample_ids[sample_ids != ""]
         # Match raw_sample_ids' dtype so searchsorted is a safe cast.
         # Every remaining sample_id is a known entry in raw_sample_ids
         # (per the unknown-check above), so this can't truncate.
@@ -1072,8 +1075,10 @@ class VczReader:
         ``ignore_missing_samples=True``, in which case they are dropped
         with a warning. Duplicate names raise (non-complement) or are
         deduped (complement). Null (``sample_id == ""``) samples are
-        never selected. Not calling :meth:`set_samples` (or
-        :meth:`set_sample_indexes`) selects every non-null sample.
+        never selectable: the empty string is the reserved null-sample
+        ID and requesting it raises ``ValueError``. Not calling
+        :meth:`set_samples` (or :meth:`set_sample_indexes`) selects
+        every non-null sample.
 
         Must be called before iterating; raises ``RuntimeError`` if the
         selection is already configured. Selecting a proper subset makes

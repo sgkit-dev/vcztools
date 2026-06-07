@@ -1497,11 +1497,33 @@ class TestVczReaderSamples:
         nt.assert_array_equal(reader.sample_ids, ["s2", "s0"])
 
     def test_samples_null_name_not_selectable(self):
-        # Null samples have an empty-string ID, which the name resolver
-        # drops — there is no name that selects a null sample.
+        # Null samples have an empty-string ID; non-null names around
+        # them resolve normally.
         reader = VczReader(self._masked_vcz())
         reader.set_samples(["s0", "s2"])
         nt.assert_array_equal(reader.sample_ids, ["s0", "s2"])
+
+    def test_samples_null_name_raises_with_null_samples(self):
+        # The empty string is the reserved null-sample ID; requesting it
+        # raises even when the store actually contains null samples.
+        reader = VczReader(self._masked_vcz())
+        with pytest.raises(ValueError, match="empty string is not a valid"):
+            reader.set_samples([""])
+
+    def test_samples_null_name_raises_without_null_samples(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="empty string is not a valid"):
+            reader.set_samples([""])
+
+    def test_samples_null_name_raises_among_valid(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="empty string is not a valid"):
+            reader.set_samples(["NA00001", ""])
+
+    def test_samples_null_name_raises_complement(self, fx_sample_vcz):
+        reader = VczReader(fx_sample_vcz.group)
+        with pytest.raises(ValueError, match="empty string is not a valid"):
+            reader.set_samples([""], complement=True)
 
     def test_sample_indexes_empty_list(self, fx_sample_vcz):
         reader = VczReader(fx_sample_vcz.group)
@@ -4002,7 +4024,7 @@ class TestResolveSampleNames:
             retrieval_mod._resolve_sample_names("NA00001", RESOLVE_ALL_SAMPLES)
 
     def test_empty_string_element_raises(self):
-        with pytest.raises(ValueError, match=r"sample\(s\) not in header: "):
+        with pytest.raises(ValueError, match="empty string is not a valid"):
             retrieval_mod._resolve_sample_names([""], RESOLVE_ALL_SAMPLES)
 
     def test_complement_excludes_one(self):
@@ -4125,11 +4147,12 @@ class TestResolveSampleNames:
             )
 
     def test_empty_string_element_with_ignore_missing(self):
-        # bcftools -s '' --force-samples → no samples.
-        result = retrieval_mod._resolve_sample_names(
-            [""], RESOLVE_ALL_SAMPLES, ignore_missing_samples=True
-        )
-        nt.assert_array_equal(result, [])
+        # The empty string is the reserved null-sample ID, not a merely
+        # "missing" name, so it raises even with ignore_missing_samples.
+        with pytest.raises(ValueError, match="empty string is not a valid"):
+            retrieval_mod._resolve_sample_names(
+                [""], RESOLVE_ALL_SAMPLES, ignore_missing_samples=True
+            )
 
     def test_complement_with_masked_header(self):
         # Masked "" entries never appear in the complement output.

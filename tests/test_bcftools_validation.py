@@ -505,7 +505,6 @@ def test_error(tmp_path, fx_all_vcz, args, vcf_name, bcftools_error_string):
         # bcftools accepts each of these and emits variant-only output.
         # vcztools refuses because matching bcftools AC/AN semantics for
         # an empty subset would require significant internal complexity.
-        "view --no-version -s '' --force-samples",
         "view --no-version -s 'NO_SAMPLE' --force-samples",
         "view --no-version -s FOO,BAR,BAZ --force-samples",
         "view --no-version -s ^NA00001,NA00002,NA00003",
@@ -517,6 +516,21 @@ def test_empty_sample_set_refused(fx_all_vcz, args):
     _, vcztools_error = run_vcztools(f"{args} {fx.zip_path}", expect_error=True)
     assert "Empty sample set is not supported" in vcztools_error
     assert "github.com/sgkit-dev/vcztools/issues" in vcztools_error
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        "view --no-version -s ''",
+        "view --no-version -s '' --force-samples",
+    ],
+)
+def test_null_sample_name_refused(fx_all_vcz, args):
+    # The empty string is the reserved null-sample ID, never a valid
+    # ``-s`` target, so it is refused regardless of --force-samples.
+    fx = fx_all_vcz["sample.vcf.gz"]
+    _, vcztools_error = run_vcztools(f"{args} {fx.zip_path}", expect_error=True)
+    assert "empty string is not a valid sample name" in vcztools_error
 
 
 class TestRegionTargetSemantics:

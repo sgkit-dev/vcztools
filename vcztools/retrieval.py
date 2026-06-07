@@ -796,14 +796,22 @@ class VczReader:
     They are addressable by name but never auto-emitted when ``fields``
     is ``None``.
 
-    ``variant_index``     Global (store-wide) 0-based index of the variant.
-    ``variant_AC``        Allele count in genotypes.
-    ``variant_AN``        Total number of alleles in called genotypes.
-    ``variant_AF``        Allele frequency.
-    ``variant_NS``        Number of samples with data.
-    ``variant_N_ALT``     Number of non-empty ALT alleles.
-    ``variant_N_MISSING`` Number of samples with all-missing genotypes.
-    ``variant_F_MISSING`` Fraction of samples with all-missing genotypes.
+    ``variant_index``
+        Global (store-wide) 0-based index of the variant.
+    ``variant_AC``
+        Allele count in genotypes.
+    ``variant_AN``
+        Total number of alleles in called genotypes.
+    ``variant_AF``
+        Allele frequency.
+    ``variant_NS``
+        Number of samples with data.
+    ``variant_N_ALT``
+        Number of non-empty ALT alleles.
+    ``variant_N_MISSING``
+        Number of samples with all-missing genotypes.
+    ``variant_F_MISSING``
+        Fraction of samples with all-missing genotypes.
 
     Parameters
     ----------

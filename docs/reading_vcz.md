@@ -272,8 +272,17 @@ chunk = next(reader.variant_chunks(fields=["call_genotype"]))
 print("call_genotype sample columns:", chunk["call_genotype"].shape[1])
 ```
 
-Null samples have no `sample_id`, so {meth}`~vcztools.VczReader.set_samples`
-cannot name one — null slots are simply unreachable by ID.
+A null sample's `sample_id` is the empty string, which is reserved and never
+names a real sample. Passing it to {meth}`~vcztools.VczReader.set_samples`
+raises a `ValueError`, so null slots are unreachable by ID:
+
+```{code-cell} ipython3
+reader = vcztools.VczReader(root)
+try:
+    reader.set_samples([""])
+except ValueError as exc:
+    print(exc)
+```
 
 For the lower-level case where you select by raw integer index, use
 {meth}`~vcztools.VczReader.set_sample_indexes`. Indexes are positions in the raw

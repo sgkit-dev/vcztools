@@ -5,6 +5,37 @@ The complete public Python API. See {ref}`sec-reading-vcz` for a worked,
 example-driven introduction to opening datasets and iterating variants, and
 {ref}`sec-format-conversion` for the PLINK and BGEN writers.
 
+## Quickfind
+
+### Querying VCZ data
+
+```{eval-rst}
+.. autosummary::
+  vcztools.open_zarr
+  vcztools.VczReader
+  vcztools.BcftoolsFilter
+```
+
+### Detecting missing and fill sentinels
+
+```{eval-rst}
+.. autosummary::
+  vcztools.is_missing
+  vcztools.is_fill
+  vcztools.trim_fill
+```
+
+### Converting to PLINK and BGEN
+
+```{eval-rst}
+.. autosummary::
+  vcztools.write_plink
+  vcztools.write_bgen
+```
+
+
+## Complete reference
+
 ```{eval-rst}
 
 .. autofunction:: vcztools.open_zarr

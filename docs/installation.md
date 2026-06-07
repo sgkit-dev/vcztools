@@ -38,7 +38,7 @@ python3 -m pip install gcsfs   # Google Cloud Storage
 python3 -m pip install adlfs   # Azure
 ```
 
-See {ref}`sec-storage-backends` for which backend and package to use for a
+See the {ref}`sec-storage-backends` section for which backend and package to use for a
 given store.
 
 ## Shell completion

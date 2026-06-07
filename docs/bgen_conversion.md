@@ -14,10 +14,9 @@ kernelspec:
 {ref}`vcztools view-bgen<cmd-vcztools-view-bgen>` transcodes a VCZ store into the
 Oxford BGEN format. Without `-o` it streams the `.bgen` payload to stdout; with
 `-o STEM` it writes `STEM.bgen` plus the `STEM.bgen.bgi` (bgenix index) and
-`STEM.sample` (Oxford text) sidecars. The format details — layout, ploidy,
-phasing and compression — are in the {ref}`BGEN file format page<sec-bgen>`; this
-page walks through the
-command.
+`STEM.sample` (Oxford text) sidecars. The format details
+are documented in the {ref}`BGEN file format page<sec-bgen>`; this
+page walks through the command.
 
 The examples run against the example dataset `data/sample.vcz.zip` (see
 {ref}`sec-reading-vcz`).

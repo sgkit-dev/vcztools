@@ -7,6 +7,7 @@ from .provenance import __version__
 from .retrieval import FieldInfo, VczReader
 from .utils import is_fill, is_missing, open_zarr, trim_fill
 from .variant_filter import VariantFilter
+from .vcf_writer import write_vcf
 
 __all__ = [
     "BcftoolsFilter",
@@ -30,4 +31,5 @@ __all__ = [
     "write_fam",
     "write_plink",
     "write_sample",
+    "write_vcf",
 ]

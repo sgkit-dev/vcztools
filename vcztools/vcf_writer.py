@@ -348,9 +348,41 @@ def write_vcf(
     encode_threads: int | None = None,
     fill_tags: frozenset | None = None,
 ) -> None:
-    """Write a VCF to ``output`` from ``reader``. Thin wrapper around
-    :class:`VcfWriter`; see that class for details on the per-write
-    state, parallel encoding, and the resource lifecycle.
+    """Write the VCF text for ``reader`` to ``output``.
+
+    ``output`` is either a filesystem path (``str`` / ``pathlib.Path``)
+    or a writable text file-like object (anything with a ``.write``
+    method, including ``sys.stdout``); paths are opened in text mode.
+    VCF output is plain, uncompressed text.
+
+    Unlike :func:`write_plink` and :func:`write_bgen`, a configured
+    variant filter on the reader does not need to be resolved first:
+    records are streamed and filtered on the fly, so both a configured
+    variant filter and a sample subset are honoured as-is.
+
+    ``header_only=True`` writes only the VCF header (the ``##`` meta
+    lines and the ``#CHROM`` column line) and no variant records.
+
+    ``no_header=True`` suppresses the header entirely, emitting only the
+    variant records.
+
+    ``no_version=True`` omits the vcztools version and command line from
+    the header.
+
+    ``drop_genotypes=True`` suppresses the ``GT`` genotype values from
+    the per-sample output. To omit the sample columns entirely — the
+    ``FORMAT`` field and every sample column, in both the header and the
+    records — clear the reader's sample selection first with
+    ``reader.set_samples([])``.
+
+    ``encode_threads`` sizes the worker pool that encodes each chunk's
+    records; ``None`` (default) selects the default (4). Encoded blocks
+    are written in record order so the output is deterministic.
+
+    ``fill_tags`` is a set of VCF INFO tag names (e.g. ``{"AC", "AN"}``)
+    to emit as recomputed values, overriding any stored counterpart and
+    injecting the corresponding INFO header lines. Tag names unknown to
+    the reader's virtual-field registry are ignored.
     """
     with VcfWriter(
         reader,

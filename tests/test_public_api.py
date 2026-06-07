@@ -30,6 +30,7 @@ class TestPublicAPI:
         "write_fam",
         "write_plink",
         "write_sample",
+        "write_vcf",
     ]
 
     def test_all_matches_expected(self):

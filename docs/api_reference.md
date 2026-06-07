@@ -3,7 +3,7 @@
 
 The complete public Python API. See {ref}`sec-reading-vcz` for a worked,
 example-driven introduction to opening datasets and iterating variants, and
-{ref}`sec-format-conversion` for the PLINK and BGEN writers.
+{ref}`sec-format-conversion` for the VCF, PLINK and BGEN writers.
 
 ## Quickfind
 
@@ -25,10 +25,11 @@ example-driven introduction to opening datasets and iterating variants, and
   vcztools.trim_fill
 ```
 
-### Converting to PLINK and BGEN
+### Converting to VCF, PLINK and BGEN
 
 ```{eval-rst}
 .. autosummary::
+  vcztools.write_vcf
   vcztools.write_plink
   vcztools.write_bgen
 ```
@@ -62,6 +63,7 @@ example-driven introduction to opening datasets and iterating variants, and
 
 .. autoclass:: vcztools.BcftoolsFilter
 
+.. autofunction:: vcztools.write_vcf
 .. autofunction:: vcztools.write_plink
 .. autofunction:: vcztools.write_bgen
 

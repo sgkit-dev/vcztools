@@ -26,6 +26,7 @@ sphinx:
     - sphinx_click.ext
     - sphinx.ext.todo
     - sphinx.ext.autodoc
+    - sphinx.ext.autosummary
   config:
     html_show_copyright: false
     todo_include_todos: true

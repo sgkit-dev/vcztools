@@ -1379,7 +1379,6 @@ def view(
             header_only=header_only,
             no_header=no_header,
             no_version=no_version,
-            drop_genotypes=drop_genotypes,
             encode_threads=encode_threads,
             fill_tags=effective_fill_tags,
         )

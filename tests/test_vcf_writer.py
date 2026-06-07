@@ -405,7 +405,7 @@ def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
     output = tmp_path.joinpath("output.vcf")
     reader = VczReader(fx_sample_vcz.group)
     reader.set_samples([])
-    write_vcf(reader, output, drop_genotypes=True)
+    write_vcf(reader, output)
 
     v = VCF(output)
     assert v.samples == []

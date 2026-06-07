@@ -99,7 +99,6 @@ class VcfWriter:
         reader,
         output,
         *,
-        drop_genotypes: bool = False,
         encode_threads: int | None = None,
         fill_tags: frozenset | None = None,
     ):
@@ -109,7 +108,6 @@ class VcfWriter:
             raise ValueError(f"encode_threads must be >= 1 (got {encode_threads})")
         self.reader = reader
         self._output_arg = output
-        self.drop_genotypes = drop_genotypes
         self.encode_threads = encode_threads
         self.fill_tags = frozenset() if fill_tags is None else frozenset(fill_tags)
         # The corresponding VCZ array names (variant_AC, ...) used both
@@ -188,7 +186,6 @@ class VcfWriter:
         samples_selection = self.reader.samples_selection
         contigs = self.reader.contigs
         filters = self.reader.filters
-        drop_genotypes = self.drop_genotypes
 
         format_fields = {}
         info_fields = {}
@@ -221,14 +218,10 @@ class VcfWriter:
         gt = None
         gt_phased = None
 
-        if "call_genotype" in chunk_data and not drop_genotypes:
+        if "call_genotype" in chunk_data:
             gt = chunk_data["call_genotype"]
 
-            if (
-                "call_genotype_phased" in chunk_data
-                and not drop_genotypes
-                and num_samples != 0
-            ):
+            if "call_genotype_phased" in chunk_data and num_samples != 0:
                 gt_phased = chunk_data["call_genotype_phased"]
             else:
                 # Default to unphased if call_genotype_phased not present
@@ -344,7 +337,6 @@ def write_vcf(
     header_only: bool = False,
     no_header: bool = False,
     no_version: bool = False,
-    drop_genotypes: bool = False,
     encode_threads: int | None = None,
     fill_tags: frozenset | None = None,
 ) -> None:
@@ -369,11 +361,9 @@ def write_vcf(
     ``no_version=True`` omits the vcztools version and command line from
     the header.
 
-    ``drop_genotypes=True`` suppresses the ``GT`` genotype values from
-    the per-sample output. To omit the sample columns entirely — the
-    ``FORMAT`` field and every sample column, in both the header and the
-    records — clear the reader's sample selection first with
-    ``reader.set_samples([])``.
+    For bcftools ``view -G`` semantics — omitting the ``FORMAT`` field
+    and every sample column from both the header and the records — clear
+    the reader's sample selection first with ``reader.set_samples([])``.
 
     ``encode_threads`` sizes the worker pool that encodes each chunk's
     records; ``None`` (default) selects the default (4). Encoded blocks
@@ -387,7 +377,6 @@ def write_vcf(
     with VcfWriter(
         reader,
         output,
-        drop_genotypes=drop_genotypes,
         encode_threads=encode_threads,
         fill_tags=fill_tags,
     ) as writer:

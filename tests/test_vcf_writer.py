@@ -411,6 +411,21 @@ def test_write_vcf__no_samples(tmp_path, fx_sample_vcz):
     assert v.samples == []
 
 
+def test_write_vcf__unknown_fill_tag(tmp_path, fx_sample_vcz):
+    output = tmp_path.joinpath("output.vcf")
+    reader = VczReader(fx_sample_vcz.group)
+    with pytest.raises(ValueError, match="Unknown fill_tags tag.*NOPE"):
+        write_vcf(reader, output, fill_tags=frozenset({"NOPE"}))
+
+
+def test_write_vcf__known_fill_tag(tmp_path, fx_sample_vcz):
+    output = tmp_path.joinpath("output.vcf")
+    reader = VczReader(fx_sample_vcz.group)
+    write_vcf(reader, output, fill_tags=frozenset({"AC"}))
+
+    assert b"##INFO=<ID=AC," in output.read_bytes()
+
+
 def test_write_vcf__missing_samples(tmp_path, fx_sample_vcz):
     mutated = copy_vcz(fx_sample_vcz.group)
     # delete samples NA00001 and NA00002 at index 0 and 1

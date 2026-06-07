@@ -86,7 +86,8 @@ class VcfWriter:
     ``variant_<TAG>`` virtual fields end up in the per-chunk request
     with ``force_recompute=`` set, and are injected into the header's
     INFO section even when the source store had no header line for
-    them.
+    them. A tag with no corresponding virtual field available for the
+    store raises ``ValueError``.
 
     ``encode_threads`` sets the size of the per-chunk line encoding
     thread pool (default 4). Each chunk's rows are split into
@@ -110,16 +111,26 @@ class VcfWriter:
         self._output_arg = output
         self.encode_threads = encode_threads
         self.fill_tags = frozenset() if fill_tags is None else frozenset(fill_tags)
-        # The corresponding VCZ array names (variant_AC, ...) used both
-        # to extend the per-chunk read list and to drive
-        # force_recompute. A fill-tags name unknown to the reader's
-        # virtual-field registry is dropped silently; the CLI validator
-        # has already rejected anything unsupported.
-        self._fill_field_names = frozenset(
-            f"variant_{tag}"
+        # Each fill tag maps to a variant_<TAG> virtual field, used both to
+        # extend the per-chunk read list and to drive force_recompute. A
+        # tag with no such virtual field available for this store is an
+        # error, not a silent no-op.
+        unknown_tags = sorted(
+            tag
             for tag in self.fill_tags
-            if f"variant_{tag}" in reader.virtual_field_names
+            if f"variant_{tag}" not in reader.virtual_field_names
         )
+        if len(unknown_tags) > 0:
+            available = sorted(
+                name[len("variant_") :]
+                for name in reader.virtual_field_names
+                if name.startswith("variant_")
+            )
+            raise ValueError(
+                f"Unknown fill_tags tag(s) {unknown_tags} not available for "
+                f"this store. Available tags: {', '.join(available)}."
+            )
+        self._fill_field_names = frozenset(f"variant_{tag}" for tag in self.fill_tags)
         # Populated in __enter__
         self.output = None
         self._executor = None
@@ -371,8 +382,9 @@ def write_vcf(
 
     ``fill_tags`` is a set of VCF INFO tag names (e.g. ``{"AC", "AN"}``)
     to emit as recomputed values, overriding any stored counterpart and
-    injecting the corresponding INFO header lines. Tag names unknown to
-    the reader's virtual-field registry are ignored.
+    injecting the corresponding INFO header lines. A tag with no
+    corresponding virtual field available for the store raises
+    ``ValueError``.
     """
     with VcfWriter(
         reader,

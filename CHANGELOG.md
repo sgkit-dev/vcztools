@@ -79,6 +79,7 @@ Bug fixes:
 - Noise on stderr when performing arithmetic with missing values (#301)
 - Null samples included in plink output (#310)
 - Fill values handled incorrectly by query (#415)
+- Crash evaluating non-scalar INFO field expressions (#435, #436)
 
 ## [0.1.2] - 2026-03-02
 

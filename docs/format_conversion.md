@@ -76,9 +76,22 @@ both alleles are present, i.e. `0 < AC < AN` (`AC > 0` alone would also keep
 sites that are monomorphic for ALT, where `AC == AN`). `AC` and `AN` are
 recomputed over the selected samples (see {ref}`sec-plink-subset-filtering`).
 Use the variant-scope `&` rather than the sample-scope `&&`, so the combined
-filter stays variant-scope:
+filter stays variant-scope.
+
+Unlike `write_vcf`, which streams and filters on the fly,
+`materialise_variant_filter` makes a single full pass over the variant axis: it
+reads and evaluates the filter's referenced fields for *every* variant to record
+which ones survive. Its cost therefore scales with the dataset size and the size
+of the referenced fields, and on a large cohort this pass can take a long time.
+On this 9-variant example it is instant, so the example below turns on `INFO`
+logging to make the pass — and its cost — visible:
 
 ```{code-cell} ipython3
+import logging
+import sys
+
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
 root = vcztools.open_zarr("data/sample.vcz.zip")
 with vcztools.VczReader(root) as reader:
     reader.set_samples(["NA00001", "NA00003"])
@@ -88,6 +101,19 @@ with vcztools.VczReader(root) as reader:
     reader.materialise_variant_filter()
     vcztools.write_plink(reader, "cohort")
 ```
+
+The log lines trace the passes over the data. The first `variant_chunks:
+starting iteration` / `iteration done in ...s` pair is the materialisation scan —
+the full pass that evaluates the filter. Its `done in ...s` and `MiB retrieved`
+figures are the cost: here a fraction of a second over a tiny dataset, but
+proportional to the referenced fields on a real cohort. The next line,
+`materialise_variant_filter: N variants survive (M chunks)`, reports the
+result — how many variants passed the filter and how many chunks the fixed
+selection now spans; this `N` equals the number of `.bim` lines below. The
+remaining `variant_chunks` pairs and the closing `write_plink: wrote ...` line
+come from `write_plink` reading the now-fixed selection (once for the variant
+metadata, once for the genotypes), confirming that materialisation and writing
+are separate passes.
 
 The `.fam` lists one line per selected sample:
 

@@ -243,16 +243,35 @@ class UnaryMinus(EvaluationNode):
         return self.operand.scope()
 
 
+def _align_mask_dims(a, b):
+    # Expand a 1-D variant mask to (n, 1) when the other operand is 2-D
+    # (axis 1 = alleles or samples), so the two broadcast together. Scalars
+    # and both-1-D / both-2-D operands are returned unchanged.
+    a = np.asarray(a)
+    b = np.asarray(b)
+    if a.ndim == 1 and b.ndim == 2:
+        a = np.expand_dims(a, axis=1)
+    elif a.ndim == 2 and b.ndim == 1:
+        b = np.expand_dims(b, axis=1)
+    return a, b
+
+
+def single_and(a, b):
+    a, b = _align_mask_dims(a, b)
+    return np.logical_and(a, b)
+
+
+def single_or(a, b):
+    a, b = _align_mask_dims(a, b)
+    return np.logical_or(a, b)
+
+
 def double_and(a, b):
     # if both operands are 1D, then they are just variant masks
     if a.ndim == 1 and b.ndim == 1:
         return np.logical_and(a, b)
 
-    # if either operand is 1D and the other is 2D, then make both 2D
-    if a.ndim == 1 and b.ndim == 2:
-        a = np.expand_dims(a, axis=1)
-    elif a.ndim == 2 and b.ndim == 1:
-        b = np.expand_dims(b, axis=1)
+    a, b = _align_mask_dims(a, b)
 
     if a.ndim == 2 and b.ndim == 2:
         # a variant site is included only if both conditions are met
@@ -274,11 +293,7 @@ def double_or(a, b):
     if a.ndim == 1 and b.ndim == 1:
         return np.logical_or(a, b)
 
-    # if either operand is 1D and the other is 2D, then make both 2D
-    if a.ndim == 1 and b.ndim == 2:
-        a = np.expand_dims(a, axis=1)
-    elif a.ndim == 2 and b.ndim == 1:
-        b = np.expand_dims(b, axis=1)
+    a, b = _align_mask_dims(a, b)
 
     if a.ndim == 2 and b.ndim == 2:
         # a variant site is included if either condition is met in any sample
@@ -302,8 +317,8 @@ class BinaryOperator(EvaluationNode):
         "-": operator.sub,
         # Note that by lumping logical operators in here we forgo any short
         # circuit optimisations
-        "&": np.logical_and,
-        "|": np.logical_or,
+        "&": single_and,
+        "|": single_or,
         "&&": double_and,
         "||": double_or,
     }

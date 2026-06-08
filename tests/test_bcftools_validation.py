@@ -103,6 +103,11 @@ def _bcftools_missing_table(vcf_path) -> tuple[tuple[str, int, float], ...]:
         ("view --no-version -i 'FMT/DP >= 5 & FMT/GQ>10'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP>5 && FMT/GQ<45'", "sample.vcf.gz"),
         ("view --no-version -i 'FMT/DP>5 & FMT/GQ<45'", "sample.vcf.gz"),
+        # Single-expression mix of a per-variant field (1-D N_ALT) with a
+        # per-sample field (2-D FMT/DP) under & / |: the 1-D mask broadcasts
+        # across the sample axis.
+        ("view --no-version -i 'N_ALT == 1 & FMT/DP>3'", "sample.vcf.gz"),
+        ("view --no-version -i 'N_ALT == 1 | FMT/DP>3'", "sample.vcf.gz"),
         (
                 "view --no-version -i '(QUAL > 10 || FMT/GQ>10) && POS > 100000'",
                 "sample.vcf.gz"
@@ -747,6 +752,12 @@ class TestFilterExpressionLanguage:
             # Compound per-allele: both sides see the 2-D array;
             # root collapses via np.any.
             "INFO/AC>0 && INFO/AC<2",
+            # Mixed per-variant (1-D N_ALT) with per-allele (2-D INFO/AC)
+            # under the variant-scope logical operators. The 1-D mask
+            # broadcasts across the allele axis before the root collapse.
+            "N_ALT >= 2 & INFO/AC > 0",
+            "N_ALT == 1 & INFO/AC > 0",
+            "N_ALT >= 2 | INFO/AC > 0",
         ],
     )
     # fmt: on

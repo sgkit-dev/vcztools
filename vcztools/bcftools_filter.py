@@ -265,12 +265,26 @@ def _align_dims(a, b):
 
 
 def _collapse_to_variant(value):
-    # A variant-scope 2-D mask carries axis 1 = alleles; collapse it to a
-    # per-variant decision (the variant matches if any allele does). A 1-D
-    # mask is already per-variant and returned unchanged.
+    # A variant-scope 2-D mask carries an extra value axis (axis 1 = alleles for
+    # Number=A/R, or the fixed/variable values of Number=2/.); collapse it to a
+    # per-variant decision (the variant matches if any element does). A 1-D mask
+    # is already per-variant and returned unchanged.
     if value.ndim == 2:
         return np.any(value, axis=1)
     return value
+
+
+def _incompatible_widths(a, b):
+    # Two 2-D operands whose axis-1 widths are genuinely incompatible: both
+    # carry more than one value and the counts differ, so neither broadcasts
+    # against the other (a width of 1 still broadcasts).
+    return (
+        a.ndim == 2
+        and b.ndim == 2
+        and a.shape[1] != b.shape[1]
+        and a.shape[1] != 1
+        and b.shape[1] != 1
+    )
 
 
 def single_and(a, b):
@@ -366,6 +380,12 @@ class BinaryOperator(EvaluationNode):
             # align inside single_and / double_and / etc.
             if op in self._ARITHMETIC_OPS:
                 ret, rhs = _align_dims(ret, rhs)
+                if _incompatible_widths(ret, rhs):
+                    raise ValueError(
+                        "cannot combine fields with incompatible dimensions: "
+                        "operands with different value counts have no common "
+                        "element"
+                    )
             # Suppress "invalid value encountered" warnings from arithmetic
             # on NaN-encoded missing floats (e.g. QUAL=.).
             with np.errstate(invalid="ignore"):
@@ -373,20 +393,27 @@ class BinaryOperator(EvaluationNode):
         return ret
 
     def _prepare_logical_operands(self, values):
-        # When the expression mixes a per-sample (sample-scope) operand with a
-        # per-allele (variant-scope, 2-D) one, collapse the allele axis to a
-        # per-variant decision so the masks combine: a per-allele mask carries
-        # axis 1 = alleles while a per-sample mask carries axis 1 = samples.
-        # All-variant logical expressions keep their per-allele axis (so
-        # ``AC>0 & AC<2`` stays a same-allele test) and pass through unchanged.
-        if self.scope() != "sample":
-            return values
-        prepared = []
-        for operand, value in zip(self.operands, values):
-            if operand.scope() == "variant":
-                value = _collapse_to_variant(np.asarray(value))
-            prepared.append(value)
-        return prepared
+        # Logical operands combine element-wise only when every 2-D operand
+        # indexes the same axis: a shared per-allele width within variant scope
+        # (so ``AC>0 & AC<2`` stays a same-allele test) or the shared per-sample
+        # axis. When the operands mix scopes (a per-allele 2-D field with a
+        # per-sample 2-D field) or carry different per-allele widths
+        # (``IIR>0 | IID>0``), collapse each variant-scope 2-D operand to a
+        # per-variant decision (any element) so the masks combine.
+        arrays = [np.asarray(value) for value in values]
+        scopes = [operand.scope() for operand in self.operands]
+        has_sample = any(scope == "sample" for scope in scopes)
+        variant_widths = {
+            array.shape[1]
+            for array, scope in zip(arrays, scopes)
+            if array.ndim == 2 and scope == "variant"
+        }
+        if not has_sample and len(variant_widths) <= 1:
+            return arrays
+        return [
+            _collapse_to_variant(array) if scope == "variant" else array
+            for array, scope in zip(arrays, scopes)
+        ]
 
     def is_missing(self, data):
         return self._propagate_sentinel(data, "is_missing")
@@ -445,13 +472,17 @@ class ComparisonOperator(EvaluationNode):
     def eval(self, data):
         raw1 = np.asarray(self.op1.eval(data))
         raw2 = np.asarray(self.op2.eval(data))
-        # A 2-D per-allele (variant-scope) operand and a 2-D per-sample
-        # (sample-scope) operand have incompatible axis-1 meanings (alleles vs
-        # samples), so element-wise comparison is undefined.
-        if raw1.ndim == 2 and raw2.ndim == 2 and self.op1.scope() != self.op2.scope():
+        # Two 2-D operands can only be compared element-wise if they index the
+        # same axis. Operands of differing scope (per-allele vs per-sample) or
+        # differing width (e.g. Number=2 vs Number=R) have no common element.
+        if (
+            raw1.ndim == 2
+            and raw2.ndim == 2
+            and (self.op1.scope() != self.op2.scope() or raw1.shape[1] != raw2.shape[1])
+        ):
             raise ValueError(
-                "cannot compare a per-allele (INFO Number=A) field with a "
-                "per-sample (FORMAT) field"
+                "cannot compare fields with incompatible dimensions: operands "
+                "with different per-allele/per-sample axes have no common element"
             )
         # Align so a per-variant (1-D) operand broadcasts against a per-allele
         # (2-D) one, e.g. INFO/AC < INFO/AN. The root collapses the resulting

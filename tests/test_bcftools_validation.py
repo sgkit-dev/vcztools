@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import vcztools
+import vcztools.bcftools_filter as bcftools_filter
 import vcztools.cli as cli
 import vcztools.constants as constants_module
 
@@ -913,6 +915,72 @@ class TestFilterExpressionLanguage:
         assert "RuntimeWarning" not in vcztools_stderr, (
             f"unexpected RuntimeWarning in stderr:\n{vcztools_stderr}"
         )
+
+
+class TestFieldTypeCombos:
+    """Filtering across the full matrix of INFO/FORMAT Number cardinalities in
+    ``field_type_combos.vcf.gz`` (INFO Number=0/1/2/A/R/. and FORMAT
+    Number=1/2/A/R/G/.), so the dimension handling is exercised beyond the
+    alt-allele case."""
+
+    FMT = r"query -f '%CHROM %POS\n'"
+
+    def _check(self, fx, expr):
+        cmd = f"{self.FMT} -i '{expr}' "
+        bcftools_output, _ = run_bcftools(f"{cmd} {fx.vcf_path}")
+        vcztools_output, _ = run_vcztools(f"{cmd} {fx.zip_path}")
+        assert vcztools_output == bcftools_output
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # Multi-valued INFO fields collapse any-element at the root,
+            # matching bcftools whatever the (non-allele) cardinality:
+            # Number=2 / Number=R / Number=. , integer and float.
+            "INFO/II2>5", "INFO/IIR>5", "INFO/IID>5",
+            "INFO/IF2>0", "INFO/IFR>0", "INFO/IFD>0",
+            # Per-allele Number=A alongside the others.
+            "INFO/IIA>0", "INFO/IIR>0",
+        ],
+    )
+    # fmt: on
+    def test_multivalued_info(self, fx_field_type_combos_vcz, expr):
+        self._check(fx_field_type_combos_vcz, expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        "expr",
+        [
+            # Different-width variant-scope 2-D fields combined logically: each
+            # side collapses over its own value axis before combining.
+            "INFO/IIR>0 | INFO/IID>0",
+            "INFO/II2>0 || INFO/IIR>0",
+            "INFO/IIR>0 & INFO/IIA>0",
+            "INFO/IF2>0 | INFO/IFR>0",
+        ],
+    )
+    # fmt: on
+    def test_different_width_logical(self, fx_field_type_combos_vcz, expr):
+        self._check(fx_field_type_combos_vcz, expr)
+
+    @pytest.mark.parametrize(
+        "field",
+        ["FI2", "FIA", "FIR", "FIG", "FID", "FF2", "FFG", "FFD"],
+    )
+    def test_multivalued_format_rejected(self, fx_field_type_combos_vcz, field):
+        # Multi-valued FORMAT fields are 3-D in the store (per-sample per
+        # value); filtering on them is unsupported and raises cleanly, for
+        # every Number cardinality (2 / A / R / G / .) and dtype.
+        reader = vcztools.VczReader(fx_field_type_combos_vcz.group)
+        variant_filter = bcftools_filter.BcftoolsFilter(
+            reader, include=f"FMT/{field}>0"
+        )
+        reader.set_variant_filter(variant_filter)
+        with pytest.raises(
+            bcftools_filter.UnsupportedHigherDimensionalFormatFieldsError
+        ):
+            list(reader.variants(fields=["variant_position"]))
 
 
 class TestSampleSubsetFilterSemantics:

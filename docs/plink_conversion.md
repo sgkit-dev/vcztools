@@ -72,17 +72,17 @@ materialised.
 (`AC`, `AN`, `AF`, `NS`) are evaluated **over the selected samples**. With
 a `-s`/`-S` subset, those values are recomputed for that subset rather
 than read from the file's stored (full-cohort) INFO. So
-`view-plink -s cohort.txt -i 'AC>0'` keeps the variants that are
-polymorphic *in your cohort*, dropping sites whose ALT alleles are carried
-only by excluded samples — even where the source file's stored `INFO/AC`
-is non-zero.
+`view-plink -s cohort.txt -i 'AC>0 && AC<AN'` keeps the variants that vary
+*in your cohort* (both alleles present, `0 < AC < AN`), dropping sites whose
+ALT alleles are carried only by excluded samples — even where the source
+file's stored `INFO/AC` is non-zero.
 
 This is deliberately **different from
 {ref}`vcztools view<cmd-vcztools-view>` and
 {ref}`vcztools query<cmd-vcztools-query>`**, which follow bcftools and
 evaluate `-i/-e` against the original
-record's stored INFO (so the same `-i 'AC>0'` keeps a site on its stored
-full-cohort count). The rationale: a PLINK fileset is the input to an
+record's stored INFO (so the same `-i 'AC>0 && AC<AN'` keeps a site on its
+stored full-cohort count). The rationale: a PLINK fileset is the input to an
 association analysis run on the exported cohort, so filters should reflect
 that cohort, not the source dataset. It is also the cheaper path on large
 datasets — only the selected samples are read.

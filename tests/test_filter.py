@@ -818,6 +818,62 @@ class TestMixedDimensionEvaluation:
         nt.assert_array_equal(result, [[True, False], [True, False]])
 
 
+class TestDifferentWidthDimensions:
+    """Variant-scope 2-D INFO fields of differing widths (e.g. Number=2 vs
+    Number=R) carry independent value axes: logical combination collapses each
+    to a per-variant decision, while comparison/arithmetic between them has no
+    common element and is rejected."""
+
+    def _evaluate(self, expression, data):
+        fee = filter_mod.BcftoolsFilter(
+            utils.FilterReader(data.keys()), include=expression
+        )
+        return fee.evaluate(numpify_values(data))
+
+    @pytest.mark.parametrize("op", ["&", "|", "&&", "||"])
+    def test_different_width_logical_collapses(self, op):
+        # X2 is width 2, X3 is width 3; each side collapses over its own value
+        # axis (any element) before combining into a per-variant mask.
+        data = {
+            "variant_X2": [[5, 0], [0, 0]],
+            "variant_X3": [[0, 0, 0], [1, 0, 0]],
+        }
+        result = self._evaluate(f"INFO/X2>0 {op} INFO/X3>0", data)
+        if op in ("&", "&&"):
+            nt.assert_array_equal(result, [False, False])
+        else:
+            nt.assert_array_equal(result, [True, True])
+
+    def test_non_allele_two_d_collapses_any(self):
+        # A Number=2-style field collapses any-element at the root, exactly like
+        # a per-allele field — the collapse is not allele-specific.
+        data = {"variant_X2": [[5, 1], [0, 1], [0, 0]]}
+        nt.assert_array_equal(self._evaluate("INFO/X2>3", data), [True, False, False])
+
+    def test_different_width_comparison_rejected(self):
+        data = {"variant_X2": [[1, 2]], "variant_X3": [[3, 4, 5]]}
+        fee = self._evaluate
+        with pytest.raises(ValueError, match="incompatible dimensions"):
+            fee("INFO/X2 > INFO/X3", data)
+
+    def test_different_width_arithmetic_rejected(self):
+        data = {"variant_X2": [[1, 2]], "variant_X3": [[3, 4, 5]]}
+        with pytest.raises(ValueError, match="incompatible dimensions"):
+            self._evaluate("INFO/X2 + INFO/X3 > 0", data)
+
+    def test_same_width_logical_stays_elementwise(self):
+        # Two width-2 fields keep the element axis: the same-element & only
+        # passes a variant where one column satisfies BOTH conditions.
+        data = {
+            "variant_X2": [[5, 0], [5, 0]],
+            "variant_Y2": [[0, 9], [9, 0]],
+        }
+        # row0: col0 (5>0 & 0>3? no); col1 (0>0? no) → no shared column → False.
+        # row1: col0 (5>0 & 9>3) → True.
+        result = self._evaluate("INFO/X2>0 & INFO/Y2>3", data)
+        nt.assert_array_equal(result, [False, True])
+
+
 class TestRaggedFieldEvaluation:
     """Per-allele (Number=A) arrays are padded with INT_FILL to the chunk's
     widest row; fill and missing sentinels must never satisfy a comparison."""
@@ -856,7 +912,7 @@ class TestEvaluationErrors:
     def test_per_allele_vs_per_sample_comparison_rejected(self):
         data = {"variant_AC": [[1, 2]], "call_DP": [[3, 4, 5]]}
         fee = self._filter("INFO/AC > FMT/DP", data.keys())
-        with pytest.raises(ValueError, match="per-allele.*per-sample"):
+        with pytest.raises(ValueError, match="incompatible dimensions"):
             fee.evaluate(numpify_values(data))
 
     def test_parse_error(self):

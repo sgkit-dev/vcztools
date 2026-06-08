@@ -258,6 +258,15 @@ def _align_dims(a, b):
     return a, b
 
 
+def _collapse_to_variant(value):
+    # A variant-scope 2-D mask carries axis 1 = alleles; collapse it to a
+    # per-variant decision (the variant matches if any allele does). A 1-D
+    # mask is already per-variant and returned unchanged.
+    if value.ndim == 2:
+        return np.any(value, axis=1)
+    return value
+
+
 def single_and(a, b):
     a, b = _align_dims(a, b)
     return np.logical_and(a, b)
@@ -269,8 +278,11 @@ def single_or(a, b):
 
 
 def double_and(a, b):
-    # if both operands are 1D, then they are just variant masks
-    if a.ndim == 1 and b.ndim == 1:
+    a = np.asarray(a)
+    b = np.asarray(b)
+    # A scalar operand (e.g. a bare constant) broadcasts against either shape,
+    # and two variant masks combine element-wise.
+    if a.ndim == 0 or b.ndim == 0 or (a.ndim == 1 and b.ndim == 1):
         return np.logical_and(a, b)
 
     a, b = _align_dims(a, b)
@@ -284,15 +296,18 @@ def double_and(a, b):
         sample_mask = np.logical_or(a, b)
         # but if a variant site is not included then none of its samples should be
         return np.logical_and(variant_mask, sample_mask)
-    else:
+    else:  # pragma: no cover
+        # Unreachable: scalars are handled above and call_* fields beyond 2-D
+        # are rejected at eval, so _align_dims always yields both-2-D here.
         raise NotImplementedError(
             f"&& not implemented for dimensions {a.ndim} and {b.ndim}"
         )
 
 
 def double_or(a, b):
-    # if both operands are 1D, then they are just variant masks
-    if a.ndim == 1 and b.ndim == 1:
+    a = np.asarray(a)
+    b = np.asarray(b)
+    if a.ndim == 0 or b.ndim == 0 or (a.ndim == 1 and b.ndim == 1):
         return np.logical_or(a, b)
 
     a, b = _align_dims(a, b)
@@ -305,7 +320,8 @@ def double_or(a, b):
         sample_mask = np.logical_or(a, b)
         # but if a variant site is included then all of its samples should be
         return np.logical_or(variant_mask, sample_mask)
-    else:
+    else:  # pragma: no cover
+        # Unreachable: see the matching note in double_and.
         raise NotImplementedError(
             f"|| not implemented for dimensions {a.ndim} and {b.ndim}"
         )
@@ -333,11 +349,12 @@ class BinaryOperator(EvaluationNode):
         self.ops = self.tokens[1::2]
 
     def eval(self, data):
-        # start by eval()'ing the first operand
-        ret = self.operands[0].eval(data)
-        for op, operand in zip(self.ops, self.operands[1:]):
+        values = [operand.eval(data) for operand in self.operands]
+        if self.ops[0] not in self._ARITHMETIC_OPS:
+            values = self._prepare_logical_operands(values)
+        ret = values[0]
+        for op, rhs in zip(self.ops, values[1:]):
             arith_fn = self.op_map[op]
-            rhs = operand.eval(data)
             # Arithmetic must broadcast a per-variant (1-D) operand against a
             # per-allele (2-D) one, e.g. INFO/AC / INFO/AN. The logical ops
             # align inside single_and / double_and / etc.
@@ -348,6 +365,22 @@ class BinaryOperator(EvaluationNode):
             with np.errstate(invalid="ignore"):
                 ret = arith_fn(ret, rhs)
         return ret
+
+    def _prepare_logical_operands(self, values):
+        # When the expression mixes a per-sample (sample-scope) operand with a
+        # per-allele (variant-scope, 2-D) one, collapse the allele axis to a
+        # per-variant decision so the masks combine: a per-allele mask carries
+        # axis 1 = alleles while a per-sample mask carries axis 1 = samples.
+        # All-variant logical expressions keep their per-allele axis (so
+        # ``AC>0 & AC<2`` stays a same-allele test) and pass through unchanged.
+        if self.scope() != "sample":
+            return values
+        prepared = []
+        for operand, value in zip(self.operands, values):
+            if operand.scope() == "variant":
+                value = _collapse_to_variant(np.asarray(value))
+            prepared.append(value)
+        return prepared
 
     def missing(self, data):
         # Logical ops operate on boolean results that ComparisonOperator
@@ -396,10 +429,20 @@ class ComparisonOperator(EvaluationNode):
         self.comparison_fn = self.op_map[self.op]
 
     def eval(self, data):
+        raw1 = np.asarray(self.op1.eval(data))
+        raw2 = np.asarray(self.op2.eval(data))
+        # A 2-D per-allele (variant-scope) operand and a 2-D per-sample
+        # (sample-scope) operand have incompatible axis-1 meanings (alleles vs
+        # samples), so element-wise comparison is undefined.
+        if raw1.ndim == 2 and raw2.ndim == 2 and self.op1.scope() != self.op2.scope():
+            raise ValueError(
+                "cannot compare a per-allele (INFO Number=A) field with a "
+                "per-sample (FORMAT) field"
+            )
         # Align so a per-variant (1-D) operand broadcasts against a per-allele
         # (2-D) one, e.g. INFO/AC < INFO/AN. The root collapses the resulting
         # 2-D variant mask via np.any.
-        v1, v2 = _align_dims(self.op1.eval(data), self.op2.eval(data))
+        v1, v2 = _align_dims(raw1, raw2)
         # Comparing sentinel-encoded missing values (e.g. INFO/AC=-1) as if
         # they were real data gives wrong answers (-1 satisfies "<2"), so the
         # comparison result is forced at missing positions to match bcftools.
@@ -548,7 +591,8 @@ def type_eq(a, b):
         all_a = np.bitwise_and.reduce(a, axis=1)
         all_a = np.where(all_a < 0, 0, all_a)  # remove missing
         return np.bitwise_and(all_a, SNP) == SNP
-    else:
+    else:  # pragma: no cover
+        # Unreachable: TypeOperator.__init__ rejects any type outside ref/snp.
         raise NotImplementedError(f"TYPE comparison not implemented for '{b}'")
 
 
@@ -563,7 +607,8 @@ def type_subset_match(a, b):
         any_a = np.where(a < 0, 0, a)  # remove missing
         any_a = np.bitwise_or.reduce(any_a, axis=1)
         return np.bitwise_and(any_a, SNP) == SNP
-    else:
+    else:  # pragma: no cover
+        # Unreachable: TypeOperator.__init__ rejects any type outside ref/snp.
         raise NotImplementedError(f"TYPE comparison not implemented for '{b}'")
 
 

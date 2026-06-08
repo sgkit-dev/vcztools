@@ -276,6 +276,103 @@ def numpify_values(data):
     return {k: np.array(v) for k, v in data.items()}
 
 
+class TestEvaluationHelpers:
+    """Direct characterisation of the array-combination helpers, exercised on
+    raw numpy arrays so each function's contract is pinned independently of any
+    parsed expression."""
+
+    def test_align_dims_expands_one_d_against_two_d(self):
+        one_d = np.array([True, False, True])
+        two_d = np.array([[1, 2], [3, 4], [5, 6]])
+        a, b = filter_mod._align_dims(one_d, two_d)
+        assert a.shape == (3, 1)
+        assert b.shape == (3, 2)
+        a, b = filter_mod._align_dims(two_d, one_d)
+        assert a.shape == (3, 2)
+        assert b.shape == (3, 1)
+
+    def test_align_dims_passes_through_matching_ranks(self):
+        for left, right in [
+            (np.array([1, 2]), np.array([3, 4])),  # both 1-D
+            (np.zeros((2, 3)), np.ones((2, 3))),  # both 2-D
+            (np.array(5), np.array([1, 2])),  # scalar + 1-D
+        ]:
+            a, b = filter_mod._align_dims(left, right)
+            assert a.shape == np.asarray(left).shape
+            assert b.shape == np.asarray(right).shape
+
+    def test_align_dims_coerces_python_inputs(self):
+        a, b = filter_mod._align_dims([1, 2], 5)
+        assert isinstance(a, np.ndarray)
+        assert isinstance(b, np.ndarray)
+
+    def test_collapse_to_variant(self):
+        two_d = np.array([[False, False], [False, True], [True, True]])
+        nt.assert_array_equal(
+            filter_mod._collapse_to_variant(two_d), [False, True, True]
+        )
+        one_d = np.array([True, False])
+        nt.assert_array_equal(filter_mod._collapse_to_variant(one_d), [True, False])
+
+    @pytest.mark.parametrize(
+        ("fn", "expected"),
+        [(filter_mod.single_and, False), (filter_mod.single_or, True)],
+    )
+    def test_single_ops_both_one_d(self, fn, expected):
+        a = np.array([True, False])
+        b = np.array([False, False])
+        nt.assert_array_equal(fn(a, b), [expected, False])
+
+    def test_single_and_broadcasts_one_d_across_axis(self):
+        variant = np.array([True, False])  # per-variant
+        per_sample = np.array([[True, True], [True, True]])  # per-sample
+        # The variant mask gates every sample column.
+        nt.assert_array_equal(
+            filter_mod.single_and(variant, per_sample),
+            [[True, True], [False, False]],
+        )
+
+    def test_single_or_two_d_same_width_elementwise(self):
+        a = np.array([[True, False], [False, False]])
+        b = np.array([[False, False], [True, False]])
+        nt.assert_array_equal(
+            filter_mod.single_or(a, b), [[True, False], [True, False]]
+        )
+
+    def test_double_and_scalar_broadcasts(self):
+        per_sample = np.array([[True, False], [True, True]])
+        # A truthy scalar passes the per-sample mask through unchanged.
+        nt.assert_array_equal(
+            filter_mod.double_and(np.array(1), per_sample), per_sample
+        )
+
+    def test_double_and_cross_sample_semantics(self):
+        # Each side must match in *some* sample for the site to survive; the
+        # surviving site then keeps the per-sample union.
+        a = np.array([[0, 0, 0, 0], [0, 0, 1, 1], [0, 0, 0, 0]])
+        b = np.array([[0, 0, 0, 0], [0, 1, 0, 1], [1, 1, 1, 1]])
+        nt.assert_array_equal(
+            filter_mod.double_and(a, b),
+            [
+                [False, False, False, False],
+                [False, True, True, True],
+                [False, False, False, False],
+            ],
+        )
+
+    def test_double_or_cross_sample_semantics(self):
+        a = np.array([[0, 0, 0, 0], [0, 0, 1, 1], [0, 0, 0, 0]])
+        b = np.array([[0, 0, 0, 0], [0, 1, 0, 1], [1, 1, 1, 1]])
+        nt.assert_array_equal(
+            filter_mod.double_or(a, b),
+            [
+                [False, False, False, False],
+                [True, True, True, True],
+                [True, True, True, True],
+            ],
+        )
+
+
 class TestFilterExpression:
     @pytest.mark.parametrize(
         ("expression", "data", "expected"),
@@ -635,13 +732,130 @@ class TestFilterExpression:
             ("a + (1 + 2)", "(variant_a)+((1)+(2))"),
             ("POS<10", "(variant_position)<(10)"),
             ('ID=="rs6054257"', "(variant_id)==('rs6054257')"),
+            # The CHROM / FILTER / TYPE operators have dedicated node classes.
+            ('CHROM="20"', "(variant_contig)=('20')"),
+            ('FILTER="PASS"', "(variant_filter)=('PASS')"),
+            ('TYPE="snp"', "(variant_allele)=('snp')"),
         ],
     )
     def test_repr(self, expr, expected):
         fe = filter_mod.BcftoolsFilter(
-            utils.FilterReader({"variant_a", "variant_b"}), include=expr
+            utils.FilterReader({"variant_a", "variant_b", "variant_filter"}),
+            include=expr,
         )
         assert repr(fe.parse_result[0]) == expected
+
+
+class TestMixedDimensionEvaluation:
+    """Expressions that combine operands of differing dimensionality: a
+    per-allele field (variant-scope, 2-D, axis 1 = alleles) and a per-sample
+    field (sample-scope, 2-D, axis 1 = samples)."""
+
+    def _evaluate(self, expression, data):
+        fee = filter_mod.BcftoolsFilter(
+            utils.FilterReader(data.keys()), include=expression
+        )
+        return fee.evaluate(numpify_values(data))
+
+    def test_per_allele_and_per_sample_logical(self):
+        # AC>0 collapses over alleles to a per-variant decision, then gates
+        # every sample column of the FMT/DP>0 mask. The whole expression is
+        # sample-scope, so the result stays 2-D (per-sample).
+        data = {
+            "variant_AC": [[0], [2]],
+            "call_DP": [[1, 0], [5, 5]],
+        }
+        result = self._evaluate("AC>0 & FMT/DP>0", data)
+        nt.assert_array_equal(result, [[False, False], [True, True]])
+
+    def test_per_allele_or_per_sample_logical(self):
+        data = {
+            "variant_AC": [[0], [2]],
+            "call_DP": [[1, 0], [0, 0]],
+        }
+        result = self._evaluate("AC>0 | FMT/DP>0", data)
+        nt.assert_array_equal(result, [[True, False], [True, True]])
+
+    def test_chained_mixed_scope(self):
+        # AC>0 (per-allele) and INFO/DP>0 (per-variant) both collapse/broadcast
+        # to gate the per-sample FMT/DP>0 mask.
+        data = {
+            "variant_AC": [[2], [2]],
+            "variant_DP": [5, 0],
+            "call_DP": [[5, 5], [5, 5]],
+        }
+        result = self._evaluate("AC>0 & FMT/DP>0 & INFO/DP>0", data)
+        # variant 1 fails the per-variant INFO/DP>0 leg → all samples dropped.
+        nt.assert_array_equal(result, [[True, True], [False, False]])
+
+    def test_per_variant_scalar_vs_per_sample(self):
+        # A 1-D INFO field broadcasts against a 2-D FORMAT field in a comparison.
+        data = {
+            "variant_DP": [10, 2],
+            "call_DP": [[5, 12], [1, 3]],
+        }
+        result = self._evaluate("INFO/DP > FMT/DP", data)
+        nt.assert_array_equal(result, [[True, False], [True, False]])
+
+
+class TestRaggedFieldEvaluation:
+    """Per-allele (Number=A) arrays are padded with INT_FILL to the chunk's
+    widest row; fill and missing sentinels must never satisfy a comparison."""
+
+    def _evaluate(self, expression, data):
+        fee = filter_mod.BcftoolsFilter(
+            utils.FilterReader(data.keys()), include=expression
+        )
+        return fee.evaluate(numpify_values(data))
+
+    def test_fill_columns_ignored(self):
+        # Row 0 is biallelic (one real AC, then INT_FILL padding); row 1 is
+        # triallelic. A threshold on AC must not see the fill column.
+        data = {
+            "variant_AC": [
+                [10, constants.INT_FILL],
+                [3, 7],
+            ]
+        }
+        nt.assert_array_equal(self._evaluate("AC>5", data), [True, True])
+        nt.assert_array_equal(self._evaluate("AC>8", data), [True, False])
+
+    def test_missing_excluded(self):
+        # INT_MISSING (-1) must not satisfy an ordering comparison even though
+        # the raw sentinel is < the threshold.
+        data = {"variant_AC": [[constants.INT_MISSING], [4]]}
+        nt.assert_array_equal(self._evaluate("AC>=0", data), [False, True])
+        # bcftools `!=` is True against a present value on the missing side.
+        nt.assert_array_equal(self._evaluate("AC!=4", data), [True, False])
+
+
+class TestEvaluationErrors:
+    def _filter(self, expression, fields):
+        return filter_mod.BcftoolsFilter(utils.FilterReader(fields), include=expression)
+
+    def test_per_allele_vs_per_sample_comparison_rejected(self):
+        data = {"variant_AC": [[1, 2]], "call_DP": [[3, 4, 5]]}
+        fee = self._filter("INFO/AC > FMT/DP", data.keys())
+        with pytest.raises(ValueError, match="per-allele.*per-sample"):
+            fee.evaluate(numpify_values(data))
+
+    def test_parse_error(self):
+        with pytest.raises(filter_mod.ParseError, match="parse error"):
+            self._filter("POS <", {"variant_position"})
+
+    def test_no_op_filter_passes_everything(self):
+        fee = filter_mod.BcftoolsFilter(utils.FilterReader({"variant_position"}))
+        data = {"variant_position": np.array([1, 2, 3])}
+        nt.assert_array_equal(fee.evaluate(data), [True, True, True])
+
+    def test_logical_result_compared(self):
+        # A logical sub-expression used as a comparison operand exercises
+        # BinaryOperator.missing on a logical node (a boolean mask is never
+        # missing).
+        data = {"call_DP": [[6, 2], [1, 1]], "call_GQ": [[20, 0], [0, 0]]}
+        fee = self._filter("(FMT/DP>5 & FMT/GQ>10) == 1", data.keys())
+        result = fee.evaluate(numpify_values(data))
+        nt.assert_array_equal(result, [[True, False], [False, False]])
 
 
 class TestBcftoolsParser:

@@ -774,6 +774,27 @@ class TestFilterExpressionLanguage:
 
     # fmt: off
     @pytest.mark.parametrize(
+        "expr",
+        [
+            # Per-allele INFO (2-D, axis 1 = alleles) combined with per-sample
+            # FORMAT (2-D, axis 1 = samples) under a logical operator: the
+            # allele axis collapses to a per-variant decision before combining
+            # with the per-sample mask.
+            "INFO/AC>0 & FMT/DP>0",
+            "INFO/AC>0 | FMT/DP>0",
+            # Per-variant (1-D) INFO compared against per-sample (2-D) FORMAT.
+            "INFO/DP > FMT/DP",
+            "INFO/DP <= FMT/DP",
+            # Per-variant INFO arithmetic feeding a per-sample comparison.
+            "INFO/AC / INFO/AN > 0.4 & FMT/DP > 3",
+        ],
+    )
+    # fmt: on
+    def test_mixed_info_format_scope(self, fx_sample_vcz, expr):
+        self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
         ("flag", "expr"),
         [
             ("-i", "INFO/AC>0 && INFO/AC<INFO/AN"),

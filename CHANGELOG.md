@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.0] - 2026-XX-XX
+## [0.2.0] - 2026-06-08
 
 New output formats:
 
@@ -14,10 +14,9 @@ New output formats:
 Cloud and remote storage:
 
 - Read VCZ from cloud and remote stores via the optional `[obstore]` and
-  `[icechunk]` extras (includes Azure); fsspec and HTTP stores are also
-  supported.
+  `[icechunk]` extras; fsspec and HTTP stores are also supported.
 - Add support for `.vcz.zip` files (#280).
-- Add `vcztools.open_zarr` for opening local, remote, and zipped stores.
+- Support "proportional chunking" across arrays (#356).
 
 Filtering and CLI:
 
@@ -25,9 +24,8 @@ Filtering and CLI:
 - Add `-v/--types`, `-V/--exclude-types`, `-m/--min-alleles`, and
   `-M/--max-alleles` to `view` and `view-plink`, matching bcftools view,
   along with a new `N_ALT` filter identifier.
-- Add `N_MISSING` and `F_MISSING` filter variables, e.g.
-  `-i 'F_MISSING < 0.05'`.
-- Add `--fill-tags` to recompute `INFO/AC` and `INFO/AN`.
+- Add `N_MISSING` and `F_MISSING` filter variables
+- Add `--fill-tags` to emulate `bcftools +fill-tags`
 - Add `--log-level` and `--log-file` options; report throughput in MiB/s.
 
 Data types:
@@ -41,7 +39,7 @@ Python API:
   - `VczReader` for variant data access, with sample selection by ID via
     `set_samples(sample_ids, complement=, ignore_missing_samples=)` (or by
     raw index via `set_sample_indexes`).
-  - One-shot writers `write_plink` / `write_bgen` and streaming
+  - One-shot writers `write_vcf` / `write_plink` / `write_bgen` and streaming
     `BedEncoder` / `BgenEncoder` byte encoders.
   - Sidecar writers `write_bim` / `write_fam` / `write_sample` /
     `write_bgi`.
@@ -55,6 +53,9 @@ Platform and packaging:
 
 - Add Windows support.
 - Provide prebuilt wheels for Linux, macOS, and Windows (CPython 3.11-3.13).
+- New required dependencies: `pandas` and `humanfriendly`; `pyparsing>=3.1.0`.
+  Genomic-range operations now use `ruranges_py` on Python 3.12+ and
+  `pyranges` on earlier versions.
 
 Documentation:
 

@@ -70,17 +70,20 @@ print("all QUAL > 10:", all(qual > 10 for qual in quals))
 PLINK is biallelic-only, so multi-allelic sites must be dropped, and the
 fixed-width writers cannot consume a still-configured filter — it must first be
 resolved with {meth}`~vcztools.VczReader.materialise_variant_filter`. Filtering
-on `N_ALT == 1` (biallelic) `&` `AC > 0` keeps the sites that are biallelic and
-polymorphic *in the chosen cohort*; `AC` is recomputed over the selected samples
-(see {ref}`sec-plink-subset-filtering`). Use the variant-scope `&` rather than
-the sample-scope `&&`, so the combined filter stays variant-scope:
+on `N_ALT == 1` (biallelic) `&` `AC > 0` `&` `AC < AN` keeps the sites that are
+biallelic and polymorphic *in the chosen cohort*: a biallelic site varies when
+both alleles are present, i.e. `0 < AC < AN` (`AC > 0` alone would also keep
+sites that are monomorphic for ALT, where `AC == AN`). `AC` and `AN` are
+recomputed over the selected samples (see {ref}`sec-plink-subset-filtering`).
+Use the variant-scope `&` rather than the sample-scope `&&`, so the combined
+filter stays variant-scope:
 
 ```{code-cell} ipython3
 root = vcztools.open_zarr("data/sample.vcz.zip")
 with vcztools.VczReader(root) as reader:
     reader.set_samples(["NA00001", "NA00003"])
     reader.set_variant_filter(
-        vcztools.BcftoolsFilter(reader, include="N_ALT == 1 & AC > 0")
+        vcztools.BcftoolsFilter(reader, include="N_ALT == 1 & AC > 0 & AC < AN")
     )
     reader.materialise_variant_filter()
     vcztools.write_plink(reader, "cohort")

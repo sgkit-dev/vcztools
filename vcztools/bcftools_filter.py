@@ -243,10 +243,12 @@ class UnaryMinus(EvaluationNode):
         return self.operand.scope()
 
 
-def _align_mask_dims(a, b):
-    # Expand a 1-D variant mask to (n, 1) when the other operand is 2-D
-    # (axis 1 = alleles or samples), so the two broadcast together. Scalars
-    # and both-1-D / both-2-D operands are returned unchanged.
+def _align_dims(a, b):
+    # Expand a 1-D per-variant operand to (n, 1) when the other operand is 2-D
+    # (axis 1 = alleles or samples), so the two broadcast together. This covers
+    # both boolean masks and raw field values, e.g. comparing per-allele
+    # INFO/AC (Number=A) against per-variant INFO/AN. Scalars and both-1-D /
+    # both-2-D operands are returned unchanged.
     a = np.asarray(a)
     b = np.asarray(b)
     if a.ndim == 1 and b.ndim == 2:
@@ -257,12 +259,12 @@ def _align_mask_dims(a, b):
 
 
 def single_and(a, b):
-    a, b = _align_mask_dims(a, b)
+    a, b = _align_dims(a, b)
     return np.logical_and(a, b)
 
 
 def single_or(a, b):
-    a, b = _align_mask_dims(a, b)
+    a, b = _align_dims(a, b)
     return np.logical_or(a, b)
 
 
@@ -271,7 +273,7 @@ def double_and(a, b):
     if a.ndim == 1 and b.ndim == 1:
         return np.logical_and(a, b)
 
-    a, b = _align_mask_dims(a, b)
+    a, b = _align_dims(a, b)
 
     if a.ndim == 2 and b.ndim == 2:
         # a variant site is included only if both conditions are met
@@ -293,7 +295,7 @@ def double_or(a, b):
     if a.ndim == 1 and b.ndim == 1:
         return np.logical_or(a, b)
 
-    a, b = _align_mask_dims(a, b)
+    a, b = _align_dims(a, b)
 
     if a.ndim == 2 and b.ndim == 2:
         # a variant site is included if either condition is met in any sample
@@ -335,10 +337,16 @@ class BinaryOperator(EvaluationNode):
         ret = self.operands[0].eval(data)
         for op, operand in zip(self.ops, self.operands[1:]):
             arith_fn = self.op_map[op]
+            rhs = operand.eval(data)
+            # Arithmetic must broadcast a per-variant (1-D) operand against a
+            # per-allele (2-D) one, e.g. INFO/AC / INFO/AN. The logical ops
+            # align inside single_and / double_and / etc.
+            if op in self._ARITHMETIC_OPS:
+                ret, rhs = _align_dims(ret, rhs)
             # Suppress "invalid value encountered" warnings from arithmetic
             # on NaN-encoded missing floats (e.g. QUAL=.).
             with np.errstate(invalid="ignore"):
-                ret = arith_fn(ret, operand.eval(data))
+                ret = arith_fn(ret, rhs)
         return ret
 
     def missing(self, data):
@@ -348,7 +356,8 @@ class BinaryOperator(EvaluationNode):
             return False
         result = False
         for operand in self.operands:
-            result = np.logical_or(result, operand.missing(data))
+            result, mask = _align_dims(result, operand.missing(data))
+            result = np.logical_or(result, mask)
         return result
 
     def __repr__(self):
@@ -387,19 +396,31 @@ class ComparisonOperator(EvaluationNode):
         self.comparison_fn = self.op_map[self.op]
 
     def eval(self, data):
-        v1 = self.op1.eval(data)
-        v2 = self.op2.eval(data)
+        # Align so a per-variant (1-D) operand broadcasts against a per-allele
+        # (2-D) one, e.g. INFO/AC < INFO/AN. The root collapses the resulting
+        # 2-D variant mask via np.any.
+        v1, v2 = _align_dims(self.op1.eval(data), self.op2.eval(data))
         # Comparing sentinel-encoded missing values (e.g. INFO/AC=-1) as if
-        # they were real data gives wrong answers (-1 satisfies "<2"), so
-        # force the comparison result at those positions. bcftools treats
-        # `!=` as the logical negation of `==` — missing `!=` anything is
-        # True — while every other comparison is False on missing.
+        # they were real data gives wrong answers (-1 satisfies "<2"), so the
+        # comparison result is forced at missing positions to match bcftools.
         # errstate silences NaN comparison warnings on float missing.
         with np.errstate(invalid="ignore"):
             result = self.comparison_fn(v1, v2)
-        miss = np.logical_or(self.op1.missing(data), self.op2.missing(data))
-        missing_fill = self.op == "!="
-        return np.where(miss, missing_fill, result)
+        m1, m2 = _align_dims(self.op1.missing(data), self.op2.missing(data))
+        any_missing = np.logical_or(m1, m2)
+        both_missing = np.logical_and(m1, m2)
+        # bcftools treats two missing values as equal: `==` is True and `!=`
+        # is False where both operands are absent, a present value never
+        # equals a missing one, and ordering comparisons are False whenever
+        # either operand is missing. For a tag against a (never-missing)
+        # constant this reduces to the exactly-one-missing column.
+        if self.comparison_fn is operator.eq:
+            result = np.where(both_missing, True, np.where(any_missing, False, result))
+        elif self.comparison_fn is operator.ne:
+            result = np.where(both_missing, False, np.where(any_missing, True, result))
+        else:
+            result = np.where(any_missing, False, result)
+        return result
 
     def __repr__(self):
         return f"({repr(self.op1)}){self.op}({repr(self.op2)})"

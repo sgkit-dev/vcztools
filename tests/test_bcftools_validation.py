@@ -758,11 +758,31 @@ class TestFilterExpressionLanguage:
             "N_ALT >= 2 & INFO/AC > 0",
             "N_ALT == 1 & INFO/AC > 0",
             "N_ALT >= 2 | INFO/AC > 0",
+            # Per-allele (2-D INFO/AC) compared directly against per-variant
+            # (1-D INFO/AN): the 1-D operand broadcasts across the allele axis
+            # inside the comparison itself.
+            "INFO/AC<INFO/AN",
+            "INFO/AC==INFO/AN",
+            "INFO/AC!=INFO/AN",
+            # The canonical "has variation" idiom: polymorphic in the cohort.
+            "INFO/AC>0 && INFO/AC<INFO/AN",
         ],
     )
     # fmt: on
     def test_per_allele_info(self, fx_sample_vcz, expr):
         self._check(fx_sample_vcz, "-i", expr)
+
+    # fmt: off
+    @pytest.mark.parametrize(
+        ("flag", "expr"),
+        [
+            ("-i", "INFO/AC>0 && INFO/AC<INFO/AN"),
+            ("-e", "INFO/AC==0 || INFO/AC==INFO/AN"),
+        ],
+    )
+    # fmt: on
+    def test_polymorphic_idiom(self, fx_sample_vcz, flag, expr):
+        self._check(fx_sample_vcz, flag, expr)
 
     # fmt: off
     @pytest.mark.parametrize(

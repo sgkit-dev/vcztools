@@ -289,6 +289,54 @@ class TestFilterExpression:
                 {"variant_position": range(10)},
                 np.zeros(10, dtype=bool),
             ),
+            # Per-allele INFO/AC (2-D, Number=A) compared against per-variant
+            # INFO/AN (1-D). Variants: monomorphic-REF, polymorphic,
+            # monomorphic-ALT. AC>0 alone keeps the monomorphic-ALT site;
+            # the canonical "has variation" idiom drops it.
+            (
+                "AC>0",
+                {"variant_AC": [[0], [2], [4]], "variant_AN": [4, 4, 4]},
+                [0, 1, 1],
+            ),
+            (
+                "AC>0 && AC<AN",
+                {"variant_AC": [[0], [2], [4]], "variant_AN": [4, 4, 4]},
+                [0, 1, 0],
+            ),
+            (
+                "AC<AN",
+                {"variant_AC": [[0], [2], [4]], "variant_AN": [4, 4, 4]},
+                [1, 1, 0],
+            ),
+            (
+                "AC==AN",
+                {"variant_AC": [[0], [2], [4]], "variant_AN": [4, 4, 4]},
+                [0, 0, 1],
+            ),
+            # Arithmetic between a 2-D and a 1-D operand must broadcast too.
+            (
+                "AC / AN > 0.4",
+                {"variant_AC": [[0], [2], [4]], "variant_AN": [4, 4, 4]},
+                [0, 1, 1],
+            ),
+            # bcftools missing semantics for tag-vs-tag equality: a site whose
+            # AC and AN are both absent (sentinel) compares equal, so `==` is
+            # True and `!=` is False there. The fourth variant below is missing.
+            (
+                "AC==AN",
+                {"variant_AC": [[0], [2], [4], [-1]], "variant_AN": [4, 4, 4, -1]},
+                [0, 0, 1, 1],
+            ),
+            (
+                "AC!=AN",
+                {"variant_AC": [[0], [2], [4], [-1]], "variant_AN": [4, 4, 4, -1]},
+                [1, 1, 0, 0],
+            ),
+            (
+                "AC>0 && AC<AN",
+                {"variant_AC": [[0], [2], [4], [-1]], "variant_AN": [4, 4, 4, -1]},
+                [0, 1, 0, 0],
+            ),
         ],
     )
     def test_evaluate(self, expression, data, expected):

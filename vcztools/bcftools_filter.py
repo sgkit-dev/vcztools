@@ -7,8 +7,7 @@ import pyparsing as pp
 
 from vcztools.calculate import SNP, calculate_variant_type
 
-from . import constants
-from .utils import vcf_name_to_vcz_names
+from . import utils
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +89,6 @@ UNSUPPORTED_CALCULATED_VARIABLES = frozenset({"N_SAMPLES", "MAC", "MAF", "ILEN"}
 # https://github.com/pyparsing/pyparsing/blob/master/examples/eval_arith.py
 
 
-def _missing_mask(value):
-    # Unlike ``utils.is_missing`` we also mask INT_FILL (trailing padding in
-    # Number=A arrays) and use np.isnan for floats so that -value still
-    # registers as missing (the bit-pattern check would miss sign-flipped NaN).
-    if value.dtype.kind == "i":
-        return (value == constants.INT_MISSING) | (value == constants.INT_FILL)
-    elif value.dtype.kind == "f":
-        return np.isnan(value)
-    return False
-
-
 class EvaluationNode:
     """
     Base class for all of the parsed nodes in the expression
@@ -123,11 +111,18 @@ class EvaluationNode:
         # filters and collapses to a 1-D variant mask at the root).
         return "variant"
 
-    def missing(self, data):
-        # Per-element mask of "this slot is a missing/fill sentinel".
-        # Propagates through arithmetic so that ComparisonOperator can
-        # force the comparison result to False wherever either operand
-        # was missing. Default False means "never missing".
+    def is_missing(self, data):
+        # Per-element mask of "this slot holds a genuine missing value".
+        # Propagates through arithmetic so that ComparisonOperator can apply
+        # bcftools missing semantics wherever either operand was missing.
+        # Default False means "never missing".
+        return False
+
+    def is_fill(self, data):
+        # Per-element mask of "this slot is structural fill (a non-existent
+        # allele, axis-1 padding of a Number=A array)". Propagates alongside
+        # is_missing so ComparisonOperator can force such slots out of the
+        # result. Default False means "never fill".
         return False
 
 
@@ -188,8 +183,16 @@ class Identifier(EvaluationNode):
             raise UnsupportedHigherDimensionalFormatFieldsError()
         return value
 
-    def missing(self, data):
-        return _missing_mask(np.asarray(data[self.field_name]))
+    def is_missing(self, data):
+        value = np.asarray(data[self.field_name])
+        # FLAG fields are present/absent, not missing — `DB=0` must match
+        # records where the flag is unset, so they carry no missing mask.
+        if value.dtype.kind == "b":
+            return False
+        return utils.is_missing(value)
+
+    def is_fill(self, data):
+        return utils.is_fill(np.asarray(data[self.field_name]))
 
     def __repr__(self):
         return self.field_name
@@ -230,8 +233,11 @@ class UnaryMinus(EvaluationNode):
         # (e.g. missing QUAL). Sign-flip preserves NaN-ness silently.
         return -self.operand.eval(data)
 
-    def missing(self, data):
-        return self.operand.missing(data)
+    def is_missing(self, data):
+        return self.operand.is_missing(data)
+
+    def is_fill(self, data):
+        return self.operand.is_fill(data)
 
     def __repr__(self):
         return f"-({repr(self.operand)})"
@@ -382,14 +388,22 @@ class BinaryOperator(EvaluationNode):
             prepared.append(value)
         return prepared
 
-    def missing(self, data):
-        # Logical ops operate on boolean results that ComparisonOperator
-        # has already masked, so there's nothing to propagate.
+    def is_missing(self, data):
+        return self._propagate_sentinel(data, "is_missing")
+
+    def is_fill(self, data):
+        return self._propagate_sentinel(data, "is_fill")
+
+    def _propagate_sentinel(self, data, method):
+        # Arithmetic carries a missing/fill slot through to its result, so a
+        # value derived from a sentinel stays flagged. Logical ops work on
+        # booleans ComparisonOperator has already masked, so nothing propagates.
         if self.ops[0] not in self._ARITHMETIC_OPS:
             return False
         result = False
         for operand in self.operands:
-            result, mask = _align_dims(result, operand.missing(data))
+            mask = getattr(operand, method)(data)
+            result, mask = _align_dims(result, mask)
             result = np.logical_or(result, mask)
         return result
 
@@ -449,7 +463,7 @@ class ComparisonOperator(EvaluationNode):
         # errstate silences NaN comparison warnings on float missing.
         with np.errstate(invalid="ignore"):
             result = self.comparison_fn(v1, v2)
-        m1, m2 = _align_dims(self.op1.missing(data), self.op2.missing(data))
+        m1, m2 = _align_dims(self.op1.is_missing(data), self.op2.is_missing(data))
         any_missing = np.logical_or(m1, m2)
         both_missing = np.logical_and(m1, m2)
         # bcftools treats two missing values as equal: `==` is True and `!=`
@@ -463,6 +477,11 @@ class ComparisonOperator(EvaluationNode):
             result = np.where(both_missing, False, np.where(any_missing, True, result))
         else:
             result = np.where(any_missing, False, result)
+        # A fill slot is a non-existent allele (Number=A padding), so it never
+        # matches any comparison. Forcing False keeps it from leaking a True
+        # through the root np.any-over-alleles collapse.
+        f1, f2 = _align_dims(self.op1.is_fill(data), self.op2.is_fill(data))
+        result = np.where(np.logical_or(f1, f2), False, result)
         return result
 
     def __repr__(self):
@@ -677,7 +696,7 @@ def make_bcftools_filter_parser(all_fields=None, map_vcf_identifiers=True):
 
     name_mapper = _identity_list
     if map_vcf_identifiers:
-        name_mapper = functools.partial(vcf_name_to_vcz_names, all_fields)
+        name_mapper = functools.partial(utils.vcf_name_to_vcz_names, all_fields)
 
     chrom_field_identifier = pp.Literal("CHROM")
     chrom_field_identifier = chrom_field_identifier.set_parse_action(

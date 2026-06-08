@@ -434,6 +434,26 @@ class TestFilterExpression:
                 {"variant_AC": [[0], [2], [4], [-1]], "variant_AN": [4, 4, 4, -1]},
                 [0, 1, 0, 0],
             ),
+            # A FILL slot (-2) is a non-existent allele (Number=A padding), not a
+            # missing value: it must never match. Row 0 is biallelic with its one
+            # real allele == 3 and a FILL pad; row 1 is genuinely multi-allelic.
+            # `AC != 3` on row 0 is 3!=3 -> False, and the FILL pad must not leak
+            # a True through the allele-axis collapse.
+            (
+                "AC != 3",
+                {"variant_AC": [[3, -2], [3, 4]]},
+                [0, 1],
+            ),
+            (
+                "AC == 3",
+                {"variant_AC": [[3, -2], [3, 4]]},
+                [1, 1],
+            ),
+            (
+                "AC > 3",
+                {"variant_AC": [[3, -2], [3, 4]]},
+                [0, 1],
+            ),
         ],
     )
     def test_evaluate(self, expression, data, expected):

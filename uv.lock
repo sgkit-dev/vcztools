@@ -12,16 +12,6 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
-conflicts = [[
-    { package = "vcztools", extra = "bgen" },
-    { package = "vcztools", group = "test" },
-], [
-    { package = "vcztools", extra = "bgen" },
-    { package = "vcztools", group = "validation" },
-], [
-    { package = "vcztools", extra = "bgen" },
-    { package = "vcztools", group = "dev" },
-]]
 
 [[package]]
 name = "accessible-pygments"
@@ -152,7 +142,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -166,15 +156,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c9/3e/13dd8e5ed9094e734ac430b5d0eb4f2bb001708a8b7856cbf8e084e001ba/alabaster-0.7.16.tar.gz", hash = "sha256:75a8b99c28a5dad50dd7f8ccdd447a121ddb3892da9e53d1ca5cca3106d58d65", size = 23776, upload-time = "2024-01-10T00:56:10.189Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/34/d4e1c02d3bee589efb5dfa17f88ea08bdb3e3eac12bc475462aec52ed223/alabaster-0.7.16-py3-none-any.whl", hash = "sha256:b46733c07dce03ae4e150330b975c75737fa60f0a7c591b6c8bf4928a28e2c92", size = 13511, upload-time = "2024-01-10T00:56:08.388Z" },
-]
-
-[[package]]
-name = "appdirs"
-version = "1.4.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d7/d8/05696357e0311f5b5c316d7b95f46c669dd9c15aaeecbb48c7d0aeb88c40/appdirs-1.4.4.tar.gz", hash = "sha256:7d5d0167b2b1ba821647616af46a749d1c653740dd0d2415100fe26e27afdf41", size = 13470, upload-time = "2020-05-11T07:59:51.037Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/00/2344469e2084fb287c2e0b57b72910309874c3245463acd6cf5e3db69324/appdirs-1.4.4-py2.py3-none-any.whl", hash = "sha256:a841dacd6b99318a741b166adb07e19ee71a274450e68237b4650ca1055ab128", size = 9566, upload-time = "2020-05-11T07:59:49.499Z" },
 ]
 
 [[package]]
@@ -290,28 +271,6 @@ wheels = [
 ]
 
 [[package]]
-name = "bgen-reader"
-version = "4.0.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "appdirs" },
-    { name = "cachetools" },
-    { name = "cbgen" },
-    { name = "dask", extra = ["array", "dataframe"], marker = "extra == 'group-8-vcztools-dev' or extra == 'group-8-vcztools-test' or extra == 'group-8-vcztools-validation'" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pytest" },
-    { name = "requests" },
-    { name = "texttable" },
-    { name = "tqdm" },
-    { name = "xarray" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/26/c7/345e33ae2c2e18c5cec58b60240288883b119e609b2cff9de6c7464f2bed/bgen-reader-4.0.8.tar.gz", hash = "sha256:50414918914b8cd893d0dfa7fef32ee1912ba1802ead37d9502b3d8936d8c68a", size = 37602, upload-time = "2021-06-23T02:09:26.584Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/ce/ba448cf7ac74bbb23c116f273b924339b619d214ac3f897fc142a3e71ac7/bgen_reader-4.0.8-py3-none-any.whl", hash = "sha256:c5cf332bf48f3fd1b5ca7ef26a882f02bfff86151bb0a8c915ecd7b7c3132162", size = 44496, upload-time = "2021-06-23T02:09:24.719Z" },
-]
-
-[[package]]
 name = "bio2zarr"
 version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -344,50 +303,13 @@ name = "build"
 version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "os_name == 'nt' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "os_name == 'nt'" },
     { name = "packaging" },
     { name = "pyproject-hooks" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3f/16/4b272700dea44c1d2e8ca963ebb3c684efe22b3eba8cfa31c5fdb60de707/build-1.4.3.tar.gz", hash = "sha256:5aa4231ae0e807efdf1fd0623e07366eca2ab215921345a2e38acdd5d0fa0a74", size = 89314, upload-time = "2026-04-10T21:25:40.857Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/30/f169e1d8b2071beaf8b97088787e30662b1d8fb82f8c0941d14678c0cbf1/build-1.4.3-py3-none-any.whl", hash = "sha256:1bc22b19b383303de8f2c8554c9a32894a58d3f185fe3756b0b20d255bee9a38", size = 26171, upload-time = "2026-04-10T21:25:39.671Z" },
-]
-
-[[package]]
-name = "cachetools"
-version = "7.1.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ff/e2/85f227594656000ff4d8adadae91a21f536d4a84c6c716a86bd6685874be/cachetools-7.1.1.tar.gz", hash = "sha256:27bdf856d68fd3c71c26c01b5edc312124ed427524d1ddb31aa2b7746fe20d4b", size = 40202, upload-time = "2026-05-03T20:00:29.391Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/0f/f897abe4ea0a8c408ae65c8c83bffab4936ad65d6032d4fb4cd35bbdc3ee/cachetools-7.1.1-py3-none-any.whl", hash = "sha256:0335cd7a0952d2b22327441fb0628139e234c565559eeb91a8a4ac7551c5353d", size = 16775, upload-time = "2026-05-03T20:00:27.857Z" },
-]
-
-[[package]]
-name = "cbgen"
-version = "1.0.6"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "appdirs" },
-    { name = "cffi" },
-    { name = "numpy" },
-    { name = "pooch" },
-    { name = "pytest" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/97/cc69e0d0accb46965332ae247f3289832e546f8d30cb77218d6eb0f47b48/cbgen-1.0.6.tar.gz", hash = "sha256:edcf856c9b0cafae7f6e999ed5d08aacdf1e09dadec766b79990fe5861e8cf7e", size = 12387, upload-time = "2024-06-17T15:27:30.503Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/05/360448e10fbe7bed04450d2e2f9df6c8ddfa6e86beb367e426eb6b06fb49/cbgen-1.0.6-cp311-cp311-macosx_13_0_x86_64.whl", hash = "sha256:b97ab995397d56fa007dfd4e3d01f0ee7bc02ee5685b4e174161615af6a1dad0", size = 419458, upload-time = "2024-06-17T15:27:02.719Z" },
-    { url = "https://files.pythonhosted.org/packages/81/71/260966997bdad39615e3430375fbca020ca103c1f601ec95f969e0b02296/cbgen-1.0.6-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:a0ddcaa25f19ea383931605d4627da06339662d0ef5bc07fda706d2592a11b31", size = 288999, upload-time = "2024-06-17T15:27:04.516Z" },
-    { url = "https://files.pythonhosted.org/packages/ad/cc/0a735cc723989189177d00a57937e44184b57ca42245570b0b8e86720d57/cbgen-1.0.6-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:85560c53ea769902e9516b86d6bd2f3e6718dcac8ce4c3d7c0ac9fb43863b19f", size = 180643, upload-time = "2024-06-17T15:27:06.253Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/aa/7b37e68dda0f95b5fde96d20aab5163c61f35268914d4df110923953fbb4/cbgen-1.0.6-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9c04f5860e7c35296777af14b0749c3b0c0210825644ac98cae9f169822a40bd", size = 578915, upload-time = "2024-06-17T15:27:08.26Z" },
-    { url = "https://files.pythonhosted.org/packages/b8/7b/10cff399b0255d1426a1498aeb2eda7a94167a034fbd9f0bca5da2c66fdd/cbgen-1.0.6-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:9beb0fe67968020344b47c0f5f648418202ead39b1cc599adc481a49daace99b", size = 345395, upload-time = "2024-06-17T15:27:09.476Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/bb/fa9ed88dca04be210707e00bf329a337b78cbfc154c4cfa0250a7f589b0b/cbgen-1.0.6-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:fc40d9e917155125057adbad5477537a3974a7908080b60715449298f5c686d7", size = 729100, upload-time = "2024-06-17T15:27:10.633Z" },
-    { url = "https://files.pythonhosted.org/packages/40/84/f0660542361cfe3a97e553d61e91d92bb26ea04a87cdd7d06522f1852dcf/cbgen-1.0.6-cp311-cp311-win_amd64.whl", hash = "sha256:733a11d2eb2b06adf4ef0dd7675ce18e011c12df99e42fea93b3222efad5293b", size = 243941, upload-time = "2024-06-17T15:27:12.426Z" },
-    { url = "https://files.pythonhosted.org/packages/09/ce/6abc744f0b17d24ce47fd177b81aafc0a8afe005439b18e57db6caa564f3/cbgen-1.0.6-cp312-cp312-macosx_13_0_x86_64.whl", hash = "sha256:e05037fabfd12711836b0cd26da961fc271b56080871e3508177c6c08b1247b1", size = 554262, upload-time = "2024-06-17T15:27:14.2Z" },
-    { url = "https://files.pythonhosted.org/packages/c0/15/7c42414b690d937ca6c4c75d08964e1e7bb19d9bb2fc06b5698ee18e53b8/cbgen-1.0.6-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:07d8d9209d24005f8f492b82f3793ac4ac8596263b07c5f68b7ab3e57eb0bc83", size = 380328, upload-time = "2024-06-17T15:27:15.918Z" },
-    { url = "https://files.pythonhosted.org/packages/a5/36/3e8550e6d05baea8eb2eae8c27887e81ea0085f8246d13e030d73f9f87fd/cbgen-1.0.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8e95a3b83d58343f5a7026dcee9dfce7ab9845406feb8b1c065151636b9fbefc", size = 767497, upload-time = "2024-06-17T15:27:17.117Z" },
-    { url = "https://files.pythonhosted.org/packages/a9/24/6613c31e2346bd583ebbd4f32eccca4cd894364daf751ed0b632665013b3/cbgen-1.0.6-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:e1279d9881844018d27d6cd3ec8475e08d68136a1862c8eadf41745b373393d1", size = 914945, upload-time = "2024-06-17T15:27:18.309Z" },
-    { url = "https://files.pythonhosted.org/packages/ec/eb/493f97d94704a5078770477d03924c6bd74c2d98d041d25848f4b735034d/cbgen-1.0.6-cp312-cp312-win_amd64.whl", hash = "sha256:e56d6a01fb71d5c7fbf7039cc23089edd7a749fafb9f2898efffeacbd14a2bba", size = 319686, upload-time = "2024-06-17T15:27:20.306Z" },
 ]
 
 [[package]]
@@ -404,7 +326,7 @@ name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz", hash = "sha256:44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529", size = 523588, upload-time = "2025-09-08T23:24:04.541Z" }
 wheels = [
@@ -571,7 +493,7 @@ dependencies = [
     { name = "filelock" },
     { name = "humanize" },
     { name = "packaging" },
-    { name = "patchelf", marker = "(platform_machine == 'aarch64' and sys_platform == 'darwin') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'darwin' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'darwin' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'darwin' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'linux' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'linux' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'linux' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "patchelf", marker = "(platform_machine == 'aarch64' and sys_platform == 'darwin') or (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'arm64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "platformdirs" },
     { name = "pyelftools" },
     { name = "wheel" },
@@ -608,20 +530,11 @@ name = "click"
 version = "8.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/57/75/31212c6bf2503fdf920d87fee5d7a86a2e3bcf444984126f13d8e4016804/click-8.3.2.tar.gz", hash = "sha256:14162b8b3b3550a7d479eafa77dfd3c38d9dc8951f6f69c78913a8f9a7540fd5", size = 302856, upload-time = "2026-04-03T19:14:45.118Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/20/71885d8b97d4f3dde17b1fdb92dbd4908b00541c5a3379787137285f602e/click-8.3.2-py3-none-any.whl", hash = "sha256:1924d2c27c5653561cd2cae4548d1406039cb79b858b747cfea24924bbc1616d", size = 108379, upload-time = "2026-04-03T19:14:43.505Z" },
-]
-
-[[package]]
-name = "cloudpickle"
-version = "3.1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
 ]
 
 [[package]]
@@ -763,7 +676,7 @@ name = "cryptography"
 version = "46.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'emscripten' and sys_platform != 'win32') or (platform_python_implementation != 'PyPy' and sys_platform == 'emscripten' and extra == 'group-8-vcztools-dev') or (platform_python_implementation != 'PyPy' and sys_platform == 'emscripten' and extra == 'group-8-vcztools-test') or (platform_python_implementation != 'PyPy' and sys_platform == 'win32' and extra == 'group-8-vcztools-dev') or (platform_python_implementation != 'PyPy' and sys_platform == 'win32' and extra == 'group-8-vcztools-test') or (platform_python_implementation == 'PyPy' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (platform_python_implementation == 'PyPy' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (platform_python_implementation == 'PyPy' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/47/93/ac8f3d5ff04d54bc814e961a43ae5b0b146154c89c61b47bb07557679b18/cryptography-46.0.7.tar.gz", hash = "sha256:e4cfd68c5f3e0bfdad0d38e023239b96a2fe84146481852dffbcca442c245aa5", size = 750652, upload-time = "2026-04-08T01:57:54.692Z" }
 wheels = [
@@ -852,35 +765,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3f/4f/4b1c826face9a953086bbf16f38d8c261a5fb3213d75b9402fefeaf9dc1f/cyvcf2-0.32.1-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:991bd5df720d0d1f463435b8e6b81a2680c422f84efc30e85a43b810bf71627e", size = 7124742, upload-time = "2026-02-23T18:15:15.574Z" },
     { url = "https://files.pythonhosted.org/packages/06/dd/41f9a5ad2cb85d67ac175b1233dcb3c722040b8a2eb7accd2bd71045eb03/cyvcf2-0.32.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:3023ee57a0d2586940519d049a137afca59b68544252538fcec851d1e40aa662", size = 7451312, upload-time = "2026-02-23T18:15:17.515Z" },
     { url = "https://files.pythonhosted.org/packages/35/77/7d39e27f6565c8cb5b4605bb3411f62d46ea793282e60427cac01f6c1471/cyvcf2-0.32.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:c58c15e5e238d5897e8678995f5a76120729d8dbaff730e662bdb11155aa3552", size = 7269350, upload-time = "2026-02-23T18:15:19.036Z" },
-]
-
-[[package]]
-name = "dask"
-version = "2026.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "cloudpickle" },
-    { name = "fsspec" },
-    { name = "importlib-metadata", marker = "python_full_version < '3.12'" },
-    { name = "packaging" },
-    { name = "partd" },
-    { name = "pyyaml" },
-    { name = "toolz" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d7/2a/5d8cc1579590af86576dde890254440e478c7174b93a02095ecfc2e6ba38/dask-2026.3.0.tar.gz", hash = "sha256:f7d96c8274e8a900d217c1ff6ea8d1bbf0b4c2c21e74a409644498d925eb8f85", size = 11000710, upload-time = "2026-03-18T07:10:14.945Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/f3/00bb1e867fba351e2d784170955713bee200c43ea306c59f30bd7e748192/dask-2026.3.0-py3-none-any.whl", hash = "sha256:be614b9242b0b38288060fb2d7696125946469c98a1c30e174883fd199e0428d", size = 1485630, upload-time = "2026-03-18T07:10:12.832Z" },
-]
-
-[package.optional-dependencies]
-array = [
-    { name = "numpy" },
-]
-dataframe = [
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyarrow" },
 ]
 
 [[package]]
@@ -1157,9 +1041,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/c6/dba32cab7e3a625b011aa5647486e2d28423a48845a2998c126dd69c85e1/greenlet-3.4.0-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:805bebb4945094acbab757d34d6e1098be6de8966009ab9ca54f06ff492def58", size = 285504, upload-time = "2026-04-08T15:52:14.071Z" },
     { url = "https://files.pythonhosted.org/packages/54/f4/7cb5c2b1feb9a1f50e038be79980dfa969aa91979e5e3a18fdbcfad2c517/greenlet-3.4.0-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:439fc2f12b9b512d9dfa681c5afe5f6b3232c708d13e6f02c845e0d9f4c2d8c6", size = 605476, upload-time = "2026-04-08T16:24:37.064Z" },
     { url = "https://files.pythonhosted.org/packages/d6/af/b66ab0b2f9a4c5a867c136bf66d9599f34f21a1bcca26a2884a29c450bd9/greenlet-3.4.0-cp311-cp311-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:a70ed1cb0295bee1df57b63bf7f46b4e56a5c93709eea769c1fec1bb23a95875", size = 618336, upload-time = "2026-04-08T16:30:56.59Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/31/56c43d2b5de476f77d36ceeec436328533bff960a4cba9a07616e93063ab/greenlet-3.4.0-cp311-cp311-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:8c5696c42e6bb5cfb7c6ff4453789081c66b9b91f061e5e9367fa15792644e76", size = 625045, upload-time = "2026-04-08T16:40:37.111Z" },
     { url = "https://files.pythonhosted.org/packages/e5/5c/8c5633ece6ba611d64bf2770219a98dd439921d6424e4e8cf16b0ac74ea5/greenlet-3.4.0-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c660bce1940a1acae5f51f0a064f1bc785d07ea16efcb4bc708090afc4d69e83", size = 613515, upload-time = "2026-04-08T15:56:32.478Z" },
-    { url = "https://files.pythonhosted.org/packages/80/ca/704d4e2c90acb8bdf7ae593f5cbc95f58e82de95cc540fb75631c1054533/greenlet-3.4.0-cp311-cp311-manylinux_2_39_riscv64.whl", hash = "sha256:89995ce5ddcd2896d89615116dd39b9703bfa0c07b583b85b89bf1b5d6eddf81", size = 419745, upload-time = "2026-04-08T16:43:04.022Z" },
     { url = "https://files.pythonhosted.org/packages/a9/df/950d15bca0d90a0e7395eb777903060504cdb509b7b705631e8fb69ff415/greenlet-3.4.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:ee407d4d1ca9dc632265aee1c8732c4a2d60adff848057cdebfe5fe94eb2c8a2", size = 1574623, upload-time = "2026-04-08T16:26:18.596Z" },
     { url = "https://files.pythonhosted.org/packages/1a/e7/0839afab829fcb7333c9ff6d80c040949510055d2d4d63251f0d1c7c804e/greenlet-3.4.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:956215d5e355fffa7c021d168728321fd4d31fd730ac609b1653b450f6a4bc71", size = 1639579, upload-time = "2026-04-08T15:57:29.231Z" },
     { url = "https://files.pythonhosted.org/packages/d9/2b/b4482401e9bcaf9f5c97f67ead38db89c19520ff6d0d6699979c6efcc200/greenlet-3.4.0-cp311-cp311-win_amd64.whl", hash = "sha256:5cb614ace7c27571270354e9c9f696554d073f8aa9319079dcba466bbdead711", size = 238233, upload-time = "2026-04-08T17:02:54.286Z" },
@@ -1167,9 +1049,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/65/8b/3669ad3b3f247a791b2b4aceb3aa5a31f5f6817bf547e4e1ff712338145a/greenlet-3.4.0-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:1a54a921561dd9518d31d2d3db4d7f80e589083063ab4d3e2e950756ef809e1a", size = 286902, upload-time = "2026-04-08T15:52:12.138Z" },
     { url = "https://files.pythonhosted.org/packages/38/3e/3c0e19b82900873e2d8469b590a6c4b3dfd2b316d0591f1c26b38a4879a5/greenlet-3.4.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:16dec271460a9a2b154e3b1c2fa1050ce6280878430320e85e08c166772e3f97", size = 606099, upload-time = "2026-04-08T16:24:38.408Z" },
     { url = "https://files.pythonhosted.org/packages/b5/33/99fef65e7754fc76a4ed14794074c38c9ed3394a5bd129d7f61b705f3168/greenlet-3.4.0-cp312-cp312-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:90036ce224ed6fe75508c1907a77e4540176dcf0744473627785dd519c6f9996", size = 618837, upload-time = "2026-04-08T16:30:58.298Z" },
-    { url = "https://files.pythonhosted.org/packages/44/57/eae2cac10421feae6c0987e3dc106c6d86262b1cb379e171b017aba893a6/greenlet-3.4.0-cp312-cp312-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:6f0def07ec9a71d72315cf26c061aceee53b306c36ed38c35caba952ea1b319d", size = 624901, upload-time = "2026-04-08T16:40:38.981Z" },
     { url = "https://files.pythonhosted.org/packages/36/f7/229f3aed6948faa20e0616a0b8568da22e365ede6a54d7d369058b128afd/greenlet-3.4.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a1c4f6b453006efb8310affb2d132832e9bbb4fc01ce6df6b70d810d38f1f6dc", size = 615062, upload-time = "2026-04-08T15:56:33.766Z" },
-    { url = "https://files.pythonhosted.org/packages/6a/8a/0e73c9b94f31d1cc257fe79a0eff621674141cdae7d6d00f40de378a1e42/greenlet-3.4.0-cp312-cp312-manylinux_2_39_riscv64.whl", hash = "sha256:0e1254cf0cbaa17b04320c3a78575f29f3c161ef38f59c977108f19ffddaf077", size = 423927, upload-time = "2026-04-08T16:43:05.293Z" },
     { url = "https://files.pythonhosted.org/packages/08/97/d988180011aa40135c46cd0d0cf01dd97f7162bae14139b4a3ef54889ba5/greenlet-3.4.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:9b2d9a138ffa0e306d0e2b72976d2fb10b97e690d40ab36a472acaab0838e2de", size = 1573511, upload-time = "2026-04-08T16:26:20.058Z" },
     { url = "https://files.pythonhosted.org/packages/d4/0f/a5a26fe152fb3d12e6a474181f6e9848283504d0afd095f353d85726374b/greenlet-3.4.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:8424683caf46eb0eb6f626cb95e008e8cc30d0cb675bdfa48200925c79b38a08", size = 1640396, upload-time = "2026-04-08T15:57:30.88Z" },
     { url = "https://files.pythonhosted.org/packages/42/cf/bb2c32d9a100e36ee9f6e38fad6b1e082b8184010cb06259b49e1266ca01/greenlet-3.4.0-cp312-cp312-win_amd64.whl", hash = "sha256:a0a53fb071531d003b075c444014ff8f8b1a9898d36bb88abd9ac7b3524648a2", size = 238892, upload-time = "2026-04-08T17:03:10.094Z" },
@@ -1177,9 +1057,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7a/75/7e9cd1126a1e1f0cd67b0eda02e5221b28488d352684704a78ed505bd719/greenlet-3.4.0-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:43748988b097f9c6f09364f260741aa73c80747f63389824435c7a50bfdfd5c1", size = 285856, upload-time = "2026-04-08T15:52:45.82Z" },
     { url = "https://files.pythonhosted.org/packages/9d/c4/3e2df392e5cb199527c4d9dbcaa75c14edcc394b45040f0189f649631e3c/greenlet-3.4.0-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5566e4e2cd7a880e8c27618e3eab20f3494452d12fd5129edef7b2f7aa9a36d1", size = 610208, upload-time = "2026-04-08T16:24:39.674Z" },
     { url = "https://files.pythonhosted.org/packages/da/af/750cdfda1d1bd30a6c28080245be8d0346e669a98fdbae7f4102aa95fff3/greenlet-3.4.0-cp313-cp313-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:1054c5a3c78e2ab599d452f23f7adafef55062a783a8e241d24f3b633ba6ff82", size = 621269, upload-time = "2026-04-08T16:30:59.767Z" },
-    { url = "https://files.pythonhosted.org/packages/e0/93/c8c508d68ba93232784bbc1b5474d92371f2897dfc6bc281b419f2e0d492/greenlet-3.4.0-cp313-cp313-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:98eedd1803353daf1cd9ef23eef23eda5a4d22f99b1f998d273a8b78b70dd47f", size = 628455, upload-time = "2026-04-08T16:40:40.698Z" },
     { url = "https://files.pythonhosted.org/packages/54/78/0cbc693622cd54ebe25207efbb3a0eb07c2639cb8594f6e3aaaa0bb077a8/greenlet-3.4.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f82cb6cddc27dd81c96b1506f4aa7def15070c3b2a67d4e46fd19016aacce6cf", size = 617549, upload-time = "2026-04-08T15:56:34.893Z" },
-    { url = "https://files.pythonhosted.org/packages/7f/46/cfaaa0ade435a60550fd83d07dfd5c41f873a01da17ede5c4cade0b9bab8/greenlet-3.4.0-cp313-cp313-manylinux_2_39_riscv64.whl", hash = "sha256:b7857e2202aae67bc5725e0c1f6403c20a8ff46094ece015e7d474f5f7020b55", size = 426238, upload-time = "2026-04-08T16:43:06.865Z" },
     { url = "https://files.pythonhosted.org/packages/ba/c0/8966767de01343c1ff47e8b855dc78e7d1a8ed2b7b9c83576a57e289f81d/greenlet-3.4.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:227a46251ecba4ff46ae742bc5ce95c91d5aceb4b02f885487aff269c127a729", size = 1575310, upload-time = "2026-04-08T16:26:21.671Z" },
     { url = "https://files.pythonhosted.org/packages/b8/38/bcdc71ba05e9a5fda87f63ffc2abcd1f15693b659346df994a48c968003d/greenlet-3.4.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:5b99e87be7eba788dd5b75ba1cde5639edffdec5f91fe0d734a249535ec3408c", size = 1640435, upload-time = "2026-04-08T15:57:32.572Z" },
     { url = "https://files.pythonhosted.org/packages/a1/c2/19b664b7173b9e4ef5f77e8cef9f14c20ec7fce7920dc1ccd7afd955d093/greenlet-3.4.0-cp313-cp313-win_amd64.whl", hash = "sha256:849f8bc17acd6295fcb5de8e46d55cc0e52381c56eaf50a2afd258e97bc65940", size = 238760, upload-time = "2026-04-08T17:04:03.878Z" },
@@ -1187,9 +1065,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/78/02/bde66806e8f169cf90b14d02c500c44cdbe02c8e224c9c67bafd1b8cadd1/greenlet-3.4.0-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:10a07aca6babdd18c16a3f4f8880acfffc2b88dfe431ad6aa5f5740759d7d75e", size = 286291, upload-time = "2026-04-08T17:09:34.307Z" },
     { url = "https://files.pythonhosted.org/packages/05/1f/39da1c336a87d47c58352fb8a78541ce63d63ae57c5b9dae1fe02801bbc2/greenlet-3.4.0-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:076e21040b3a917d3ce4ad68fb5c3c6b32f1405616c4a57aa83120979649bd3d", size = 656749, upload-time = "2026-04-08T16:24:41.721Z" },
     { url = "https://files.pythonhosted.org/packages/d3/6c/90ee29a4ee27af7aa2e2ec408799eeb69ee3fcc5abcecac6ddd07a5cd0f2/greenlet-3.4.0-cp314-cp314-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:e82689eea4a237e530bb5cb41b180ef81fa2160e1f89422a67be7d90da67f615", size = 669084, upload-time = "2026-04-08T16:31:01.372Z" },
-    { url = "https://files.pythonhosted.org/packages/d2/4a/74078d3936712cff6d3c91a930016f476ce4198d84e224fe6d81d3e02880/greenlet-3.4.0-cp314-cp314-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:06c2d3b89e0c62ba50bd7adf491b14f39da9e7e701647cb7b9ff4c99bee04b19", size = 673405, upload-time = "2026-04-08T16:40:42.527Z" },
     { url = "https://files.pythonhosted.org/packages/07/49/d4cad6e5381a50947bb973d2f6cf6592621451b09368b8c20d9b8af49c5b/greenlet-3.4.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4df3b0b2289ec686d3c821a5fee44259c05cfe824dd5e6e12c8e5f5df23085cf", size = 665621, upload-time = "2026-04-08T15:56:35.995Z" },
-    { url = "https://files.pythonhosted.org/packages/79/3e/df8a83ab894751bc31e1106fdfaa80ca9753222f106b04de93faaa55feb7/greenlet-3.4.0-cp314-cp314-manylinux_2_39_riscv64.whl", hash = "sha256:070b8bac2ff3b4d9e0ff36a0d19e42103331d9737e8504747cd1e659f76297bd", size = 471670, upload-time = "2026-04-08T16:43:08.512Z" },
     { url = "https://files.pythonhosted.org/packages/37/31/d1edd54f424761b5d47718822f506b435b6aab2f3f93b465441143ea5119/greenlet-3.4.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:8bff29d586ea415688f4cec96a591fcc3bf762d046a796cdadc1fdb6e7f2d5bf", size = 1622259, upload-time = "2026-04-08T16:26:23.201Z" },
     { url = "https://files.pythonhosted.org/packages/b0/c6/6d3f9cdcb21c4e12a79cb332579f1c6aa1af78eb68059c5a957c7812d95e/greenlet-3.4.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:8a569c2fb840c53c13a2b8967c63621fafbd1a0e015b9c82f408c33d626a2fda", size = 1686916, upload-time = "2026-04-08T15:57:34.282Z" },
     { url = "https://files.pythonhosted.org/packages/63/45/c1ca4a1ad975de4727e52d3ffe641ae23e1d7a8ffaa8ff7a0477e1827b92/greenlet-3.4.0-cp314-cp314-win_amd64.whl", hash = "sha256:207ba5b97ea8b0b60eb43ffcacf26969dd83726095161d676aac03ff913ee50d", size = 239821, upload-time = "2026-04-08T17:03:48.423Z" },
@@ -1197,9 +1073,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/8f/18d72b629783f5e8d045a76f5325c1e938e659a9e4da79c7dcd10169a48d/greenlet-3.4.0-cp314-cp314t-macosx_11_0_universal2.whl", hash = "sha256:d70012e51df2dbbccfaf63a40aaf9b40c8bed37c3e3a38751c926301ce538ece", size = 294681, upload-time = "2026-04-08T15:52:35.778Z" },
     { url = "https://files.pythonhosted.org/packages/9e/ad/5fa86ec46769c4153820d58a04062285b3b9e10ba3d461ee257b68dcbf53/greenlet-3.4.0-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a58bec0751f43068cd40cff31bb3ca02ad6000b3a51ca81367af4eb5abc480c8", size = 658899, upload-time = "2026-04-08T16:24:43.32Z" },
     { url = "https://files.pythonhosted.org/packages/43/f0/4e8174ca0e87ae748c409f055a1ba161038c43cc0a5a6f1433a26ac2e5bf/greenlet-3.4.0-cp314-cp314t-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:05fa0803561028f4b2e3b490ee41216a842eaee11aed004cc343a996d9523aa2", size = 665284, upload-time = "2026-04-08T16:31:02.833Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/92/466b0d9afd44b8af623139a3599d651c7564fa4152f25f117e1ee5949ffb/greenlet-3.4.0-cp314-cp314t-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:c4cd56a9eb7a6444edbc19062f7b6fbc8f287c663b946e3171d899693b1c19fa", size = 665872, upload-time = "2026-04-08T16:40:43.912Z" },
     { url = "https://files.pythonhosted.org/packages/19/da/991cf7cd33662e2df92a1274b7eb4d61769294d38a1bba8a45f31364845e/greenlet-3.4.0-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e60d38719cb80b3ab5e85f9f1aed4960acfde09868af6762ccb27b260d68f4ed", size = 661861, upload-time = "2026-04-08T15:56:37.269Z" },
-    { url = "https://files.pythonhosted.org/packages/0d/14/3395a7ef3e260de0325152ddfe19dffb3e49fe10873b94654352b53ad48e/greenlet-3.4.0-cp314-cp314t-manylinux_2_39_riscv64.whl", hash = "sha256:1f85f204c4d54134ae850d401fa435c89cd667d5ce9dc567571776b45941af72", size = 489237, upload-time = "2026-04-08T16:43:09.993Z" },
     { url = "https://files.pythonhosted.org/packages/36/c5/6c2c708e14db3d9caea4b459d8464f58c32047451142fe2cfd90e7458f41/greenlet-3.4.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:7f50c804733b43eded05ae694691c9aa68bca7d0a867d67d4a3f514742a2d53f", size = 1622182, upload-time = "2026-04-08T16:26:24.777Z" },
     { url = "https://files.pythonhosted.org/packages/7a/4c/50c5fed19378e11a29fabab1f6be39ea95358f4a0a07e115a51ca93385d8/greenlet-3.4.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:2d4f0635dc4aa638cda4b2f5a07ae9a2cff9280327b581a3fcb6f317b4fbc38a", size = 1685050, upload-time = "2026-04-08T15:57:36.453Z" },
     { url = "https://files.pythonhosted.org/packages/db/72/85ae954d734703ab48e622c59d4ce35d77ce840c265814af9c078cacc7aa/greenlet-3.4.0-cp314-cp314t-win_amd64.whl", hash = "sha256:1a4a48f24681300c640f143ba7c404270e1ebbbcf34331d7104a4ff40f8ea705", size = 245554, upload-time = "2026-04-08T17:03:50.044Z" },
@@ -1210,7 +1084,7 @@ name = "humanfriendly"
 version = "10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyreadline3", marker = "sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "pyreadline3", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cc/3f/2c29224acb2e2df4d2046e4c73ee2662023c58ff5b113c4c1adac0886c43/humanfriendly-10.0.tar.gz", hash = "sha256:6b0b831ce8f15f7300721aa49829fc4e83921a9a301cc7f606be6686a2288ddc", size = 360702, upload-time = "2021-09-17T21:40:43.31Z" }
 wheels = [
@@ -1248,7 +1122,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "zarr", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "zarr", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/65/a6/310fcab581c7a34477ac039dee70e31496a5754d282777be9701bc229323/icechunk-1.1.21.tar.gz", hash = "sha256:0c42aa58de7d60d1eb8cbcf70fe32633825cd1442b327e39e99beb7477009098", size = 404773, upload-time = "2026-03-13T20:10:34.088Z" }
 wheels = [
@@ -1326,7 +1200,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "zarr", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "zarr", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e2/24/dfff6a94dd007d3ab95343f19dc865f4e6b87f69015456af778f2b12401e/icechunk-2.0.3.tar.gz", hash = "sha256:51725570cf1c4dbb5709f3dbca41dee78951447be0fcba8b0370278a3dabade8", size = 2963765, upload-time = "2026-04-16T03:35:00.211Z" }
 wheels = [
@@ -1418,11 +1292,11 @@ name = "ipykernel"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "appnope", marker = "sys_platform == 'darwin' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "appnope", marker = "sys_platform == 'darwin'" },
     { name = "comm" },
     { name = "debugpy" },
-    { name = "ipython", version = "9.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "ipython", version = "9.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "ipython", version = "9.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "ipython", version = "9.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "jupyter-client" },
     { name = "jupyter-core" },
     { name = "matplotlib-inline" },
@@ -1448,17 +1322,17 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "colorama", marker = "(python_full_version < '3.12' and sys_platform == 'win32') or (python_full_version >= '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (python_full_version >= '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (python_full_version >= '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform != 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform != 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform != 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "decorator", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "ipython-pygments-lexers", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "jedi", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "matplotlib-inline", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "pexpect", marker = "(python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32') or (python_full_version >= '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (python_full_version >= '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (python_full_version >= '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "prompt-toolkit", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "pygments", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "stack-data", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "traitlets", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
+    { name = "decorator", marker = "python_full_version < '3.12'" },
+    { name = "ipython-pygments-lexers", marker = "python_full_version < '3.12'" },
+    { name = "jedi", marker = "python_full_version < '3.12'" },
+    { name = "matplotlib-inline", marker = "python_full_version < '3.12'" },
+    { name = "pexpect", marker = "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit", marker = "python_full_version < '3.12'" },
+    { name = "pygments", marker = "python_full_version < '3.12'" },
+    { name = "stack-data", marker = "python_full_version < '3.12'" },
+    { name = "traitlets", marker = "python_full_version < '3.12'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c5/25/daae0e764047b0a2480c7bbb25d48f4f509b5818636562eeac145d06dfee/ipython-9.10.1.tar.gz", hash = "sha256:e170e9b2a44312484415bdb750492699bf329233b03f2557a9692cce6466ada4", size = 4426663, upload-time = "2026-03-27T09:53:26.244Z" }
 wheels = [
@@ -1478,16 +1352,16 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "colorama", marker = "(python_full_version >= '3.12' and sys_platform == 'win32') or (python_full_version < '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (python_full_version < '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (python_full_version < '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform != 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform != 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform != 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "decorator", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "ipython-pygments-lexers", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "jedi", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "matplotlib-inline", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "pexpect", marker = "(python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32') or (python_full_version < '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (python_full_version < '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (python_full_version < '3.12' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "prompt-toolkit", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "pygments", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "stack-data", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "traitlets", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "python_full_version >= '3.12' and sys_platform == 'win32'" },
+    { name = "decorator", marker = "python_full_version >= '3.12'" },
+    { name = "ipython-pygments-lexers", marker = "python_full_version >= '3.12'" },
+    { name = "jedi", marker = "python_full_version >= '3.12'" },
+    { name = "matplotlib-inline", marker = "python_full_version >= '3.12'" },
+    { name = "pexpect", marker = "python_full_version >= '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit", marker = "python_full_version >= '3.12'" },
+    { name = "pygments", marker = "python_full_version >= '3.12'" },
+    { name = "stack-data", marker = "python_full_version >= '3.12'" },
+    { name = "traitlets", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3a/73/7114f80a8f9cabdb13c27732dce24af945b2923dcab80723602f7c8bc2d8/ipython-9.12.0.tar.gz", hash = "sha256:01daa83f504b693ba523b5a407246cabde4eb4513285a3c6acaff11a66735ee4", size = 4428879, upload-time = "2026-03-27T09:42:45.312Z" }
 wheels = [
@@ -1532,7 +1406,7 @@ name = "jaraco-context"
 version = "6.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "backports-tarfile", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "backports-tarfile", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/af/50/4763cd07e722bb6285316d390a164bc7e479db9d90daa769f22578f698b4/jaraco_context-6.1.2.tar.gz", hash = "sha256:f1a6c9d391e661cc5b8d39861ff077a7dc24dc23833ccee564b234b81c82dfe3", size = 16801, upload-time = "2026-03-20T22:13:33.922Z" }
 wheels = [
@@ -1693,13 +1567,13 @@ name = "keyring"
 version = "25.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "importlib-metadata", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "importlib-metadata", marker = "python_full_version < '3.12'" },
     { name = "jaraco-classes" },
     { name = "jaraco-context" },
     { name = "jaraco-functools" },
-    { name = "jeepney", marker = "sys_platform == 'linux' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "pywin32-ctypes", marker = "sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "secretstorage", marker = "sys_platform == 'linux' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "jeepney", marker = "sys_platform == 'linux'" },
+    { name = "pywin32-ctypes", marker = "sys_platform == 'win32'" },
+    { name = "secretstorage", marker = "sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/4b/674af6ef2f97d56f0ab5153bf0bfa28ccb6c3ed4d1babf4305449668807b/keyring-25.7.0.tar.gz", hash = "sha256:fe01bd85eb3f8fb3dd0405defdeac9a5b4f6f0439edbb3149577f244a2e8245b", size = 63516, upload-time = "2025-11-16T16:26:09.482Z" }
 wheels = [
@@ -1753,15 +1627,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/11/03/16090dd6f74ba2b8b922276047f15962fbeea0a75d5601607edb301ba945/llvmlite-0.47.0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:fa1cbd800edd3b20bc141521f7fd45a6185a5b84109aa6855134e81397ffe72b", size = 56275178, upload-time = "2026-03-31T18:29:42.58Z" },
     { url = "https://files.pythonhosted.org/packages/f5/cb/0abf1dd4c5286a95ffe0c1d8c67aec06b515894a0dd2ac97f5e27b82ab0b/llvmlite-0.47.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f6725179b89f03b17dabe236ff3422cb8291b4c1bf40af152826dfd34e350ae8", size = 55128632, upload-time = "2026-03-31T18:29:46.939Z" },
     { url = "https://files.pythonhosted.org/packages/4f/79/d3bbab197e86e0ff4f9c07122895b66a3e0d024247fcff7f12c473cb36d9/llvmlite-0.47.0-cp314-cp314t-win_amd64.whl", hash = "sha256:6842cf6f707ec4be3d985a385ad03f72b2d724439e118fcbe99b2929964f0453", size = 39153839, upload-time = "2026-03-31T18:29:51.004Z" },
-]
-
-[[package]]
-name = "locket"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2f/83/97b29fe05cb6ae28d2dbd30b81e2e402a3eed5f460c26e9eaa5895ceacf5/locket-1.0.0.tar.gz", hash = "sha256:5c0d4c052a8bbbf750e056a8e65ccd309086f4f0f18a2eac306a8dfa4112a632", size = 4350, upload-time = "2022-04-20T22:04:44.312Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/bc/83e112abc66cd466c6b83f99118035867cecd41802f8d044638aa78a106e/locket-1.0.0-py2.py3-none-any.whl", hash = "sha256:b6c819a722f7b6bd955b80781788e4a66a55628b858d347536b7e81325a3a5e3", size = 4398, upload-time = "2022-04-20T22:04:42.23Z" },
 ]
 
 [[package]]
@@ -2046,8 +1911,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "importlib-metadata" },
     { name = "ipykernel" },
-    { name = "ipython", version = "9.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "ipython", version = "9.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "ipython", version = "9.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "ipython", version = "9.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "jupyter-cache" },
     { name = "myst-parser" },
     { name = "nbclient" },
@@ -2171,7 +2036,7 @@ name = "ncls"
 version = "0.0.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "numpy", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5f/dd/0c6a5a36ec132665f85e5e33f0480b58cf5aa8af8fbe1d5971410d789558/ncls-0.0.70.tar.gz", hash = "sha256:7d16634a8f57fa79659e9ae7e5cc6edd1e02d5acb0eb57128dbed03e9f4fdd9c", size = 592442, upload-time = "2025-07-04T15:01:37.39Z" }
 wheels = [
@@ -2387,7 +2252,7 @@ name = "obstore"
 version = "0.9.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/24/18/cab734edaeb495a861cfbdced9fecdc0866ed1a85aa5a9202ec77cf4723e/obstore-0.9.2.tar.gz", hash = "sha256:7ef94323127a971c9dea2484109d6c706eb2b2594a2df13c2dd0a6d21a9a69ae", size = 123731, upload-time = "2026-03-11T19:10:18.19Z" }
 wheels = [
@@ -2460,7 +2325,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "python-dateutil" },
-    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "tzdata", marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/99/b342345300f13440fe9fe385c3c481e2d9a595ee3bab4d3219247ac94e9a/pandas-3.0.2.tar.gz", hash = "sha256:f4753e73e34c8d83221ba58f232433fca2748be8b18dbca02d242ed153945043", size = 4645855, upload-time = "2026-03-31T06:48:30.816Z" }
 wheels = [
@@ -2523,32 +2388,14 @@ wheels = [
 ]
 
 [[package]]
-name = "partd"
-version = "1.4.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "locket" },
-    { name = "toolz" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/3a/3f06f34820a31257ddcabdfafc2672c5816be79c7e353b02c1f318daa7d4/partd-1.4.2.tar.gz", hash = "sha256:d022c33afbdc8405c226621b015e8067888173d85f7f5ecebb3cafed9a20f02c", size = 21029, upload-time = "2024-05-06T19:51:41.945Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/e7/40fb618334dcdf7c5a316c0e7343c5cd82d3d866edc100d98e29bc945ecd/partd-1.4.2-py3-none-any.whl", hash = "sha256:978e4ac767ec4ba5b86c6eaa52e5a2a3bc748a2ca839e8cc798f1cc6ce6efb0f", size = 18905, upload-time = "2024-05-06T19:51:39.271Z" },
-]
-
-[[package]]
 name = "patchelf"
 version = "0.17.2.4"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/2c/a3/fdd3fa938c864aa2f11dd0b7f08befeda983d2dcdee44da493c6977a653f/patchelf-0.17.2.4.tar.gz", hash = "sha256:970ee5cd8af33e5ea2099510b2f9013fa1b8d5cd763bf3fd3961281c18101a09", size = 149629, upload-time = "2025-07-23T21:16:32.071Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/a7/8c4f86c78ec03db954d05fd9c57a114cc3a172a2d3e4a8b949cd5ff89471/patchelf-0.17.2.4-py3-none-macosx_10_9_universal2.whl", hash = "sha256:343bb1b94e959f9070ca9607453b04390e36bbaa33c88640b989cefad0aa049e", size = 184436, upload-time = "2025-07-23T21:16:20.578Z" },
-    { url = "https://files.pythonhosted.org/packages/0b/6d/2e9f5483cdb352fab36b8076667b062b2d79cb09d2e3fd09b6fca5771cb6/patchelf-0.17.2.4-py3-none-manylinux1_i686.manylinux_2_5_i686.musllinux_1_1_i686.whl", hash = "sha256:09fd848d625a165fc7b7e07745508c24077129b019c4415a882938781d43adf8", size = 547318, upload-time = "2025-07-23T21:16:22.135Z" },
     { url = "https://files.pythonhosted.org/packages/7e/19/f7821ef31aab01fa7dc8ebe697ece88ec4f7a0fdd3155dab2dfee4b00e5c/patchelf-0.17.2.4-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.musllinux_1_1_x86_64.whl", hash = "sha256:d9b35ebfada70c02679ad036407d9724ffe1255122ba4ac5e4be5868618a5689", size = 482846, upload-time = "2025-07-23T21:16:23.73Z" },
     { url = "https://files.pythonhosted.org/packages/d1/50/107fea848ecfd851d473b079cab79107487d72c4c3cdb25b9d2603a24ca2/patchelf-0.17.2.4-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.musllinux_1_1_aarch64.whl", hash = "sha256:2931a1b5b85f3549661898af7bf746afbda7903c7c9a967cfc998a3563f84fad", size = 477811, upload-time = "2025-07-23T21:16:25.145Z" },
-    { url = "https://files.pythonhosted.org/packages/89/a9/a9a2103e159fd65bffbc21ecc5c8c36e44eb34fe53b4ef85fb6d08c2a635/patchelf-0.17.2.4-py3-none-manylinux2014_armv7l.manylinux_2_17_armv7l.musllinux_1_1_armv7l.whl", hash = "sha256:ae44cb3c857d50f54b99e5697aa978726ada33a8a6129d4b8b7ffd28b996652d", size = 431226, upload-time = "2025-07-23T21:16:26.765Z" },
-    { url = "https://files.pythonhosted.org/packages/87/93/897d612f6df7cfd987bdf668425127efeff8d8e4ad8bfbab1c69d2a0d861/patchelf-0.17.2.4-py3-none-manylinux2014_ppc64le.manylinux_2_17_ppc64le.musllinux_1_1_ppc64le.whl", hash = "sha256:680a266a70f60a7a4f4c448482c5bdba80cc8e6bb155a49dcc24238ba49927b0", size = 540276, upload-time = "2025-07-23T21:16:27.983Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/b8/2b92d11533482bac9ee989081d6880845287751b5f528adbd6bb27667fbd/patchelf-0.17.2.4-py3-none-manylinux2014_s390x.manylinux_2_17_s390x.musllinux_1_1_s390x.whl", hash = "sha256:d842b51f0401460f3b1f3a3a67d2c266a8f515a5adfbfa6e7b656cb3ac2ed8bc", size = 596632, upload-time = "2025-07-23T21:16:29.253Z" },
-    { url = "https://files.pythonhosted.org/packages/14/e2/975d4bdb418f942b53e6187b95bd9e0d5e0488b7bc214685a1e43e2c2751/patchelf-0.17.2.4-py3-none-manylinux_2_31_riscv64.musllinux_1_1_riscv64.whl", hash = "sha256:7076d9e127230982e20a81a6e2358d3343004667ba510d9f822d4fdee29b0d71", size = 508281, upload-time = "2025-07-23T21:16:30.865Z" },
 ]
 
 [[package]]
@@ -2556,7 +2403,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -2777,56 +2624,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pyarrow"
-version = "24.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/91/13/13e1069b351bdc3881266e11147ffccf687505dbb0ea74036237f5d454a5/pyarrow-24.0.0.tar.gz", hash = "sha256:85fe721a14dd823aca09127acbb06c3ca723efbd436c004f16bca601b04dcc83", size = 1180261, upload-time = "2026-04-21T10:51:25.837Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/c9/a47ab7ece0d86cbe6678418a0fbd1ac4bb493b9184a3891dfa0e7f287ae0/pyarrow-24.0.0-cp311-cp311-macosx_12_0_arm64.whl", hash = "sha256:b0e131f880cda8d04e076cee175a46fc0e8bc8b65c99c6c09dff6669335fde74", size = 35068898, upload-time = "2026-04-21T10:46:36.599Z" },
-    { url = "https://files.pythonhosted.org/packages/d1/bc/8db86617a9a58008acf8913d6fed68ea2a46acb6de928db28d724c891a68/pyarrow-24.0.0-cp311-cp311-macosx_12_0_x86_64.whl", hash = "sha256:1b2fe7f9a5566401a0ef2571f197eb92358925c1f0c8dba305d6e43ea0871bb3", size = 36679915, upload-time = "2026-04-21T10:46:42.602Z" },
-    { url = "https://files.pythonhosted.org/packages/eb/8e/fb178720400ef69db251eb4a9c3ccf4af269bc1feb5055529b8fc87170d1/pyarrow-24.0.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:0b3537c00fb8d384f15ac1e79b6eb6db04a16514c8c1d22e59a9b95c8ba42868", size = 45697931, upload-time = "2026-04-21T10:46:48.403Z" },
-    { url = "https://files.pythonhosted.org/packages/f3/27/99c42abe8e21b44f4917f62631f3aa31404882a2c41d8a4cd5c110e13d52/pyarrow-24.0.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:14e31a3c9e35f1ab6356c6378f6f72830e6d2d5f1791df3774a7b097d18a6a1e", size = 48837449, upload-time = "2026-04-21T10:46:55.329Z" },
-    { url = "https://files.pythonhosted.org/packages/36/b6/333749e2666e9032891125bf9c691146e92901bece62030ac1430e2e7c88/pyarrow-24.0.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:b7d9a514e73bc42711e6a35aaccf3587c520024fe0a25d830a1a8a27c15f4f57", size = 49395949, upload-time = "2026-04-21T10:47:01.869Z" },
-    { url = "https://files.pythonhosted.org/packages/17/25/c5201706a2dd374e8ba6ee3fd7a8c89fb7ffc16eed5217a91fd2bd7f7626/pyarrow-24.0.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:b196eb3f931862af3fa84c2a253514d859c08e0d8fe020e07be12e75a5a9780c", size = 51912986, upload-time = "2026-04-21T10:47:09.872Z" },
-    { url = "https://files.pythonhosted.org/packages/f8/d2/4d1bbba65320b21a49678d6fbdc6ff7c649251359fdcfc03568c4136231d/pyarrow-24.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:35405aecb474e683fb36af650618fd5340ee5471fc65a21b36076a18bbc6c981", size = 27255371, upload-time = "2026-04-21T10:47:15.943Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/a9/9686d9f07837f91f775e8932659192e02c74f9d8920524b480b85212cc68/pyarrow-24.0.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:6233c9ed9ab9d1db47de57d9753256d9dcffbf42db341576099f0fd9f6bf4810", size = 34981559, upload-time = "2026-04-21T10:47:22.17Z" },
-    { url = "https://files.pythonhosted.org/packages/80/b6/0ddf0e9b6ead3474ab087ae598c76b031fc45532bf6a63f3a553440fb258/pyarrow-24.0.0-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:f7616236ec1bc2b15bfdec22a71ab38851c86f8f05ff64f379e1278cf20c634a", size = 36663654, upload-time = "2026-04-21T10:47:28.315Z" },
-    { url = "https://files.pythonhosted.org/packages/7c/3b/926382efe8ce27ba729071d3566ade6dfb86bdf112f366000196b2f5780a/pyarrow-24.0.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:1617043b99bd33e5318ae18eb2919af09c71322ef1ca46566cdafc6e6712fb66", size = 45679394, upload-time = "2026-04-21T10:47:34.821Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/7a/829f7d9dfd37c207206081d6dad474d81dde29952401f07f2ba507814818/pyarrow-24.0.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:6165461f55ef6314f026de6638d661188e3455d3ec49834556a0ebbdbace18bb", size = 48863122, upload-time = "2026-04-21T10:47:42.056Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/e8/f88ce625fe8babaae64e8db2d417c7653adb3019b08aae85c5ed787dc816/pyarrow-24.0.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:3b13dedfe76a0ad2d1d859b0811b53827a4e9d93a0bcb05cf59333ab4980cc7e", size = 49376032, upload-time = "2026-04-21T10:47:48.967Z" },
-    { url = "https://files.pythonhosted.org/packages/36/7a/82c363caa145fff88fb475da50d3bf52bb024f61917be5424c3392eaf878/pyarrow-24.0.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:25ea65d868eb04015cd18e6df2fbe98f07e5bda2abefabcb88fce39a947716f6", size = 51929490, upload-time = "2026-04-21T10:47:55.981Z" },
-    { url = "https://files.pythonhosted.org/packages/66/1c/e3e72c8014ad2743ca64a701652c733cc5cbcee15c0463a32a8c55518d9e/pyarrow-24.0.0-cp312-cp312-win_amd64.whl", hash = "sha256:295f0a7f2e242dabd513737cf076007dc5b2d59237e3eca37b05c0c6446f3826", size = 27355660, upload-time = "2026-04-21T10:48:01.718Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/d3/a1abf004482026ddc17f4503db227787fa3cfe41ec5091ff20e4fea55e57/pyarrow-24.0.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:02b001b3ed4723caa44f6cd1af2d5c86aa2cf9971dacc2ffa55b21237713dfba", size = 34976759, upload-time = "2026-04-21T10:48:07.258Z" },
-    { url = "https://files.pythonhosted.org/packages/4f/4a/34f0a36d28a2dd32225301b79daad44e243dc1a2bb77d43b60749be255c4/pyarrow-24.0.0-cp313-cp313-macosx_12_0_x86_64.whl", hash = "sha256:04920d6a71aabd08a0417709efce97d45ea8e6fb733d9ca9ecffb13c67839f68", size = 36658471, upload-time = "2026-04-21T10:48:13.347Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/78/543b94712ae8bb1a6023bcc1acf1a740fbff8286747c289cd9468fced2a5/pyarrow-24.0.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:a964266397740257f16f7bb2e4f08a0c81454004beab8ff59dd531b73610e9f2", size = 45675981, upload-time = "2026-04-21T10:48:20.201Z" },
-    { url = "https://files.pythonhosted.org/packages/84/9f/8fb7c222b100d314137fa40ec050de56cd8c6d957d1cfff685ce72f15b17/pyarrow-24.0.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:6f066b179d68c413374294bc1735f68475457c933258df594443bb9d88ddc2a0", size = 48859172, upload-time = "2026-04-21T10:48:27.541Z" },
-    { url = "https://files.pythonhosted.org/packages/a7/d3/1ea72538e6c8b3b475ed78d1049a2c518e655761ea50fe1171fc855fcab7/pyarrow-24.0.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:1183baeb14c5f587b1ec52831e665718ce632caab84b7cd6b85fd44f96114495", size = 49385733, upload-time = "2026-04-21T10:48:34.7Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/be/c3d8b06a1ba35f2260f8e1f771abbee7d5e345c0937aab90675706b1690a/pyarrow-24.0.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:806f24b4085453c197a5078218d1ee08783ebbba271badd153d1ae22a3ee804f", size = 51934335, upload-time = "2026-04-21T10:48:42.099Z" },
-    { url = "https://files.pythonhosted.org/packages/9c/62/89e07a1e7329d2cde3e3c6994ba0839a24977a2beda8be6005ea3d860b99/pyarrow-24.0.0-cp313-cp313-win_amd64.whl", hash = "sha256:e4505fc6583f7b05ab854934896bcac8253b04ac1171a77dfb73efef92076d91", size = 27271748, upload-time = "2026-04-21T10:49:42.532Z" },
-    { url = "https://files.pythonhosted.org/packages/17/1a/cff3a59f80b5b1658549d46611b67163f65e0664431c076ad728bf9d5af4/pyarrow-24.0.0-cp313-cp313t-macosx_12_0_arm64.whl", hash = "sha256:1a4e45017efbf115032e4475ee876d525e0e36c742214fbe405332480ecd6275", size = 35238554, upload-time = "2026-04-21T10:48:48.526Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/99/cce0f42a327bfef2c420fb6078a3eb834826e5d6697bf3009fe11d2ad051/pyarrow-24.0.0-cp313-cp313t-macosx_12_0_x86_64.whl", hash = "sha256:7986f1fa71cee060ad00758bcc79d3a93bab8559bf978fab9e53472a2e25a17b", size = 36782301, upload-time = "2026-04-21T10:48:55.181Z" },
-    { url = "https://files.pythonhosted.org/packages/2a/66/8e560d5ff6793ca29aca213c53eec0dd482dd46cb93b2819e5aab52e4252/pyarrow-24.0.0-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:d3e0b61e8efb24ed38898e5cdc5fffa9124be480008d401a1f8071500494ae42", size = 45721929, upload-time = "2026-04-21T10:49:03.676Z" },
-    { url = "https://files.pythonhosted.org/packages/27/0c/a26e25505d030716e078d9f16eb74973cbf0b33b672884e9f9da1c83b871/pyarrow-24.0.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:55a3bc1e3df3b5567b7d27ef551b2283f0c68a5e86f1cd56abc569da4f31335b", size = 48825365, upload-time = "2026-04-21T10:49:11.714Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/eb/771f9ecb0c65e73fe9dccdd1717901b9594f08c4515d000c7c62df573811/pyarrow-24.0.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:641f795b361874ac9da5294f8f443dfdbee355cf2bd9e3b8d97aaac2306b9b37", size = 49451819, upload-time = "2026-04-21T10:49:21.474Z" },
-    { url = "https://files.pythonhosted.org/packages/48/da/61ae89a88732f5a785646f3ec6125dbb640fa98a540eb2b9889caa561403/pyarrow-24.0.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:8adc8e6ce5fccf5dc707046ae4914fd537def529709cc0d285d37a7f9cd442ca", size = 51909252, upload-time = "2026-04-21T10:49:31.164Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/1a/8dd5cafab7b66573fa91c03d06d213356ad4edd71813aa75e08ce2b3a844/pyarrow-24.0.0-cp313-cp313t-win_amd64.whl", hash = "sha256:9b18371ad2f44044b81a8d23bc2d8a9b6a6226dca775e8e16cfee640473d6c5d", size = 27388127, upload-time = "2026-04-21T10:49:37.334Z" },
-    { url = "https://files.pythonhosted.org/packages/ad/80/d022a34ff05d2cbedd8ccf841fc1f532ecfa9eb5ed1711b56d0e0ea71fc9/pyarrow-24.0.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:1cc9057f0319e26333b357e17f3c2c022f1a83739b48a88b25bfd5fa2dc18838", size = 35007997, upload-time = "2026-04-21T10:49:48.796Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/ff/f01485fda6f4e5d441afb8dd5e7681e4db18826c1e271852f5d3957d6a80/pyarrow-24.0.0-cp314-cp314-macosx_12_0_x86_64.whl", hash = "sha256:e6f1278ee4785b6db21229374a1c9e54ec7c549de5d1efc9630b6207de7e170b", size = 36678720, upload-time = "2026-04-21T10:49:55.858Z" },
-    { url = "https://files.pythonhosted.org/packages/9e/c2/2d2d5fea814237923f71b36495211f20b43a1576f9a4d6da7e751a64ec6f/pyarrow-24.0.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:adbbedc55506cbdabb830890444fb856bfb0060c46c6f8026c6c2f2cf86ae795", size = 45741852, upload-time = "2026-04-21T10:50:04.624Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/3a/28ba9c1c1ebdbb5f1b94dfebb46f207e52e6a554b7fe4132540fde29a3a0/pyarrow-24.0.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:ae8a1145af31d903fa9bb166824d7abe9b4681a000b0159c9fb99c11bc11ad26", size = 48889852, upload-time = "2026-04-21T10:50:12.293Z" },
-    { url = "https://files.pythonhosted.org/packages/df/51/4a389acfd31dca009f8fb82d7f510bb4130f2b3a8e18cf00194d0687d8ac/pyarrow-24.0.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:d7027eba1df3b2069e2e8d80f644fa0918b68c46432af3d088ddd390d063ecde", size = 49445207, upload-time = "2026-04-21T10:50:20.677Z" },
-    { url = "https://files.pythonhosted.org/packages/19/4b/0bab2b23d2ae901b1b9a03c0efd4b2d070256f8ce3fc43f6e58c167b2081/pyarrow-24.0.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:e56a1ffe9bf7b727432b89104cc0849c21582949dd7bdcb34f17b2001a351a76", size = 51954117, upload-time = "2026-04-21T10:50:29.14Z" },
-    { url = "https://files.pythonhosted.org/packages/29/88/f4e9145da0417b3d2c12035a8492b35ff4a3dbc653e614fcfb51d9dedb38/pyarrow-24.0.0-cp314-cp314-win_amd64.whl", hash = "sha256:38be1808cdd068605b787e6ca9119b27eb275a0234e50212c3492331680c3b1e", size = 28001155, upload-time = "2026-04-21T10:51:22.337Z" },
-    { url = "https://files.pythonhosted.org/packages/79/4f/46a49a63f43526da895b1a45bbb51d5baf8e4d77159f8528fc3e5490007f/pyarrow-24.0.0-cp314-cp314t-macosx_12_0_arm64.whl", hash = "sha256:418e48ce50a45a6a6c73c454677203a9c75c966cb1e92ca3370959185f197a05", size = 35250387, upload-time = "2026-04-21T10:50:35.552Z" },
-    { url = "https://files.pythonhosted.org/packages/a0/da/d5e0cd5ef00796922404806d5f00325cdadc3441ce2c13fe7115f2df9a64/pyarrow-24.0.0-cp314-cp314t-macosx_12_0_x86_64.whl", hash = "sha256:2f16197705a230a78270cdd4ea8a1d57e86b2fdcbc34a1f6aebc72e65c986f9a", size = 36797102, upload-time = "2026-04-21T10:50:42.417Z" },
-    { url = "https://files.pythonhosted.org/packages/34/c7/5904145b0a593a05236c882933d439b5720f0a145381179063722fbfc123/pyarrow-24.0.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:fb24ac194bfc5e86839d7dcd52092ee31e5fe6733fe11f5e3b06ef0812b20072", size = 45745118, upload-time = "2026-04-21T10:50:49.324Z" },
-    { url = "https://files.pythonhosted.org/packages/13/d3/cca42fe166d1c6e4d5b80e530b7949104d10e17508a90ae202dac205ce2a/pyarrow-24.0.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:9700ebd9a51f5895ce75ff4ac4b3c47a7d4b42bc618be8e713e5d56bacf5f931", size = 48844765, upload-time = "2026-04-21T10:50:55.579Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/49/942c3b79878ba928324d1e17c274ed84581db8c0a749b24bcf4cbdf15bd3/pyarrow-24.0.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:d8ddd2768da81d3ee08cfea9b597f4abb4e8e1dc8ae7e204b608d23a0d3ab699", size = 49471890, upload-time = "2026-04-21T10:51:02.439Z" },
-    { url = "https://files.pythonhosted.org/packages/76/97/ff71431000a75d84135a1ace5ca4ba11726a231a8007bbb320a4c54075d5/pyarrow-24.0.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:61a3d7eaa97a14768b542f3d284dc6400dd2470d9f080708b13cd46b6ae18136", size = 51932250, upload-time = "2026-04-21T10:51:10.576Z" },
-    { url = "https://files.pythonhosted.org/packages/51/be/6f79d55816d5c22557cf27533543d5d70dfe692adfbee4b99f2760674f38/pyarrow-24.0.0-cp314-cp314t-win_amd64.whl", hash = "sha256:c91d00057f23b8d353039520dc3a6c09d8608164c692e9f59a175a42b2ae0c19", size = 28131282, upload-time = "2026-04-21T10:51:16.815Z" },
-]
-
-[[package]]
 name = "pybtex"
 version = "0.26.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2920,11 +2717,11 @@ name = "pyranges"
 version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "natsort", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "ncls", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "pandas", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "sorted-nearest", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "tabulate", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "natsort", marker = "python_full_version < '3.12'" },
+    { name = "ncls", marker = "python_full_version < '3.12'" },
+    { name = "pandas", marker = "python_full_version < '3.12'" },
+    { name = "sorted-nearest", marker = "python_full_version < '3.12'" },
+    { name = "tabulate", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bf/b4/c90491bd784dc51a54a04ff188d5694563cdce5c1258816ff5d7cf332c70/pyranges-0.1.4.tar.gz", hash = "sha256:ca99cb70ff41c5da86ebc337f057877d293643b69e8e9937ccc738f98c32dbeb", size = 1494730, upload-time = "2025-03-14T14:22:27.995Z" }
 wheels = [
@@ -2945,7 +2742,7 @@ name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2961,7 +2758,7 @@ name = "pytest-cov"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "coverage", extra = ["toml"], marker = "extra == 'group-8-vcztools-dev' or extra == 'group-8-vcztools-test' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "coverage", extra = ["toml"] },
     { name = "pluggy" },
     { name = "pytest" },
 ]
@@ -3064,7 +2861,7 @@ name = "pyzmq"
 version = "27.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "implementation_name == 'pypy' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "cffi", marker = "implementation_name == 'pypy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/04/0b/3c9baedbdf613ecaa7aa07027780b8867f57b6293b6ee50de316c9f3222b/pyzmq-27.1.0.tar.gz", hash = "sha256:ac0765e3d44455adb6ddbf4417dcce460fc40a05978c08efdf2948072f6db540", size = 281750, upload-time = "2025-09-08T23:10:18.157Z" }
 wheels = [
@@ -3138,7 +2935,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -3341,7 +3138,7 @@ name = "ruranges-py"
 version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "numpy", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3f/7d/724048316c6e6650f0cc3f038d921979638843040b905f41b239ee2a3a17/ruranges_py-0.2.0.tar.gz", hash = "sha256:cfcd65f696e93cef08478efaeb32bd4da31a1735a7760bc3eb7527958b467df6", size = 32976, upload-time = "2026-02-08T09:05:06.326Z" }
 wheels = [
@@ -3353,8 +3150,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "jeepney", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'emscripten' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (sys_platform == 'win32' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -3393,7 +3190,7 @@ name = "sorted-nearest"
 version = "0.0.41"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "numpy", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6b/a4/bd8ad7d1cf66268219f282d4268b6ba73f8ff51c5fba2c9663adab103615/sorted_nearest-0.0.41.tar.gz", hash = "sha256:bd3ce6cbbc1df9a00e0a8afafe00556f4eaa2499a37fc5901227d0beb10b7298", size = 1568705, upload-time = "2025-10-06T13:16:47.155Z" }
 
@@ -3422,7 +3219,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alabaster" },
     { name = "babel" },
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "docutils" },
     { name = "imagesize" },
     { name = "jinja2" },
@@ -3646,7 +3443,7 @@ name = "sqlalchemy"
 version = "2.0.49"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/09/45/461788f35e0364a8da7bda51a1fe1b09762d0c32f12f63727998d85a873b/sqlalchemy-2.0.49.tar.gz", hash = "sha256:d15950a57a210e36dd4cec1aac22787e2a4d57ba9318233e2ef8b2daf9ff2d5f", size = 9898221, upload-time = "2026-04-03T16:38:11.704Z" }
@@ -3718,15 +3515,6 @@ wheels = [
 ]
 
 [[package]]
-name = "texttable"
-version = "1.7.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1c/dc/0aff23d6036a4d3bf4f1d8c8204c5c79c4437e25e0ae94ffe4bbb55ee3c2/texttable-1.7.0.tar.gz", hash = "sha256:2d2068fb55115807d3ac77a4ca68fa48803e84ebb0ee2340f858107a36522638", size = 12831, upload-time = "2023-10-03T09:48:12.272Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/99/4772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65/texttable-1.7.0-py2.py3-none-any.whl", hash = "sha256:72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917", size = 10768, upload-time = "2023-10-03T09:48:10.434Z" },
-]
-
-[[package]]
 name = "tomli"
 version = "2.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3781,15 +3569,6 @@ wheels = [
 ]
 
 [[package]]
-name = "toolz"
-version = "1.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/11/d6/114b492226588d6ff54579d95847662fc69196bdeec318eb45393b24c192/toolz-1.1.0.tar.gz", hash = "sha256:27a5c770d068c110d9ed9323f24f1543e83b2f300a687b7891c1a6d56b697b5b", size = 52613, upload-time = "2025-10-17T04:03:21.661Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fb/12/5911ae3eeec47800503a238d971e51722ccea5feb8569b735184d5fcdbc0/toolz-1.1.0-py3-none-any.whl", hash = "sha256:15ccc861ac51c53696de0a5d6d4607f99c210739caf987b5d2054f3efed429d8", size = 58093, upload-time = "2025-10-17T04:03:20.435Z" },
-]
-
-[[package]]
 name = "tornado"
 version = "6.5.5"
 source = { registry = "https://pypi.org/simple" }
@@ -3811,7 +3590,7 @@ name = "tqdm"
 version = "4.67.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
 wheels = [
@@ -3893,7 +3672,7 @@ version = "6.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "id" },
-    { name = "keyring", marker = "(platform_machine != 'ppc64le' and platform_machine != 's390x') or (platform_machine == 'ppc64le' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (platform_machine == 'ppc64le' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (platform_machine == 'ppc64le' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation') or (platform_machine == 's390x' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (platform_machine == 's390x' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (platform_machine == 's390x' and extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "keyring", marker = "platform_machine != 'ppc64le' and platform_machine != 's390x'" },
     { name = "packaging" },
     { name = "readme-renderer" },
     { name = "requests" },
@@ -3970,8 +3749,8 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyparsing" },
-    { name = "pyranges", marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "ruranges-py", marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "pyranges", marker = "python_full_version < '3.12'" },
+    { name = "ruranges-py", marker = "python_full_version >= '3.12'" },
     { name = "zarr" },
 ]
 
@@ -3980,8 +3759,8 @@ bgen = [
     { name = "bgen-limix" },
 ]
 icechunk = [
-    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 obstore = [
     { name = "obstore" },
@@ -3991,8 +3770,8 @@ obstore = [
 benchmark = [
     { name = "bio2zarr" },
     { name = "fsspec", extra = ["http"] },
-    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pandas" },
@@ -4006,14 +3785,14 @@ bgen-test = [
 ]
 dev = [
     { name = "azure-storage-blob" },
-    { name = "bgen-reader" },
+    { name = "bgen-limix" },
     { name = "bio2zarr" },
     { name = "clang-format" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
-    { name = "fsspec", extra = ["http"], marker = "extra == 'group-8-vcztools-dev' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "fsspec", extra = ["http"] },
     { name = "hypothesis" },
-    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pandas" },
@@ -4028,7 +3807,7 @@ dev = [
     { name = "tskit" },
     { name = "tstrait" },
     { name = "twine" },
-    { name = "validate-pyproject", extra = ["all"], marker = "extra == 'group-8-vcztools-dev' or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "validate-pyproject", extra = ["all"] },
     { name = "xarray" },
     { name = "zizmor" },
 ]
@@ -4048,12 +3827,12 @@ packaging = [
 ]
 test = [
     { name = "azure-storage-blob" },
-    { name = "bgen-reader" },
+    { name = "bgen-limix" },
     { name = "bio2zarr" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
     { name = "hypothesis" },
-    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
-    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-dev') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-test') or (extra == 'extra-8-vcztools-bgen' and extra == 'group-8-vcztools-validation')" },
+    { name = "icechunk", version = "1.1.21", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "icechunk", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "msprime" },
     { name = "obstore" },
     { name = "pytest" },
@@ -4064,7 +3843,7 @@ test = [
     { name = "xarray" },
 ]
 validation = [
-    { name = "bgen-reader" },
+    { name = "bgen-limix" },
     { name = "bio2zarr" },
     { name = "msprime" },
     { name = "pandas" },
@@ -4110,7 +3889,7 @@ bgen-test = [
 ]
 dev = [
     { name = "azure-storage-blob" },
-    { name = "bgen-reader" },
+    { name = "bgen-limix", specifier = ">=4.14,<5" },
     { name = "bio2zarr" },
     { name = "clang-format", specifier = "==19.1.7" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
@@ -4151,7 +3930,7 @@ packaging = [
 ]
 test = [
     { name = "azure-storage-blob" },
-    { name = "bgen-reader" },
+    { name = "bgen-limix", specifier = ">=4.14,<5" },
     { name = "bio2zarr" },
     { name = "cyvcf2", marker = "sys_platform != 'win32'" },
     { name = "hypothesis" },
@@ -4166,7 +3945,7 @@ test = [
     { name = "xarray" },
 ]
 validation = [
-    { name = "bgen-reader" },
+    { name = "bgen-limix", specifier = ">=4.14,<5" },
     { name = "bio2zarr" },
     { name = "msprime" },
     { name = "pandas" },

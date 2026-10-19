@@ -27,14 +27,12 @@ uv run pytest
 Note: some tests require `bcftools` and `plink` to be installed
 (available via conda-forge and bioconda).
 
-Native BGEN interoperability tests use the maintained `bgen-limix` backend.
-Keep them separate from the legacy `bgen-reader` suite: the legacy `cbgen`
-distribution and `bgen-limix` both provide the `cbgen` import and must not
-share an environment. uv declares this conflict explicitly.
+All BGEN tests use the maintained `bgen-limix>=4.14,<5` backend through
+its public `BgenFile` and `BgenMetafile` APIs. It is included in the test
+dependencies; no separate environment is needed.
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-bgen uv sync --no-default-groups --extra bgen --group bgen-test
-UV_PROJECT_ENVIRONMENT=.venv-bgen uv run --no-sync pytest tests/test_bgen_probability.py
+uv run pytest tests/test_bgen.py tests/test_bgen_validation.py tests/test_bgen_probability.py
 ```
 
 The native tests also include real VCZ -> BGEN -> bio2zarr roundtrips

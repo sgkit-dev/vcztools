@@ -1624,7 +1624,7 @@ def write_bgen(
         logger.warning(
             "write_bgen: embed_header_samples=False and sample_path=None "
             "leave sample IDs nowhere in the output; downstream tools "
-            "(REGENIE, SAIGE, bgen-reader) will not be able to associate "
+            "(REGENIE, SAIGE) will not be able to associate "
             "genotypes with sample IDs."
         )
 

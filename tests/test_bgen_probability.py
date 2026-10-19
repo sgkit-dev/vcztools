@@ -1,14 +1,11 @@
-"""Public bgen-limix oracles for the probability-aware exporter.
-
-Run separately from the legacy bgen-reader suite: the two distributions
-provide incompatible implementations of the same ``cbgen`` import.
-"""
+"""Public bgen-limix oracles for the probability-aware exporter."""
 
 import io
 import itertools
 import math
 import sqlite3
 
+import cbgen
 import click.testing
 import numpy as np
 import numpy.testing as nt
@@ -16,12 +13,6 @@ import pytest
 
 from tests import vcz_builder
 from vcztools import BgenEncoder, VczReader, bgen, bgen_probability, cli, constants
-
-cbgen = pytest.importorskip("cbgen")
-if not hasattr(cbgen, "BgenFile"):
-    pytest.skip(
-        "Requires maintained bgen-limix, not legacy cbgen", allow_module_level=True
-    )
 
 
 def probability_store():

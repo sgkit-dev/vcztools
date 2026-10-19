@@ -8,8 +8,10 @@ by default and individually suppressible. The Python API
 (:func:`write_bgen`) is shaped the same way: the BGEN payload destination
 is path-or-file-like, and each sidecar is requested by passing a
 filesystem path (``None`` skips it). Output profile: layout 2,
-zlib-compressed, 8 bits/probability, biallelic, embedded sample IDs in the
-``.bgen`` header. Haploid and mixed-ploidy stores are supported via
+zlib-compressed, with embedded sample IDs by default. GP/HP stores use
+the chunked general encoder (multi-allelic, ploidy 0..63, 1..32 bits);
+legacy biallelic hard-call stores retain the fast 8-bit C encoder.
+Haploid and mixed-ploidy stores are supported via
 per-sample ploidy bytes; this is the consumer lowest-common-denominator:
 REGENIE, SAIGE, BOLT-LMM, BGENIE, qctool, and PLINK 2 all accept it
 without further conversion.
@@ -37,17 +39,20 @@ compatibility, sidecar conventions — see ``docs/bgen.md``.
 
 import concurrent.futures as cf
 import dataclasses
+import importlib.metadata
 import logging
+import os
 import pathlib
 import sqlite3
 import struct
+import tempfile
 import time
 import zlib
 from typing import ClassVar
 
 import numpy as np
 
-from vcztools import _vcztools, format_encoder, retrieval, utils
+from vcztools import _vcztools, bgen_probability, format_encoder, retrieval, utils
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +620,18 @@ class BgenEncoder(format_encoder.FormatEncoder):
         encode_block_bytes: int | None = None,
         unphased: bool = False,
     ):
+        if {
+            "call_GP",
+            "call_HP",
+            "call_PLOIDY",
+            "call_BGEN_MISSING",
+            "variant_bgen_phased",
+            "variant_bgen_id",
+        } & reader.field_names:
+            raise ValueError(
+                "BgenEncoder cannot preserve probability/BGEN metadata fields; "
+                "use write_bgen"
+            )
         if total_string_length is None:
             total_string_length = 64
         if pad_byte is None:
@@ -860,8 +877,12 @@ def write_sample(reader, output):
     whitespace-separated).
     """
     sample_ids = reader.sample_ids
+    seen = set()
     for sid in sample_ids:
         s = str(sid)
+        if not s or s in seen:
+            raise ValueError("Oxford .sample IDs must be nonempty and unique")
+        seen.add(s)
         if any(c.isspace() for c in s):
             raise ValueError(
                 f"Sample ID {s!r} contains whitespace; "
@@ -894,7 +915,7 @@ CREATE INDEX position_idx ON Variant (chromosome, position);
 _BGI_INSERT_SQL = (
     "INSERT INTO Variant (chromosome, position, rsid, number_of_alleles, "
     "allele1, allele2, file_start_position, size_in_bytes) "
-    "VALUES (?, ?, ?, 2, ?, ?, ?, ?)"
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -951,6 +972,8 @@ def write_bgi(
     variant_id_field: str = "rsid",
     total_string_length: int | None = None,
     pad_byte: bytes = b".",
+    actual_alleles: bool = False,
+    minimum_alleles: int = 1,
 ):
     """Write the bgenix ``.bgen.bgi`` SQLite sidecar for ``reader``.
 
@@ -984,9 +1007,10 @@ def write_bgi(
     are read via the reader's standard ``variant_chunks`` API and
     assembled as numpy arrays; per-row tuples are streamed into
     SQLite via a generator so peak memory stays at the column
-    arrays rather than an N-row tuple list. Variant scope is
-    biallelic only; multi-allelic raises ``ValueError`` lazily on
-    the chunk containing the offending row.
+    arrays rather than an N-row tuple list.
+    ``actual_alleles=True`` records actual allele counts for the general
+    encoder; ``minimum_alleles`` accounts for legacy monomorphic padding.
+    Otherwise the historical biallelic-only validation applies.
     """
     if variant_id_field not in ("rsid", "varid"):
         raise ValueError(
@@ -1022,12 +1046,19 @@ def write_bgi(
     a1_parts: list[np.ndarray] = []
     a2_parts: list[np.ndarray] = []
     variant_id_parts: list[np.ndarray] = []
+    allele_count_parts: list[np.ndarray] = []
 
     read_start = time.perf_counter()
     for chunk in reader.variant_chunks(fields=fields):
         alleles = chunk["variant_allele"]
-        _check_biallelic(alleles)
+        if not actual_alleles:
+            _check_biallelic(alleles)
         n = alleles.shape[0]
+        allele_count_parts.append(
+            np.maximum((alleles != "").sum(axis=1), minimum_alleles)
+            if actual_alleles
+            else np.full(n, 2)
+        )
         chrom_parts.append(contig_ids[chunk["variant_contig"]])
         pos_parts.append(np.asarray(chunk["variant_position"]))
         a1_parts.append(np.asarray(alleles[:, 0]))
@@ -1049,6 +1080,7 @@ def write_bgi(
         a1_arr = np.concatenate(a1_parts)
         a2_arr = np.concatenate(a2_parts)
         variant_id_arr = np.concatenate(variant_id_parts)
+        allele_counts = np.concatenate(allele_count_parts)
         # Match the .bim/.bgi monomorphic / missing-rsid convention used
         # by write_bgen and BgenEncoder.
         variant_id_arr = np.where(variant_id_arr == "", ".", variant_id_arr)
@@ -1077,8 +1109,9 @@ def write_bgi(
                     str(chrom_arr[i]),
                     int(pos_arr[i]),
                     str(rsid_arr[i]),
+                    int(allele_counts[i]),
                     str(a1_arr[i]),
-                    str(a2_arr[i]),
+                    str(a2_arr[i]) if allele_counts[i] > 1 else None,
                     int(starts[i]),
                     int(sizes[i]),
                 )
@@ -1124,6 +1157,68 @@ class _BgenPayloadInfo:
     variant_offsets: np.ndarray
     total_string_length: int | None
     pad_byte: bytes
+    actual_alleles: bool = False
+    minimum_alleles: int = 2
+
+
+def _native_backend():
+    try:
+        importlib.metadata.distribution("cbgen")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    else:
+        raise ImportError(
+            "The legacy cbgen distribution conflicts with bgen-limix. "
+            "Use a separate environment containing vcztools[bgen], not cbgen."
+        )
+    try:
+        version = importlib.metadata.version("bgen-limix")
+    except importlib.metadata.PackageNotFoundError as e:
+        raise ImportError(
+            "Native indexes require vcztools[bgen] (bgen-limix>=4.14,<5)"
+        ) from e
+    release = tuple(int(part) for part in version.split(".")[:2])
+    if not (4, 14) <= release < (5, 0):
+        raise ImportError("Native indexes require bgen-limix>=4.14,<5")
+    try:
+        from cbgen import BgenFile  # noqa: PLC0415
+    except ImportError as e:
+        raise ImportError(
+            "Native .metafile generation requires vcztools[bgen] "
+            "(bgen-limix>=4.14,<5, not the legacy cbgen distribution)"
+        ) from e
+    return BgenFile
+
+
+def write_metafile(bgen_path, output=None):
+    """Create a bgen-limix index, never overwriting an existing sidecar.
+
+    The default is ``<bgen_path>.metafile``. This is neither a SQLite
+    ``.bgi`` nor a file named ``.metadata``. A temporary index is closed
+    before publication; failed creation leaves no partial target.
+    """
+    backend = _native_backend()
+    source = pathlib.Path(bgen_path)
+    target = (
+        pathlib.Path(str(source) + ".metafile")
+        if output is None
+        else pathlib.Path(output)
+    )
+    if target.resolve() == source.resolve():
+        raise ValueError("Metafile path must differ from BGEN payload")
+    if target.exists():
+        raise FileExistsError(f"Refusing to overwrite existing native index: {target}")
+    with tempfile.TemporaryDirectory(
+        prefix=".vcztools-bgen-", dir=target.parent
+    ) as temp:
+        temporary = pathlib.Path(temp) / "index.metafile"
+        with backend(str(source)) as handle:
+            if handle.nvariants == 0:
+                raise ValueError(
+                    "Native metafile generation requires at least one variant"
+                )
+            handle.create_metafile(str(temporary))
+        os.link(temporary, target)
 
 
 def _write_bgen_fixed(
@@ -1318,6 +1413,8 @@ def write_bgen(
     *,
     sample_path=None,
     bgi_path=None,
+    metafile_path=None,
+    bits_per_probability: int | None = None,
     embed_header_samples: bool | None = None,
     compression_level: int | None = None,
     encode_threads: int | None = None,
@@ -1348,11 +1445,23 @@ def write_bgen(
     filter raises ``NotImplementedError``. This keeps variant-block ordering
     and ``.bgi`` entries aligned with the BGEN payload.
 
-    Variant scope: biallelic only (multi-allelic raises ``ValueError``).
-    Genotype source: hard calls from ``call_genotype`` encoded as 1.0
-    probability on the called genotype (8-bit precision round-trips
-    exactly). Phase: per-variant from ``call_genotype_phased`` if the
-    field exists in the store; otherwise unphased.
+    GP/HP probabilities take precedence over hard calls, with
+    ``variant_bgen_phased`` choosing the active field when both exist.
+    The general encoder supports multi-allelic variants, ploidy 0..63
+    from ``call_PLOIDY`` or genotype padding, and explicit missingness
+    from ``call_BGEN_MISSING``. Without probabilities, hard calls are
+    encoded as exact 1.0/0.0 states. DS alone is insufficient.
+
+    ``bits_per_probability`` accepts 1..32 (default 16 for GP/HP,
+    8 for hard calls). Simplex-preserving quantization bounds component
+    error by ``1/(2**bits-1)`` relative to normalized input.
+    See ``docs/bgen.md`` for sentinel rules and dosage-error bounds.
+
+    ``metafile_path`` requests an additional native bgen-limix index.
+    Requires a filesystem payload and the ``bgen`` optional dependency;
+    existing indexes are never overwritten. The canonical path is
+    ``str(output) + ".metafile"``. It is generated after closing the
+    BGEN payload, independently of ``bgi_path``.
 
     ``embed_header_samples`` controls whether the BGEN header carries
     sample IDs. When False, the ``SAMPLE_IDS_PRESENT`` flag is cleared
@@ -1374,17 +1483,18 @@ def write_bgen(
     ``COMPRESSION_ZLIB`` regardless of level, every reader handles
     the output.
 
-    ``encode_threads`` sizes the worker pool that runs per-slice
+    ``encode_threads`` sizes the legacy fast-path worker pool that runs per-slice
     :func:`_prepare_chunk` + per-variant ``_encode_variant_block`` for
     each chunk. Slice bytes are written back to the output in variant
     order on the main thread so byte layout and ``.bgi`` offsets stay
-    deterministic. ``None`` selects the default (4).
+    deterministic. ``None`` selects the default (4). The general
+    probability/polyploid encoder processes reader chunks sequentially.
 
     ``unphased=True`` forces every variant's phased flag to ``0``,
     ignoring ``call_genotype_phased`` if present. Use this when the
     downstream tool only accepts unphased BGEN (e.g. qctool's
     ``-snp-stats``, whose ``ToGP`` setter rejects per-haplotype-per-
-    allele probabilities).
+    allele probabilities). Phased HP input is rejected with this option.
 
     ``variant_id_field`` chooses which BGEN slot — ``"rsid"`` (default)
     or ``"varid"`` — carries the zarr ``variant_id``. The other slot
@@ -1418,6 +1528,75 @@ def write_bgen(
         embed_header_samples = True
     if variant_id_field is None:
         variant_id_field = "rsid"
+    if variant_id_field not in ("rsid", "varid"):
+        raise ValueError("variant_id_field must be 'rsid' or 'varid'")
+    probability_source = bool({"call_GP", "call_HP"} & reader.field_names)
+    if "call_genotype" in reader.field_names:
+        genotype_shape = reader.get_field_info("call_genotype").shape
+        if len(genotype_shape) != 3:
+            raise ValueError("call_genotype must be a 3D array")
+    if not probability_source and "call_genotype" not in reader.field_names:
+        raise ValueError(
+            "BGEN export requires GP/HP probabilities or call_genotype; "
+            "DS alone is insufficient"
+        )
+    general = (
+        probability_source
+        or (
+            not fixed_variant_size
+            and reader.get_field_info("variant_allele").shape[1] > 2
+        )
+        or "call_PLOIDY" in reader.field_names
+        or "call_BGEN_MISSING" in reader.field_names
+        or "variant_bgen_id" in reader.field_names
+        or "variant_bgen_phased" in reader.field_names
+        or (
+            "call_genotype" in reader.field_names
+            and reader.get_field_info("call_genotype").shape[2] > 2
+        )
+    )
+    if bits_per_probability is None:
+        bits_per_probability = 16 if probability_source else 8
+    if (
+        not isinstance(bits_per_probability, int)
+        or isinstance(bits_per_probability, bool)
+        or not 1 <= bits_per_probability <= 32
+    ):
+        raise ValueError("bits_per_probability must be an integer in 1..32")
+    if bits_per_probability != 8:
+        general = True
+    if fixed_variant_size and general:
+        raise ValueError(
+            "fixed_variant_size supports only legacy biallelic hard-call "
+            "input at 8 bits"
+        )
+    if compression_level is not None and not -1 <= compression_level <= 9:
+        raise ValueError("compression_level must be in -1..9")
+
+    paths = [
+        p
+        for p in (output, sample_path, bgi_path, metafile_path)
+        if isinstance(p, (str, pathlib.Path))
+    ]
+    resolved = [pathlib.Path(p).resolve() for p in paths]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("BGEN payload and sidecar paths must be distinct")
+    if isinstance(output, (str, pathlib.Path)):
+        native_index = pathlib.Path(str(output) + ".metafile")
+        if native_index.exists():
+            raise FileExistsError(
+                f"Refusing to invalidate existing native index: {native_index}"
+            )
+    if metafile_path is not None:
+        if not isinstance(output, (str, pathlib.Path)):
+            raise ValueError(
+                "Native metafile generation requires a filesystem BGEN output"
+            )
+        if pathlib.Path(metafile_path).exists():
+            raise FileExistsError(
+                f"Refusing to overwrite existing native index: {metafile_path}"
+            )
+        _native_backend()
 
     if not fixed_variant_size and (
         total_string_length is not None or pad_byte is not None
@@ -1452,7 +1631,41 @@ def write_bgen(
     else:
         display_name = getattr(output, "name", "<stream>")
 
-    if fixed_variant_size:
+    if general:
+        minimum_alleles = (
+            1
+            if probability_source
+            or {
+                "call_PLOIDY",
+                "call_BGEN_MISSING",
+                "variant_bgen_phased",
+                "variant_bgen_id",
+            }
+            & reader.field_names
+            else 2
+        )
+        samples = reader.sample_ids
+        sample_block = _build_sample_id_block(samples) if embed_header_samples else b""
+        header = _build_header(
+            int(reader.variant_counts_per_chunk().sum()),
+            len(samples),
+            sample_block,
+            embed_samples=embed_header_samples,
+        )
+        offsets = bgen_probability.write_payload(
+            reader,
+            output,
+            header=header,
+            compression_level=compression_level,
+            bits=bits_per_probability,
+            unphased=unphased,
+            variant_id_field=variant_id_field,
+            minimum_alleles=minimum_alleles,
+        )
+        info = _BgenPayloadInfo(
+            offsets, None, b".", actual_alleles=True, minimum_alleles=minimum_alleles
+        )
+    elif fixed_variant_size:
         info = _write_bgen_fixed(
             reader,
             output,
@@ -1484,4 +1697,8 @@ def write_bgen(
             variant_id_field=variant_id_field,
             total_string_length=info.total_string_length,
             pad_byte=info.pad_byte,
+            actual_alleles=info.actual_alleles,
+            minimum_alleles=info.minimum_alleles,
         )
+    if metafile_path is not None:
+        write_metafile(output, metafile_path)

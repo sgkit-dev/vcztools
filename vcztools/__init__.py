@@ -1,5 +1,5 @@
 from .bcftools_filter import BcftoolsFilter
-from .bgen import BgenEncoder, write_bgen, write_bgi, write_sample
+from .bgen import BgenEncoder, write_bgen, write_bgi, write_metafile, write_sample
 from .cli import GroupedCommand, ViewBgenOptions, ViewPlinkOptions
 from .format_encoder import FormatEncoder
 from .plink import BedEncoder, write_bim, write_fam, write_plink
@@ -29,6 +29,7 @@ __all__ = [
     "write_bgi",
     "write_bim",
     "write_fam",
+    "write_metafile",
     "write_plink",
     "write_sample",
     "write_vcf",

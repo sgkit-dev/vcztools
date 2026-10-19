@@ -50,10 +50,12 @@ repository = "https://github.com/sgkit-dev/vcztools"
 vcztools = "vcztools.cli:vcztools_main"
 
 [project.optional-dependencies]
+bgen = ["bgen-limix>=4.14,<5"]
 obstore = ["obstore"]
 icechunk = ["icechunk"]
 
 [dependency-groups]
+bgen-test = ["pytest", "pytest-xdist"]
 test = [
   "azure-storage-blob",
   "bgen-reader",
@@ -123,6 +125,18 @@ dev = [
 
 [tool.setuptools]
 packages = ["vcztools"]
+
+[tool.uv]
+conflicts = [
+  [
+    {extra = "bgen"},
+    {group = "test"},
+  ],
+  [
+    {extra = "bgen"},
+    {group = "validation"},
+  ],
+]
 
 [tool.pytest.ini_options]
 addopts = "-n auto"

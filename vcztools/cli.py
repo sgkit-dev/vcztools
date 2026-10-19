@@ -976,6 +976,8 @@ class ViewBgenOptions:
     reader: ReaderOptions = dataclasses.field(default_factory=ReaderOptions)
     log: LogOptions = dataclasses.field(default_factory=LogOptions)
     no_bgi: bool = False
+    metafile: bool = False
+    bits_per_probability: int | None = None
     no_sample_file: bool = False
     no_header_samples: bool = False
     unphased: bool = False
@@ -1048,6 +1050,20 @@ class ViewBgenOptions:
             ),
         )(f)
         f = click.option(
+            "--metafile",
+            is_flag=True,
+            help=(
+                "Additionally create the native bgen-limix .bgen.metafile "
+                "index (requires vcztools[bgen] and -o)."
+            ),
+        )(f)
+        f = click.option(
+            "--bits-per-probability",
+            type=click.IntRange(1, 32),
+            default=None,
+            help="Probability precision (default: 16 for GP/HP, 8 for hard calls).",
+        )(f)
+        f = click.option(
             "--no-bgi",
             is_flag=True,
             default=False,
@@ -1063,6 +1079,8 @@ class ViewBgenOptions:
             reader=ReaderOptions.from_click_kwargs(kwargs),
             log=LogOptions.from_click_kwargs(kwargs),
             no_bgi=kwargs.get("no_bgi", False),
+            metafile=kwargs.get("metafile", False),
+            bits_per_probability=kwargs.get("bits_per_probability"),
             no_sample_file=kwargs.get("no_sample_file", False),
             no_header_samples=kwargs.get("no_header_samples", False),
             unphased=kwargs.get("unphased", False),
@@ -1490,11 +1508,12 @@ def view_bgen(
     With -o STEM, write foo.bgen + foo.bgen.bgi + foo.sample; sidecars
     are individually suppressible (--no-bgi, --no-sample-file).
 
-    Phase is propagated per-variant from ``call_genotype_phased`` if present;
-    pass ``--unphased`` to force every variant unphased . Sample/region
+    Phase comes from BGEN metadata or, for hard calls, ``call_genotype_phased``.
+    ``--unphased`` forces hard-call output unphased (phased HP is rejected).
+    Sample/region
     selection mirrors bcftools view (-s/-S/-r/-R/-t/-T/-v/-V/-m/-M).
-    Multi-allelic variants are rejected by default; pass ``-M 2`` (or
-    ``--max-alleles 2``) to skip them.
+    Variable-size output supports multi-allelic variants and GP/HP probabilities.
+    Pass ``-M 2`` to restrict output for biallelic-only consumers.
 
     Unlike ``vcztools view`` / ``query``, ``-i/-e`` filters are
     evaluated over the *selected* samples: with a ``-s``/``-S`` subset,
@@ -1506,6 +1525,8 @@ def view_bgen(
     opts = ViewBgenOptions.from_click_kwargs(kwargs)
     opts.log.apply()
     embed_header_samples = not opts.no_header_samples
+    if opts.metafile and output is None:
+        raise click.UsageError("--metafile requires -o/--output")
     if output is None:
         # Stream .bgen to stdout. Sidecars have no stem to derive paths
         # from, so they're omitted.
@@ -1531,6 +1552,8 @@ def view_bgen(
             bgen_dest,
             sample_path=sample_path,
             bgi_path=bgi_path,
+            metafile_path=str(bgen_dest) + ".metafile" if opts.metafile else None,
+            bits_per_probability=opts.bits_per_probability,
             embed_header_samples=embed_header_samples,
             compression_level=compression_level,
             unphased=opts.unphased,

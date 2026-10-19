@@ -23,7 +23,8 @@ The examples run against the example dataset `data/sample.vcz.zip` (see
 
 ## Basic conversion
 
-As with PLINK, multi-allelic sites are rejected, so `-M 2` skips them. The
+Multi-allelic sites are supported, but `-M 2` restricts output for consumers
+that require biallelic data. The
 sample data is mixed-phase; `--unphased` emits every variant unphased (see
 the {ref}`BGEN file format page<sec-bgen>` for the phasing rules):
 
@@ -86,6 +87,20 @@ record-level.
 Streaming mode (no `-o`) writes only the `.bgen` payload. With `-o`, suppress
 either sidecar with `--no-bgi` or `--no-sample-file`. The genotype blocks are
 zlib-compressed; `--compression-level` tunes the level (default `1`).
+
+To additionally produce the native bgen-limix index, install `vcztools[bgen]`
+in an environment without the legacy `cbgen` distribution and run:
+
+```bash
+vcztools view-bgen input.vcz -o output --metafile --bits-per-probability 16
+```
+
+This retains `output.bgen.bgi` and `output.sample`, and additionally creates
+`output.bgen.metafile` (not `.metadata`). `--metafile` requires file output.
+For GP/HP stores, probabilities take precedence over hard calls; do not use
+`--unphased` to export phased HP, since that would discard phase information.
+Sample-derived AC/AN/AF filters require hard-call data; no hard calls are
+invented for probability-only stores.
 
 ## See also
 

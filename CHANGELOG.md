@@ -4,6 +4,13 @@
 
 In development.
 
+- Export BGEN GP/HP probabilities without inferring hard calls, including
+  multi-allelic variants, ploidy 0..63 and explicit missingness metadata.
+  Add configurable 1..32-bit simplex-preserving probability quantization.
+- Add optional native bgen-limix `.bgen.metafile` indexes (`--metafile`,
+  `vcztools[bgen]`), alongside the existing default `.bgen.bgi` and
+  Oxford `.sample` sidecars.
+
 ## [0.2.0] - 2026-06-08
 
 New output formats:

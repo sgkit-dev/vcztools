@@ -15,6 +15,7 @@ import logging
 import sqlite3
 import struct
 import zlib
+from types import SimpleNamespace
 
 import bgen_reader as br
 import numpy as np
@@ -156,6 +157,14 @@ class TestWriteSample:
         )
         with pytest.raises(ValueError, match="whitespace"):
             bgen.write_sample(reader, io.StringIO())
+
+    @pytest.mark.parametrize("ids", [["", "valid"], ["duplicate", "duplicate"]])
+    def test_empty_or_duplicate_ids_rejected(self, ids, tmp_path):
+        reader = SimpleNamespace(sample_ids=np.array(ids))
+        path = tmp_path / "bad.sample"
+        with pytest.raises(ValueError, match="nonempty and unique"):
+            bgen.write_sample(reader, path)
+        assert not path.exists()
 
     def test_sample_subset_round_trips(self):
         reader = _build_reader(num_samples=4)
@@ -1529,13 +1538,16 @@ class TestBgenRoundTripViaBgenReader:
         with br.open_bgen(path, verbose=False) as bg:
             assert str(bg.allele_ids[0]) == "A,."
 
-    def test_multi_allelic_raises(self, write_to_bgen):
+    def test_multi_allelic_scope(self, write_to_bgen, request):
         reader = _build_reader(
             num_variants=1,
             num_samples=2,
             alleles=[("A", "T", "G")],
         )
-        with pytest.raises(ValueError, match="Multi-allelic"):
+        if request.node.callspec.params["write_to_bgen"]:
+            with pytest.raises(ValueError, match="Multi-allelic|biallelic"):
+                write_to_bgen(reader)
+        else:
             write_to_bgen(reader)
 
     def test_sample_subset(self, write_to_bgen):

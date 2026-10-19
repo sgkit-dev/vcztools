@@ -840,13 +840,13 @@ class TestViewBgen:
         )
         assert result.exit_code != 0
 
-    def test_multiallelic_without_max_alleles_errors(self, tmp_path, fx_vcz_path):
+    def test_multiallelic_without_max_alleles(self, tmp_path, fx_vcz_path):
         out = tmp_path / "b"
-        _, err = run_vcztools(
+        run_vcztools(
             f"view-bgen {fx_vcz_path} -o {out.as_posix()}",
-            expect_error=True,
         )
-        assert "Multi-allelic" in err
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        assert len(rows) > 6
 
     def test_max_alleles_skips_multiallelic(self, tmp_path, fx_vcz_path):
         # Same fixture, same expectations as view-plink: 6 surviving

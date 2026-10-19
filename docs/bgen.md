@@ -16,15 +16,49 @@ to clear the flag and omit the sample-ID block.
 ### Hard calls and probabilities
 
 BGEN's native data type is genotype probabilities.
-`view-bgen` currently encodes the hard calls in `call_genotype` as
-1.0 probability on the called genotype and 0.0 elsewhere.
+`view-bgen` uses `call_GP` (unphased, colexicographic genotype order) or
+`call_HP` (phased, flattened haplotype-major allele probabilities) when
+present, even if `call_genotype` also exists. It never infers hard calls
+from probabilities or dosages. Without GP/HP, hard calls in `call_genotype`
+are encoded as 1.0 on the called state and 0.0 elsewhere.
+
+For probability input, provide `call_PLOIDY[variants,samples]`, or a
+`call_genotype` array whose trailing `-2` padding identifies ploidy.
+`call_BGEN_MISSING[variants,samples]` preserves the missing flag independently
+of ploidy, including zero-ploidy calls. Otherwise, active missing probability
+sentinels identify missing calls. Probability-only stores without ploidy
+information are rejected rather than guessing.
+
+GP's active width is `C(P+K-1,P)`; HP's is `P*K`. Extra entries must use
+VCZ floating-point fill sentinels, and missing active entries must use missing
+sentinels, not fill. `variant_bgen_phased[variants]` chooses GP or HP per
+variant and is required when both fields exist. Inactive probability fields
+must contain one missing sentinel followed by fill. `variant_id` supplies
+the rsID; `variant_bgen_id`, when present, preserves BGEN's separate variant ID.
+Allele ordering and one-based positions are preserved.
+
+The default is 16 bits for GP/HP and 8 bits for hard calls.
+`--bits-per-probability 1..32` selects precision. Each simplex is validated
+(finite values in `[0,1]`, sum within `1e-6` of 1), normalized, and rounded
+using largest remainders so reconstructed probabilities sum to 1.
+Each component differs from the **normalized** source by at most
+`1/(2^bits-1)` plus floating-point roundoff. For HP this applies separately
+to each haplotype; alternate-allele dosage error is at most `P/(2^bits-1)`.
+For GP a conservative dosage-error bound is
+`P*C(P+K-1,P)/(2^bits-1)`. Normalization drift is additional when comparing
+against unnormalized source values (notably float32).
+Hard-call probabilities are represented exactly.
 
 ### Phasing
 
-If the VCZ store has a `call_genotype_phased` field, each variant is
+For probability/BGEN metadata stores, `variant_bgen_phased` is authoritative.
+Without it, GP-only is unphased and HP-only is phased. Phased HP with
+`--unphased` is rejected rather than silently discarding phase.
+
+For legacy hard-call stores with a `call_genotype_phased` field, each variant is
 emitted as phased iff every sample is phased for that variant. (BGEN
 has a single phase flag per variant; mixed-phase variants degrade
-silently to unphased and a warning is logged.) Stores without
+to unphased and a warning is logged.) Stores without
 `call_genotype_phased` emit unphased. Use `--unphased` to force
 unphased output regardless of the `call_genotype_phased` field.
 
@@ -38,6 +72,22 @@ two sidecar files:
 | `<stem>.bgen` | binary | always | — | the BGEN payload (header + variant blocks) |
 | `<stem>.bgen.bgi` | SQLite | on | `--no-bgi` | bgenix index|
 | `<stem>.sample` | text | on | `--no-sample-file` | Oxford `.sample` (sample IDs) |
+| `<stem>.bgen.metafile` | native bgen-limix | off | omit `--metafile` | native variant index |
+
+`--metafile` additionally creates the canonical native index, **not**
+`.metadata` and not a renamed `.bgi`. It requires `vcztools[bgen]`
+(`bgen-limix>=4.14,<5`, imported as `cbgen`) and `-o`.
+The legacy distribution named `cbgen` is incompatible: do not install both.
+Native index creation uses the public `BgenFile.create_metafile` API after
+closing the payload. It publishes only a complete index and refuses to
+overwrite an existing one. Native index generation requires at least one
+variant. Export also refuses to overwrite a BGEN payload
+with an existing canonical `.metafile`, to avoid leaving a stale index.
+Remove or relocate old files deliberately before regenerating a fileset.
+
+The `.sample` format is `ID_1 ID_2 missing`, then `0 0 0`, followed by
+`sample_id sample_id 0` per selected sample, in export order. It carries IDs
+only, not phenotypes or per-sample missingness estimates.
 
 The `.bgen` header also embeds sample IDs, so consumers that read sample
 names from the BGEN itself (qctool, BGENIE, PLINK 2) work without the
@@ -46,12 +96,12 @@ names from the BGEN itself (qctool, BGENIE, PLINK 2) work without the
 identifiers must not appear in the binary).
 
 Streaming mode (no `-o`) writes only the `.bgen` payload to stdout;
-sidecar flags have no effect.
+the suppression flags have no effect. `--metafile` instead errors without `-o`.
 
 ### Multi-allelic variants
 
-Multi-allelic variants are rejected by default, and must be
-filtered out:
+Variable-size export supports multi-allelic variants. To restrict output
+for biallelic-only consumers:
 
 ```bash
 vcztools view-bgen sample.vcz -o sample --max-alleles 2
@@ -59,7 +109,12 @@ vcztools view-bgen sample.vcz -o sample --max-alleles 2
 
 ### Ploidy
 
-`view-bgen` supports both haploid and diploid input, plus mixed
+Probability/general-ploidy export supports ploidy 0..63 and mixed
+ploidy within a variant. GP at ploidy zero contains `[1]` for a nonmissing
+call; HP at ploidy zero has an empty active vector. Missing zero-ploidy
+calls remain distinguishable through `call_BGEN_MISSING`.
+
+The legacy fast hard-call path supports both haploid and diploid input, plus mixed
 ploidy where some samples are haploid and some are diploid for the
 same variant (e.g. chrX with both sexes). The classification depends
 on each `(a, b)` pair in `call_genotype`:
@@ -101,14 +156,23 @@ level 1.
 
 ## Limitations
 
-- **Layout 2, 8-bit, zlib only.** Higher precision (16/32-bit) and
-  alternative compressions (zstd, none) are not exposed.
-- **Ploidy 1 or 2.** Polyploid input (`call_genotype.shape[2] > 2`)
-  is rejected.
-- **Hard calls only.** Genotype probabilities (`call_GP`) are not
-  read; the encoder emits 1.0/0.0 from `call_genotype` only.
+- **Layout 2, zlib only.** Alternative compressions and layout 1 are
+  not exposed.
+- **Not universally lossless.** Probabilities are quantized. Derived DS
+  is recomputed by importers; DS-only input cannot determine probabilities
+  and is rejected. Unrelated VCF INFO/FORMAT fields, filters, phenotypes,
+  and arbitrary VCZ attributes are not represented by BGEN.
+- **General encoder performance.** Reads remain chunked and sample-subset
+  aware, but the general encoder runs sequentially in Python;
+  `encode_threads` applies only to the legacy fast paths. Hard-call
+  unphased state spaces exceeding one million stored states per call
+  are rejected explicitly.
+- **Legacy monomorphic profile.** Hard-call stores without BGEN metadata
+  retain the historical `REF,.` representation; probability/BGEN-metadata
+  stores preserve true single-allele records.
 - **Whitespace in sample IDs.** Rejected with a clear error message —
-  the `.sample` format is whitespace-separated.
+  the `.sample` format is whitespace-separated. Sidecar IDs must also
+  be nonempty and unique.
 
 ## Fixed-size encoding
 

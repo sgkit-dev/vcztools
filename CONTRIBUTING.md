@@ -27,6 +27,22 @@ uv run pytest
 Note: some tests require `bcftools` and `plink` to be installed
 (available via conda-forge and bioconda).
 
+Native BGEN interoperability tests use the maintained `bgen-limix` backend.
+Keep them separate from the legacy `bgen-reader` suite: the legacy `cbgen`
+distribution and `bgen-limix` both provide the `cbgen` import and must not
+share an environment. uv declares this conflict explicitly.
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-bgen uv sync --no-default-groups --extra bgen --group bgen-test
+UV_PROJECT_ENVIRONMENT=.venv-bgen uv run --no-sync pytest tests/test_bgen_probability.py
+```
+
+The native tests also include real VCZ -> BGEN -> bio2zarr roundtrips
+for both Zarr formats, selected samples, GP/HP and missing/fill sentinels.
+These run when a bio2zarr build providing `bio2zarr.bgen.convert` and
+`sample_file` support is installed in that environment; otherwise only
+those integration cases are skipped.
+
 ## Linting
 
 We use [prek](https://github.com/prek-dev/prek) for pre-commit linting,

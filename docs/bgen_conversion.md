@@ -96,7 +96,7 @@ vcztools view-bgen input.vcz -o output --metafile --bits-per-probability 16
 ```
 
 This retains `output.bgen.bgi` and `output.sample`, and additionally creates
-`output.bgen.metafile` (not `.metadata`). `--metafile` requires file output.
+`output.bgen.metafile`. `--metafile` requires file output.
 For GP/HP stores, probabilities take precedence over hard calls; do not use
 `--unphased` to export phased HP, since that would discard phase information.
 Sample-derived AC/AN/AF filters require hard-call data; no hard calls are

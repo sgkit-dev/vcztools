@@ -166,6 +166,19 @@ class TestWriteSample:
             bgen.write_sample(reader, path)
         assert not path.exists()
 
+    @pytest.mark.parametrize("identifier", ["NA", "."])
+    def test_reserved_missing_ids_rejected(self, identifier, tmp_path):
+        reader = _build_reader(num_samples=2, sample_id=np.array([identifier, "valid"]))
+        path = tmp_path / "bad.sample"
+        with pytest.raises(ValueError, match="reserved"):
+            bgen.write_sample(reader, path)
+        assert not path.exists()
+
+    @pytest.mark.parametrize("identifier", ["0", "na", "Na"])
+    def test_nonmissing_literal_ids_preserved(self, identifier):
+        reader = _build_reader(num_samples=2, sample_id=np.array([identifier, "valid"]))
+        assert _sample_string(reader).splitlines()[2] == f"{identifier} {identifier} 0"
+
     def test_sample_subset_round_trips(self):
         reader = _build_reader(num_samples=4)
         reader.set_sample_indexes([0, 2])

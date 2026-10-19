@@ -874,12 +874,18 @@ def write_sample(reader, output):
     with ``ID_1`` and ``ID_2`` both set to the sample name (matches the
     ``--double-id`` style) and the ``missing`` column set to ``0``.
     Whitespace in sample IDs is rejected (the file format is
-    whitespace-separated).
+    whitespace-separated), as are the reserved missing identifiers
+    ``NA`` and ``.``.
     """
     sample_ids = reader.sample_ids
     seen = set()
     for sid in sample_ids:
         s = str(sid)
+        if s in {"NA", "."}:
+            raise ValueError(
+                f"Sample ID {s!r} is a reserved missing identifier in Oxford "
+                ".sample files; omit the sample sidecar to retain embedded IDs."
+            )
         if not s or s in seen:
             raise ValueError("Oxford .sample IDs must be nonempty and unique")
         seen.add(s)
@@ -1193,8 +1199,7 @@ def _native_backend():
 def write_metafile(bgen_path, output=None):
     """Create a bgen-limix index, never overwriting an existing sidecar.
 
-    The default is ``<bgen_path>.metafile``. This is neither a SQLite
-    ``.bgi`` nor a file named ``.metadata``. A temporary index is closed
+    The default is ``<bgen_path>.metafile``. A temporary index is closed
     before publication; failed creation leaves no partial target.
     """
     backend = _native_backend()

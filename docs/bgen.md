@@ -74,8 +74,8 @@ two sidecar files:
 | `<stem>.sample` | text | on | `--no-sample-file` | Oxford `.sample` (sample IDs) |
 | `<stem>.bgen.metafile` | native bgen-limix | off | omit `--metafile` | native variant index |
 
-`--metafile` additionally creates the canonical native index, **not**
-`.metadata` and not a renamed `.bgi`. It requires `vcztools[bgen]`
+`--metafile` additionally creates the native bgen-limix index.
+It requires `vcztools[bgen]`
 (`bgen-limix>=4.14,<5`, imported as `cbgen`) and `-o`.
 The legacy distribution named `cbgen` is incompatible: do not install both.
 Native index creation uses the public `BgenFile.create_metafile` API after
@@ -172,7 +172,10 @@ level 1.
   stores preserve true single-allele records.
 - **Whitespace in sample IDs.** Rejected with a clear error message —
   the `.sample` format is whitespace-separated. Sidecar IDs must also
-  be nonempty and unique.
+  be nonempty and unique, and cannot be the reserved missing identifiers
+  `NA` or `.` (case-sensitive). Literal `0`, `na`, and `Na` are valid.
+  This sidecar restriction does not apply to IDs embedded in BGEN;
+  omit `.sample` with `--no-sample-file` to retain an embedded `NA` ID.
 
 ## Fixed-size encoding
 

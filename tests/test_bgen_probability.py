@@ -355,16 +355,50 @@ def test_legacy_backend_conflict_is_explicit(monkeypatch):
         bgen._native_backend()
 
 
-def test_sample_validation_precedes_payload_write(tmp_path):
+@pytest.mark.parametrize("identifier", ["has space", "NA", "."])
+def test_sample_validation_precedes_payload_write(tmp_path, identifier):
     root = probability_store()
-    root["sample_id"][0] = "has space"
+    root["sample_id"][0] = identifier
     path = tmp_path / "out.bgen"
     sample_path = tmp_path / "out.sample"
     with VczReader(root) as reader:
-        with pytest.raises(ValueError, match="whitespace"):
-            bgen.write_bgen(reader, path, sample_path=sample_path)
+        with pytest.raises(ValueError, match="whitespace|reserved"):
+            bgen.write_bgen(
+                reader,
+                path,
+                sample_path=sample_path,
+                bgi_path=str(path) + ".bgi",
+                metafile_path=str(path) + ".metafile",
+            )
     assert not path.exists()
     assert not sample_path.exists()
+    assert not (tmp_path / "out.bgen.bgi").exists()
+    assert not (tmp_path / "out.bgen.metafile").exists()
+
+
+def test_na_embedded_without_sample_sidecar(tmp_path):
+    root = probability_store()
+    root["sample_id"][0] = "NA"
+    path = tmp_path / "out.bgen"
+    with VczReader(root) as reader:
+        bgen.write_bgen(reader, path, metafile_path=str(path) + ".metafile")
+    samples, _, _ = native_read(path)
+    assert samples[0] in ("NA", b"NA")
+
+
+def test_bio2zarr_embedded_na_roundtrip(tmp_path):
+    converter = pytest.importorskip("bio2zarr.bgen")
+    root = probability_store()
+    root["sample_id"][0] = "NA"
+    path = tmp_path / "out.bgen"
+    with VczReader(root) as reader:
+        bgen.write_bgen(reader, path, metafile_path=str(path) + ".metafile")
+    target = tmp_path / "roundtrip.vcz"
+    converter.convert(path, target, worker_processes=0)
+    import zarr  # noqa: PLC0415
+
+    result = zarr.open_group(target, mode="r")
+    nt.assert_array_equal(result["sample_id"][:], root["sample_id"][:])
 
 
 @pytest.mark.parametrize("zarr_format", [2, 3])
@@ -372,6 +406,7 @@ def test_sample_validation_precedes_payload_write(tmp_path):
 def test_bio2zarr_probability_roundtrip(tmp_path, zarr_format, subset):
     converter = pytest.importorskip("bio2zarr.bgen")
     root = probability_store()
+    root["sample_id"][0] = "0"
     path = tmp_path / "out.bgen"
     sample_path = tmp_path / "out.sample"
     selected = [1, 3] if subset else list(range(4))

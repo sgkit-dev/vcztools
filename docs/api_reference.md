@@ -81,6 +81,7 @@ example-driven introduction to opening datasets and iterating variants, and
 .. autofunction:: vcztools.write_bim
 .. autofunction:: vcztools.write_fam
 .. autofunction:: vcztools.write_bgi
+.. autofunction:: vcztools.write_metafile
 .. autofunction:: vcztools.write_sample
 
 ```

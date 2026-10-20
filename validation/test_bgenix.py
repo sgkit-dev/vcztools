@@ -211,8 +211,7 @@ def _read_variant_table(bgi_path: pathlib.Path) -> list[tuple]:
     (varid, rsid, chromosome, alleles) to a fixed width so the variant
     block is a constant size. bgenix indexes the on-disk bytes verbatim
     and so records the padded form; we record canonical values in our
-    own ``.bgi``. The padding is BGEN-spec-permitted (the reference
-    bgen-reader strips it on read) but it would otherwise make a
+    own ``.bgi``. The padding is BGEN-spec-permitted but would make a
     byte-exact comparison spurious. Stripping on both sides aligns
     canonical and on-disk-byte representations for the equality
     assertion."""

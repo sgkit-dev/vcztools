@@ -50,15 +50,18 @@ repository = "https://github.com/sgkit-dev/vcztools"
 vcztools = "vcztools.cli:vcztools_main"
 
 [project.optional-dependencies]
+bgen = ["bgen-limix>=4.15.0,<5"]
 obstore = ["obstore"]
 icechunk = ["icechunk"]
 
 [dependency-groups]
+bgen-test = ["pytest", "pytest-xdist"]
 test = [
   "azure-storage-blob",
-  "bgen-reader",
+  "bgen-limix>=4.15.0,<5",
   "bio2zarr",
   "cyvcf2 ; sys_platform != 'win32'",
+  "fsspec[http]",
   "hypothesis",
   "icechunk",
   "obstore",
@@ -105,7 +108,7 @@ benchmark = [
 ]
 
 validation = [
-  "bgen-reader",
+  "bgen-limix>=4.15.0,<5",
   "bio2zarr",
   "msprime",
   "pandas",

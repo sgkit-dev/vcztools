@@ -28,6 +28,7 @@ class TestPublicAPI:
         "write_bgi",
         "write_bim",
         "write_fam",
+        "write_metafile",
         "write_plink",
         "write_sample",
         "write_vcf",

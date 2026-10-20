@@ -4,13 +4,13 @@ import sqlite3
 import sys
 from unittest import mock
 
-import bgen_reader as br
 import click
 import click.testing as ct
 import numpy as np
 import pytest
 
 import vcztools.cli as cli
+from tests.bgen_helpers import read_bgen
 from tests.test_bcftools_validation import run_vcztools
 from vcztools import bcftools_filter, provenance
 
@@ -840,13 +840,13 @@ class TestViewBgen:
         )
         assert result.exit_code != 0
 
-    def test_multiallelic_without_max_alleles_errors(self, tmp_path, fx_vcz_path):
+    def test_multiallelic_without_max_alleles(self, tmp_path, fx_vcz_path):
         out = tmp_path / "b"
-        _, err = run_vcztools(
+        run_vcztools(
             f"view-bgen {fx_vcz_path} -o {out.as_posix()}",
-            expect_error=True,
         )
-        assert "Multi-allelic" in err
+        rows = self._bgi_variant_rows(tmp_path / "b.bgen.bgi")
+        assert len(rows) > 6
 
     def test_max_alleles_skips_multiallelic(self, tmp_path, fx_vcz_path):
         # Same fixture, same expectations as view-plink: 6 surviving
@@ -986,8 +986,8 @@ class TestViewBgen:
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -o {out.as_posix()} --unphased"
         )
-        with br.open_bgen(tmp_path / "b.bgen", verbose=False) as bg:
-            assert not bg.phased.any()
+        bg = read_bgen(tmp_path / "b.bgen")
+        assert not bg.phased.any()
 
     def test_no_header_samples_no_sample_file_warns(self, tmp_path, fx_vcz_path):
         # Both off → sample IDs nowhere; expect a logger.warning.
@@ -1074,18 +1074,18 @@ class TestViewBgen:
     ):
         # With --variant-id-field varid, the BGEN rsid slot holds the
         # padding field — "." followed by pad_byte filler. Pick a
-        # distinctive --pad-byte and confirm bgen-reader sees it.
+        # distinctive --pad-byte and confirm bgen-limix sees it.
         out = tmp_path / "b"
         run_vcztools(
             f"view-bgen {fx_vcz_path} --max-alleles 2 "
             f"-e 'CHROM==\"X\"' -o {out.as_posix()} "
             f"--fixed-variant-size --variant-id-field varid --pad-byte X"
         )
-        with br.open_bgen(tmp_path / "b.bgen", verbose=False) as bg:
-            for rsid in bg.rsids:
-                rsid_str = str(rsid)
-                assert rsid_str.startswith(".")
-                assert set(rsid_str[1:]) == {"X"}
+        bg = read_bgen(tmp_path / "b.bgen")
+        for rsid in bg.metadata("rsid"):
+            rsid_str = str(rsid)
+            assert rsid_str.startswith(".")
+            assert set(rsid_str[1:]) == {"X"}
 
     def test_fixed_variant_size_rejects_non_zero_compression(
         self, tmp_path, fx_vcz_path

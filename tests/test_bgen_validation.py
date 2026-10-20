@@ -2,8 +2,8 @@
 
 Two layers:
 
-1. :class:`TestBgenReaderRoundtrip` — always runs. Parses ``view-bgen``
-   output with the maintained reference reader (``bgen-reader``) and
+1. :class:`TestBgenLimixRoundtrip` — always runs. Parses ``view-bgen``
+   output with the maintained reference reader (``bgen-limix``) and
    asserts the genotype matrix and metadata round-trip from the source
    VCZ store. Confirms our spec interpretation matches a third-party
    reader's.
@@ -11,7 +11,7 @@ Two layers:
 2. :class:`TestPlink2BgenCrossCheck` — skipped if ``plink2`` is not on
    PATH. Runs ``plink2 --export bgen-1.2 bits=8 ref-first`` and
    ``vcztools view-bgen`` on the same fixture, parses both outputs with
-   ``bgen-reader``, and asserts they agree on the genotype probability
+   ``bgen-limix``, and asserts they agree on the genotype probability
    matrix and core metadata. Confirms semantic equivalence with the
    reference transcoder. Known field-level divergences (sample-ID
    format, rsid synthesis) are documented in :func:`_strip_double_id`
@@ -22,13 +22,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import bgen_reader as br
 import click.testing as ct
 import numpy as np
 import pytest
 
 import vcztools.cli as cli
 from tests import vcz_builder
+from tests.bgen_helpers import read_bgen
 from vcztools import bgen as bgen_mod
 from vcztools import retrieval
 
@@ -143,7 +143,7 @@ def _strip_chr_prefix(chroms) -> list[str]:
 
 
 def _bgen_unphased_dosages(probs: np.ndarray) -> np.ndarray:
-    """``probs`` from bgen-reader for unphased biallelic diploid is
+    """``probs`` from bgen-limix for unphased biallelic diploid is
     shape ``(n_samples, n_variants, 3)`` storing P(00), P(01), P(11) per
     sample. Returns the integer ALT dosage matrix as
     ``(n_variants, n_samples)``. Missing samples (NaN in ``probs``) are
@@ -188,8 +188,8 @@ def _filter_indexes(group, *, drop_chrom: str | None = None, max_alleles: int = 
 # ---------------------------------------------------------------------------
 
 
-class TestBgenReaderRoundtrip:
-    """Parse vcztools output with ``bgen-reader`` and assert the source
+class TestBgenLimixRoundtrip:
+    """Parse vcztools output with ``bgen-limix`` and assert the source
     VCZ round-trips through the BGEN encoding."""
 
     def test_sample_fixture_genotypes(self, tmp_path, fx_sample_vcz):
@@ -202,10 +202,10 @@ class TestBgenReaderRoundtrip:
         )
         keep = _filter_indexes(fx_sample_vcz.group, drop_chrom="X", max_alleles=2)
         source_g = fx_sample_vcz.group["call_genotype"][...][keep]
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen:
-            assert list(bgen.samples) == ["NA00001", "NA00002", "NA00003"]
-            assert bgen.nvariants == int(keep.sum())
-            probs = bgen.read()
+        bgen = read_bgen(out.with_suffix(".bgen"))
+        assert list(bgen.samples) == ["NA00001", "NA00002", "NA00003"]
+        assert bgen.variant_count == int(keep.sum())
+        probs = bgen.probabilities
         bgen_dosage = _bgen_unphased_dosages(probs)
         source_dosage, missing = _vcz_dosages_and_missing(source_g)
         np.testing.assert_array_equal(bgen_dosage[~missing], source_dosage[~missing])
@@ -222,14 +222,12 @@ class TestBgenReaderRoundtrip:
         variant_contig = fx_sample_vcz.group["variant_contig"][...][keep]
         expected_chrom = list(contig_id[variant_contig])
         expected_pos = list(fx_sample_vcz.group["variant_position"][...][keep])
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen:
-            assert [str(c) for c in bgen.chromosomes] == expected_chrom
-            assert [int(p) for p in bgen.positions] == expected_pos
-            # Allele list is comma-joined by bgen-reader. Each variant
-            # has exactly 2 alleles (biallelic + monomorphic encoded as
-            # "REF,.").
-            for allele_str in bgen.allele_ids:
-                assert len(str(allele_str).split(",")) == 2
+        bgen = read_bgen(out.with_suffix(".bgen"))
+        assert [str(c) for c in bgen.metadata("chrom")] == expected_chrom
+        assert [int(p) for p in bgen.metadata("position")] == expected_pos
+        # Each variant has two alleles, including legacy REF,. padding.
+        for alleles in bgen.metadata("allele_ids"):
+            assert len(alleles) == 2
 
     def test_sample_subset(self, tmp_path, fx_sample_vcz):
         out = tmp_path / "x"
@@ -238,9 +236,9 @@ class TestBgenReaderRoundtrip:
             fx_sample_vcz.zip_path,
             out,
         )
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen:
-            assert list(bgen.samples) == ["NA00001", "NA00003"]
-            assert bgen.nsamples == 2
+        bgen = read_bgen(out.with_suffix(".bgen"))
+        assert list(bgen.samples) == ["NA00001", "NA00003"]
+        assert bgen.sample_count == 2
 
     def test_msprime_fixture_genotypes(self, tmp_path, fx_msprime_diploid_vcz):
         # The msprime fixture has one tri-allelic site; --max-alleles 2
@@ -249,12 +247,12 @@ class TestBgenReaderRoundtrip:
         run_view_bgen("--max-alleles 2", fx_msprime_diploid_vcz.zip_path, out)
         keep = _filter_indexes(fx_msprime_diploid_vcz.group, max_alleles=2)
         source_g = fx_msprime_diploid_vcz.group["call_genotype"][...][keep]
-        with br.open_bgen(out.with_suffix(".bgen"), verbose=False) as bgen:
-            assert bgen.nvariants == int(keep.sum())
-            # msprime output is fully phased.
-            assert all(bool(p) for p in bgen.phased)
-            probs = bgen.read()
-        # For phased diploid biallelic, bgen-reader returns shape
+        bgen = read_bgen(out.with_suffix(".bgen"))
+        assert bgen.variant_count == int(keep.sum())
+        # msprime output is fully phased.
+        assert all(bool(p) for p in bgen.phased)
+        probs = bgen.probabilities
+        # The snapshot stacks phased diploid biallelic calls into shape
         # (n_samples, n_variants, 4): per-haplotype P(allele 0), P(allele 1).
         assert probs.shape[-1] == 4
         # Decode hap1 and hap2 separately and compare against source.
@@ -285,9 +283,9 @@ class TestBgenReaderRoundtrip:
         reader = retrieval.VczReader(root)
         bgen_path = tmp_path / "p.bgen"
         bgen_mod.write_bgen(reader, bgen_path)
-        with br.open_bgen(bgen_path, verbose=False) as bgen:
-            assert all(bool(p) for p in bgen.phased)
-            probs = bgen.read()
+        bgen = read_bgen(bgen_path)
+        assert all(bool(p) for p in bgen.phased)
+        probs = bgen.probabilities
         hap1 = np.argmax(probs[..., 0:2], axis=-1).T
         hap2 = np.argmax(probs[..., 2:4], axis=-1).T
         np.testing.assert_array_equal(hap1, G[..., 0])
@@ -311,15 +309,15 @@ class TestBgenReaderRoundtrip:
         reader = retrieval.VczReader(root)
         bgen_path = tmp_path / "m.bgen"
         bgen_mod.write_bgen(reader, bgen_path)
-        with br.open_bgen(bgen_path, verbose=False) as bgen:
-            probs, missing_mask = bgen.read(return_missings=True)
-        # bgen-reader missing_mask is (n_samples, n_variants).
+        bgen = read_bgen(bgen_path)
+        missing_mask = bgen.missing
+        # The snapshot's missing mask is (n_samples, n_variants).
         expected_missing = (G < 0).any(axis=-1).T  # (n_samples, n_variants)
         np.testing.assert_array_equal(missing_mask, expected_missing)
 
 
 # ---------------------------------------------------------------------------
-# Haploid / mixed-ploidy roundtrip via bgen-reader
+# Haploid / mixed-ploidy roundtrip via bgen-limix
 # ---------------------------------------------------------------------------
 
 
@@ -332,9 +330,9 @@ def _haploid_allele_from_probs(probs_row):
     return int(np.argmax(probs_row[:2]))
 
 
-class TestBgenReaderHaploidRoundtrip:
+class TestBgenLimixHaploidRoundtrip:
     """Validate haploid + mixed-ploidy ``view-bgen`` output via the
-    ``bgen-reader`` reference reader. Source VCZ is built synthetically
+    ``bgen-limix`` reference reader. Source VCZ is built synthetically
     with :func:`tests.vcz_builder.make_vcz`. Mixed-ploidy must go
     through ``write_bgen`` (the variable-size encoder); BgenEncoder is
     uniform-only and is covered in ``tests/test_bgen.py``."""
@@ -359,11 +357,13 @@ class TestBgenReaderHaploidRoundtrip:
         reader = retrieval.VczReader(root)
         bgen_path = tmp_path / "h.bgen"
         bgen_mod.write_bgen(reader, bgen_path)
-        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
-            assert bg.nvariants == 3
-            assert bg.nsamples == 4
-            np.testing.assert_array_equal(bg.ncombinations, [2, 2, 2])
-            probs, missing = bg.read(return_missings=True)
+        bg = read_bgen(bgen_path)
+        assert bg.variant_count == 3
+        assert bg.sample_count == 4
+        np.testing.assert_array_equal(
+            [g.probability.shape[1] for g in bg.genotypes], [2, 2, 2]
+        )
+        probs, missing = (bg.probabilities, bg.missing)
         # Compare allele-per-call against the source.
         for v in range(3):
             for s in range(4):
@@ -396,12 +396,14 @@ class TestBgenReaderHaploidRoundtrip:
         reader = retrieval.VczReader(root)
         bgen_path = tmp_path / "mp.bgen"
         bgen_mod.write_bgen(reader, bgen_path)
-        with br.open_bgen(bgen_path, verbose=False, allow_complex=True) as bg:
-            assert bg.nvariants == 2
-            assert bg.nsamples == 4
-            # Both variants have diploid + haploid samples -> max combos = 3.
-            np.testing.assert_array_equal(bg.ncombinations, [3, 3])
-            probs, missing = bg.read(return_missings=True)
+        bg = read_bgen(bgen_path)
+        assert bg.variant_count == 2
+        assert bg.sample_count == 4
+        # Both variants have diploid + haploid samples -> max combos = 3.
+        np.testing.assert_array_equal(
+            [g.probability.shape[1] for g in bg.genotypes], [3, 3]
+        )
+        probs, missing = (bg.probabilities, bg.missing)
         # Variant 0: sample 0 diploid het (0, 1) -> [0, 1, 0].
         np.testing.assert_array_equal(probs[0, 0], [0.0, 1.0, 0.0])
         # sample 1 haploid alt -> [0, 1, NaN]
@@ -422,7 +424,7 @@ class TestBgenReaderHaploidRoundtrip:
 @pytest.mark.skipif(PLINK2 is None, reason="plink2 not on PATH")
 class TestPlink2BgenCrossCheck:
     """``plink2 --export bgen-1.2 bits=8 ref-first --double-id`` vs
-    ``vcztools view-bgen``: parse both outputs with ``bgen-reader`` and
+    ``vcztools view-bgen``: parse both outputs with ``bgen-limix`` and
     assert they agree semantically.
 
     Known field-level divergences:
@@ -450,18 +452,18 @@ class TestPlink2BgenCrossCheck:
         vcz_out = tmp_path / "vcztools"
         run_plink2_bgen("--max-alleles 2", fx_chr22_vcz.vcf_path, plink_out)
         run_view_bgen("--max-alleles 2", fx_chr22_vcz.zip_path, vcz_out)
-        with br.open_bgen(plink_out.with_suffix(".bgen"), verbose=False) as p:
-            p_samples = _strip_double_id(p.samples)
-            p_probs = p.read()
-            p_chrom = _strip_chr_prefix(p.chromosomes)
-            p_pos = [int(x) for x in p.positions]
-            p_phased = [bool(x) for x in p.phased]
-        with br.open_bgen(vcz_out.with_suffix(".bgen"), verbose=False) as v:
-            v_samples = list(v.samples)
-            v_probs = v.read()
-            v_chrom = _strip_chr_prefix(v.chromosomes)
-            v_pos = [int(x) for x in v.positions]
-            v_phased = [bool(x) for x in v.phased]
+        p = read_bgen(plink_out.with_suffix(".bgen"))
+        p_samples = _strip_double_id(p.samples)
+        p_probs = p.probabilities
+        p_chrom = _strip_chr_prefix(p.metadata("chrom"))
+        p_pos = [int(x) for x in p.metadata("position")]
+        p_phased = [bool(x) for x in p.phased]
+        v = read_bgen(vcz_out.with_suffix(".bgen"))
+        v_samples = list(v.samples)
+        v_probs = v.probabilities
+        v_chrom = _strip_chr_prefix(v.metadata("chrom"))
+        v_pos = [int(x) for x in v.metadata("position")]
+        v_phased = [bool(x) for x in v.phased]
         assert p_samples == v_samples
         assert p_chrom == v_chrom
         assert p_pos == v_pos
@@ -478,10 +480,10 @@ class TestPlink2BgenCrossCheck:
         vcz_out = tmp_path / "vcztools"
         run_plink2_bgen("--max-alleles 2", fx_chr22_vcz.vcf_path, plink_out)
         run_view_bgen("--max-alleles 2", fx_chr22_vcz.zip_path, vcz_out)
-        with br.open_bgen(plink_out.with_suffix(".bgen"), verbose=False) as p:
-            p_alleles = [str(a) for a in p.allele_ids]
-        with br.open_bgen(vcz_out.with_suffix(".bgen"), verbose=False) as v:
-            v_alleles = [str(a) for a in v.allele_ids]
+        p = read_bgen(plink_out.with_suffix(".bgen"))
+        p_alleles = p.metadata("allele_ids")
+        v = read_bgen(vcz_out.with_suffix(".bgen"))
+        v_alleles = v.metadata("allele_ids")
         assert p_alleles == v_alleles
 
     def test_chr22_fixture_variant_count_matches_max_alleles(
@@ -493,10 +495,10 @@ class TestPlink2BgenCrossCheck:
         vcz_out = tmp_path / "vcztools"
         run_plink2_bgen("--max-alleles 2", fx_chr22_vcz.vcf_path, plink_out)
         run_view_bgen("--max-alleles 2", fx_chr22_vcz.zip_path, vcz_out)
-        with br.open_bgen(plink_out.with_suffix(".bgen"), verbose=False) as p:
-            p_n = p.nvariants
-        with br.open_bgen(vcz_out.with_suffix(".bgen"), verbose=False) as v:
-            v_n = v.nvariants
+        p = read_bgen(plink_out.with_suffix(".bgen"))
+        p_n = p.variant_count
+        v = read_bgen(vcz_out.with_suffix(".bgen"))
+        v_n = v.variant_count
         assert p_n == v_n
         # The chr22 fixture has 100 variants; --max-alleles 2 drops the
         # 4 multi-allelic ones, leaving 96.

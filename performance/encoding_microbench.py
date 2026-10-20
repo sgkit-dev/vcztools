@@ -80,9 +80,9 @@ def _encode_variant_range_python(
     benchmark format to expose the speed-up from the C kernel."""
     prep = bgen._prepare_chunk(chunk, chunk_strings, start=start, end=end)
     phase_counts.append(prep.mixed_phase_count)
-    geno_blocks, geno_block_lens = bgen._vcztools.encode_bgen_geno_blocks(
-        prep.genotypes, prep.phased
-    )
+    geno_blocks, geno_block_lens = bgen._native_backend(
+        encoding=True
+    ).encode_layout2_hardcalls_legacy(prep.genotypes, prep.phased)
     bpv = self._bytes_per_variant
     n = end - start
     uniform_len = self._uniform_geno_size

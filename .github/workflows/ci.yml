@@ -78,6 +78,24 @@ jobs:
         run: |
           uv run pytest --cov=vcztools --cov-report=term-missing
 
+  bgen_native:
+    name: Native BGEN export and decoding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          python-version: "3.12"
+      - name: Install maintained backend without legacy cbgen
+        run: uv sync --locked --no-default-groups --extra bgen --group bgen-test
+      - name: Run native probability and index tests
+        run: |
+          uv run --no-sync pytest tests/test_bgen_probability.py \
+            tests/test_bgen_native_encoding.py tests/test_bgen_native_interface.py
+
   c_python_test:
     name: CPython interface tests
     runs-on: ubuntu-latest

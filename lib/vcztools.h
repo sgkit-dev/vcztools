@@ -48,12 +48,6 @@
 #define VCZ_ERR_FIELD_UNSUPPORTED_ITEM_SIZE   (-203)
 #define VCZ_ERR_FIELD_UNSUPPORTED_NUM_COLUMNS (-204)
 
-/* BGEN encoder errors */
-#define VCZ_ERR_BGEN_INVALID_PLOIDY         (-301)
-#define VCZ_ERR_BGEN_INVALID_ALLELE         (-302)
-#define VCZ_ERR_BGEN_MIXED_PLOIDY           (-303)
-#define VCZ_ERR_BGEN_STRING_LENGTH_MISMATCH (-304)
-
 typedef struct {
     // maximum length + 1 for NULL byte
     char name[VCZ_MAX_FIELD_NAME_LEN + 1];
@@ -140,34 +134,3 @@ int vcz_encode_plink(
 int vcz_compute_ac_an(size_t num_variants, size_t num_samples, size_t ploidy,
     size_t max_num_alt, const int32_t *num_alleles, const int8_t *genotypes,
     int32_t *ac_out, int32_t *an_out);
-
-#define VCZ_BGEN_PLOIDY_HAPLOID         0x01
-#define VCZ_BGEN_PLOIDY_DIPLOID         0x02
-#define VCZ_BGEN_PLOIDY_MISSING_HAPLOID 0x81
-#define VCZ_BGEN_PLOIDY_MISSING_DIPLOID 0x82
-#define VCZ_BGEN_BITS_PER_PROB          8
-int vcz_encode_bgen_geno_blocks(size_t num_variants, size_t num_samples,
-    const int8_t *genotypes, const uint8_t *phased, uint8_t *buf, size_t row_stride,
-    uint32_t *out_lens);
-size_t vcz_bgen_geno_block_size(size_t num_samples, size_t uniform_ploidy);
-size_t vcz_bgen_variant_block_size(
-    size_t num_samples, size_t uniform_ploidy, size_t total_string_length);
-int vcz_encode_bgen_chunk_slice_level0(size_t num_variants, size_t num_samples,
-    size_t uniform_ploidy, size_t total_string_length, const uint8_t *varid,
-    size_t varid_stride, const uint8_t *rsid, size_t rsid_stride, const uint8_t *chrom,
-    size_t chrom_stride, const uint8_t *allele1, size_t allele1_stride,
-    const uint8_t *allele2, size_t allele2_stride, const int32_t *position,
-    const int8_t *genotypes, const uint8_t *phased, uint8_t *out_buf);
-
-/* Drop-in replacements for the zlib symbols referenced by the BGEN encoder.
- * Same name (with vcz_ prefix), same parameter order and semantics as zlib,
- * stdint types instead of zlib typedefs. Specialised to level-0/stored
- * DEFLATE so we don't have to link libz in production; the C test suite
- * cross-checks them against libz. */
-#define VCZ_Z_OK           0
-#define VCZ_Z_STREAM_ERROR (-401)
-#define VCZ_Z_BUF_ERROR    (-402)
-uint32_t vcz_adler32(uint32_t adler, const uint8_t *buf, size_t len);
-size_t vcz_compress_bound(size_t source_len);
-int vcz_compress2(uint8_t *dest, size_t *dest_len, const uint8_t *source,
-    size_t source_len, int level);

@@ -30,14 +30,3 @@ test_compute = executable('test_compute',
     c_args: extra_c_args,
 )
 test('test_compute', test_compute)
-
-# Cross-check the in-tree zlib replacements against libz. Production
-# builds (setup.py) don't link libz; the test runner is the one place
-# we're allowed to depend on it.
-z_dep = cc.find_library('z', required: true)
-test_zlib = executable('test_zlib',
-    sources: ['test_zlib.c', 'formats.c'],
-    dependencies: [cunit_dep, m_dep, z_dep],
-    c_args: extra_c_args,
-)
-test('test_zlib', test_zlib)

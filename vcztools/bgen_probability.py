@@ -1,5 +1,7 @@
-"""Chunked layout-2 encoding for probability and general-ploidy VCZ stores."""
+"""VCZ validation and chunked orchestration for native layout-2 encoding."""
 
+import concurrent.futures as cf
+import itertools
 import logging
 import math
 import struct
@@ -17,43 +19,6 @@ def _string(value, width):
     if len(encoded) >= 1 << (8 * width):
         raise ValueError(f"BGEN string exceeds {width}-byte length prefix")
     return len(encoded).to_bytes(width, "little") + encoded
-
-
-def _quantize(probabilities, scale):
-    p = np.asarray(probabilities, dtype=np.float64)
-    if (
-        not np.isfinite(p).all()
-        or (p < 0).any()
-        or (p > 1).any()
-        or not np.isclose(p.sum(), 1, atol=1e-6, rtol=0)
-    ):
-        raise ValueError("BGEN probabilities must be finite, in [0, 1], and sum to 1")
-    # Largest-remainder rounding keeps each simplex's integer sum exact.
-    scaled = p / p.sum() * scale
-    q = np.floor(scaled).astype(np.uint64)
-    remainder = scale - int(q.sum())
-    order = np.argsort(-(scaled - q), kind="stable")
-    q[order[:remainder]] += 1
-    return q[:-1]
-
-
-def _pack(values, bits):
-    values = np.asarray(values, dtype=np.uint64)
-    if bits in (8, 16, 32):
-        return values.astype(f"<u{bits // 8}").tobytes()
-    result = bytearray()
-    buffer = 0
-    available = 0
-    for value in values:
-        buffer |= int(value) << available
-        available += bits
-        while available >= 8:
-            result.append(buffer & 255)
-            buffer >>= 8
-            available -= 8
-    if available:
-        result.append(buffer)
-    return bytes(result)
 
 
 def _ploidy(chunk, row, samples):
@@ -76,7 +41,7 @@ def _ploidy(chunk, row, samples):
     return p.astype(np.uint8)
 
 
-def _phase(chunk, row, probability_source, unphased):
+def _phase(chunk, row, probability_source, unphased, *, warn_mixed=True):
     if "variant_bgen_phased" in chunk:
         flag = chunk["variant_bgen_phased"][row]
         if flag not in (0, 1):
@@ -88,7 +53,7 @@ def _phase(chunk, row, probability_source, unphased):
         phased = "call_HP" in chunk
     elif "call_genotype_phased" in chunk:
         flags = chunk["call_genotype_phased"][row]
-        if flags.any() and not flags.all() and not unphased:
+        if flags.any() and not flags.all() and not unphased and warn_mixed:
             logger.warning(
                 "Mixed phase across samples; hard calls emitted as unphased "
                 "(BGEN has one phase flag per variant)."
@@ -101,113 +66,215 @@ def _phase(chunk, row, probability_source, unphased):
     return phased and not unphased
 
 
-def _genotype_block(chunk, row, k, samples, bits, unphased):
+def _encode_genotype_blocks(chunk, allele_counts, samples, bits, unphased, backend):
+    """Validate VCZ representation, then cross the native numerical seam once."""
     probability_source = "call_GP" in chunk or "call_HP" in chunk
-    ploidy = _ploidy(chunk, row, samples)
-    phased = _phase(chunk, row, probability_source, unphased)
-    field = "call_HP" if phased else "call_GP"
-    if probability_source and field not in chunk:
-        raise ValueError(f"BGEN phase requires {field}; refusing hard-call fallback")
-    inactive = "call_GP" if phased else "call_HP"
-    if probability_source and inactive in chunk:
-        vector = chunk[inactive][row]
-        if (
-            vector.ndim != 2
-            or vector.shape[1] < 1
-            or not utils.is_missing(vector[:, 0]).all()
-            or not utils.is_fill(vector[:, 1:]).all()
-        ):
-            raise ValueError(
-                f"Inactive {inactive} must contain missing then fill sentinels"
-            )
-    explicit_missing = chunk.get("call_BGEN_MISSING")
-    if explicit_missing is not None:
-        explicit_missing = explicit_missing[row]
-        if (
-            explicit_missing.shape != (samples,)
-            or not np.isin(explicit_missing, [0, 1]).all()
-        ):
-            raise ValueError("call_BGEN_MISSING must contain one 0/1 flag per sample")
-    missing = np.zeros(samples, dtype=bool)
-    values = []
-    scale = (1 << bits) - 1
-    for sample, p in enumerate(ploidy):
-        p = int(p)
-        states = math.comb(p + k - 1, p)
-        count = p * k if phased else states
-        stored = p * (k - 1) if phased else states - 1
-        if probability_source:
-            vector = chunk[field][row, sample]
-            if vector.ndim != 1 or vector.dtype.kind != "f" or vector.size < count:
-                raise ValueError(f"{field} has insufficient probability states")
-            if not utils.is_fill(vector[count:]).all():
-                raise ValueError(f"{field} has non-fill values beyond active states")
-            active = vector[:count]
-            missing[sample] = (
-                bool(explicit_missing[sample])
-                if explicit_missing is not None
-                else bool(np.isnan(active).all()) and count > 0
-            )
-            if missing[sample]:
-                if not utils.is_missing(active).all():
-                    raise ValueError(
-                        "Missing probability calls must contain missing NaNs"
-                    )
-                values.extend([0] * stored)
-            elif phased:
-                for simplex in active.reshape(p, k):
-                    values.extend(_quantize(simplex, scale))
-            else:
-                values.extend(_quantize(active, scale))
-        else:
-            g = chunk["call_genotype"][row, sample]
+    variants = len(allele_counts)
+    ploidy = np.empty((variants, samples), dtype=np.uint8)
+    missing = np.zeros((variants, samples), dtype=bool)
+    phased = np.empty(variants, dtype=bool)
+    for row, k in enumerate(allele_counts):
+        k = int(k)
+        ploidy[row] = _ploidy(chunk, row, samples)
+        phased[row] = _phase(chunk, row, probability_source, unphased)
+        explicit_missing = chunk.get("call_BGEN_MISSING")
+        if explicit_missing is not None:
+            explicit_missing = explicit_missing[row]
             if (
-                g.ndim != 1
-                or g.dtype.kind not in "iu"
-                or len(g) < p
-                or (g[p:] != -2).any()
-                or (g[:p] < -1).any()
-                or (g[:p] >= k).any()
+                explicit_missing.shape != (samples,)
+                or not np.isin(explicit_missing, [0, 1]).all()
+            ):
+                raise ValueError(
+                    "call_BGEN_MISSING must contain one 0/1 flag per sample"
+                )
+            missing[row] = explicit_missing
+        if probability_source:
+            field = "call_HP" if phased[row] else "call_GP"
+            if field not in chunk:
+                raise ValueError(
+                    f"BGEN phase requires {field}; refusing hard-call fallback"
+                )
+            inactive = "call_GP" if phased[row] else "call_HP"
+            if inactive in chunk:
+                vector = chunk[inactive][row]
+                if (
+                    vector.ndim != 2
+                    or vector.shape[0] != samples
+                    or vector.shape[1] < 1
+                    or not utils.is_missing(vector[:, 0]).all()
+                    or not utils.is_fill(vector[:, 1:]).all()
+                ):
+                    raise ValueError(
+                        f"Inactive {inactive} must contain missing then fill sentinels"
+                    )
+            vector = chunk[field][row]
+            if (
+                vector.ndim != 2
+                or vector.shape[0] != samples
+                or vector.dtype.kind != "f"
+                or vector.dtype.itemsize not in (4, 8)
+            ):
+                raise ValueError(f"{field} must be a float32/float64 probability array")
+            counts = np.empty(samples, dtype=np.intp)
+            for p in np.unique(ploidy[row]):
+                p = int(p)
+                count = p * k if phased[row] else math.comb(p + k - 1, p)
+                if count > vector.shape[1]:
+                    raise ValueError(f"{field} has insufficient probability states")
+                counts[ploidy[row] == p] = count
+            active = np.arange(vector.shape[1]) < counts[:, None]
+            if not (utils.is_fill(vector) | active).all():
+                raise ValueError(f"{field} has non-fill values beyond active states")
+            if explicit_missing is None:
+                missing[row] = np.all(np.isnan(vector), axis=1, where=active) & (
+                    counts > 0
+                )
+            if not utils.is_missing(vector[active & missing[row, :, None]]).all():
+                raise ValueError("Missing probability calls must contain missing NaNs")
+        else:
+            g = chunk["call_genotype"][row]
+            if g.ndim != 2 or g.shape[0] != samples or g.dtype.kind not in "iu":
+                raise ValueError("call_genotype must be a 3D integer array")
+            active = np.arange(g.shape[-1]) < ploidy[row, :, None]
+            if (
+                (ploidy[row] > g.shape[1]).any()
+                or ((g != -2) & ~active).any()
+                or (((g < -1) | (g >= k)) & active).any()
             ):
                 raise ValueError("Invalid genotype allele or non-trailing ploidy fill")
-            missing[sample] = (
-                bool(explicit_missing[sample])
-                if explicit_missing is not None
-                else bool((g[:p] == -1).any())
-            )
-            if not missing[sample] and (g[:p] < 0).any():
+            if explicit_missing is None:
+                missing[row] = ((g == -1) & active).any(axis=1)
+            if ((g < 0) & active & ~missing[row, :, None]).any():
                 raise ValueError("Nonmissing genotype contains missing alleles")
-            if stored > 1_000_000:
+            if not phased[row]:
+                for p in np.unique(ploidy[row]):
+                    if math.comb(int(p) + k - 1, int(p)) - 1 > 1_000_000:
+                        raise ValueError(
+                            "Hard-call BGEN probability vector exceeds 1000000 states"
+                        )
+    kwargs = {
+        "allele_counts": np.asarray(allele_counts, dtype=np.uint16),
+        "missing": missing,
+        "phased": phased,
+        "bits": bits,
+    }
+    if probability_source:
+        kwargs["ploidy"] = ploidy
+        for field, argument in (("call_GP", "gp"), ("call_HP", "hp")):
+            if field in chunk:
+                vector = chunk[field]
+                kwargs[argument] = np.ascontiguousarray(
+                    vector, dtype=vector.dtype.newbyteorder("=")
+                )
+        return backend.encode_layout2(**kwargs)
+    return backend.encode_layout2_hardcalls(
+        genotypes=np.ascontiguousarray(chunk["call_genotype"], dtype=np.int32),
+        **kwargs,
+    )
+
+
+def _genotype_block(chunk, row, k, samples, bits, unphased):
+    from vcztools import bgen  # noqa: PLC0415
+
+    backend = bgen._native_backend(encoding=True)
+    selected = {name: value[row : row + 1] for name, value in chunk.items()}
+    result, _ = _encode_genotype_blocks(selected, [k], samples, bits, unphased, backend)
+    return result
+
+
+def _variant_header(chunk, row, contigs, variant_id_field, minimum_alleles):
+    alleles = utils.trim_fill(chunk["variant_allele"][row])
+    if len(alleles) == 1 and minimum_alleles == 2:
+        alleles = np.append(alleles, ".")
+    k = len(alleles)
+    if not 1 <= k <= 65535 or (alleles == "").any():
+        raise ValueError("BGEN requires 1..65535 nonempty, trailing-fill alleles")
+    position = int(chunk["variant_position"][row])
+    if not 1 <= position <= 0xFFFFFFFF:
+        raise ValueError("BGEN positions must be in 1..4294967295")
+    identifier = str(chunk["variant_id"][row]) or "." if "variant_id" in chunk else "."
+    varid = str(chunk["variant_bgen_id"][row]) if "variant_bgen_id" in chunk else "."
+    rsid = identifier
+    if variant_id_field == "varid":
+        if "variant_bgen_id" in chunk:
+            raise ValueError("variant_id_field='varid' conflicts with variant_bgen_id")
+        varid, rsid = identifier, "."
+    return (
+        _string(varid, 2)
+        + _string(rsid, 2)
+        + _string(contigs[chunk["variant_contig"][row]], 2)
+        + struct.pack("<IH", position, k)
+        + b"".join(_string(a, 4) for a in alleles),
+        k,
+    )
+
+
+def _slice_ranges(chunk, allele_counts, samples, bits, unphased, threads):
+    """Bound each native output batch, including ragged hard-call state spaces."""
+    probability_source = "call_GP" in chunk or "call_HP" in chunk
+    variants = len(allele_counts)
+    rows_per_slice = max(1, (variants + threads - 1) // threads)
+    start = 0
+    size = 0
+    for row, k in enumerate(allele_counts):
+        ploidy = _ploidy(chunk, row, samples)
+        phased = _phase(chunk, row, probability_source, unphased, warn_mixed=False)
+        p, counts = np.unique(ploidy, return_counts=True)
+        stored = 0
+        for value, count in zip(p, counts):
+            value = int(value)
+            states = value * (k - 1) if phased else math.comb(value + k - 1, value) - 1
+            if not probability_source and not phased and states > 1_000_000:
                 raise ValueError(
                     "Hard-call BGEN probability vector exceeds 1000000 states"
                 )
-            encoded = np.zeros(stored, dtype=np.uint64)
-            if not missing[sample]:
-                if phased:
-                    for h, allele in enumerate(g[:p]):
-                        if allele < k - 1:
-                            encoded[h * (k - 1) + int(allele)] = scale
-                else:
-                    rank = sum(
-                        math.comb(int(a) + i, i + 1)
-                        for i, a in enumerate(sorted(g[:p]))
-                    )
-                    if rank < stored:
-                        encoded[rank] = scale
-            values.extend(encoded)
-    flags = ploidy | (missing.astype(np.uint8) << 7)
-    return (
-        struct.pack(
-            "<IHBB",
-            samples,
-            k,
-            int(ploidy.min()) if samples else 0,
-            int(ploidy.max()) if samples else 0,
-        )
-        + flags.tobytes()
-        + bytes([phased, bits])
-        + _pack(values, bits)
+            stored += states * int(count)
+        row_size = 10 + samples + (stored * bits + 7) // 8
+        if row_size > 256 * 1024**2:
+            raise ValueError(
+                "A BGEN genotype block exceeds the 256 MiB native batch limit"
+            )
+        if row > start and (
+            size + row_size > 8 * 1024**2 or row - start >= rows_per_slice
+        ):
+            yield start, row
+            start = row
+            size = 0
+        size += row_size
+    if start < variants:
+        yield start, variants
+
+
+def _encode_slice(
+    chunk,
+    headers,
+    allele_counts,
+    start,
+    end,
+    samples,
+    bits,
+    unphased,
+    backend,
+    compression_level,
+):
+    selected = {name: value[start:end] for name, value in chunk.items()}
+    encoded, boundaries = _encode_genotype_blocks(
+        selected, allele_counts[start:end], samples, bits, unphased, backend
     )
+    raw = memoryview(encoded)
+    output = bytearray()
+    lengths = []
+    for row in range(end - start):
+        genotype = raw[int(boundaries[row]) : int(boundaries[row + 1])]
+        compressed = zlib.compress(genotype, compression_level)
+        block = (
+            headers[start + row]
+            + struct.pack("<II", len(compressed) + 4, len(genotype))
+            + compressed
+        )
+        output.extend(block)
+        lengths.append(len(block))
+    return output, lengths
 
 
 def write_payload(
@@ -220,6 +287,8 @@ def write_payload(
     unphased,
     variant_id_field,
     minimum_alleles=1,
+    backend,
+    encode_threads,
 ):
     """Write one reader chunk at a time and return absolute variant boundaries."""
     fields = ["variant_allele", "variant_contig", "variant_position"]
@@ -248,51 +317,43 @@ def write_payload(
         fields.remove("call_genotype_phased")
     contigs = reader.contig_ids
     offsets = [len(header)]
-    with utils.open_file_like(output, mode="wb") as stream:
+    with (
+        utils.open_file_like(output, mode="wb") as stream,
+        cf.ThreadPoolExecutor(max_workers=encode_threads) as executor,
+    ):
         stream.write(header)
         for chunk in reader.variant_chunks(fields=fields):
-            for row, padded_alleles in enumerate(chunk["variant_allele"]):
-                alleles = utils.trim_fill(padded_alleles)
-                if len(alleles) == 1 and minimum_alleles == 2:
-                    alleles = np.append(alleles, ".")
-                k = len(alleles)
-                if not 1 <= k <= 65535 or (alleles == "").any():
-                    raise ValueError(
-                        "BGEN requires 1..65535 nonempty, trailing-fill alleles"
+            metadata = [
+                _variant_header(chunk, row, contigs, variant_id_field, minimum_alleles)
+                for row in range(len(chunk["variant_allele"]))
+            ]
+            headers = [value[0] for value in metadata]
+            allele_counts = [value[1] for value in metadata]
+            samples = len(reader.sample_ids)
+            ranges = iter(
+                _slice_ranges(
+                    chunk, allele_counts, samples, bits, unphased, encode_threads
+                )
+            )
+            while group := list(itertools.islice(ranges, encode_threads)):
+                futures = [
+                    executor.submit(
+                        _encode_slice,
+                        chunk,
+                        headers,
+                        allele_counts,
+                        start,
+                        end,
+                        samples,
+                        bits,
+                        unphased,
+                        backend,
+                        compression_level,
                     )
-                position = int(chunk["variant_position"][row])
-                if not 1 <= position <= 0xFFFFFFFF:
-                    raise ValueError("BGEN positions must be in 1..4294967295")
-                identifier = (
-                    str(chunk["variant_id"][row]) or "."
-                    if "variant_id" in chunk
-                    else "."
-                )
-                varid = (
-                    str(chunk["variant_bgen_id"][row])
-                    if "variant_bgen_id" in chunk
-                    else "."
-                )
-                rsid = identifier
-                if variant_id_field == "varid":
-                    if "variant_bgen_id" in chunk:
-                        raise ValueError(
-                            "variant_id_field='varid' conflicts with variant_bgen_id"
-                        )
-                    varid, rsid = identifier, "."
-                raw = _genotype_block(
-                    chunk, row, k, len(reader.sample_ids), bits, unphased
-                )
-                compressed = zlib.compress(raw, compression_level)
-                block = (
-                    _string(varid, 2)
-                    + _string(rsid, 2)
-                    + _string(contigs[chunk["variant_contig"][row]], 2)
-                    + struct.pack("<IH", position, k)
-                    + b"".join(_string(a, 4) for a in alleles)
-                    + struct.pack("<II", len(compressed) + 4, len(raw))
-                    + compressed
-                )
-                stream.write(block)
-                offsets.append(offsets[-1] + len(block))
+                    for start, end in group
+                ]
+                for future in futures:
+                    block, lengths = future.result()
+                    stream.write(block)
+                    offsets.extend(offsets[-1] + np.cumsum(lengths, dtype=np.int64))
     return np.asarray(offsets, dtype=np.int64)

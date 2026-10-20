@@ -15,7 +15,7 @@ from tests import vcz_builder
 from vcztools import BgenEncoder, VczReader, bgen, bgen_probability, cli, constants
 
 
-def probability_store():
+def probability_store(*, variants_chunk_size=1):
     """Mixed phase, triallelic, mixed ploidy, zero ploidy and missing calls."""
     ploidy = np.array([[3, 1, 0, 2], [3, 1, 0, 2]], dtype=np.uint8)
     missing = np.array([[0, 0, 0, 1], [0, 0, 1, 1]], dtype=np.uint8)
@@ -35,7 +35,7 @@ def probability_store():
         variant_position=[11, 22],
         alleles=[("A", "C", "G")] * 2,
         num_samples=4,
-        variants_chunk_size=1,
+        variants_chunk_size=variants_chunk_size,
         samples_chunk_size=2,
         variant_id=["rs1", "rs2"],
         call_fields={"GP": gp, "HP": hp, "PLOIDY": ploidy, "BGEN_MISSING": missing},
@@ -333,7 +333,18 @@ def test_float32_normalization_and_32bit_quantization():
     normalized = probabilities.astype(np.float64)
     normalized /= normalized.sum()
     scale = 2**32 - 1
-    stored = bgen_probability._quantize(probabilities, scale)
+    raw = bgen_probability._genotype_block(
+        {
+            "call_GP": probabilities.reshape(1, 1, 3),
+            "call_PLOIDY": np.array([[2]], dtype=np.uint8),
+        },
+        0,
+        2,
+        1,
+        32,
+        False,
+    )
+    stored = np.frombuffer(raw, dtype="<u4", offset=11).astype(np.uint64)
     actual = np.append(stored, scale - int(stored.sum())) / scale
     assert np.max(np.abs(actual - normalized)) <= 1 / scale
     drift = np.max(np.abs(normalized - probabilities))

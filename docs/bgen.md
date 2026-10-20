@@ -49,6 +49,26 @@ For GP a conservative dosage-error bound is
 against unnormalized source values (notably float32).
 Hard-call probabilities are represented exactly.
 
+### Native encoding dependency (development)
+
+The general GP/HP, multiallelic and polyploid encoder delegates numerical
+encoding to the public `cbgen.encode_layout2` and
+`cbgen.encode_layout2_hardcalls` interfaces from the **bgen-limix 4.15
+development build**. This is a staged cross-repository change: those
+interfaces are **not present in released bgen-limix 4.14**, and installing
+`vcztools[bgen]` from the public package index alone does not yet enable them.
+Install the matching development wheel before using general export.
+Missing capabilities raise `ImportError` before creating the payload or
+any sidecar; there is no Python numerical fallback.
+
+The existing biallelic haploid/diploid 8-bit hard-call paths remain usable
+without the new interfaces. Variable-size hard-call export uses the public
+native encoder when available; fixed-stride `BgenEncoder` retains its fused
+vcztools C kernel. Released bgen-limix 4.14 remains sufficient for reading
+and `.metafile` creation. Dependency requirements must be raised when the
+new upstream encoder is published; no local wheel paths are recorded in
+the dependency manifest or lockfile.
+
 ### Phasing
 
 For probability/BGEN metadata stores, `variant_bgen_phased` is authoritative.
@@ -162,11 +182,14 @@ level 1.
   is recomputed by importers; DS-only input cannot determine probabilities
   and is rejected. Unrelated VCF INFO/FORMAT fields, filters, phenotypes,
   and arbitrary VCZ attributes are not represented by BGEN.
-- **General encoder performance.** Reads remain chunked and sample-subset
-  aware, but the general encoder runs sequentially in Python;
-  `encode_threads` applies only to the legacy fast paths. Hard-call
-  unphased state spaces exceeding one million stored states per call
-  are rejected explicitly.
+- **General encoder resources.** Reads remain chunked and sample-subset
+  aware. Numerical encoding runs in bgen-limix C with the GIL released;
+  `encode_threads` also controls ordered, bounded batches on this path.
+  Batches target at most 8 MiB of raw genotype output (a larger single
+  variant forms its own batch); individual genotype blocks above 256 MiB
+  are rejected before native allocation. Hard-call unphased state spaces
+  exceeding one million stored states per call are rejected explicitly.
+  Native encoding does not eliminate combinatorial genotype-state growth.
 - **Legacy monomorphic profile.** Hard-call stores without BGEN metadata
   retain the historical `REF,.` representation; probability/BGEN-metadata
   stores preserve true single-allele records.

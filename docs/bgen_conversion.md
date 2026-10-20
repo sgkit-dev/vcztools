@@ -102,6 +102,13 @@ For GP/HP stores, probabilities take precedence over hard calls; do not use
 Sample-derived AC/AN/AF filters require hard-call data; no hard calls are
 invented for probability-only stores.
 
+General GP/HP, multiallelic or polyploid export additionally needs the
+matching **bgen-limix 4.15 development wheel** with public native encoding
+interfaces. Released 4.14 can read/index BGEN but cannot run this encoder.
+Until that functionality is published, installing `vcztools[bgen]` alone
+is insufficient for general export; see the development dependency note
+in the {ref}`BGEN file format page<sec-bgen>`.
+
 ## See also
 
 - The {ref}`BGEN file format page<sec-bgen>` — format details.

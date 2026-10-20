@@ -493,7 +493,9 @@ def _encode_variant_block(
     return bytes(out)
 
 
-def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
+def _encode_chunk_slice(
+    chunk, chunk_strings, start, end, *, compression_level, backend=None
+):
     """Encode variants ``[start:end]`` of ``chunk`` into one concatenated
     byte buffer. Returns ``(slice_bytes, per_variant_lengths,
     mixed_phase_count)``.
@@ -507,14 +509,34 @@ def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
     so the geno-block builder runs here on the slice's genotypes.
     """
     prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
-    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(
-        prep.genotypes, prep.phased
-    )
     n = end - start
+    if backend is None or prep.genotypes.shape[1] == 0:
+        geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(
+            prep.genotypes, prep.phased
+        )
+        blocks = [
+            memoryview(geno_blocks[j, : int(geno_block_lens[j])]) for j in range(n)
+        ]
+    else:
+        if ((prep.genotypes < -2) | (prep.genotypes > 1)).any():
+            raise ValueError("BGEN genotype allele out of range [-2, 1]")
+        if (prep.genotypes[:, :, 0] == -2).any():
+            raise ValueError(
+                "Legacy BGEN encoding does not support zero-ploidy; "
+                "use call_PLOIDY for general export"
+            )
+        encoded, boundaries = backend.encode_layout2_hardcalls(
+            genotypes=prep.genotypes,
+            allele_counts=np.full(n, 2, dtype=np.uint16),
+            phased=prep.phased,
+            bits=8,
+            max_output_bytes=max(256 * 1024**2, n * (10 + 3 * prep.genotypes.shape[1])),
+        )
+        raw = memoryview(encoded)
+        blocks = [raw[int(boundaries[j]) : int(boundaries[j + 1])] for j in range(n)]
     out = bytearray()
     lens = []
     for j in range(n):
-        block_len = int(geno_block_lens[j])
         block = _encode_variant_block(
             varid_bytes=prep.varid[j],
             rsid_bytes=prep.rsid[j],
@@ -522,7 +544,7 @@ def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
             position=int(prep.position[j]),
             allele1_bytes=prep.allele1[j],
             allele2_bytes=prep.allele2[j],
-            geno_block_bytes=bytes(geno_blocks[j, :block_len]),
+            geno_block_bytes=blocks[j],
             compression_level=compression_level,
         )
         out.extend(block)
@@ -1167,12 +1189,20 @@ class _BgenPayloadInfo:
     minimum_alleles: int = 2
 
 
-def _native_backend():
+def _native_backend(*, encoding=False, required=True):
+    encoding_requirement = (
+        "General BGEN export requires bgen-limix with the public "
+        "encode_layout2 and encode_layout2_hardcalls interfaces "
+        "(4.15 development build). Released bgen-limix 4.14 supports "
+        "reading/indexing only; there is no Python encoding fallback."
+    )
     try:
         importlib.metadata.distribution("cbgen")
     except importlib.metadata.PackageNotFoundError:
         pass
     else:
+        if not required:
+            return None
         raise ImportError(
             "The legacy cbgen distribution conflicts with bgen-limix. "
             "Use a separate environment containing vcztools[bgen], not cbgen."
@@ -1180,20 +1210,35 @@ def _native_backend():
     try:
         version = importlib.metadata.version("bgen-limix")
     except importlib.metadata.PackageNotFoundError as e:
+        if not required:
+            return None
+        if encoding:
+            raise ImportError(encoding_requirement) from e
         raise ImportError(
-            "Native indexes require vcztools[bgen] (bgen-limix>=4.14,<5)"
+            "Native BGEN support requires vcztools[bgen] (bgen-limix>=4.14,<5)"
         ) from e
     release = tuple(int(part) for part in version.split(".")[:2])
     if not (4, 14) <= release < (5, 0):
+        if not required:
+            return None
         raise ImportError("Native indexes require bgen-limix>=4.14,<5")
     try:
-        from cbgen import BgenFile  # noqa: PLC0415
+        import cbgen  # noqa: PLC0415
     except ImportError as e:
         raise ImportError(
             "Native .metafile generation requires vcztools[bgen] "
             "(bgen-limix>=4.14,<5, not the legacy cbgen distribution)"
         ) from e
-    return BgenFile
+    if encoding:
+        if not all(
+            callable(getattr(cbgen, name, None))
+            for name in ("encode_layout2", "encode_layout2_hardcalls")
+        ):
+            if not required:
+                return None
+            raise ImportError(encoding_requirement)
+        return cbgen
+    return cbgen.BgenFile
 
 
 def write_metafile(bgen_path, output=None):
@@ -1292,6 +1337,7 @@ def _write_bgen_variable(
     encode_threads,
     unphased,
     variant_id_field,
+    backend=None,
 ) -> _BgenPayloadInfo:
     """Variable-stride payload body — runs the per-chunk parallel
     encoder loop and streams variant blocks to ``output``.
@@ -1369,6 +1415,7 @@ def _write_bgen_variable(
                     s,
                     e,
                     compression_level=compression_level,
+                    backend=backend,
                 )
                 for (s, e) in slice_ranges
             ]
@@ -1488,12 +1535,16 @@ def write_bgen(
     ``COMPRESSION_ZLIB`` regardless of level, every reader handles
     the output.
 
-    ``encode_threads`` sizes the legacy fast-path worker pool that runs per-slice
+    ``encode_threads`` sizes the worker pool that runs per-slice
     :func:`_prepare_chunk` + per-variant ``_encode_variant_block`` for
     each chunk. Slice bytes are written back to the output in variant
     order on the main thread so byte layout and ``.bgi`` offsets stay
     deterministic. ``None`` selects the default (4). The general
-    probability/polyploid encoder processes reader chunks sequentially.
+    probability/polyploid encoder calls the public bgen-limix batch encoder
+    with the GIL released, using ordered slices targeting 8 MiB of raw output.
+    Individual genotype blocks exceeding 256 MiB are rejected.
+    General export requires the 4.15 development encoding interfaces;
+    released 4.14 supports reading/indexing only.
 
     ``unphased=True`` forces every variant's phased flag to ``0``,
     ignoring ``call_genotype_phased`` if present. Use this when the
@@ -1619,6 +1670,11 @@ def write_bgen(
         compression_level = 0 if fixed_variant_size else 1
 
     format_encoder.check_variant_filter_materialised(reader, "write_bgen")
+    encoding_backend = (
+        _native_backend(encoding=True, required=general)
+        if general or not fixed_variant_size
+        else None
+    )
 
     if not embed_header_samples and sample_path is None:
         logger.warning(
@@ -1666,6 +1722,8 @@ def write_bgen(
             unphased=unphased,
             variant_id_field=variant_id_field,
             minimum_alleles=minimum_alleles,
+            backend=encoding_backend,
+            encode_threads=encode_threads,
         )
         info = _BgenPayloadInfo(
             offsets, None, b".", actual_alleles=True, minimum_alleles=minimum_alleles
@@ -1692,6 +1750,7 @@ def write_bgen(
             encode_threads=encode_threads,
             unphased=unphased,
             variant_id_field=variant_id_field,
+            backend=encoding_backend,
         )
 
     if bgi_path is not None:

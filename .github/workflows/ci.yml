@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   merge_group:
   pull_request:
   push:
@@ -79,7 +80,7 @@ jobs:
           uv run pytest --cov=vcztools --cov-report=term-missing
 
   bgen_native:
-    name: Native BGEN interoperability
+    name: Native BGEN export and decoding
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -92,7 +93,9 @@ jobs:
       - name: Install maintained backend without legacy cbgen
         run: uv sync --locked --no-default-groups --extra bgen --group bgen-test
       - name: Run native probability and index tests
-        run: uv run --no-sync pytest tests/test_bgen_probability.py
+        run: |
+          uv run --no-sync pytest tests/test_bgen_probability.py \
+            tests/test_bgen_native_encoding.py tests/test_bgen_native_interface.py
 
   c_python_test:
     name: CPython interface tests

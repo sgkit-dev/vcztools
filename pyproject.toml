@@ -61,6 +61,7 @@ test = [
   "bgen-limix>=4.15.0,<5",
   "bio2zarr",
   "cyvcf2 ; sys_platform != 'win32'",
+  "fsspec[http]",
   "hypothesis",
   "icechunk",
   "obstore",

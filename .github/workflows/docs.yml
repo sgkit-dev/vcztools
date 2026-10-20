@@ -1,6 +1,7 @@
 name: Docs
 
 on:
+  workflow_dispatch:
   merge_group:
   pull_request:
   push:
@@ -42,7 +43,9 @@ jobs:
 
   deploy:
     needs: build-docs
-    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+    if: >-
+      github.repository == 'sgkit-dev/vcztools' &&
+      github.event_name == 'push'
     permissions:
         pages: write
         id-token: write

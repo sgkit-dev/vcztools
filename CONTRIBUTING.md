@@ -35,11 +35,12 @@ dependencies; no separate environment is needed.
 uv run pytest tests/test_bgen.py tests/test_bgen_validation.py tests/test_bgen_probability.py
 ```
 
-The native tests also include real VCZ -> BGEN -> bio2zarr roundtrips
-for both Zarr formats, selected samples, GP/HP and missing/fill sentinels.
-These run when a bio2zarr build providing `bio2zarr.bgen.convert` and
-`sample_file` support is installed in that environment; otherwise only
-those integration cases are skipped.
+BGEN exporter tests use native decoding and independently calculated expected
+bytes, without requiring a bio2zarr BGEN importer. Full VCZ -> BGEN -> VCZ
+integration coverage belongs in bio2zarr, which consumes vcztools for that
+test direction. The existing bio2zarr development dependency here remains
+for VCF fixtures and other pre-existing tests; BGEN export has no runtime
+dependency on bio2zarr.
 
 The locked public bgen-limix backend provides both general and specialized
 legacy layout-2 encoding interfaces. No development wheel is needed.

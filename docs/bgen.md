@@ -61,10 +61,11 @@ Install the matching development wheel before using general export.
 Missing capabilities raise `ImportError` before creating the payload or
 any sidecar; there is no Python numerical fallback.
 
-The existing biallelic haploid/diploid 8-bit hard-call paths remain usable
-without the new interfaces. Variable-size hard-call export uses the public
-native encoder when available; fixed-stride `BgenEncoder` retains its fused
-vcztools C kernel. Released bgen-limix 4.14 remains sufficient for reading
+The existing biallelic haploid/diploid 8-bit hard-call paths retain their
+specialized vcztools C kernels, both variable-size and fixed-stride, and remain
+usable without the new interfaces. The upstream general encoder supports
+hard calls too, but its additional generality and validation are unnecessary
+overhead on this legacy fast path. Released bgen-limix 4.14 remains sufficient for reading
 and `.metafile` creation. Dependency requirements must be raised when the
 new upstream encoder is published; no local wheel paths are recorded in
 the dependency manifest or lockfile.

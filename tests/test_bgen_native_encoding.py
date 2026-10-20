@@ -163,13 +163,11 @@ def test_threaded_general_export_is_byte_identical():
         assert outputs[0] == outputs[1] == outputs[2]
 
 
-def test_legacy_variable_export_uses_public_native_hardcalls(monkeypatch):
-    original = cbgen.encode_layout2_hardcalls
-    calls = []
-
+def test_legacy_variable_export_keeps_specialized_fastpath(monkeypatch):
     def encode(**kwargs):
-        calls.append(kwargs["genotypes"].shape)
-        return original(**kwargs)
+        raise AssertionError(
+            "Legacy hard calls must retain the specialized C fast path"
+        )
 
     monkeypatch.setattr(cbgen, "encode_layout2_hardcalls", encode)
     root = vcz_builder.make_vcz(
@@ -181,4 +179,3 @@ def test_legacy_variable_export_uses_public_native_hardcalls(monkeypatch):
     )
     with VczReader(root) as reader:
         bgen.write_bgen(reader, io.BytesIO())
-    assert calls == [(1, 2, 2)]

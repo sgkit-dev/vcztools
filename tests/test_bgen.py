@@ -17,13 +17,14 @@ import struct
 import zlib
 from types import SimpleNamespace
 
+import cbgen as _native
 import numpy as np
 import numpy.testing as nt
 import pytest
 
 from tests import vcz_builder
 from tests.bgen_helpers import read_bgen
-from vcztools import _vcztools, bcftools_filter, bgen, regions, retrieval
+from vcztools import bcftools_filter, bgen, regions, retrieval
 
 
 def _build_geno_block_reference(g, variant_phased):
@@ -267,7 +268,7 @@ class TestBuildHeader:
 
 
 class TestBgenVariantBlockSize:
-    """:func:`vcztools._vcztools.bgen_variant_block_size` exposes the
+    """:func:`cbgen.layout2_fixed_size` exposes the
     C kernel's exact per-variant byte count to Python, so the encoder
     never has to reimplement the size formula.
 
@@ -277,7 +278,7 @@ class TestBgenVariantBlockSize:
        kernel for one variant at boundary sizes (where Python's
        ``zlib.compress(_, 0)`` over-predicts by 5 bytes) and asserts
        the bytes the kernel wrote line up with what
-       ``bgen_variant_block_size`` predicted.
+       ``layout2_fixed_size`` predicted.
     2. :func:`test_round_trips_through_python_zlib_decompress` —
        extracts the kernel's stored-zlib payload and round-trips it
        through ``zlib.decompress``, locking the kernel's stream to
@@ -310,13 +311,13 @@ class TestBgenVariantBlockSize:
         allele1 = dot_row.copy()
         allele2 = dot_row.copy()
         position = np.array([100], dtype=np.int32)
-        bpv = _vcztools.bgen_variant_block_size(
+        bpv = _native.layout2_fixed_size(
             num_samples=num_samples,
             uniform_ploidy=uniform_ploidy,
             total_string_length=total_string_length,
         )
         out = np.zeros(bpv, dtype=np.uint8)
-        _vcztools.encode_bgen_chunk_slice_level0(
+        _native.encode_layout2_fixed(
             varid,
             rsid,
             chrom,
@@ -364,7 +365,7 @@ class TestBgenVariantBlockSize:
         # bytes per variant. Read the per-variant C (payload length)
         # field straight off the wire and assert that the kernel's
         # declared variant-block tail matches what
-        # bgen_variant_block_size predicted.
+        # layout2_fixed_size predicted.
         wire, header_overhead, _geno_size, bpv = self._emit_chunk_slice(
             num_samples, uniform_ploidy
         )
@@ -410,7 +411,7 @@ class TestBgenVariantBlockSize:
         if uniform_ploidy == 1:
             G[:, :, 1] = -2
         phased = np.zeros(1, dtype=bool)
-        ref_blocks, ref_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
+        ref_blocks, ref_lens = _native.encode_layout2_hardcalls_legacy(G, phased)
         assert int(ref_lens[0]) == geno_size
         assert unpacked == bytes(ref_blocks[0, :geno_size])
 
@@ -437,7 +438,7 @@ def _single_variant_geno_block(G_single, *, phased=False):
         chunk["call_genotype_phased"] = np.ones((1, n), dtype=bool)
     chunk_strings = bgen._prepare_chunk_strings(chunk, contig_ids=np.array(["chr1"]))
     prep = bgen._prepare_chunk(chunk, chunk_strings, start=0, end=1)
-    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(
+    geno_blocks, geno_block_lens = _native.encode_layout2_hardcalls_legacy(
         prep.genotypes, prep.phased
     )
     block_len = int(geno_block_lens[0])
@@ -446,7 +447,7 @@ def _single_variant_geno_block(G_single, *, phased=False):
 
 class TestPrepareChunkGenoBlocks:
     """Spec-level byte assertions on the uncompressed genotype-block
-    bytes produced by ``_vcztools.encode_bgen_geno_blocks`` (the same
+    bytes produced by ``_native.encode_layout2_hardcalls_legacy`` (the same
     geno-block builder that BgenEncoder's C kernel runs internally).
     Layout 2 / 8-bit / biallelic with per-sample ploidy."""
 
@@ -564,7 +565,7 @@ class TestPrepareChunkGenoBlocks:
 
 
 class TestBuildGenoBlocksAgainstReference:
-    """Sweep the C kernel ``_vcztools.encode_bgen_geno_blocks`` against
+    """Sweep the C kernel ``_native.encode_layout2_hardcalls_legacy`` against
     the pure-Python ``_build_geno_blocks_reference`` over a range of
     awkward inputs; the C output must match byte-for-byte. Inputs may
     include any of: diploid calls, haploid (``b == -2``), missing
@@ -572,7 +573,7 @@ class TestBuildGenoBlocksAgainstReference:
     zero-ploidy error case and is exercised separately."""
 
     def _assert_matches(self, G, phased):
-        c_buf, c_lens = _vcztools.encode_bgen_geno_blocks(G, phased)
+        c_buf, c_lens = _native.encode_layout2_hardcalls_legacy(G, phased)
         ref_blocks = _build_geno_blocks_reference(G, phased)
         assert c_buf.dtype == np.uint8
         assert c_lens.dtype == np.uint32
@@ -719,7 +720,7 @@ class TestBuildGenoBlocksAgainstReference:
         G = np.array([[[-2, b]]], dtype=np.int8)
         phased = np.array([phased_value])
         with pytest.raises(ValueError, match="zero-ploidy"):
-            _vcztools.encode_bgen_geno_blocks(G, phased)
+            _native.encode_layout2_hardcalls_legacy(G, phased)
 
     @pytest.mark.parametrize("phased_value", [False, True])
     @pytest.mark.parametrize(
@@ -747,7 +748,7 @@ class TestBuildGenoBlocksAgainstReference:
         G = np.array([[g]], dtype=np.int8)
         phased = np.array([phased_value])
         with pytest.raises(ValueError, match="out of range"):
-            _vcztools.encode_bgen_geno_blocks(G, phased)
+            _native.encode_layout2_hardcalls_legacy(G, phased)
 
     def test_invalid_allele_mid_chunk_surfaces(self):
         # A bad value on variant 2 of a 3-variant chunk surfaces from
@@ -756,7 +757,7 @@ class TestBuildGenoBlocksAgainstReference:
         G[2, 1, 0] = 2
         phased = np.zeros(3, dtype=bool)
         with pytest.raises(ValueError, match="out of range"):
-            _vcztools.encode_bgen_geno_blocks(G, phased)
+            _native.encode_layout2_hardcalls_legacy(G, phased)
 
 
 class TestPloidyNormalization:
@@ -818,8 +819,12 @@ class TestPloidyNormalization:
         prep2 = prepare(G_padded)
         # _prepare_chunk no longer materialises geno blocks; build them
         # here from the normalised genotypes + phased and compare.
-        gb1, gbl1 = _vcztools.encode_bgen_geno_blocks(prep1.genotypes, prep1.phased)
-        gb2, gbl2 = _vcztools.encode_bgen_geno_blocks(prep2.genotypes, prep2.phased)
+        gb1, gbl1 = _native.encode_layout2_hardcalls_legacy(
+            prep1.genotypes, prep1.phased
+        )
+        gb2, gbl2 = _native.encode_layout2_hardcalls_legacy(
+            prep2.genotypes, prep2.phased
+        )
         nt.assert_array_equal(gbl1, gbl2)
         block_len = int(gbl1[0])
         nt.assert_array_equal(gb1[0, :block_len], gb2[0, :block_len])
@@ -2083,10 +2088,10 @@ class TestBgenEncoderMetadata:
             assert enc.num_samples == 5
 
     def test_bytes_per_variant_formula(self):
-        # bpv comes from _vcztools.bgen_variant_block_size with the
+        # bpv comes from _native.layout2_fixed_size with the
         # simplified signature (single total_string_length knob).
         with _build_encoder(num_variants=2, num_samples=4) as enc:
-            expected = _vcztools.bgen_variant_block_size(
+            expected = _native.layout2_fixed_size(
                 num_samples=4,
                 uniform_ploidy=2,
                 total_string_length=64,
@@ -2110,7 +2115,7 @@ class TestBgenEncoderMetadata:
             num_samples=2,
             encoder_kwargs=dict(total_string_length=128),
         ) as enc:
-            expected = _vcztools.bgen_variant_block_size(
+            expected = _native.layout2_fixed_size(
                 num_samples=2,
                 uniform_ploidy=2,
                 total_string_length=128,
@@ -2465,7 +2470,7 @@ class TestBgenEncoderBoundarySizeDecompression:
         phased = np.zeros(num_variants, dtype=bool)
         G_padded = np.full((num_variants, num_samples, 2), -2, dtype=np.int8)
         G_padded[:, :, : G.shape[2]] = G
-        ref_blocks, ref_lens = _vcztools.encode_bgen_geno_blocks(G_padded, phased)
+        ref_blocks, ref_lens = _native.encode_layout2_hardcalls_legacy(G_padded, phased)
         assert (ref_lens == uniform_geno_size).all()
 
         for v, rec in enumerate(records):
@@ -2724,7 +2729,7 @@ class TestBgenEncoderUniformPloidy:
         )
         with bgen.BgenEncoder(reader) as enc:
             geno_size = 10 + 2 * num_samples
-            expected = _vcztools.bgen_variant_block_size(
+            expected = _native.layout2_fixed_size(
                 num_samples=num_samples,
                 uniform_ploidy=1,
                 total_string_length=64,
@@ -2790,16 +2795,18 @@ class TestBgenEncoderUniformPloidy:
 
 
 # ---------------------------------------------------------------------------
-# C kernel: encode_bgen_chunk_slice_level0.
+# C kernel: encode_layout2_fixed.
 # Drives BgenEncoder._encode_variant_range; tests target it via the encoder
-# in addition to direct unit tests on _vcztools.encode_bgen_chunk_slice_level0.
+# in addition to direct unit tests on _native.encode_layout2_fixed.
 # ---------------------------------------------------------------------------
 
 
 def _python_encode_variant_range(prep, uniform_len):
     """Reference Python implementation matching the old loop body."""
     n = prep.varid.shape[0]
-    geno_blocks, _ = _vcztools.encode_bgen_geno_blocks(prep.genotypes, prep.phased)
+    geno_blocks, _ = _native.encode_layout2_hardcalls_legacy(
+        prep.genotypes, prep.phased
+    )
     out = bytearray()
     for j in range(n):
         block = bgen._encode_variant_block(
@@ -2836,7 +2843,7 @@ def _per_variant_header_overhead(
 
 
 class TestBgenChunkSliceLevel0Kernel:
-    """Direct unit tests for ``_vcztools.encode_bgen_chunk_slice_level0``."""
+    """Direct unit tests for ``_native.encode_layout2_fixed``."""
 
     @pytest.mark.parametrize(
         ("num_samples", "uniform_ploidy"),
@@ -2915,13 +2922,13 @@ class TestBgenChunkSliceLevel0Kernel:
         # Each string field is one "." byte per variant.
         dot = np.full((num_variants, 1), ord("."), dtype=np.uint8)
         position = np.array([100, 200], dtype=np.int32)
-        bpv = _vcztools.bgen_variant_block_size(
+        bpv = _native.layout2_fixed_size(
             num_samples=num_samples,
             uniform_ploidy=uniform_ploidy,
             total_string_length=total_string_length,
         )
         out = np.empty(num_variants * bpv, dtype=np.uint8)
-        _vcztools.encode_bgen_chunk_slice_level0(
+        _native.encode_layout2_fixed(
             dot,
             dot,
             dot,
@@ -2943,7 +2950,7 @@ class TestBgenChunkSliceLevel0Kernel:
         payload = v0[header_overhead + 8 : header_overhead + 4 + C]
         # zlib stream decodes back to the uncompressed geno block built
         # from the same G/phased the kernel saw.
-        expected_geno, _ = _vcztools.encode_bgen_geno_blocks(G, phased)
+        expected_geno, _ = _native.encode_layout2_hardcalls_legacy(G, phased)
         assert zlib.decompress(payload) == bytes(expected_geno[0, :geno_size])
         # First block has BFINAL=0; second has BFINAL=1.
         first_block_header = payload[2]
@@ -2993,7 +3000,7 @@ class TestBgenChunkSliceLevel0Kernel:
         G2 = np.zeros((num_variants, num_samples, 2), dtype=np.int8)
         G2[:] = gt
         phased = np.zeros(num_variants, dtype=bool)
-        geno_blocks, geno_lens = _vcztools.encode_bgen_geno_blocks(G2, phased)
+        geno_blocks, geno_lens = _native.encode_layout2_hardcalls_legacy(G2, phased)
         assert (geno_lens == uniform_len).all()
         for v in range(num_variants):
             v_block = buf[v * bpv : (v + 1) * bpv]
@@ -3012,8 +3019,8 @@ class TestBgenChunkSliceLevel0Kernel:
         dot = np.full((num_variants, 1), ord("."), dtype=np.uint8)
         position = np.zeros(num_variants, dtype=np.int32)
         out_buf = np.zeros(8, dtype=np.uint8)  # deliberately too small
-        with pytest.raises(_vcztools.VczBufferTooSmall):
-            _vcztools.encode_bgen_chunk_slice_level0(
+        with pytest.raises(_native.BufferTooSmall):
+            _native.encode_layout2_fixed(
                 dot,
                 dot,
                 dot,

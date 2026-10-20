@@ -41,9 +41,9 @@ These run when a bio2zarr build providing `bio2zarr.bgen.convert` and
 `sample_file` support is installed in that environment; otherwise only
 those integration cases are skipped.
 
-General encoding tests now require the matching bgen-limix 4.15 development
-wheel exposing `encode_layout2` and `encode_layout2_hardcalls`. Released
-4.14 still covers reading/indexing and the capability-gate tests, but is
+Encoding tests now require the matching bgen-limix 4.15 development wheel
+exposing general and specialized legacy layout-2 encoding interfaces.
+Released 4.14 still covers reading/indexing and the capability-gate tests, but is
 not sufficient for the complete suite. This staged integration is not yet
 public-install-ready, and CI using only the released lockfile cannot run
 the full general-export suite successfully until the encoder is published.
@@ -53,7 +53,7 @@ After installing the matching development wheel with `uv pip install`
 into the project environment, use `uv run --no-sync pytest` to preserve it:
 
 ```bash
-uv run --no-sync pytest tests/test_bgen_native_encoding.py tests/test_bgen_probability.py
+uv run --no-sync pytest tests/test_bgen_native_encoding.py tests/test_bgen_native_interface.py tests/test_bgen_probability.py
 ```
 
 ## Linting

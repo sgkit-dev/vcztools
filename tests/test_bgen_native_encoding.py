@@ -11,6 +11,28 @@ from tests.test_bgen_probability import probability_store
 from vcztools import VczReader, bgen, bgen_probability, constants, utils
 
 
+def test_native_installation_checked_once_but_capabilities_checked_each_time(
+    monkeypatch,
+):
+    bgen._native_backend_module.cache_clear()
+    distribution = bgen.importlib.metadata.distribution
+    calls = []
+
+    def lookup(name):
+        calls.append(name)
+        return distribution(name)
+
+    monkeypatch.setattr(bgen.importlib.metadata, "distribution", lookup)
+    assert bgen._native_backend(encoding=True) is cbgen
+    initial = calls.copy()
+    assert initial
+    assert bgen._native_backend(encoding=True) is cbgen
+    assert calls == initial
+    monkeypatch.delattr(cbgen, "encode_layout2_fixed")
+    with pytest.raises(ImportError, match="4.15 development build"):
+        bgen._native_backend(encoding=True), constants, utils
+
+
 @pytest.mark.parametrize("hardcalls", [False, True])
 def test_encoding_capability_required_before_any_output(
     tmp_path, monkeypatch, hardcalls
@@ -42,8 +64,11 @@ def test_encoding_capability_required_before_any_output(
     assert not list(tmp_path.iterdir())
 
 
-def test_released_reader_preserves_legacy_encoders(monkeypatch):
-    for name in ("encode_layout2", "encode_layout2_hardcalls"):
+@pytest.mark.parametrize("fixed", [False, True])
+def test_released_reader_requires_specialized_encoding_before_output(
+    tmp_path, monkeypatch, fixed
+):
+    for name in ("encode_layout2_hardcalls_legacy", "encode_layout2_fixed"):
         monkeypatch.delattr(cbgen, name, raising=False)
     root = vcz_builder.make_vcz(
         variant_contig=[0],
@@ -52,11 +77,11 @@ def test_released_reader_preserves_legacy_encoders(monkeypatch):
         num_samples=2,
         call_genotype=np.array([[[0, 1], [-1, -1]]], dtype=np.int8),
     )
-    for fixed in (False, True):
-        with VczReader(root) as reader:
-            output = io.BytesIO()
+    output = tmp_path / "out.bgen"
+    with VczReader(root) as reader:
+        with pytest.raises(ImportError, match="4.15 development build"):
             bgen.write_bgen(reader, output, fixed_variant_size=fixed)
-            assert output.getvalue()[16:20] == b"bgen"
+    assert not output.exists()
 
 
 def test_general_slices_are_bounded_by_output_not_input_padding():
@@ -163,19 +188,30 @@ def test_threaded_general_export_is_byte_identical():
         assert outputs[0] == outputs[1] == outputs[2]
 
 
-def test_legacy_variable_export_keeps_specialized_fastpath(monkeypatch):
+@pytest.mark.parametrize("fixed", [False, True])
+def test_legacy_export_uses_upstream_specialized_fastpath(monkeypatch, fixed):
     def encode(**kwargs):
         raise AssertionError(
             "Legacy hard calls must retain the specialized C fast path"
         )
 
     monkeypatch.setattr(cbgen, "encode_layout2_hardcalls", encode)
+    name = "encode_layout2_fixed" if fixed else "encode_layout2_hardcalls_legacy"
+    original = getattr(cbgen, name)
+    calls = []
+
+    def specialized(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cbgen, name, specialized)
     root = vcz_builder.make_vcz(
         variant_contig=[0],
         variant_position=[1],
         alleles=[("A", "C")],
         num_samples=2,
-        call_genotype=np.array([[[0, 1], [1, -2]]], dtype=np.int8),
+        call_genotype=np.array([[[0, 1], [1, 1]]], dtype=np.int8),
     )
     with VczReader(root) as reader:
-        bgen.write_bgen(reader, io.BytesIO())
+        bgen.write_bgen(reader, io.BytesIO(), fixed_variant_size=fixed)
+    assert calls == [True]

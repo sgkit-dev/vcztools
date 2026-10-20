@@ -352,6 +352,7 @@ def test_float32_normalization_and_32bit_quantization():
 
 
 def test_legacy_backend_conflict_is_explicit(monkeypatch):
+    bgen._native_backend_module.cache_clear()
     monkeypatch.setattr(bgen.importlib.metadata, "distribution", lambda name: object())
     with pytest.raises(ImportError, match="legacy cbgen distribution conflicts"):
         bgen._native_backend()

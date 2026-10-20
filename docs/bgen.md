@@ -51,22 +51,25 @@ Hard-call probabilities are represented exactly.
 
 ### Native encoding dependency (development)
 
-The general GP/HP, multiallelic and polyploid encoder delegates numerical
-encoding to the public `cbgen.encode_layout2` and
-`cbgen.encode_layout2_hardcalls` interfaces from the **bgen-limix 4.15
-development build**. This is a staged cross-repository change: those
+All BGEN numerical encoding lives in **bgen-limix 4.15 development builds**.
+General GP/HP, multiallelic and polyploid encoding uses the public
+`cbgen.encode_layout2` and `cbgen.encode_layout2_hardcalls` interfaces.
+Legacy biallelic hard calls use `cbgen.encode_layout2_hardcalls_legacy`;
+the fused fixed-stride encoder uses `cbgen.encode_layout2_fixed` and
+`cbgen.layout2_fixed_size`. These specialized kernels avoid the general
+encoder's per-call combinatorial and probability-processing overhead.
+This is a staged cross-repository change: those
 interfaces are **not present in released bgen-limix 4.14**, and installing
 `vcztools[bgen]` from the public package index alone does not yet enable them.
-Install the matching development wheel before using general export.
+Install the matching development wheel before using any BGEN export.
 Missing capabilities raise `ImportError` before creating the payload or
 any sidecar; there is no Python numerical fallback.
 
-The existing biallelic haploid/diploid 8-bit hard-call paths retain their
-specialized vcztools C kernels, both variable-size and fixed-stride, and remain
-usable without the new interfaces. The upstream general encoder supports
-hard calls too, but its additional generality and validation are unnecessary
-overhead on this legacy fast path. Released bgen-limix 4.14 remains sufficient for reading
-and `.metafile` creation. Dependency requirements must be raised when the
+The former local BGEN C kernels, bindings and stored-zlib helpers have been
+removed from vcztools. Python retains VCZ validation, chunk/sample selection,
+header/string preparation, stream orchestration and sidecar policies.
+Released bgen-limix 4.14 remains sufficient for reading and `.metafile`
+creation, but not export. Dependency requirements must be raised when the
 new upstream encoder is published; no local wheel paths are recorded in
 the dependency manifest or lockfile.
 

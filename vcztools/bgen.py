@@ -10,7 +10,7 @@ is path-or-file-like, and each sidecar is requested by passing a
 filesystem path (``None`` skips it). Output profile: layout 2,
 zlib-compressed, with embedded sample IDs by default. GP/HP stores use
 the chunked general encoder (multi-allelic, ploidy 0..63, 1..32 bits);
-legacy biallelic hard-call stores retain the fast 8-bit C encoder.
+legacy biallelic hard-call stores use bgen-limix's specialized 8-bit C encoder.
 Haploid and mixed-ploidy stores are supported via
 per-sample ploidy bytes; this is the consumer lowest-common-denominator:
 REGENIE, SAIGE, BOLT-LMM, BGENIE, qctool, and PLINK 2 all accept it
@@ -39,6 +39,7 @@ compatibility, sidecar conventions — see ``docs/bgen.md``.
 
 import concurrent.futures as cf
 import dataclasses
+import functools
 import importlib.metadata
 import logging
 import os
@@ -493,7 +494,9 @@ def _encode_variant_block(
     return bytes(out)
 
 
-def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
+def _encode_chunk_slice(
+    chunk, chunk_strings, start, end, *, compression_level, backend
+):
     """Encode variants ``[start:end]`` of ``chunk`` into one concatenated
     byte buffer. Returns ``(slice_bytes, per_variant_lengths,
     mixed_phase_count)``.
@@ -508,7 +511,7 @@ def _encode_chunk_slice(chunk, chunk_strings, start, end, *, compression_level):
     """
     prep = _prepare_chunk(chunk, chunk_strings, start=start, end=end)
     n = end - start
-    geno_blocks, geno_block_lens = _vcztools.encode_bgen_geno_blocks(
+    geno_blocks, geno_block_lens = backend.encode_layout2_hardcalls_legacy(
         prep.genotypes, prep.phased
     )
     out = bytearray()
@@ -703,7 +706,8 @@ class BgenEncoder(format_encoder.FormatEncoder):
             )
         self._uniform_ploidy = uniform_ploidy
         self._uniform_geno_size = 10 + (uniform_ploidy + 1) * num_samples
-        bytes_per_variant = _vcztools.bgen_variant_block_size(
+        self._backend = _native_backend(encoding=True)
+        bytes_per_variant = self._backend.layout2_fixed_size(
             num_samples=num_samples,
             uniform_ploidy=uniform_ploidy,
             total_string_length=total_string_length,
@@ -828,22 +832,26 @@ class BgenEncoder(format_encoder.FormatEncoder):
             -1, prep.allele2.dtype.itemsize
         )
         # The kernel builds each variant's BGEN genotype block on the
-        # fly from prep.genotypes + prep.phased; mixed-ploidy variants
-        # surface via VCZ_ERR_BGEN_MIXED_PLOIDY (handle_library_error
-        # converts to NotImplementedError pointing at write_bgen).
-        _vcztools.encode_bgen_chunk_slice_level0(
-            varid_2d,
-            rsid_2d,
-            chrom_2d,
-            allele1_2d,
-            allele2_2d,
-            position,
-            prep.genotypes,
-            prep.phased,
-            out_view,
-            self._uniform_ploidy,
-            self._total_string_length,
-        )
+        # fly from prep.genotypes + prep.phased. The adapter adds the
+        # variable-size writer's name to native mixed-ploidy errors.
+        try:
+            self._backend.encode_layout2_fixed(
+                varid_2d,
+                rsid_2d,
+                chrom_2d,
+                allele1_2d,
+                allele2_2d,
+                position,
+                prep.genotypes,
+                prep.phased,
+                out_view,
+                self._uniform_ploidy,
+                self._total_string_length,
+            )
+        except self._backend.BufferTooSmall as e:
+            raise _vcztools.VczBufferTooSmall(str(e)) from e
+        except NotImplementedError as e:
+            raise NotImplementedError(f"{e}. Use write_bgen() instead.") from e
 
     def _close_hook(self) -> None:
         if self._mixed_phase_count > 0:
@@ -1166,13 +1174,9 @@ class _BgenPayloadInfo:
     minimum_alleles: int = 2
 
 
-def _native_backend(*, encoding=False):
-    encoding_requirement = (
-        "General BGEN export requires bgen-limix with the public "
-        "encode_layout2 and encode_layout2_hardcalls interfaces "
-        "(4.15 development build). Released bgen-limix 4.14 supports "
-        "reading/indexing only; there is no Python encoding fallback."
-    )
+@functools.cache
+def _native_backend_module():
+    """Validate the process's installed backend once, not per chunk or export."""
     try:
         importlib.metadata.distribution("cbgen")
     except importlib.metadata.PackageNotFoundError:
@@ -1182,14 +1186,7 @@ def _native_backend(*, encoding=False):
             "The legacy cbgen distribution conflicts with bgen-limix. "
             "Use a separate environment containing vcztools[bgen], not cbgen."
         )
-    try:
-        version = importlib.metadata.version("bgen-limix")
-    except importlib.metadata.PackageNotFoundError as e:
-        if encoding:
-            raise ImportError(encoding_requirement) from e
-        raise ImportError(
-            "Native BGEN support requires vcztools[bgen] (bgen-limix>=4.14,<5)"
-        ) from e
+    version = importlib.metadata.version("bgen-limix")
     release = tuple(int(part) for part in version.split(".")[:2])
     if not (4, 14) <= release < (5, 0):
         raise ImportError("Native indexes require bgen-limix>=4.14,<5")
@@ -1200,10 +1197,35 @@ def _native_backend(*, encoding=False):
             "Native .metafile generation requires vcztools[bgen] "
             "(bgen-limix>=4.14,<5, not the legacy cbgen distribution)"
         ) from e
+    return cbgen
+
+
+def _native_backend(*, encoding=False):
+    encoding_requirement = (
+        "BGEN export requires bgen-limix with the public general and specialized "
+        "layout-2 encoding interfaces "
+        "(4.15 development build). Released bgen-limix 4.14 supports "
+        "reading/indexing only; there is no Python encoding fallback."
+    )
+    try:
+        cbgen = _native_backend_module()
+    except importlib.metadata.PackageNotFoundError as e:
+        if encoding:
+            raise ImportError(encoding_requirement) from e
+        raise ImportError(
+            "Native BGEN support requires vcztools[bgen] (bgen-limix>=4.14,<5)"
+        ) from e
     if encoding:
         if not all(
             callable(getattr(cbgen, name, None))
-            for name in ("encode_layout2", "encode_layout2_hardcalls")
+            for name in (
+                "encode_layout2",
+                "encode_layout2_hardcalls",
+                "encode_layout2_hardcalls_legacy",
+                "encode_layout2_fixed",
+                "layout2_fixed_size",
+                "BufferTooSmall",
+            )
         ):
             raise ImportError(encoding_requirement)
         return cbgen
@@ -1306,6 +1328,7 @@ def _write_bgen_variable(
     encode_threads,
     unphased,
     variant_id_field,
+    backend,
 ) -> _BgenPayloadInfo:
     """Variable-stride payload body — runs the per-chunk parallel
     encoder loop and streams variant blocks to ``output``.
@@ -1383,6 +1406,7 @@ def _write_bgen_variable(
                     s,
                     e,
                     compression_level=compression_level,
+                    backend=backend,
                 )
                 for (s, e) in slice_ranges
             ]
@@ -1637,7 +1661,7 @@ def write_bgen(
         compression_level = 0 if fixed_variant_size else 1
 
     format_encoder.check_variant_filter_materialised(reader, "write_bgen")
-    encoding_backend = _native_backend(encoding=True) if general else None
+    encoding_backend = _native_backend(encoding=True)
 
     if not embed_header_samples and sample_path is None:
         logger.warning(
@@ -1713,6 +1737,7 @@ def write_bgen(
             encode_threads=encode_threads,
             unphased=unphased,
             variant_id_field=variant_id_field,
+            backend=encoding_backend,
         )
 
     if bgi_path is not None:

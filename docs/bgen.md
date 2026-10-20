@@ -49,29 +49,25 @@ For GP a conservative dosage-error bound is
 against unnormalized source values (notably float32).
 Hard-call probabilities are represented exactly.
 
-### Native encoding dependency (development)
+### Native encoding dependency
 
-All BGEN numerical encoding lives in **bgen-limix 4.15 development builds**.
+All BGEN numerical encoding lives in **bgen-limix 4.15 or later**.
 General GP/HP, multiallelic and polyploid encoding uses the public
 `cbgen.encode_layout2` and `cbgen.encode_layout2_hardcalls` interfaces.
 Legacy biallelic hard calls use `cbgen.encode_layout2_hardcalls_legacy`;
 the fused fixed-stride encoder uses `cbgen.encode_layout2_fixed` and
 `cbgen.layout2_fixed_size`. These specialized kernels avoid the general
 encoder's per-call combinatorial and probability-processing overhead.
-This is a staged cross-repository change: those
-interfaces are **not present in released bgen-limix 4.14**, and installing
-`vcztools[bgen]` from the public package index alone does not yet enable them.
-Install the matching development wheel before using any BGEN export.
+Install `vcztools[bgen]` to include the native backend (`bgen-limix>=4.15,<5`,
+imported as `cbgen`). Version 4.14 does not provide these encoding interfaces.
 Missing capabilities raise `ImportError` before creating the payload or
 any sidecar; there is no Python numerical fallback.
 
 The former local BGEN C kernels, bindings and stored-zlib helpers have been
 removed from vcztools. Python retains VCZ validation, chunk/sample selection,
 header/string preparation, stream orchestration and sidecar policies.
-Released bgen-limix 4.14 remains sufficient for reading and `.metafile`
-creation, but not export. Dependency requirements must be raised when the
-new upstream encoder is published; no local wheel paths are recorded in
-the dependency manifest or lockfile.
+The dependency manifest and lockfile use the public package index; no
+development wheels or machine-local paths are needed.
 
 ### Phasing
 
@@ -100,7 +96,7 @@ two sidecar files:
 
 `--metafile` additionally creates the native bgen-limix index.
 It requires `vcztools[bgen]`
-(`bgen-limix>=4.14,<5`, imported as `cbgen`) and `-o`.
+(`bgen-limix>=4.15,<5`, imported as `cbgen`) and `-o`.
 The legacy distribution named `cbgen` is incompatible: do not install both.
 Native index creation uses the public `BgenFile.create_metafile` API after
 closing the payload. It publishes only a complete index and refuses to

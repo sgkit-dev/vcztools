@@ -102,13 +102,11 @@ For GP/HP stores, probabilities take precedence over hard calls; do not use
 Sample-derived AC/AN/AF filters require hard-call data; no hard calls are
 invented for probability-only stores.
 
-All BGEN export additionally needs the
-matching **bgen-limix 4.15 development wheel** with public native encoding
-interfaces, including the specialized legacy kernels. Released 4.14 can
-read/index BGEN but cannot run these encoders.
-Until that functionality is published, installing `vcztools[bgen]` alone
-is insufficient for export; see the development dependency note
-in the {ref}`BGEN file format page<sec-bgen>`.
+All BGEN export needs **bgen-limix>=4.15,<5**, included by installing
+`vcztools[bgen]`. This provides the public native encoding interfaces,
+including the specialized legacy kernels. Version 4.14 can read/index
+BGEN but cannot run these encoders. See the native dependency note in the
+{ref}`BGEN file format page<sec-bgen>`.
 
 ## See also
 

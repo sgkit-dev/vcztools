@@ -1188,14 +1188,14 @@ def _native_backend_module():
         )
     version = importlib.metadata.version("bgen-limix")
     release = tuple(int(part) for part in version.split(".")[:2])
-    if not (4, 14) <= release < (5, 0):
-        raise ImportError("Native indexes require bgen-limix>=4.14,<5")
+    if not (4, 15) <= release < (5, 0):
+        raise ImportError("Native BGEN support requires bgen-limix>=4.15,<5")
     try:
         import cbgen  # noqa: PLC0415
     except ImportError as e:
         raise ImportError(
             "Native .metafile generation requires vcztools[bgen] "
-            "(bgen-limix>=4.14,<5, not the legacy cbgen distribution)"
+            "(bgen-limix>=4.15,<5, not the legacy cbgen distribution)"
         ) from e
     return cbgen
 
@@ -1204,8 +1204,8 @@ def _native_backend(*, encoding=False):
     encoding_requirement = (
         "BGEN export requires bgen-limix with the public general and specialized "
         "layout-2 encoding interfaces "
-        "(4.15 development build). Released bgen-limix 4.14 supports "
-        "reading/indexing only; there is no Python encoding fallback."
+        "from bgen-limix>=4.15,<5. Install vcztools[bgen]; "
+        "there is no Python encoding fallback."
     )
     try:
         cbgen = _native_backend_module()
@@ -1213,7 +1213,7 @@ def _native_backend(*, encoding=False):
         if encoding:
             raise ImportError(encoding_requirement) from e
         raise ImportError(
-            "Native BGEN support requires vcztools[bgen] (bgen-limix>=4.14,<5)"
+            "Native BGEN support requires vcztools[bgen] (bgen-limix>=4.15,<5)"
         ) from e
     if encoding:
         if not all(
@@ -1534,8 +1534,8 @@ def write_bgen(
     probability/polyploid encoder calls the public bgen-limix batch encoder
     with the GIL released, using ordered slices targeting 8 MiB of raw output.
     Individual genotype blocks exceeding 256 MiB are rejected.
-    General export requires the 4.15 development encoding interfaces;
-    released 4.14 supports reading/indexing only.
+    Export requires bgen-limix>=4.15,<5 with its public general and
+    specialized layout-2 encoding interfaces, installed by vcztools[bgen].
 
     ``unphased=True`` forces every variant's phased flag to ``0``,
     ignoring ``call_genotype_phased`` if present. Use this when the

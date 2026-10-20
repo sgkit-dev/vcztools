@@ -27,7 +27,7 @@ uv run pytest
 Note: some tests require `bcftools` and `plink` to be installed
 (available via conda-forge and bioconda).
 
-All BGEN tests use the maintained `bgen-limix>=4.14,<5` backend through
+All BGEN tests use the maintained `bgen-limix>=4.15,<5` backend through
 its public `BgenFile` and `BgenMetafile` APIs. It is included in the test
 dependencies; no separate environment is needed.
 
@@ -41,19 +41,13 @@ These run when a bio2zarr build providing `bio2zarr.bgen.convert` and
 `sample_file` support is installed in that environment; otherwise only
 those integration cases are skipped.
 
-Encoding tests now require the matching bgen-limix 4.15 development wheel
-exposing general and specialized legacy layout-2 encoding interfaces.
-Released 4.14 still covers reading/indexing and the capability-gate tests, but is
-not sufficient for the complete suite. This staged integration is not yet
-public-install-ready, and CI using only the released lockfile cannot run
-the full general-export suite successfully until the encoder is published.
-Do not add machine-local wheel paths to `pyproject.toml` or `uv.lock`.
-
-After installing the matching development wheel with `uv pip install`
-into the project environment, use `uv run --no-sync pytest` to preserve it:
+The locked public bgen-limix backend provides both general and specialized
+legacy layout-2 encoding interfaces. No development wheel is needed.
+Capability-gate tests also cover backends missing the required interfaces;
+encoding must fail before creating a payload or sidecars.
 
 ```bash
-uv run --no-sync pytest tests/test_bgen_native_encoding.py tests/test_bgen_native_interface.py tests/test_bgen_probability.py
+uv run pytest tests/test_bgen_native_encoding.py tests/test_bgen_native_interface.py tests/test_bgen_probability.py
 ```
 
 ## Linting

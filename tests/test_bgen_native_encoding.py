@@ -11,6 +11,24 @@ from tests.test_bgen_probability import probability_store
 from vcztools import VczReader, bgen, bgen_probability, constants, utils
 
 
+@pytest.mark.parametrize("version", ["4.14.0", "5.0.0"])
+def test_unsupported_backend_version_rejected_before_output(
+    tmp_path, monkeypatch, version
+):
+    bgen._native_backend_module.cache_clear()
+    monkeypatch.setattr(bgen.importlib.metadata, "version", lambda name: version)
+    with VczReader(probability_store()) as reader:
+        with pytest.raises(ImportError, match="bgen-limix>=4.15,<5"):
+            bgen.write_bgen(
+                reader,
+                tmp_path / "out.bgen",
+                sample_path=tmp_path / "out.sample",
+                bgi_path=tmp_path / "out.bgi",
+                metafile_path=tmp_path / "out.bgen.metafile",
+            )
+    assert not list(tmp_path.iterdir())
+
+
 def test_native_installation_checked_once_but_capabilities_checked_each_time(
     monkeypatch,
 ):
@@ -29,7 +47,7 @@ def test_native_installation_checked_once_but_capabilities_checked_each_time(
     assert bgen._native_backend(encoding=True) is cbgen
     assert calls == initial
     monkeypatch.delattr(cbgen, "encode_layout2_fixed")
-    with pytest.raises(ImportError, match="4.15 development build"):
+    with pytest.raises(ImportError, match="bgen-limix>=4.15,<5"):
         bgen._native_backend(encoding=True), constants, utils
 
 
@@ -39,7 +57,6 @@ def test_encoding_capability_required_before_any_output(
 ):
     for name in ("encode_layout2", "encode_layout2_hardcalls"):
         monkeypatch.delattr(cbgen, name, raising=False)
-    monkeypatch.setattr(bgen.importlib.metadata, "version", lambda name: "4.14.0")
     root = probability_store()
     if hardcalls:
         del root["call_GP"]
@@ -53,7 +70,7 @@ def test_encoding_capability_required_before_any_output(
         )
     payload = tmp_path / "out.bgen"
     with VczReader(root) as reader:
-        with pytest.raises(ImportError, match="4.15 development build"):
+        with pytest.raises(ImportError, match="bgen-limix>=4.15,<5"):
             bgen.write_bgen(
                 reader,
                 payload,
@@ -65,7 +82,7 @@ def test_encoding_capability_required_before_any_output(
 
 
 @pytest.mark.parametrize("fixed", [False, True])
-def test_released_reader_requires_specialized_encoding_before_output(
+def test_backend_requires_specialized_encoding_before_output(
     tmp_path, monkeypatch, fixed
 ):
     for name in ("encode_layout2_hardcalls_legacy", "encode_layout2_fixed"):
@@ -79,7 +96,7 @@ def test_released_reader_requires_specialized_encoding_before_output(
     )
     output = tmp_path / "out.bgen"
     with VczReader(root) as reader:
-        with pytest.raises(ImportError, match="4.15 development build"):
+        with pytest.raises(ImportError, match="bgen-limix>=4.15,<5"):
             bgen.write_bgen(reader, output, fixed_variant_size=fixed)
     assert not output.exists()
 
